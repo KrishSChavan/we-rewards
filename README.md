@@ -1,4 +1,4 @@
-# PSU Eats Rewards
+# We-Rewards
 
 Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one Express app.
 
@@ -53,5 +53,3 @@ config — the terminal never sends a point value.
 2. Vendor terminal UI: code entry → tier buttons → confirm → auto-return
 3. Redeem flow both sides
 4. Manifest + service worker (offline shell), then pilot with one vendor
-# we-rewards
-# we-rewards
