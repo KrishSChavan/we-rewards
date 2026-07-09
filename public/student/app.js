@@ -8,6 +8,11 @@ let balance = 0;
 let myCodeTimer = null;     // home-screen earn-code refresh loop
 let redeemCountdown = null; // redemption-code modal countdown
 let selectedItem = null;
+let socket = null;          // socket.io connection for live balance pushes
+let currentToken = null;    // latest Supabase access token (socket auth)
+let balanceReady = false;   // first balance shown yet? (skip the ticker on load)
+let tickRaf = 0;            // requestAnimationFrame id for the counting ticker
+let toastTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,9 +38,13 @@ const $ = (id) => document.getElementById(id);
   $('item-redeem').addEventListener('click', onRedeemTap);
   $('item-modal').addEventListener('click', (e) => { if (e.target === $('item-modal')) closeItemModal(); });
 
-  sb.auth.onAuthStateChange((_event, session) => render(session));
+  sb.auth.onAuthStateChange((_event, session) => {
+    currentToken = session?.access_token ?? null;   // keep the socket's token fresh
+    render(session);
+  });
 
   const { data } = await sb.auth.getSession();
+  currentToken = data?.session?.access_token ?? null;
   render(data?.session ?? null);
 
   if ('serviceWorker' in navigator) {
@@ -61,8 +70,11 @@ function render(session) {
   if (session) {
     loadHome();
     startMyCode();
+    connectSocket();
   } else {
     stopMyCode();
+    disconnectSocket();
+    balanceReady = false;   // re-login should show the balance instantly, no ticker
   }
 }
 
@@ -119,16 +131,113 @@ async function loadHome() {
       vendors.find((v) => v.balance > 0) ??
       vendors[0] ??
       null;
-    balance = vendor?.balance ?? 0;
 
     $('pb-vendor').textContent = vendor ? vendor.name.toUpperCase() : 'PSU EATS';
-    $('pb-balance').textContent = balance;
-
     renderItems();
+    applyBalance(vendor?.balance ?? 0);   // sets/tickers the number + notifies
   } catch {
     $('items-empty').textContent = 'Couldn’t load rewards. Check your connection and try again.';
     $('items-empty').hidden = false;
   }
+}
+
+/* ---------- live balance: socket push + ticker + notification ---------- */
+
+// The server pushes a { vendorId, balance } event the instant a vendor awards
+// or redeems, so the meter updates live with no polling. The socket.io client
+// is served by our own server at /socket.io/socket.io.js.
+function connectSocket() {
+  if (!socket) {
+    socket = io({ autoConnect: false, auth: (cb) => cb({ token: currentToken }) });
+    socket.on('balance', (payload) => {
+      if (vendor && payload?.vendorId === vendor.vendorId) applyBalance(payload.balance ?? 0);
+    });
+    // Catch up on (re)connect in case an update landed while we were offline.
+    socket.on('connect', syncBalance);
+  }
+  if (!socket.connected) socket.connect();
+}
+
+function disconnectSocket() {
+  if (socket) socket.disconnect();
+}
+
+// One-shot balance fetch to re-sync after a (re)connect.
+async function syncBalance() {
+  if (!vendor) return;
+  try {
+    const res = await authFetch('/api/me/balances');
+    if (!res.ok) return;
+    const vendors = await res.json();
+    const v = vendors.find((x) => x.vendorId === vendor.vendorId);
+    if (v) applyBalance(v.balance ?? 0);
+  } catch { /* ignore */ }
+}
+
+// Update the balance everywhere. After the first load, a change animates the
+// meter and pops a toast so gains/losses register live.
+function applyBalance(next) {
+  const prev = balance;
+  if (next === prev && balanceReady) return;   // no change — nothing to do
+  balance = next;
+  document.querySelectorAll('.item-card').forEach(decorateCard); // live lock/unlock
+
+  if (!balanceReady) {              // first paint: just show it, no ticker/toast
+    balanceReady = true;
+    $('pb-balance').textContent = next;
+    return;
+  }
+  tickTo(prev, next);
+  notifyPoints(next - prev);
+
+  // A drop while the sheet is showing a code means this redemption just went
+  // through — close the card (after a beat so the "Redeemed" toast registers).
+  if (next < prev && !$('item-modal').hidden && !$('item-code').hidden) {
+    setTimeout(closeItemModal, 1000);
+  }
+}
+
+// Count the meter from one value to another (eased, capped at 1s).
+function tickTo(from, to) {
+  const el = $('pb-balance');
+  cancelAnimationFrame(tickRaf);
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    el.textContent = to;
+    return;
+  }
+  const start = performance.now();
+  const dur = Math.min(1000, 300 + Math.abs(to - from) * 3);
+  const step = (now) => {
+    const p = Math.min(1, (now - start) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(from + (to - from) * eased);
+    if (p < 1) tickRaf = requestAnimationFrame(step);
+    else el.textContent = to;
+  };
+  tickRaf = requestAnimationFrame(step);
+}
+
+// Pop a pill + bump/flash the meter: green for points added, amber for redeemed.
+function notifyPoints(delta) {
+  const gain = delta > 0;
+
+  const toast = $('points-toast');
+  toast.className = `points-toast ${gain ? 'gain' : 'lose'}`;
+  toast.textContent = gain ? `✨  +${delta} pts` : `🎉  Redeemed · ${Math.abs(delta)} pts`;
+  toast.hidden = false;
+  void toast.offsetWidth;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => { toast.hidden = true; }, 300);
+  }, 2200);
+
+  const pts = document.querySelector('.pb-points');
+  pts.classList.remove('is-bump');
+  void pts.offsetWidth;                       // restart the animation
+  pts.classList.add('is-bump', gain ? 'gain' : 'lose');
+  setTimeout(() => pts.classList.remove('gain', 'lose'), 900);
 }
 
 function renderItems() {
@@ -230,6 +339,7 @@ function openSheet() {
 
 function closeItemModal() {
   const overlay = $('item-modal');
+  if (overlay.hidden || !overlay.classList.contains('is-open')) return; // already closing/closed
   overlay.classList.remove('is-open'); // slide the card down + fade the backdrop
   clearInterval(redeemCountdown);
   redeemCountdown = null;

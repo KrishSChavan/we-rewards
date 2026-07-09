@@ -14,6 +14,7 @@
   --sky-line: #a9c4e4;
   --accent: #96bee6;
   --success: #157a43;
+  --warn: #c2740a;
   --muted: #5a6678;
 }
 
@@ -151,9 +152,35 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .pb-vendor { font-weight: 900; letter-spacing: 0.12em; font-size: 1rem; color: var(--accent); }
 .signout { font-weight: 700; color: var(--sky); text-decoration: underline; font-size: 0.85rem; padding: 0.3rem 0; }
-.pb-points { display: flex; align-items: baseline; gap: 0.3rem; }
-.pb-points span { font-size: 2.6rem; font-weight: 900; line-height: 1; }
+.pb-points { display: flex; align-items: baseline; gap: 0.3rem; transform-origin: right center; }
+.pb-points span { font-size: 2.6rem; font-weight: 900; line-height: 1; transition: color 200ms ease; }
 .pb-points small { font-size: 1rem; font-weight: 700; color: var(--sky); }
+/* live ticker feedback: a bump + a color flash on the number */
+.pb-points.is-bump { animation: pbBump 480ms cubic-bezier(0.22, 1, 0.36, 1); }
+.pb-points.gain span { color: #7be0a6; }   /* light green reads on the navy bar */
+.pb-points.lose span { color: #f0b968; }   /* light amber */
+@keyframes pbBump {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.16); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) { .pb-points.is-bump { animation: none; } }
+
+/* pill that pops in near the top when points are awarded or an item is redeemed */
+.points-toast {
+  position: fixed; left: 50%; top: calc(4.4rem + env(safe-area-inset-top));
+  transform: translateX(-50%) translateY(-10px); z-index: 45;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.65rem 1.15rem; border-radius: 999px;
+  font-weight: 900; font-size: 1.05rem; color: #fff; white-space: nowrap;
+  box-shadow: 0 8px 20px rgba(16, 29, 51, 0.28);
+  opacity: 0; pointer-events: none;
+  transition: opacity 260ms ease, transform 260ms ease;
+}
+.points-toast[hidden] { display: none; }
+.points-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.points-toast.gain { background: var(--success); }
+.points-toast.lose { background: var(--warn); }
 
 .app-main { padding: 1.3rem 1.3rem 3rem; }
 

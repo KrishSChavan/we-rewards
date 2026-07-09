@@ -1,7 +1,7 @@
 /* PSU Eats Rewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'psu-eats-v6';
+const CACHE = 'psu-eats-v9';
 const SHELL = ['/', '/styles.css', '/app.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -20,7 +20,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
   if (url.origin !== location.origin) return;   // CDNs manage their own caching
-  if (url.pathname.startsWith('/api/')) return; // live data must never be stale
+  if (url.pathname.startsWith('/api/')) return;       // live data must never be stale
+  if (url.pathname.startsWith('/socket.io/')) return; // let the realtime transport pass through
 
   e.respondWith(
     fetch(e.request)

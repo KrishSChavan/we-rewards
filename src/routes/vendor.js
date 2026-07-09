@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireVendor } from '../middleware/auth.js';
+import { emitBalance } from '../lib/realtime.js';
 
 const router = Router();
 router.use(requireVendor);
@@ -96,8 +97,11 @@ router.post('/award', async (req, res, next) => {
     });
     if (error) throw error;
 
+    const newBalance = data?.[0]?.new_balance;
+    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
+
     const { data: profile } = await supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle();
-    res.json({ awarded: points, newBalance: data?.[0]?.new_balance, customerName: profile?.name ?? 'Customer' });
+    res.json({ awarded: points, newBalance, customerName: profile?.name ?? 'Customer' });
   } catch (err) {
     next(err);
   }
@@ -142,6 +146,9 @@ router.post('/redeem', async (req, res, next) => {
     const code = String(req.body?.code ?? '').trim();
     if (!/^\d{4}$/.test(code)) throw new Error('CODE_INVALID');
 
+    // Whose code is this? (looked up before the RPC consumes it, for the live push)
+    const { user_id: userId } = await resolveRedeemCode(code, req.vendor.id);
+
     const { data, error } = await supabaseAdmin.rpc('redeem_by_code', {
       p_code: code,
       p_vendor_id: req.vendor.id,
@@ -149,7 +156,10 @@ router.post('/redeem', async (req, res, next) => {
     if (error) throw error;
     if (!data?.length) throw new Error('CODE_INVALID');
 
-    res.json({ rewardTitle: data[0].reward_title, newBalance: data[0].new_balance });
+    const newBalance = data[0].new_balance;
+    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
+
+    res.json({ rewardTitle: data[0].reward_title, newBalance });
   } catch (err) {
     next(err);
   }

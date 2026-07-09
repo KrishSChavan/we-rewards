@@ -1,10 +1,14 @@
 import express from 'express';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Server } from 'socket.io';
 import 'dotenv/config';
 
 import studentRoutes from './src/routes/student.js';
 import vendorRoutes from './src/routes/vendor.js';
+import { supabaseAuth } from './src/lib/supabase.js';
+import { setIo } from './src/lib/realtime.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -50,5 +54,30 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'SERVER_ERROR', message: 'Something went wrong.' });
 });
 
+// ---- Socket.IO: live balance pushes to students ----
+const server = http.createServer(app);
+const io = new Server(server);
+
+// Authenticate each socket with the student's Supabase access token, then drop
+// them into a room keyed by their user id so awards/redeems can target them.
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('NO_TOKEN'));
+    const { data, error } = await supabaseAuth.auth.getUser(token);
+    if (error || !data?.user) return next(new Error('BAD_TOKEN'));
+    socket.data.userId = data.user.id;
+    next();
+  } catch {
+    next(new Error('AUTH_ERROR'));
+  }
+});
+
+io.on('connection', (socket) => {
+  socket.join(`user:${socket.data.userId}`);
+});
+
+setIo(io);
+
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`PSU Eats Rewards running on http://localhost:${port}`));
+server.listen(port, () => console.log(`We-Rewards running on http://localhost:${port}`));
