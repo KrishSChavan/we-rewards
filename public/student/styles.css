@@ -1,0 +1,278 @@
+/* =====================================================
+   PSU Eats Rewards — student app
+   Same family as the terminal (PSU navy, Archivo) but
+   warmer and more playful: this side has to feel fun.
+   ===================================================== */
+
+:root {
+  --ink: #101d33;
+  --paper: #f2f5f9;
+  --card: #ffffff;
+  --navy: #12294b;
+  --navy-press: #0b1c36;
+  --sky: #d7e5f5;
+  --sky-line: #a9c4e4;
+  --accent: #96bee6;
+  --success: #157a43;
+  --muted: #5a6678;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+body {
+  font-family: "Archivo", system-ui, -apple-system, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; border: none; cursor: pointer; background: none; }
+[hidden] { display: none !important; }
+
+/* ---------- nav ---------- */
+
+.nav {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1.1rem clamp(1.2rem, 4vw, 3rem);
+}
+
+.wordmark { font-weight: 900; letter-spacing: 0.12em; font-size: 0.95rem; }
+.wordmark em { font-style: normal; color: var(--navy); background: var(--sky); padding: 0.1em 0.35em; border-radius: 0.3em; }
+
+.nav-signin {
+  font-weight: 700; font-size: 0.95rem; color: var(--navy);
+  padding: 0.6rem 1.1rem; border: 2.5px solid var(--navy); border-radius: 0.6rem;
+}
+
+/* ---------- hero ---------- */
+
+.hero {
+  display: grid; grid-template-columns: 1.15fr 1fr; align-items: center;
+  gap: 2rem;
+  padding: clamp(2rem, 6vw, 5rem) clamp(1.2rem, 4vw, 3rem);
+  max-width: 72rem; margin: 0 auto;
+}
+
+.hero-copy h1 {
+  font-size: clamp(2.6rem, 7vw, 4.6rem);
+  font-weight: 900; line-height: 0.98; letter-spacing: -0.01em;
+}
+.hl { color: var(--navy); background: linear-gradient(transparent 55%, var(--accent) 55%); }
+
+.hero-sub {
+  margin-top: 1.2rem; font-size: 1.15rem; line-height: 1.55;
+  color: var(--muted); font-weight: 500; max-width: 30rem;
+}
+
+.google-btn {
+  margin-top: 1.8rem;
+  display: inline-flex; align-items: center; gap: 0.8rem;
+  background: var(--card); color: var(--ink);
+  font-size: 1.15rem; font-weight: 700;
+  padding: 1rem 1.6rem; border-radius: 0.9rem;
+  border: 3px solid var(--ink);
+  box-shadow: 0 4px 0 var(--ink);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.google-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+
+.auth-error { margin-top: 0.9rem; color: #a93226; font-weight: 700; }
+.fine { margin-top: 0.9rem; color: var(--muted); font-size: 0.92rem; font-weight: 500; }
+
+/* ---------- hero mock card ---------- */
+
+.hero-card { position: relative; display: flex; justify-content: center; }
+
+.mock-card {
+  background: var(--navy); color: #fff; border-radius: 1.4rem;
+  padding: 1.6rem 1.8rem; width: min(19rem, 80%);
+  transform: rotate(3deg);
+  box-shadow: 0 18px 40px rgba(16, 29, 51, 0.28);
+}
+.mock-vendor { font-weight: 900; letter-spacing: 0.14em; font-size: 0.8rem; color: var(--accent); }
+.mock-points { font-size: 3.4rem; font-weight: 900; line-height: 1.1; }
+.mock-points small { font-size: 0.35em; font-weight: 700; margin-left: 0.25em; letter-spacing: 0.08em; }
+
+.mock-qr {
+  margin: 1rem 0 0.8rem;
+  display: grid; grid-template-columns: repeat(12, 1fr); gap: 3px;
+  background: #fff; padding: 0.7rem; border-radius: 0.7rem; aspect-ratio: 3.2;
+}
+.mock-qr i { background: var(--ink); border-radius: 1px; }
+.mock-qr i:nth-child(3n), .mock-qr i:nth-child(7n) { background: transparent; }
+
+.mock-hint { font-size: 0.9rem; font-weight: 700; color: var(--sky); }
+
+.chip {
+  position: absolute; background: var(--card); border: 3px solid var(--ink);
+  border-radius: 2rem; padding: 0.45rem 0.9rem;
+  font-weight: 900; font-size: 0.95rem;
+  box-shadow: 0 3px 0 var(--ink);
+}
+.chip-1 { top: 8%; right: 4%; transform: rotate(-6deg); color: var(--success); }
+.chip-2 { bottom: 4%; left: 6%; transform: rotate(4deg); color: var(--navy); }
+
+/* ---------- how it works ---------- */
+
+.how {
+  background: var(--navy); color: #fff;
+  padding: clamp(2.5rem, 6vw, 4.5rem) clamp(1.2rem, 4vw, 3rem);
+}
+.how h2 {
+  max-width: 72rem; margin: 0 auto 2rem;
+  font-size: 1rem; font-weight: 900; letter-spacing: 0.22em; color: var(--accent);
+}
+.steps {
+  max-width: 72rem; margin: 0 auto; list-style: none;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem;
+}
+.step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2.6rem; height: 2.6rem; border-radius: 50%;
+  background: var(--accent); color: var(--navy);
+  font-weight: 900; font-size: 1.25rem; margin-bottom: 0.9rem;
+}
+.steps h3 { font-size: 1.35rem; font-weight: 900; margin-bottom: 0.5rem; }
+.steps p { color: var(--sky); line-height: 1.55; font-weight: 500; }
+
+.footer { padding: 2rem; text-align: center; color: var(--muted); font-size: 0.92rem; font-weight: 500; }
+
+/* ---------- signed-in app ---------- */
+
+#app { max-width: 30rem; margin: 0 auto; min-height: 100vh; min-height: 100dvh; }
+
+.points-bar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1rem 1.3rem;
+  padding-top: calc(1rem + env(safe-area-inset-top));
+  background: var(--navy); color: #fff;
+  border-radius: 0 0 1.2rem 1.2rem;
+}
+.pb-vendor { font-weight: 900; letter-spacing: 0.12em; font-size: 1rem; color: var(--accent); }
+.signout { font-weight: 700; color: var(--sky); text-decoration: underline; font-size: 0.85rem; padding: 0.3rem 0; }
+.pb-points { display: flex; align-items: baseline; gap: 0.3rem; }
+.pb-points span { font-size: 2.6rem; font-weight: 900; line-height: 1; }
+.pb-points small { font-size: 1rem; font-weight: 700; color: var(--sky); }
+
+.app-main { padding: 1.3rem 1.3rem 3rem; }
+
+.my-code {
+  width: 100%; text-align: center;
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1.1rem;
+  padding: 1.3rem; box-shadow: 0 4px 0 var(--ink);
+  display: flex; flex-direction: column; align-items: center; gap: 0.35rem;
+}
+.mc-label { font-size: 0.8rem; font-weight: 900; letter-spacing: 0.16em; color: var(--muted); }
+.mc-value {
+  /* Sized so all 6 characters fit on one line without clipping, even on a
+     narrow phone (the previous size overflowed and cut off the last char). */
+  font-size: clamp(2rem, 11.5vw, 3.4rem); font-weight: 900; line-height: 1.05;
+  letter-spacing: 0.08em; text-indent: 0.08em;   /* keep glyphs visually centered */
+  white-space: nowrap; max-width: 100%;
+  color: var(--navy); font-variant-numeric: tabular-nums;
+}
+.mc-sub { font-size: 0.92rem; font-weight: 500; color: var(--muted); }
+
+.app-sub { margin: 1.6rem 0 0.8rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
+.empty-state { color: var(--muted); font-weight: 500; padding: 1.5rem 0; }
+
+/* ---------- item cards ---------- */
+
+.items { display: flex; flex-direction: column; gap: 0.9rem; }
+
+.item-card {
+  width: 100%; text-align: left;
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1.1rem;
+  padding: 1rem 1.2rem;
+  display: flex; align-items: center; gap: 1rem;
+  transition: transform 80ms ease;
+}
+.item-card:active { transform: scale(0.985); }
+
+.ic-emoji {
+  font-size: 2rem; width: 3.4rem; height: 3.4rem; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--sky); border-radius: 0.9rem;
+}
+.ic-body { flex: 1; min-width: 0; }
+.ic-title { font-weight: 900; font-size: 1.15rem; line-height: 1.15; }
+.ic-status { font-size: 0.9rem; font-weight: 700; color: var(--success); margin-top: 0.2rem; }
+.ic-cost { font-weight: 900; color: var(--navy); white-space: nowrap; font-size: 1.05rem; }
+
+.item-card.locked { opacity: 0.55; }
+.item-card.locked .ic-emoji { background: #e3e7ee; filter: grayscale(1); }
+.item-card.locked .ic-status { color: var(--muted); font-weight: 500; }
+.item-card.locked .ic-cost { color: var(--muted); }
+
+/* ---------- overlays / modals ---------- */
+
+.overlay {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(16, 29, 51, 0);
+  display: flex; align-items: flex-end; justify-content: center;
+  transition: background 300ms ease;   /* backdrop fades with the sheet */
+}
+.overlay[hidden] { display: none; }
+.overlay.is-open { background: rgba(16, 29, 51, 0.55); }
+
+/* Bottom sheet: full width, rounded top, slides up from the bottom edge. */
+.detail-card {
+  position: relative; width: 100%;
+  background: var(--card);
+  border-top: 3px solid var(--ink);
+  border-radius: 1.5rem 1.5rem 0 0;
+  padding: 2.2rem 1.5rem calc(1.7rem + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
+  text-align: center;
+  min-height: 42vh; max-height: 88vh; overflow-y: auto;
+  transform: translateY(100%);
+  transition: transform 340ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.overlay.is-open .detail-card { transform: translateY(0); }
+.detail-close {
+  position: absolute; top: 0.9rem; right: 0.9rem;
+  width: 2.6rem; height: 2.6rem; border-radius: 50%;
+  border: 2.5px solid var(--ink); background: var(--paper);
+  font-size: 1.1rem; font-weight: 900;
+}
+.detail-emoji { font-size: 3.4rem; }
+.detail-title { font-size: 1.7rem; font-weight: 900; line-height: 1.1; }
+.detail-cost { font-weight: 900; color: var(--navy); font-size: 1.15rem; }
+.detail-desc { color: var(--muted); font-weight: 500; line-height: 1.5; }
+.detail-status { font-weight: 700; font-size: 1rem; min-height: 1.3em; }
+.detail-status.ok { color: var(--success); }
+.detail-status.locked { color: var(--muted); }
+
+.btn-redeem {
+  margin-top: 0.6rem; width: 100%;
+  background: var(--navy); color: #fff;
+  font-size: 1.3rem; font-weight: 900;
+  padding: 1.1rem; border-radius: 0.9rem;
+}
+.btn-redeem:active { background: var(--navy-press); }
+.btn-redeem:disabled { opacity: 0.4; }
+
+/* Redemption code shown in place of the Redeem button: code + timer, side by side. */
+.item-code {
+  margin-top: 0.6rem; width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 0.9rem; flex-wrap: wrap;
+}
+.item-code-value {
+  font-size: clamp(2.2rem, 12vw, 3.2rem); font-weight: 900;
+  letter-spacing: 0.12em; text-indent: 0.12em;
+  color: var(--navy); font-variant-numeric: tabular-nums;
+}
+.item-code-timer {
+  font-size: 1.1rem; font-weight: 800; color: var(--navy);
+  background: var(--sky); border: 2px solid var(--sky-line);
+  padding: 0.4rem 0.85rem; border-radius: 999px; font-variant-numeric: tabular-nums;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 760px) {
+  .hero { grid-template-columns: 1fr; padding-top: 1.5rem; }
+  .hero-card { margin-top: 1.5rem; }
+  .steps { grid-template-columns: 1fr; }
+}

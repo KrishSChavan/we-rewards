@@ -1,0 +1,384 @@
+/* =====================================================
+   PSU Eats Rewards — vendor terminal
+   Design intent: legible from arm's length, tappable with
+   a thumb mid-rush, state readable from across the counter.
+   Ink navy on cool paper; color floods announce results.
+   ===================================================== */
+
+:root {
+  --ink: #101d33;          /* near-navy text */
+  --paper: #eef1f6;        /* cool light background */
+  --card: #ffffff;
+  --navy: #12294b;         /* PSU navy — primary actions */
+  --navy-press: #0b1c36;
+  --sky: #d7e5f5;          /* chips, tier cards */
+  --sky-line: #a9c4e4;
+  --success: #157a43;
+  --redeem: #a56a14;       /* amber = redeem mode marker */
+  --error: #a93226;
+  --muted: #5a6678;
+  font-size: 16px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: "Archivo", system-ui, -apple-system, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+  user-select: none;
+}
+
+button { font-family: inherit; border: none; cursor: pointer; }
+
+/* ---------- shell ---------- */
+
+#shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.9rem 1.4rem;
+  background: var(--card);
+  border-bottom: 3px solid var(--ink);
+}
+
+.vendor-name { font-weight: 900; letter-spacing: 0.04em; font-size: 1.15rem; text-transform: uppercase; }
+
+.tabs { display: flex; gap: 0.5rem; }
+
+.tab {
+  font-size: 1.15rem; font-weight: 900; letter-spacing: 0.08em;
+  padding: 0.8rem 1.9rem; border-radius: 0.6rem;
+  background: transparent; color: var(--ink);
+  border: 3px solid var(--ink);
+}
+.tab.is-active { background: var(--navy); border-color: var(--navy); color: #fff; }
+.tab-redeem.is-active { background: var(--redeem); border-color: var(--redeem); }
+
+#main { flex: 1; display: flex; min-height: 0; }
+
+.screen {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: safe center;
+  padding: 1.5rem; gap: 1.25rem;
+  overflow-y: auto;   /* never clip content — scroll on very short screens */
+}
+.screen[hidden] { display: none; }
+
+/* ---------- login ---------- */
+
+#screen-login { min-height: 100vh; }
+
+.login-card {
+  width: min(30rem, 92vw); background: var(--card);
+  border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 2.2rem; display: flex; flex-direction: column; gap: 1.1rem;
+}
+.brand { font-weight: 900; letter-spacing: 0.18em; font-size: 0.8rem; color: var(--navy); }
+.login-card h1 { font-size: 1.6rem; font-weight: 900; }
+.login-card label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; font-size: 1rem; }
+.login-card input {
+  font: inherit; font-size: 1.25rem; padding: 0.9rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+}
+.login-note { color: var(--muted); font-size: 0.95rem; }
+
+/* ---------- shared buttons ---------- */
+
+.btn-primary {
+  background: var(--navy); color: #fff;
+  font-size: 1.5rem; font-weight: 900; letter-spacing: 0.03em;
+  padding: 1.2rem 2rem; border-radius: 0.8rem;
+}
+.btn-primary:active { background: var(--navy-press); }
+.btn-primary:disabled { opacity: 0.35; }
+
+.btn-secondary {
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--ink);
+  font-size: 1.35rem; font-weight: 700;
+  padding: 1.1rem 1.8rem; border-radius: 0.8rem;
+}
+
+.btn-ghost {
+  background: transparent; color: var(--muted);
+  font-size: 1.2rem; font-weight: 700;
+  padding: 1.1rem 1.5rem; text-decoration: underline;
+}
+
+.field-error { color: var(--error); font-weight: 700; font-size: 1.05rem; }
+
+/* ---------- scan screens ---------- */
+
+.scan-title {
+  font-size: clamp(2.2rem, 6vw, 3.6rem);
+  font-weight: 900; line-height: 1.02; text-align: center; letter-spacing: 0.02em;
+}
+.scan-redeem .scan-title { color: var(--redeem); }
+
+/* Customer / redemption code entry (replaces the camera scanner) */
+.code-entry {
+  width: min(26rem, 86vw);
+  display: flex; flex-direction: column; gap: 1rem; align-items: stretch;
+}
+.code-input {
+  width: 100%; text-align: center; font-family: inherit;
+  font-size: clamp(2.4rem, 9vw, 3.4rem); font-weight: 900;
+  letter-spacing: 0.3em; text-indent: 0.3em;   /* keep glyphs visually centered */
+  text-transform: uppercase; color: var(--ink);
+  padding: 1rem 0.5rem; border-radius: 1rem;
+  border: 3px solid var(--sky-line); background: var(--card);
+}
+.code-input:focus { outline: none; border-color: var(--navy); }
+.scan-redeem .code-input:focus { border-color: var(--redeem); }
+.code-input::placeholder { color: var(--sky-line); letter-spacing: 0.3em; }
+.code-submit { width: 100%; }
+.code-hint { color: var(--muted); font-weight: 500; font-size: 1.05rem; text-align: center; }
+
+.last-activity { color: var(--muted); font-weight: 500; font-size: 1.05rem; min-height: 1.4em; text-align: center; }
+
+/* ---------- customer + tiers ---------- */
+
+.customer-screen { justify-content: flex-start; padding-top: 2rem; }
+
+.customer-head {
+  width: min(60rem, 100%);
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+}
+.eyebrow { font-size: 0.85rem; font-weight: 900; letter-spacing: 0.2em; color: var(--muted); }
+#customer-name { font-size: clamp(1.9rem, 5vw, 3rem); font-weight: 900; }
+
+.balance-chip {
+  background: var(--sky); border: 3px solid var(--sky-line); border-radius: 1rem;
+  padding: 0.7rem 1.4rem; display: flex; align-items: baseline; gap: 0.45rem;
+}
+.balance-chip span:first-child { font-size: 2.2rem; font-weight: 900; }
+.chip-label { font-weight: 700; color: var(--navy); }
+
+.tier-grid {
+  width: min(60rem, 100%); flex: 1;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+  min-height: 0;
+}
+
+.tier-btn {
+  background: var(--card); border: 3.5px solid var(--ink); border-radius: 1.1rem;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.15rem;
+  padding: 1rem; min-height: 8.5rem;
+}
+.tier-btn:active { background: var(--sky); transform: scale(0.985); }
+.tier-label { font-size: 1.4rem; font-weight: 700; }
+.tier-range { font-size: 1rem; font-weight: 500; color: var(--muted); }
+.tier-points { font-size: clamp(2.4rem, 5.5vw, 3.4rem); font-weight: 900; color: var(--navy); line-height: 1; }
+.tier-points small { font-size: 0.4em; font-weight: 700; letter-spacing: 0.05em; }
+
+.customer-actions { width: min(60rem, 100%); display: flex; justify-content: space-between; gap: 1rem; }
+
+/* ---------- keypads ---------- */
+
+.pad-readout { text-align: center; }
+.pad-amount { font-size: clamp(2.4rem, 6.5vh, 4.8rem); font-weight: 900; line-height: 1; }
+.pad-points { font-size: clamp(1.05rem, 2.4vh, 1.5rem); font-weight: 700; color: var(--navy); margin-top: 0.3rem; }
+
+.keypad {
+  display: grid;
+  /* Keys scale with viewport HEIGHT (and are capped by width) so the whole pad
+     shrinks to fit short screens instead of pushing the buttons off the bottom. */
+  grid-template-columns: repeat(3, min(7.5rem, 16vh, 26vw));
+  gap: clamp(0.35rem, 1.1vh, 0.8rem);
+}
+.keypad button {
+  font-size: clamp(1.2rem, 3vh, 2rem); font-weight: 900; aspect-ratio: 1.25;
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--ink); border-radius: 0.9rem;
+}
+.keypad button:active { background: var(--sky); }
+.key-dim { background: var(--paper) !important; color: var(--muted) !important; font-size: 1.4rem !important; }
+
+.pad-actions { display: flex; gap: 1.2rem; }
+
+/* ---------- pin ---------- */
+
+.pin-dots { display: flex; gap: 1.1rem; }
+.pin-dots i {
+  width: 1.4rem; height: 1.4rem; border-radius: 50%;
+  border: 3px solid var(--ink); background: transparent;
+}
+.pin-dots i.filled { background: var(--ink); }
+
+/* ---------- result flood ---------- */
+
+.flood {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0.8rem; padding: 2rem 2rem 5.5rem; text-align: center; color: #fff;
+  opacity: 0; transition: opacity 300ms ease;   /* clean fade in/out (< 1s) */
+}
+.flood[hidden] { display: none; }
+.flood.is-visible { opacity: 1; }
+.flood.success { background: var(--success); }
+.flood.error   { background: var(--error); }
+
+.flood-icon { font-size: clamp(4rem, 12vw, 7rem); line-height: 1; font-weight: 900; }
+.flood-big  { font-size: clamp(2.4rem, 7vw, 4.5rem); font-weight: 900; line-height: 1.05; }
+.flood-small { font-size: 1.4rem; font-weight: 700; opacity: 0.9; }
+
+/* auto-close timer bar + early-close button, pinned to the bottom */
+.flood-bar {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 1rem;
+  padding: 1.1rem clamp(1rem, 3vw, 2rem);
+}
+.flood-progress {
+  flex: 1; height: 0.55rem; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28); overflow: hidden;
+}
+/* JS drives width 100% → 0% over the auto-close duration (smooth linear). */
+.flood-progress-fill { height: 100%; width: 100%; background: #fff; border-radius: 999px; }
+.flood-close {
+  flex: 0 0 auto;
+  width: 3rem; height: 3rem; border-radius: 50%;
+  border: 3px solid #fff; background: transparent; color: #fff;
+  font-size: 1.35rem; font-weight: 900; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.flood-close:active { background: rgba(255, 255, 255, 0.22); }
+
+@media (prefers-reduced-motion: reduce) {
+  .flood { transition: none; }
+}
+
+/* ---------- narrow screens ---------- */
+
+@media (max-width: 640px) {
+  .tier-grid { grid-template-columns: 1fr; }
+  .customer-head { flex-direction: column; align-items: flex-start; }
+  .manage-head { flex-direction: column; align-items: flex-start; gap: 0.8rem; }
+}
+
+/* ---------- quick-redeem buttons ---------- */
+
+.eyebrow-redeem { color: var(--redeem); }
+.hint-text { color: var(--muted); font-size: 1.05rem; font-weight: 500; align-self: center; }
+
+/* ---------- award pad with customer header ---------- */
+
+.pad-head { margin-bottom: 0.2rem; }
+.pad-screen { padding: clamp(0.6rem, 1.5vh, 1.6rem) 1.25rem; gap: clamp(0.4rem, 1.2vh, 1rem); }
+/* Scale the action buttons down on short screens too, so they always fit. */
+.pad-screen .btn-primary,
+.pad-screen .btn-ghost {
+  font-size: clamp(1.05rem, 2.6vh, 1.5rem);
+  padding: clamp(0.7rem, 1.7vh, 1.2rem) 1.6rem;
+}
+
+/* ---------- redeem confirm screen ---------- */
+
+.confirm-box {
+  width: min(60rem, 100%); flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.6rem;
+  background: var(--card); border: 3.5px solid var(--redeem); border-radius: 1.2rem;
+  padding: 2rem; text-align: center;
+}
+.confirm-item { font-size: clamp(2.2rem, 6vw, 3.6rem); font-weight: 900; line-height: 1.05; }
+.confirm-cost { font-size: 1.4rem; font-weight: 700; color: var(--redeem); }
+
+.confirm-actions { width: min(60rem, 100%); justify-content: space-between; }
+
+.btn-confirm {
+  background: var(--redeem); color: #fff;
+  font-size: 1.5rem; font-weight: 900; letter-spacing: 0.02em;
+  padding: 1.2rem 2rem; border-radius: 0.8rem;
+}
+.btn-confirm:active { filter: brightness(0.85); }
+.btn-confirm:disabled { opacity: 0.4; }
+
+.redeem-btn {
+  background: var(--card); border: 3.5px solid var(--redeem); border-radius: 1.1rem;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.3rem;
+  padding: 1rem; min-height: 8.5rem;
+}
+.redeem-btn:active { transform: scale(0.985); }
+.redeem-title { font-size: clamp(1.6rem, 3.5vw, 2.2rem); font-weight: 900; line-height: 1.1; }
+.redeem-cost { font-size: 1.2rem; font-weight: 700; color: var(--redeem); }
+
+.redeem-btn:disabled { border-color: #cfd6e0; opacity: 0.55; }
+.redeem-btn:disabled .redeem-cost { color: var(--muted); }
+.redeem-cost .short { font-weight: 500; }
+
+.redeem-btn.confirming {
+  background: var(--redeem); border-color: var(--redeem); color: #fff;
+}
+.redeem-btn.confirming .redeem-cost { color: #fff; }
+
+/* ---------- items / manage ---------- */
+
+.manage-screen { justify-content: flex-start; padding-top: 2rem; overflow-y: auto; }
+
+.manage-head {
+  width: min(50rem, 100%);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.manage-head h2 { font-size: 2rem; font-weight: 900; }
+.manage-note { width: min(50rem, 100%); color: var(--muted); font-size: 1rem; font-weight: 500; }
+.btn-compact { font-size: 1.2rem; padding: 0.9rem 1.4rem; }
+
+.reward-list { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 0.8rem; }
+
+.reward-row {
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1rem;
+  display: flex; align-items: center; gap: 1rem; padding: 1rem 1.2rem;
+}
+.reward-row.is-off { opacity: 0.55; border-style: dashed; }
+.reward-info { flex: 1; text-align: left; background: none; border: none; padding: 0; }
+.reward-info .redeem-title { font-size: 1.4rem; display: block; }
+.reward-info .redeem-cost { font-size: 1.05rem; }
+.reward-toggle {
+  min-width: 6.5rem; font-size: 1.1rem; font-weight: 900; letter-spacing: 0.06em;
+  padding: 0.8rem 1rem; border-radius: 0.7rem;
+  border: 3px solid var(--ink); background: var(--card); color: var(--muted);
+}
+.reward-toggle.is-on { background: var(--success); border-color: var(--success); color: #fff; }
+
+.reward-list-empty { color: var(--muted); font-weight: 700; font-size: 1.2rem; padding: 2rem 0; text-align: center; }
+
+/* ---------- overlay form ---------- */
+
+.overlay {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(16, 29, 51, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 1.5rem;
+}
+.overlay[hidden] { display: none; }
+
+.form-card {
+  width: min(30rem, 92vw); background: var(--card);
+  border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 2rem; display: flex; flex-direction: column; gap: 1rem;
+}
+.form-card h2 { font-size: 1.6rem; font-weight: 900; }
+.form-card label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; }
+.form-card input {
+  font: inherit; font-size: 1.35rem; padding: 0.9rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+}
+.form-card .pad-actions { justify-content: flex-end; }
+
+/* ---------- emoji picker ---------- */
+
+.emoji-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem;
+}
+.emoji-grid button {
+  font-size: 1.7rem; padding: 0.5rem 0;
+  background: var(--paper); border: 2.5px solid transparent; border-radius: 0.7rem;
+}
+.emoji-grid button.selected {
+  border-color: var(--navy); background: var(--sky);
+}
+
+.reward-emoji { font-size: 1.7rem; margin-right: 0.6rem; }
+.confirm-emoji { font-size: clamp(3rem, 8vw, 4.5rem); line-height: 1; }

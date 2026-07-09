@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>PSU Eats Rewards — eat local, earn free food</title>
+  <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
+  <meta name="theme-color" content="#12294b" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+  <!-- ================= LANDING + AUTH ================= -->
+  <div id="landing" hidden>
+    <header class="nav">
+      <span class="wordmark">PSU EATS <em>REWARDS</em></span>
+      <button class="nav-signin" data-signin>Sign in</button>
+    </header>
+
+    <main class="hero">
+      <div class="hero-copy">
+        <h1>EAT LOCAL.<br />EARN POINTS.<br /><span class="hl">EAT FREE.</span></h1>
+        <p class="hero-sub">
+          Collect points every time you grab food at local spots around Penn State —
+          then trade them in for free stuff. No app to download, no punch card to lose.
+        </p>
+        <button class="google-btn" data-signin>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+            <path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.66-.22-2.45H12v4.64h6.45a5.52 5.52 0 0 1-2.39 3.62v3h3.86c2.26-2.08 3.58-5.15 3.58-8.81z"/>
+            <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.86-3c-1.07.72-2.44 1.15-4.08 1.15-3.13 0-5.79-2.12-6.74-4.96H1.27v3.1A12 12 0 0 0 12 24z"/>
+            <path fill="#FBBC05" d="M5.26 14.28A7.2 7.2 0 0 1 4.88 12c0-.79.14-1.56.38-2.28v-3.1H1.27a12 12 0 0 0 0 10.76l3.99-3.1z"/>
+            <path fill="#EA4335" d="M12 4.76c1.76 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 12 12 0 0 0 1.27 6.62l3.99 3.1C6.21 6.88 8.87 4.76 12 4.76z"/>
+          </svg>
+          Continue with Google
+        </button>
+        <p id="auth-error" class="auth-error" hidden></p>
+        <p class="fine">Free for students · works right in your browser</p>
+      </div>
+
+      <div class="hero-card" aria-hidden="true">
+        <div class="mock-card">
+          <p class="mock-vendor">YALLAH TACO</p>
+          <p class="mock-points">165<small>pts</small></p>
+          <div class="mock-qr">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </div>
+          <p class="mock-hint">35 pts to a free drink</p>
+        </div>
+        <div class="chip chip-1">+75 pts</div>
+        <div class="chip chip-2">Free drink ✓</div>
+      </div>
+    </main>
+
+    <section class="how">
+      <h2>HOW IT WORKS</h2>
+      <ol class="steps">
+        <li>
+          <span class="step-num">1</span>
+          <h3>Show your code</h3>
+          <p>Sign in once and your personal QR code lives on your phone. Show it at the counter when you pay.</p>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <h3>Earn points</h3>
+          <p>The shop scans it and points land instantly. Every spot sets its own rewards — watch them stack up.</p>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <h3>Eat free</h3>
+          <p>Got enough points? Just show your code and say what you're redeeming. That's the whole thing.</p>
+        </li>
+      </ol>
+    </section>
+
+    <footer class="footer">
+      <p>Made in State College for Penn State students &amp; the local spots that feed them.</p>
+    </footer>
+  </div>
+
+  <!-- ================= SIGNED-IN APP ================= -->
+  <div id="app" hidden>
+
+    <!-- points bar -->
+    <header class="points-bar">
+      <div class="pb-left">
+        <p id="pb-vendor" class="pb-vendor">PSU EATS</p>
+        <button id="signout-btn" class="signout">Sign out</button>
+      </div>
+      <div class="pb-points">
+        <span id="pb-balance">0</span><small>pts</small>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <div class="my-code">
+        <span class="mc-label">YOUR CODE</span>
+        <span id="my-code-value" class="mc-value">••••••</span>
+        <span class="mc-sub">Give this at the counter to earn points</span>
+      </div>
+
+      <p class="app-sub">REWARDS</p>
+
+      <div id="items" class="items">
+        <!-- ================================================================
+             PLACEHOLDER ITEMS — safe to comment out or delete once the
+             vendor has added real items in the terminal's ITEMS tab.
+             Real items are added below these automatically.
+             ================================================================ -->
+        <!-- <button class="item-card placeholder"
+                data-sample="1" data-emoji="🥤" data-title="Free Fountain Drink"
+                data-cost="100" data-desc="Any size fountain drink, on the house.">
+        </button>
+        <button class="item-card placeholder"
+                data-sample="1" data-emoji="🍟" data-title="Free Side of Fries"
+                data-cost="150" data-desc="A fresh side of fries with any order.">
+        </button>
+        <button class="item-card placeholder"
+                data-sample="1" data-emoji="🌯" data-title="Free Burrito"
+                data-cost="300" data-desc="Any burrito on the menu, our treat.">
+        </button> -->
+        <!-- ============== END PLACEHOLDER ITEMS ============== -->
+      </div>
+      <p id="items-empty" class="empty-state" hidden>No rewards yet — check back soon!</p>
+    </main>
+
+    <!-- item detail bottom sheet -->
+    <div id="item-modal" class="overlay sheet" hidden>
+      <div class="detail-card">
+        <button id="item-close" class="detail-close" aria-label="Close">✕</button>
+        <p id="item-emoji" class="detail-emoji">🎁</p>
+        <h2 id="item-title" class="detail-title">—</h2>
+        <p id="item-cost" class="detail-cost">— pts</p>
+        <p id="item-desc" class="detail-desc"></p>
+        <p id="item-status" class="detail-status"></p>
+        <button id="item-redeem" class="btn-redeem">Redeem</button>
+        <div id="item-code" class="item-code" hidden>
+          <span id="item-code-value" class="item-code-value">••••</span>
+          <span id="item-code-timer" class="item-code-timer"></span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

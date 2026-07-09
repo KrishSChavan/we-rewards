@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Terminal — PSU Eats Rewards</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/terminal/terminal.css" />
+</head>
+<body>
+
+  <!-- ===== LOGIN (shown once per device) ===== -->
+  <section id="screen-login" class="screen" hidden>
+    <div class="login-card">
+      <p class="brand">PSU EATS REWARDS</p>
+      <h1>Terminal sign-in</h1>
+      <label>Email
+        <input id="login-email" type="email" autocomplete="username" inputmode="email" />
+      </label>
+      <label>Password
+        <input id="login-password" type="password" autocomplete="current-password" />
+      </label>
+      <p id="login-error" class="field-error" hidden></p>
+      <button id="login-btn" class="btn-primary">Sign in</button>
+      <p class="login-note">Sign in stays saved on this device.</p>
+    </div>
+  </section>
+
+  <!-- ===== APP SHELL ===== -->
+  <div id="shell" hidden>
+    <header id="topbar">
+      <span id="vendor-name" class="vendor-name">—</span>
+      <nav class="tabs" aria-label="Mode">
+        <button id="tab-award" class="tab is-active">AWARD</button>
+        <button id="tab-redeem" class="tab tab-redeem">REDEEM</button>
+        <button id="tab-manage" class="tab tab-manage">ITEMS</button>
+      </nav>
+    </header>
+
+    <main id="main">
+
+      <!-- ===== AWARD: ENTER CODE ===== -->
+      <section id="screen-scan" class="screen scan-screen" hidden>
+        <h2 class="scan-title">ENTER CUSTOMER<br />CODE</h2>
+        <form id="earn-code-form" class="code-entry">
+          <input id="earn-code-input" class="code-input" type="text" inputmode="text"
+                 autocomplete="off" autocapitalize="characters" spellcheck="false"
+                 maxlength="6" placeholder="A1B2C3" aria-label="Customer's 6-character code" />
+          <button type="submit" class="btn-primary code-submit">Find customer</button>
+        </form>
+        <p class="code-hint">Ask the customer for the 6-character code shown in their app.</p>
+        <p id="last-activity" class="last-activity"></p>
+      </section>
+
+      <!-- ===== AWARD: CUSTOMER + EXACT AMOUNT ===== -->
+      <section id="screen-pad" class="screen pad-screen" hidden>
+        <div class="customer-head pad-head">
+          <div>
+            <p class="eyebrow">CUSTOMER</p>
+            <h2 id="customer-name">—</h2>
+          </div>
+          <div class="balance-chip">
+            <span id="customer-balance">0</span>
+            <span class="chip-label">pts</span>
+          </div>
+        </div>
+        <div class="pad-readout">
+          <p class="pad-amount">$<span id="pad-amount">0.00</span></p>
+          <p class="pad-points">= <strong id="pad-points">0</strong> pts</p>
+        </div>
+        <div class="keypad" id="amount-keypad">
+          <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+          <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+          <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+          <button data-k="." class="key-dim">.</button><button data-k="0">0</button><button data-k="back" class="key-dim">⌫</button>
+        </div>
+        <div class="pad-actions">
+          <button id="pad-cancel" class="btn-ghost">Cancel</button>
+          <button id="pad-award" class="btn-primary" disabled>Award points</button>
+        </div>
+      </section>
+
+      <!-- ===== REDEEM: PIN GATE ===== -->
+      <section id="screen-pin" class="screen pin-screen" hidden>
+        <h2 class="scan-title">STAFF PIN</h2>
+        <div class="pin-dots" id="pin-dots"><i></i><i></i><i></i><i></i></div>
+        <p id="pin-error" class="field-error" hidden>Incorrect PIN — try again.</p>
+        <div class="keypad keypad-pin" id="pin-keypad">
+          <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+          <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+          <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+          <button data-k="cancel" class="key-dim">Cancel</button><button data-k="0">0</button><button data-k="back" class="key-dim">⌫</button>
+        </div>
+      </section>
+
+      <!-- ===== REDEEM: ENTER CODE ===== -->
+      <section id="screen-redeem-scan" class="screen scan-screen scan-redeem" hidden>
+        <h2 class="scan-title">ENTER REDEEM<br />CODE</h2>
+        <form id="redeem-code-form" class="code-entry">
+          <input id="redeem-code-input" class="code-input" type="text" inputmode="numeric"
+                 autocomplete="off" spellcheck="false"
+                 maxlength="4" placeholder="0000" aria-label="4-digit redemption code" />
+          <button type="submit" class="btn-confirm code-submit">Find redemption</button>
+        </form>
+        <p class="last-activity">Customer taps an item in their app, then Redeem, to get their 4-digit code.</p>
+      </section>
+
+      <!-- ===== REDEEM: CONFIRM ("is this the user?") ===== -->
+      <section id="screen-redeem-confirm" class="screen customer-screen" hidden>
+        <div class="customer-head">
+          <div>
+            <p class="eyebrow eyebrow-redeem">REDEEM FOR</p>
+            <h2 id="redeem-name">—</h2>
+          </div>
+          <div class="balance-chip">
+            <span id="redeem-balance">0</span>
+            <span class="chip-label">pts</span>
+          </div>
+        </div>
+        <div class="confirm-box">
+          <p class="confirm-emoji" id="redeem-emoji">🎁</p>
+          <p class="confirm-item" id="redeem-item">—</p>
+          <p class="confirm-cost" id="redeem-cost">—</p>
+        </div>
+        <div class="pad-actions confirm-actions">
+          <button id="redeem-cancel" class="btn-ghost">Cancel</button>
+          <button id="redeem-confirm" class="btn-confirm">Confirm — deduct points</button>
+        </div>
+      </section>
+
+      <!-- ===== ITEMS: MANAGE REWARDS ===== -->
+      <section id="screen-manage" class="screen manage-screen" hidden>
+        <div class="manage-head">
+          <h2>Reward items</h2>
+          <button id="add-reward-btn" class="btn-primary btn-compact">+ Add item</button>
+        </div>
+        <p class="manage-note">Items that are ON show as buttons on the redeem screen and in the student app.</p>
+        <div id="reward-list" class="reward-list"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ===== ADD/EDIT REWARD OVERLAY ===== -->
+  <div id="reward-form" class="overlay" hidden>
+    <div class="form-card">
+      <h2 id="reward-form-title">Add item</h2>
+      <label>Item name
+        <input id="reward-title" type="text" maxlength="60" placeholder="Free drink" />
+      </label>
+      <label>Points to redeem
+        <input id="reward-cost" type="number" inputmode="numeric" min="1" step="1" placeholder="150" />
+      </label>
+      <label>Icon</label>
+      <div id="emoji-grid" class="emoji-grid">
+        <button type="button" data-e="🎁">🎁</button><button type="button" data-e="🥤">🥤</button>
+        <button type="button" data-e="☕">☕</button><button type="button" data-e="🧋">🧋</button>
+        <button type="button" data-e="🍕">🍕</button><button type="button" data-e="🍔">🍔</button>
+        <button type="button" data-e="🌯">🌯</button><button type="button" data-e="🌮">🌮</button>
+        <button type="button" data-e="🍟">🍟</button><button type="button" data-e="🥪">🥪</button>
+        <button type="button" data-e="🥗">🥗</button><button type="button" data-e="🍜">🍜</button>
+        <button type="button" data-e="🍣">🍣</button><button type="button" data-e="🍗">🍗</button>
+        <button type="button" data-e="🥞">🥞</button><button type="button" data-e="🥯">🥯</button>
+        <button type="button" data-e="🍩">🍩</button><button type="button" data-e="🍪">🍪</button>
+        <button type="button" data-e="🧁">🧁</button><button type="button" data-e="🍦">🍦</button>
+      </div>
+      <p id="reward-form-hint" class="manage-note"></p>
+      <p id="reward-form-error" class="field-error" hidden></p>
+      <div class="pad-actions">
+        <button id="reward-form-cancel" class="btn-ghost">Cancel</button>
+        <button id="reward-form-save" class="btn-primary">Save item</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== FULL-SCREEN RESULT FLOOD ===== -->
+  <div id="flood" class="flood" hidden>
+    <p id="flood-icon" class="flood-icon">✓</p>
+    <p id="flood-big" class="flood-big"></p>
+    <p id="flood-small" class="flood-small"></p>
+    <div class="flood-bar">
+      <div class="flood-progress"><div id="flood-progress-fill" class="flood-progress-fill"></div></div>
+      <button id="flood-close" class="flood-close" aria-label="Close now">✕</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/terminal/terminal.js"></script>
+</body>
+</html>
