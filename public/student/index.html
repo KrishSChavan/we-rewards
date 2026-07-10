@@ -84,15 +84,33 @@
     </footer>
   </div>
 
-  <!-- ================= SIGNED-IN APP ================= -->
-  <div id="app" hidden>
+  <!-- ================= SIGNED-IN: HOME (vendor carousel) ================= -->
+  <div id="home" hidden>
+    <!-- blue banner hugging the top of the screen -->
+    <header class="brand-banner">
+      <span class="brand-word">We<em>Rewards</em></span>
+    </header>
 
-    <!-- points bar -->
+    <main class="home-main">
+      <p class="home-sub">YOUR SPOTS</p>
+      <!-- vendor cards render here: horizontal, scroll-snapped -->
+      <div id="vendor-carousel" class="vendor-carousel"></div>
+      <p id="vendors-empty" class="empty-state" hidden>No spots yet — check back soon!</p>
+    </main>
+
+    <!-- big red sign-out button hugging the bottom -->
+    <footer class="home-foot">
+      <button id="home-signout" class="signout-big">Sign out</button>
+    </footer>
+  </div>
+
+  <!-- ============ SIGNED-IN: VENDOR (earn code + rewards + redeem) ============ -->
+  <div id="vendor" hidden>
+
+    <!-- points bar: back button (left) replaces the old sign-out link -->
     <header class="points-bar">
-      <div class="pb-left">
-        <p id="pb-vendor" class="pb-vendor">PSU EATS</p>
-        <button id="signout-btn" class="signout">Sign out</button>
-      </div>
+      <button id="back-btn" class="pb-back" aria-label="Back to your spots">←</button>
+      <p id="pb-vendor" class="pb-vendor">PSU EATS</p>
       <div class="pb-points">
         <span id="pb-balance">0</span><small>pts</small>
       </div>
@@ -110,26 +128,7 @@
 
       <p class="app-sub">REWARDS</p>
 
-      <div id="items" class="items">
-        <!-- ================================================================
-             PLACEHOLDER ITEMS — safe to comment out or delete once the
-             vendor has added real items in the terminal's ITEMS tab.
-             Real items are added below these automatically.
-             ================================================================ -->
-        <!-- <button class="item-card placeholder"
-                data-sample="1" data-emoji="🥤" data-title="Free Fountain Drink"
-                data-cost="100" data-desc="Any size fountain drink, on the house.">
-        </button>
-        <button class="item-card placeholder"
-                data-sample="1" data-emoji="🍟" data-title="Free Side of Fries"
-                data-cost="150" data-desc="A fresh side of fries with any order.">
-        </button>
-        <button class="item-card placeholder"
-                data-sample="1" data-emoji="🌯" data-title="Free Burrito"
-                data-cost="300" data-desc="Any burrito on the menu, our treat.">
-        </button> -->
-        <!-- ============== END PLACEHOLDER ITEMS ============== -->
-      </div>
+      <div id="items" class="items"></div>
       <p id="items-empty" class="empty-state" hidden>No rewards yet — check back soon!</p>
     </main>
 

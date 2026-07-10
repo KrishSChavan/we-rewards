@@ -1,9 +1,10 @@
-/* PSU Eats Rewards — student app (single-restaurant mode)
-   Points bar → your earn code → rewards scroll (placeholders + live vendor
-   items) → item detail modal → redemption code modal. */
+/* PSU Eats Rewards — student app
+   Home (vendor carousel) → tap a card → vendor screen (points bar with back
+   button → your earn code → rewards → item detail modal → redemption code). */
 
 let sb = null;
-let vendor = null;    // the one live restaurant (first from /api/me/balances)
+let allVendors = [];  // every active vendor + this student's balance at each
+let vendor = null;    // the vendor whose screen is currently open (null on home)
 let balance = 0;
 let myCodeTimer = null;     // home-screen earn-code refresh loop
 let redeemCountdown = null; // redemption-code modal countdown
@@ -29,10 +30,12 @@ const $ = (id) => document.getElementById(id);
   });
 
   document.querySelectorAll('[data-signin]').forEach((b) => b.addEventListener('click', signInWithGoogle));
-  $('signout-btn').addEventListener('click', async () => {
+  $('home-signout').addEventListener('click', async () => {
     await sb.auth.signOut();
     render(null);
   });
+  $('vendor-carousel').addEventListener('click', onVendorTap);
+  $('back-btn').addEventListener('click', backToHome);
   $('items').addEventListener('click', onItemTap);
   $('item-close').addEventListener('click', closeItemModal);
   $('item-redeem').addEventListener('click', onRedeemTap);
@@ -66,16 +69,22 @@ async function signInWithGoogle() {
 
 function render(session) {
   $('landing').hidden = !!session;
-  $('app').hidden = !session;
-  if (session) {
-    loadHome();
-    startMyCode();
-    connectSocket();
-  } else {
+  if (!session) {
+    $('home').hidden = true;
+    $('vendor').hidden = true;
     stopMyCode();
     disconnectSocket();
     balanceReady = false;   // re-login should show the balance instantly, no ticker
+    allVendors = [];
+    vendor = null;
+    return;
   }
+  // Signed in. onAuthStateChange also fires on silent token refreshes, so don't
+  // yank the user off a vendor screen — only default to home on a fresh sign-in.
+  if ($('home').hidden && $('vendor').hidden) $('home').hidden = false;
+  loadVendors();
+  startMyCode();
+  connectSocket();
 }
 
 async function authFetch(path, opts = {}) {
@@ -113,32 +122,79 @@ async function refreshMyCode() {
   }
 }
 
-/* ---------- home: points bar + items ---------- */
+/* ---------- home: vendor carousel ---------- */
 
-async function loadHome() {
+// Fetch every vendor + this student's balance at each, render the cards, and
+// (if a vendor screen is open) keep that screen's items + meter in sync.
+async function loadVendors() {
   try {
     const res = await authFetch('/api/me/balances');
     if (!res.ok) throw new Error();
-    const vendors = await res.json();
+    allVendors = await res.json();
+    renderVendors();
 
-    // Single-restaurant mode picks one vendor. Stay on the one we're already
-    // showing across re-fetches (redeem/close calls loadHome again); on first
-    // load prefer a vendor the student actually has points at, so a stray extra
-    // active vendor can't strand them on a 0 balance. Multi-vendor = a picker here.
-    const prevId = vendor?.vendorId;
-    vendor =
-      vendors.find((v) => v.vendorId === prevId) ??
-      vendors.find((v) => v.balance > 0) ??
-      vendors[0] ??
-      null;
-
-    $('pb-vendor').textContent = vendor ? vendor.name.toUpperCase() : 'PSU EATS';
-    renderItems();
-    applyBalance(vendor?.balance ?? 0);   // sets/tickers the number + notifies
+    if (vendor && !$('vendor').hidden) {
+      const v = allVendors.find((x) => x.vendorId === vendor.vendorId);
+      if (v) { vendor = v; renderItems(); applyBalance(v.balance ?? 0); }
+    }
   } catch {
-    $('items-empty').textContent = 'Couldn’t load rewards. Check your connection and try again.';
-    $('items-empty').hidden = false;
+    $('vendors-empty').textContent = 'Couldn’t load your spots. Check your connection and try again.';
+    $('vendors-empty').hidden = false;
   }
+}
+
+function renderVendors() {
+  const wrap = $('vendor-carousel');
+  wrap.innerHTML = '';
+  wrap.classList.toggle('single', allVendors.length === 1);   // lone vendor → full width
+  $('vendors-empty').hidden = allVendors.length > 0;
+
+  allVendors.forEach((v) => {
+    const card = document.createElement('button');
+    card.className = 'vendor-card';
+    card.dataset.id = v.vendorId;
+    card.innerHTML = `
+      <span class="vc-name">${escapeHtml(v.name)}</span>
+      <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>`;
+    wrap.appendChild(card);
+  });
+}
+
+// Live-patch just the points number on a card (used by socket pushes on home).
+function patchVendorCard(vendorId, next) {
+  const card = [...$('vendor-carousel').querySelectorAll('.vendor-card')]
+    .find((c) => c.dataset.id === String(vendorId));
+  const num = card?.querySelector('.vc-num');
+  if (num) num.textContent = next;
+}
+
+/* ---------- open / leave a vendor screen ---------- */
+
+function onVendorTap(e) {
+  const card = e.target.closest('.vendor-card');
+  if (card) openVendor(card.dataset.id);
+}
+
+function openVendor(vendorId) {
+  const v = allVendors.find((x) => String(x.vendorId) === String(vendorId));
+  if (!v) return;
+  vendor = v;
+  balanceReady = false;                       // paint the number instantly, no ticker
+  $('pb-vendor').textContent = v.name.toUpperCase();
+  renderItems();
+  applyBalance(v.balance ?? 0);
+  $('home').hidden = true;
+  $('vendor').hidden = false;
+  window.scrollTo(0, 0);
+}
+
+function backToHome() {
+  vendor = null;
+  balanceReady = false;
+  $('vendor').hidden = true;
+  $('home').hidden = false;
+  loadVendors();                              // refresh card balances on the way back
+  window.scrollTo(0, 0);
 }
 
 /* ---------- live balance: socket push + ticker + notification ---------- */
@@ -150,28 +206,21 @@ function connectSocket() {
   if (!socket) {
     socket = io({ autoConnect: false, auth: (cb) => cb({ token: currentToken }) });
     socket.on('balance', (payload) => {
-      if (vendor && payload?.vendorId === vendor.vendorId) applyBalance(payload.balance ?? 0);
+      if (!payload?.vendorId) return;
+      const next = payload.balance ?? 0;
+      const v = allVendors.find((x) => x.vendorId === payload.vendorId);
+      if (v) v.balance = next;
+      patchVendorCard(payload.vendorId, next);                       // live-update the home card
+      if (vendor && payload.vendorId === vendor.vendorId) applyBalance(next); // and the open meter
     });
     // Catch up on (re)connect in case an update landed while we were offline.
-    socket.on('connect', syncBalance);
+    socket.on('connect', loadVendors);
   }
   if (!socket.connected) socket.connect();
 }
 
 function disconnectSocket() {
   if (socket) socket.disconnect();
-}
-
-// One-shot balance fetch to re-sync after a (re)connect.
-async function syncBalance() {
-  if (!vendor) return;
-  try {
-    const res = await authFetch('/api/me/balances');
-    if (!res.ok) return;
-    const vendors = await res.json();
-    const v = vendors.find((x) => x.vendorId === vendor.vendorId);
-    if (v) applyBalance(v.balance ?? 0);
-  } catch { /* ignore */ }
 }
 
 // Update the balance everywhere. After the first load, a change animates the
@@ -349,7 +398,7 @@ function closeItemModal() {
     $('item-redeem').disabled = false;
     $('item-code').hidden = true;
     selectedItem = null;
-    loadHome();                        // balance may have changed while open
+    loadVendors();                     // balance may have changed while open
   }, 360);
 }
 
