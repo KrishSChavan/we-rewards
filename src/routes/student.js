@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { getTierProfile } from '../lib/tiers.js';
 import { requireUser } from '../middleware/auth.js';
 
 const router = Router();
@@ -56,7 +57,8 @@ router.post('/earn-code', async (req, res, next) => {
 /**
  * POST /api/me/redeem-code  { vendorId, rewardId }
  * Pre-checks affordability so the student gets a clear error before showing a
- * code, then mints a unique 4-digit redemption code (one live code per student).
+ * code, then mints a unique 4-digit redemption code (one live code per student
+ * per vendor — pending redemptions at other vendors are unaffected).
  * The final atomic check + single-use consumption happens in redeem_by_code.
  */
 router.post('/redeem-code', async (req, res, next) => {
@@ -87,15 +89,29 @@ router.post('/redeem-code', async (req, res, next) => {
   }
 });
 
-/** GET /api/me/history — recent activity for the student's profile tab */
+/**
+ * GET /api/me/tier
+ * 30-day engagement score + current earn multiplier for the home tier bar.
+ */
+router.get('/tier', async (req, res, next) => {
+  try {
+    res.json(await getTierProfile(req.user.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET /api/me/history — the student's transactions over the last 30 days */
 router.get('/history', async (req, res, next) => {
   try {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const { data, error } = await supabaseAdmin
       .from('transactions')
-      .select('id, vendor_id, type, points, created_at, vendors(name), rewards(title)')
+      .select('id, vendor_id, type, points, dollar_amount, created_at, vendors(name), rewards(title)')
       .eq('user_id', req.user.id)
+      .gte('created_at', since)
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(200);
     if (error) throw error;
     res.json(data);
   } catch (err) {

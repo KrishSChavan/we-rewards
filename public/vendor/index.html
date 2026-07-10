@@ -61,14 +61,17 @@
             <p class="eyebrow">CUSTOMER</p>
             <h2 id="customer-name">—</h2>
           </div>
-          <div class="balance-chip">
-            <span id="customer-balance">0</span>
-            <span class="chip-label">pts</span>
+          <div class="head-chips">
+            <div id="customer-tier" class="tier-chip">1x</div>
+            <div class="balance-chip">
+              <span id="customer-balance">0</span>
+              <span class="chip-label">pts</span>
+            </div>
           </div>
         </div>
         <div class="pad-readout">
           <p class="pad-amount">$<span id="pad-amount">0.00</span></p>
-          <p class="pad-points">= <strong id="pad-points">0</strong> pts</p>
+          <p class="pad-points">= <strong id="pad-points">0</strong> pts <span id="pad-mult" class="pad-mult" hidden></span></p>
         </div>
         <div class="keypad" id="amount-keypad">
           <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>

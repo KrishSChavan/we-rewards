@@ -10,6 +10,7 @@ let rewards = [];          // vendor's rewards from /api/vendor/rewards
 let mode = 'award';        // 'award' | 'redeem' | 'manage'
 let pinTarget = null;      // where the PIN gate leads on success
 let currentEarnCode = null;    // customer's 6-char earn code on the award pad
+let currentMultiplier = 1;     // scanned customer's tier multiplier (1x/2x/3x)
 let pendingRedeemCode = null;  // 4-digit redeem code awaiting vendor confirmation
 let padValue = '';         // exact-amount entry string
 let pinValue = '';
@@ -167,6 +168,7 @@ function normalizeRedeem(v) {
 
 function enterScan() {
   currentEarnCode = null;
+  currentMultiplier = 1;
   show('screen-scan');
   const input = $('earn-code-input');
   input.value = '';
@@ -188,8 +190,11 @@ async function submitEarnCode() {
     const data = await res.json();
     if (!res.ok) return flood('error', 'CODE EXPIRED', data.message || 'Ask the customer to refresh their code.', enterScan);
     currentEarnCode = code;
+    currentMultiplier = data.multiplier ?? 1;
     $('customer-name').textContent = data.name;
     $('customer-balance').textContent = data.balance;
+    $('customer-tier').textContent = `${currentMultiplier}x`;
+    $('customer-tier').classList.toggle('is-boosted', currentMultiplier > 1);
     padValue = '';
     renderPad();
     show('screen-pad');
@@ -215,8 +220,11 @@ function onAmountKey(e) {
 
 function renderPad() {
   const amt = Number(padValue || 0);
+  const base = Math.floor(amt * config.pointsPerDollar);
   $('pad-amount').textContent = amt.toFixed(2);
-  $('pad-points').textContent = Math.floor(amt * config.pointsPerDollar);
+  $('pad-points').textContent = base * currentMultiplier;
+  $('pad-mult').hidden = currentMultiplier <= 1;
+  $('pad-mult').textContent = currentMultiplier > 1 ? `(${base} × ${currentMultiplier}x member)` : '';
   $('pad-award').disabled = amt <= 0;
 }
 
@@ -232,7 +240,10 @@ async function awardExact() {
     if (!res.ok) {
       return flood('error', 'DIDN\u2019T GO THROUGH', data.message, enterScan);
     }
-    flood('success', `+${data.awarded} PTS`, `${data.customerName} · new balance ${data.newBalance}`, () => {
+    const detail = data.bonusPoints > 0
+      ? `${data.customerName} · ${data.basePoints} base + ${data.bonusPoints} tier bonus (${data.multiplier}x) · new balance ${data.newBalance}`
+      : `${data.customerName} · new balance ${data.newBalance}`;
+    flood('success', `+${data.awarded} PTS`, detail, () => {
       refreshLastActivity();
       enterScan();
     });

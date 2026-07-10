@@ -158,6 +158,16 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .balance-chip span:first-child { font-size: 2.2rem; font-weight: 900; }
 .chip-label { font-weight: 700; color: var(--navy); }
 
+/* customer's earn multiplier from their 30-day tier (next to the balance) */
+.head-chips { display: flex; align-items: stretch; gap: 0.6rem; }
+.tier-chip {
+  display: flex; align-items: center;
+  border: 3px solid var(--sky-line); border-radius: 1rem;
+  padding: 0.7rem 1rem; font-size: 1.5rem; font-weight: 900; color: var(--muted);
+}
+.tier-chip.is-boosted { background: #ffd76e; border-color: #e0ad33; color: #5b4200; }
+.pad-mult { font-weight: 900; color: #a67c00; }
+
 .tier-grid {
   width: min(60rem, 100%); flex: 1;
   display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;

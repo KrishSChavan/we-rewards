@@ -14,6 +14,8 @@ let currentToken = null;    // latest Supabase access token (socket auth)
 let balanceReady = false;   // first balance shown yet? (skip the ticker on load)
 let tickRaf = 0;            // requestAnimationFrame id for the counting ticker
 let toastTimer = null;
+let activeTab = 0;          // 0 = home, 1 = history, 2 = account
+let historyLoaded = false;  // has the history tab fetched at least once?
 
 const $ = (id) => document.getElementById(id);
 
@@ -30,11 +32,20 @@ const $ = (id) => document.getElementById(id);
   });
 
   document.querySelectorAll('[data-signin]').forEach((b) => b.addEventListener('click', signInWithGoogle));
-  $('home-signout').addEventListener('click', async () => {
+  $('account-signout').addEventListener('click', async () => {
     await sb.auth.signOut();
     render(null);
   });
+  // bottom nav: slide between Home / History / Account
+  $('tabbar').addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (btn) setTab(Number(btn.dataset.tab));
+  });
   $('vendor-carousel').addEventListener('click', onVendorTap);
+  $('tier-info-btn').addEventListener('click', openTierInfo);
+  $('tier-info-close').addEventListener('click', closeTierInfo);
+  // click on the backdrop (but not the card) closes the popover
+  $('tier-info').addEventListener('click', (e) => { if (e.target === $('tier-info')) closeTierInfo(); });
   $('back-btn').addEventListener('click', backToHome);
   $('items').addEventListener('click', onItemTap);
   $('item-close').addEventListener('click', closeItemModal);
@@ -68,23 +79,137 @@ async function signInWithGoogle() {
 }
 
 function render(session) {
+  const wasSignedOut = $('app').hidden;
   $('landing').hidden = !!session;
+  $('app').hidden = !session;
+
   if (!session) {
-    $('home').hidden = true;
+    $('home').hidden = false;   // reset the Home tab's sub-view for the next sign-in
     $('vendor').hidden = true;
+    setTab(0, false);
     stopMyCode();
     disconnectSocket();
     balanceReady = false;   // re-login should show the balance instantly, no ticker
     allVendors = [];
     vendor = null;
+    historyLoaded = false;
     return;
   }
-  // Signed in. onAuthStateChange also fires on silent token refreshes, so don't
-  // yank the user off a vendor screen — only default to home on a fresh sign-in.
-  if ($('home').hidden && $('vendor').hidden) $('home').hidden = false;
+  // A fresh sign-in lands on the Home tab, carousel view. onAuthStateChange also
+  // fires on silent token refreshes — those must NOT yank the user off a vendor
+  // screen or their current tab, so only reset when the app was hidden.
+  if (wasSignedOut) {
+    $('home').hidden = false;
+    $('vendor').hidden = true;
+    setTab(0, false);
+  }
   loadVendors();
+  loadTier();
   startMyCode();
   connectSocket();
+}
+
+/* ---------- bottom nav: sliding tabs ---------- */
+
+// Slide the track to tab `i` and sync the nav highlight. `animate: false` snaps
+// (used on sign-in/out so the reset isn't a visible swipe).
+function setTab(i, animate = true) {
+  activeTab = i;
+  const track = $('tab-track');
+  if (!animate) track.style.transition = 'none';
+  track.style.setProperty('--tab', i);
+  if (!animate) { void track.offsetWidth; track.style.transition = ''; }  // restore for next time
+
+  document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
+    const on = idx === i;
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-current', on ? 'page' : 'false');
+  });
+
+  if (i === 1) loadHistory();   // refresh activity whenever the History tab opens
+}
+
+/* ---------- history tab (last 30 days) ---------- */
+
+async function loadHistory() {
+  try {
+    const res = await authFetch('/api/me/history');
+    if (!res.ok) throw new Error();
+    renderHistory(await res.json());
+    historyLoaded = true;
+  } catch {
+    $('history-loading').hidden = true;
+    if (!historyLoaded) {          // keep any existing list on a transient refresh failure
+      $('history-list').innerHTML = '';
+      $('history-empty').textContent = 'Couldn’t load your activity. Check your connection and try again.';
+      $('history-empty').hidden = false;
+    }
+  }
+}
+
+function renderHistory(items) {
+  const list = $('history-list');
+  $('history-loading').hidden = true;
+  list.innerHTML = '';
+
+  if (!items.length) {
+    $('history-empty').textContent = 'No activity in the last 30 days.';
+    $('history-empty').hidden = false;
+    return;
+  }
+  $('history-empty').hidden = true;
+
+  let lastDay = null;
+  items.forEach((tx) => {
+    const day = dayLabel(new Date(tx.created_at));
+    if (day !== lastDay) {
+      lastDay = day;
+      const h = document.createElement('p');
+      h.className = 'history-day';
+      h.textContent = day;
+      list.appendChild(h);
+    }
+    list.appendChild(historyRow(tx));
+  });
+}
+
+function historyRow(tx) {
+  const earn = tx.type === 'earn';
+  const vendorName = tx.vendors?.name ?? 'a spot';
+  const reward = tx.rewards?.title;
+  const time = new Date(tx.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  // earn → "Earned at X" + "$Y spent"; redeem → "Redeemed <reward>" + "at X"
+  const title = earn
+    ? `Earned at ${vendorName}`
+    : (reward ? `Redeemed ${reward}` : 'Redeemed a reward');
+  const sub = earn
+    ? (tx.dollar_amount != null ? `$${Number(tx.dollar_amount).toFixed(2)} spent · ${time}` : time)
+    : `at ${vendorName} · ${time}`;
+
+  // points are stored positive for earn, negative for redeem
+  const pts = earn ? `+${tx.points}` : `−${Math.abs(tx.points)}`;
+
+  const row = document.createElement('div');
+  row.className = `history-row ${earn ? 'earn' : 'redeem'}`;
+  row.innerHTML = `
+    <span class="hr-icon">${earn ? '✨' : '🎁'}</span>
+    <span class="hr-body">
+      <span class="hr-title">${escapeHtml(title)}</span>
+      <span class="hr-sub">${escapeHtml(sub)}</span>
+    </span>
+    <span class="hr-points">${pts}<small>pts</small></span>`;
+  return row;
+}
+
+// "Today" / "Yesterday" / "Mon, Jul 8" — used for the day dividers.
+function dayLabel(d) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const that = new Date(d); that.setHours(0, 0, 0, 0);
+  const diff = Math.round((today - that) / 86_400_000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 async function authFetch(path, opts = {}) {
@@ -120,6 +245,61 @@ async function refreshMyCode() {
   } catch {
     // keep the last code visible on a transient failure rather than blanking it
   }
+}
+
+/* ---------- home: tier bar (30-day score → earn multiplier) ---------- */
+
+// Paint the meter under the wordmark: fill = score / 1000, marks at the tier
+// cutoffs, scale labels sized to match each tier's share of the bar.
+async function loadTier() {
+  try {
+    const res = await authFetch('/api/me/tier');
+    if (!res.ok) throw new Error();
+    renderTier(await res.json());
+  } catch {
+    // keep the last state (or stay hidden) on a transient failure
+  }
+}
+
+function renderTier(t) {
+  const bar = $('tier-bar');
+  const pct = (v) => `${Math.min(100, (v / t.maxScore) * 100)}%`;
+
+  $('tier-fill').style.width = pct(t.score);
+  bar.querySelectorAll('.tier-mark').forEach((m, i) => {
+    if (t.cutoffs[i] != null) m.style.left = pct(t.cutoffs[i]);
+  });
+
+  // Each label spans its tier's slice of the track (e.g. 35% / 35% / 30%)
+  const edges = [0, ...t.cutoffs, t.maxScore];
+  bar.querySelectorAll('.tier-scale span').forEach((s, i) => {
+    if (edges[i + 1] != null) s.style.width = pct(edges[i + 1] - edges[i]);
+  });
+
+  $('tier-badge').textContent = `${t.multiplier}x points`;
+  $('tier-hint').textContent =
+    t.nextTierScore != null
+      ? `${t.nextTierScore - t.score} to ${t.nextMultiplier}x`
+      : 'Max multiplier ✓';
+
+  bar.classList.remove('t1', 't2', 't3');
+  bar.classList.add(`t${t.tier}`);
+  bar.hidden = false;
+}
+
+// Fade the "how it works" popover in/out (mirrors the item sheet pattern).
+function openTierInfo() {
+  const ov = $('tier-info');
+  ov.hidden = false;
+  void ov.offsetWidth;          // reflow so the fade-in transition runs
+  ov.classList.add('is-open');
+}
+
+function closeTierInfo() {
+  const ov = $('tier-info');
+  if (ov.hidden) return;
+  ov.classList.remove('is-open');
+  setTimeout(() => { ov.hidden = true; }, 160);   // wait out the fade
 }
 
 /* ---------- home: vendor carousel ---------- */
@@ -185,7 +365,7 @@ function openVendor(vendorId) {
   applyBalance(v.balance ?? 0);
   $('home').hidden = true;
   $('vendor').hidden = false;
-  window.scrollTo(0, 0);
+  $('tab-home').scrollTop = 0;                // scroll the tab page, not the window
 }
 
 function backToHome() {
@@ -194,7 +374,7 @@ function backToHome() {
   $('vendor').hidden = true;
   $('home').hidden = false;
   loadVendors();                              // refresh card balances on the way back
-  window.scrollTo(0, 0);
+  $('tab-home').scrollTop = 0;
 }
 
 /* ---------- live balance: socket push + ticker + notification ---------- */
@@ -212,9 +392,11 @@ function connectSocket() {
       if (v) v.balance = next;
       patchVendorCard(payload.vendorId, next);                       // live-update the home card
       if (vendor && payload.vendorId === vendor.vendorId) applyBalance(next); // and the open meter
+      loadTier();                             // an earn just landed — score may have moved
+      if (historyLoaded) loadHistory();       // ...and it's a new activity row
     });
     // Catch up on (re)connect in case an update landed while we were offline.
-    socket.on('connect', loadVendors);
+    socket.on('connect', () => { loadVendors(); loadTier(); });
   }
   if (!socket.connected) socket.connect();
 }

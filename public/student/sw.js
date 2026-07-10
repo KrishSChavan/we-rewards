@@ -1,7 +1,7 @@
 /* PSU Eats Rewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'psu-eats-v9';
+const CACHE = 'psu-eats-v10';
 const SHELL = ['/', '/styles.css', '/app.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -22,8 +22,7 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql`, `supabase/migration-003.sql`, and
-   `supabase/migration-004.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-006.sql` in order.
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
@@ -46,6 +45,38 @@ config — the terminal never sends a point value.
 - Tier buttons award `floor(midpoint(min, max) × ratio)` — derived at request
   time, so changing the ratio updates every button automatically.
 - Exact entry awards `floor(amount × ratio)`. Always floor, never round up.
+- The base award is then multiplied by the customer's **tier multiplier**
+  (1x / 2x / 3x, see below).
+
+## Engagement tiers (earn multipliers)
+
+`src/lib/tiers.js` scores each student's last 30 days of earn transactions
+0–1000 from three balanced parts — breadth (% of vendors visited), depth
+(vendors they revisit + visit frequency), and spend (capped volume +
+meal-sized tickets). A linear blend keeps a floor for one-dimensional
+customers; a geometric blend only pays out when all three are strong, so
+looping through vendors beats whaling one. Anti-farming: visits count once
+per vendor per day, and each visit credits at most $30 of spend.
+
+- Score < 350 → **1x** (the vendor's own ratio)
+- 350–699 → **2x**
+- 700+ → **3x**
+
+The score is computed live per request (no cron): the home screen shows it as
+the tier bar (`GET /api/me/tier`), the terminal shows the customer's
+multiplier on scan, and `/api/vendor/award` applies it server-side
+(`base × multiplier`, tier computed before the purchase lands so a
+transaction can't bump its own multiplier). Cutoffs and targets are
+constants at the top of `src/lib/tiers.js` — recalibrate them once real
+distribution data exists.
+
+All source data lives in the `transactions` table (what happened, dollar
+amount, points, the student, the vendor, the date). Each computed score is
+also snapshotted to `user_scores` (score, tier, multiplier, B/L/S
+components, visit + spend aggregates) so analytics can read scores straight
+from the DB. `profiles.revisits` is a lifetime counter: +1 the first time a
+student earns at a vendor on a new day after a previous visit — incremented
+inside `award_points` atomically, backfilled by migration-005.
 
 ## Build order from here
 

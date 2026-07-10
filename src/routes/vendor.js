@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { getTierProfile } from '../lib/tiers.js';
 import { requireVendor } from '../middleware/auth.js';
 import { emitBalance } from '../lib/realtime.js';
 
@@ -58,11 +59,18 @@ router.get('/config', (req, res) => {
 router.post('/scan', async (req, res, next) => {
   try {
     const userId = await resolveEarnCode(req.body?.code);
-    const [{ data: profile }, { data: bal }] = await Promise.all([
+    const [{ data: profile }, { data: bal }, tierProfile] = await Promise.all([
       supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle(),
       supabaseAdmin.from('point_balances').select('balance').eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle(),
+      getTierProfile(userId),
     ]);
-    res.json({ userId, name: profile?.name ?? 'Customer', balance: bal?.balance ?? 0 });
+    res.json({
+      userId,
+      name: profile?.name ?? 'Customer',
+      balance: bal?.balance ?? 0,
+      tier: tierProfile.tier,
+      multiplier: tierProfile.multiplier,
+    });
   } catch (err) {
     next(err);
   }
@@ -71,8 +79,8 @@ router.post('/scan', async (req, res, next) => {
 /**
  * POST /api/vendor/award  { code, exactAmount }
  * Resolves the student's earn code, computes points server-side from the
- * vendor's own ratio (never trusts client-sent point values), and calls the
- * atomic award_points RPC.
+ * vendor's own ratio (never trusts client-sent point values), applies the
+ * customer's tier multiplier, and calls the atomic award_points RPC.
  */
 router.post('/award', async (req, res, next) => {
   try {
@@ -84,10 +92,15 @@ router.post('/award', async (req, res, next) => {
     if (!Number.isFinite(dollarAmount) || dollarAmount <= 0 || dollarAmount > 500) {
       return res.status(400).json({ error: 'BAD_AMOUNT', message: 'Enter a valid amount.' });
     }
-    const points = Math.floor(dollarAmount * ratio);
-    if (points < 1) {
+    const basePoints = Math.floor(dollarAmount * ratio);
+    if (basePoints < 1) {
       return res.status(400).json({ error: 'BAD_AMOUNT', message: 'Amount is too small to earn points.' });
     }
+
+    // Tier is computed before this purchase lands, so today's transaction
+    // can't bump its own multiplier mid-award.
+    const { tier, multiplier } = await getTierProfile(userId);
+    const points = basePoints * multiplier;
 
     const { data, error } = await supabaseAdmin.rpc('award_points', {
       p_user_id: userId,
@@ -101,7 +114,15 @@ router.post('/award', async (req, res, next) => {
     emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
 
     const { data: profile } = await supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle();
-    res.json({ awarded: points, newBalance, customerName: profile?.name ?? 'Customer' });
+    res.json({
+      awarded: points,
+      basePoints,
+      bonusPoints: points - basePoints,
+      tier,
+      multiplier,
+      newBalance,
+      customerName: profile?.name ?? 'Customer',
+    });
   } catch (err) {
     next(err);
   }

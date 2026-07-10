@@ -84,71 +84,166 @@
     </footer>
   </div>
 
-  <!-- ================= SIGNED-IN: HOME (vendor carousel) ================= -->
-  <div id="home" hidden>
-    <!-- blue banner hugging the top of the screen -->
-    <header class="brand-banner">
-      <span class="brand-word">We<em>Rewards</em></span>
-    </header>
+  <!-- ================= SIGNED-IN APP (sliding tabs + bottom nav) ================= -->
+  <div id="app" hidden>
 
-    <main class="home-main">
-      <p class="home-sub">YOUR SPOTS</p>
-      <!-- vendor cards render here: horizontal, scroll-snapped -->
-      <div id="vendor-carousel" class="vendor-carousel"></div>
-      <p id="vendors-empty" class="empty-state" hidden>No spots yet — check back soon!</p>
-    </main>
+    <!-- viewport clips the 3-wide track; the track slides horizontally per tab -->
+    <div class="tab-viewport">
+      <div id="tab-track" class="tab-track">
 
-    <!-- big red sign-out button hugging the bottom -->
-    <footer class="home-foot">
-      <button id="home-signout" class="signout-big">Sign out</button>
-    </footer>
-  </div>
+        <!-- ---------- HOME TAB (vendor carousel + vendor drill-down) ---------- -->
+        <section class="tab-page" id="tab-home" aria-label="Home">
 
-  <!-- ============ SIGNED-IN: VENDOR (earn code + rewards + redeem) ============ -->
-  <div id="vendor" hidden>
+          <div id="home">
+            <!-- blue banner hugging the top of the screen -->
+            <header class="brand-banner">
+              <span class="brand-word">We<em>Rewards</em></span>
 
-    <!-- points bar: back button (left) replaces the old sign-out link -->
-    <header class="points-bar">
-      <button id="back-btn" class="pb-back" aria-label="Back to your spots">←</button>
-      <p id="pb-vendor" class="pb-vendor">PSU EATS</p>
-      <div class="pb-points">
-        <span id="pb-balance">0</span><small>pts</small>
-      </div>
-    </header>
+              <!-- 30-day tier meter: score fills toward the 2x / 3x earn multipliers -->
+              <div id="tier-bar" class="tier-bar" hidden>
+                <div class="tier-top">
+                  <span id="tier-badge" class="tier-badge">1x points</span>
+                  <span class="tier-top-right">
+                    <span id="tier-hint" class="tier-hint"></span>
+                    <button id="tier-info-btn" class="tier-info-btn" type="button" aria-label="How the tier score works">i</button>
+                  </span>
+                </div>
+                <div class="tier-track">
+                  <div id="tier-fill" class="tier-fill"></div>
+                  <i class="tier-mark"></i>
+                  <i class="tier-mark"></i>
+                </div>
+                <div class="tier-scale">
+                  <span>1x</span><span>2x</span><span>3x</span>
+                </div>
+              </div>
+            </header>
 
-    <!-- live points notification (award / redeem) -->
-    <div id="points-toast" class="points-toast" hidden></div>
+            <main class="home-main">
+              <p class="home-sub">YOUR SPOTS</p>
+              <!-- vendor cards render here: horizontal, scroll-snapped -->
+              <div id="vendor-carousel" class="vendor-carousel"></div>
+              <p id="vendors-empty" class="empty-state" hidden>No spots yet — check back soon!</p>
+            </main>
+          </div>
 
-    <main class="app-main">
-      <div class="my-code">
-        <span class="mc-label">YOUR CODE</span>
-        <span id="my-code-value" class="mc-value">••••••</span>
-        <span class="mc-sub">Give this at the counter to earn points</span>
-      </div>
+          <!-- vendor screen: drills in over the carousel, nav bar stays put -->
+          <div id="vendor" hidden>
+            <!-- points bar: back button (left) replaces the old sign-out link -->
+            <header class="points-bar">
+              <button id="back-btn" class="pb-back" aria-label="Back to your spots">←</button>
+              <p id="pb-vendor" class="pb-vendor">PSU EATS</p>
+              <div class="pb-points">
+                <span id="pb-balance">0</span><small>pts</small>
+              </div>
+            </header>
 
-      <p class="app-sub">REWARDS</p>
+            <main class="app-main">
+              <div class="my-code">
+                <span class="mc-label">YOUR CODE</span>
+                <span id="my-code-value" class="mc-value">••••••</span>
+                <span class="mc-sub">Give this at the counter to earn points</span>
+              </div>
 
-      <div id="items" class="items"></div>
-      <p id="items-empty" class="empty-state" hidden>No rewards yet — check back soon!</p>
-    </main>
+              <p class="app-sub">REWARDS</p>
 
-    <!-- item detail bottom sheet -->
-    <div id="item-modal" class="overlay sheet" hidden>
-      <div class="detail-card">
-        <button id="item-close" class="detail-close" aria-label="Close">✕</button>
-        <p id="item-emoji" class="detail-emoji">🎁</p>
-        <h2 id="item-title" class="detail-title">—</h2>
-        <p id="item-cost" class="detail-cost">— pts</p>
-        <p id="item-desc" class="detail-desc"></p>
-        <p id="item-status" class="detail-status"></p>
-        <button id="item-redeem" class="btn-redeem">Redeem</button>
-        <div id="item-code" class="item-code" hidden>
-          <span id="item-code-value" class="item-code-value">••••</span>
-          <span id="item-code-timer" class="item-code-timer"></span>
-        </div>
+              <div id="items" class="items"></div>
+              <p id="items-empty" class="empty-state" hidden>No rewards yet — check back soon!</p>
+            </main>
+          </div>
+
+        </section>
+
+        <!-- ---------- HISTORY TAB (last 30 days) ---------- -->
+        <section class="tab-page" id="tab-history" aria-label="History">
+          <div id="history">
+            <header class="page-head">
+              <h1 class="page-title">Activity</h1>
+              <p class="page-sub">Your last 30 days</p>
+            </header>
+            <div id="history-list" class="history-list"></div>
+            <p id="history-loading" class="empty-state">Loading…</p>
+            <p id="history-empty" class="empty-state" hidden>No activity in the last 30 days.</p>
+          </div>
+        </section>
+
+        <!-- ---------- ACCOUNT TAB (placeholder for now) ---------- -->
+        <section class="tab-page" id="tab-account" aria-label="Account">
+          <div id="account">
+            <header class="page-head">
+              <h1 class="page-title">Account</h1>
+              <p class="page-sub">Settings coming soon</p>
+            </header>
+            <div class="account-body">
+              <p class="account-placeholder">More account settings are on the way.</p>
+              <button id="account-signout" class="signout-big">Sign out</button>
+            </div>
+          </div>
+        </section>
+
       </div>
     </div>
 
+    <!-- ---------- bottom nav ---------- -->
+    <nav class="tabbar" id="tabbar" aria-label="Main">
+      <button class="tab-btn is-active" data-tab="0" type="button" aria-current="page" aria-label="Home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5" /><path d="M9.5 21v-6h5v6" />
+        </svg>
+        <span>Home</span>
+      </button>
+      <button class="tab-btn" data-tab="1" type="button" aria-current="false" aria-label="History">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7.5V12l3.5 2" />
+        </svg>
+        <span>History</span>
+      </button>
+      <button class="tab-btn" data-tab="2" type="button" aria-current="false" aria-label="Account">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" />
+        </svg>
+        <span>Account</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- ================= OVERLAYS (fixed; kept OUT of the sliding track) =================
+       A CSS transform on an ancestor becomes the containing block for its
+       position:fixed descendants, so these live at body level instead. -->
+
+  <!-- live points notification (award / redeem) -->
+  <div id="points-toast" class="points-toast" hidden></div>
+
+  <!-- tier info popover: fades in on the (i), closes via ✕ or outside click -->
+  <div id="tier-info" class="tier-info-overlay" hidden>
+    <div id="tier-info-card" class="tier-info-card" role="dialog" aria-label="How the tier score works">
+      <button id="tier-info-close" class="tier-info-close" type="button" aria-label="Close">✕</button>
+      <h3>How your multiplier works</h3>
+      <p>Your points multiplier climbs the more you use WeRewards over the last 30 days. You earn a score from 0–1000 that blends three things:</p>
+      <ul>
+        <li><strong>Variety</strong> — how many different spots you visit</li>
+        <li><strong>Loyalty</strong> — how often you come back to the same spots</li>
+        <li><strong>Spend</strong> — how much you spend, with extra weight for meal-sized orders</li>
+      </ul>
+      <p>Keeping all three balanced climbs fastest. Reach <strong>350</strong> for <strong>2× points</strong>, or <strong>700</strong> for <strong>3×</strong> — the multiplier applies to everything you earn. It's a rolling 30-day window, so keep visiting to hold your tier.</p>
+    </div>
+  </div>
+
+  <!-- item detail bottom sheet -->
+  <div id="item-modal" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <button id="item-close" class="detail-close" aria-label="Close">✕</button>
+      <p id="item-emoji" class="detail-emoji">🎁</p>
+      <h2 id="item-title" class="detail-title">—</h2>
+      <p id="item-cost" class="detail-cost">— pts</p>
+      <p id="item-desc" class="detail-desc"></p>
+      <p id="item-status" class="detail-status"></p>
+      <button id="item-redeem" class="btn-redeem">Redeem</button>
+      <div id="item-code" class="item-code" hidden>
+        <span id="item-code-value" class="item-code-value">••••</span>
+        <span id="item-code-timer" class="item-code-timer"></span>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
