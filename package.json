@@ -13,7 +13,8 @@
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
     "socket.io": "^4.8.3"
   },
   "description": "Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one Express app.",

@@ -16,6 +16,8 @@ let padValue = '';         // exact-amount entry string
 let pinValue = '';
 let pinUnlocked = false;   // set once the PIN is entered correctly; lives in
                            // memory only, so a page refresh always re-asks
+let pinToken = null;       // server-side PIN session token from verify-pin, sent
+                           // as X-Vendor-Pin on redeem/manage requests
 let selectedEmoji = '🎁';  // emoji picked in the item form
 let busy = false;          // guards double-taps / double-submits
 let idleTimeout = null;
@@ -106,9 +108,28 @@ async function authFetch(path, opts = {}) {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${data?.session?.access_token ?? ''}`,
+      // The server enforces the staff PIN on redeem/manage routes; send the
+      // session token when we have one (harmless on routes that ignore it).
+      ...(pinToken ? { 'X-Vendor-Pin': pinToken } : {}),
       ...(opts.headers || {}),
     },
   });
+}
+
+// The PIN session can expire mid-shift; a 401 PIN_REQUIRED from a gated route
+// means re-authenticate. Reset the gate and bounce back to the PIN screen.
+function handlePinRequired(res, data) {
+  if (res.status === 401 && data?.error === 'PIN_REQUIRED') {
+    pinUnlocked = false;
+    pinToken = null;
+    pinValue = '';
+    pinTarget = mode === 'manage' ? 'manage' : 'redeem';
+    renderPinDots();
+    $('pin-error').hidden = true;
+    show('screen-pin');
+    return true;
+  }
+  return false;
 }
 
 function show(id) {
@@ -273,10 +294,12 @@ async function onPinKey(e) {
       method: 'POST',
       body: JSON.stringify({ pin: pinValue }),
     });
+    const data = await res.json().catch(() => ({}));
     pinValue = '';
     renderPinDots();
     if (res.ok) {
-      pinUnlocked = true; // stays unlocked until the page is refreshed
+      pinUnlocked = true;       // stays unlocked until the page is refreshed
+      pinToken = data.token ?? null; // server session token for gated requests
       pinTarget === 'manage' ? enterManage() : enterRedeemScan();
     } else {
       $('pin-error').hidden = false;
@@ -306,6 +329,7 @@ async function submitRedeemCode() {
       body: JSON.stringify({ code }),
     });
     const data = await res.json();
+    if (handlePinRequired(res, data)) return;
     if (!res.ok) {
       return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
     }
@@ -334,6 +358,7 @@ async function confirmRedeem() {
       body: JSON.stringify({ code: pendingRedeemCode }),
     });
     const data = await res.json();
+    if (handlePinRequired(res, data)) return;
     if (!res.ok) {
       return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
     }
@@ -399,7 +424,10 @@ async function toggleReward(reward) {
   if (res.ok) {
     await refreshRewards();
     renderRewardList();
+    return;
   }
+  const data = await res.json().catch(() => ({}));
+  handlePinRequired(res, data); // expired PIN session → back to the PIN screen
 }
 
 function openRewardForm(reward) {
@@ -451,6 +479,7 @@ async function saveReward() {
     }
   );
   const data = await res.json();
+  if (handlePinRequired(res, data)) { closeRewardForm(); return; }
   if (!res.ok) {
     $('reward-form-error').textContent = data.message || 'Couldn\u2019t save the item.';
     $('reward-form-error').hidden = false;

@@ -6,18 +6,9 @@
   <title>PSU Eats Rewards — eat local, earn free food</title>
   <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
   <meta name="theme-color" content="#12294b" />
-  <!-- apply the saved (or system) theme before first paint to avoid a flash -->
-  <script>
-    (function () {
-      try {
-        var t = localStorage.getItem('psu-theme');
-        if (t !== 'dark' && t !== 'light') {
-          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        }
-        document.documentElement.setAttribute('data-theme', t);
-      } catch (e) {}
-    })();
-  </script>
+  <!-- apply the saved (or system) theme before first paint to avoid a flash
+       (external so the page CSP can forbid inline scripts) -->
+  <script src="/theme-init.js"></script>
   <link rel="manifest" href="/manifest.json" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />

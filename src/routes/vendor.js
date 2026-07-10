@@ -1,9 +1,13 @@
 import { Router } from 'express';
+import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getTierProfile } from '../lib/tiers.js';
-import { requireVendor } from '../middleware/auth.js';
+import { requireVendor, requirePin } from '../middleware/auth.js';
 import { emitBalance } from '../lib/realtime.js';
+
+// A staff PIN session (from verify-pin) stays valid for one shift.
+const PIN_SESSION_HOURS = 8;
 
 const router = Router();
 router.use(requireVendor);
@@ -133,7 +137,7 @@ router.post('/award', async (req, res, next) => {
  * Looks up the live 4-digit redemption code WITHOUT redeeming — the terminal
  * shows "is this the user?" (name + points + item) and only /redeem deducts.
  */
-router.post('/redeem-preview', async (req, res, next) => {
+router.post('/redeem-preview', requirePin, async (req, res, next) => {
   try {
     const { user_id: userId, reward_id: rewardId } = await resolveRedeemCode(req.body?.code, req.vendor.id);
 
@@ -162,7 +166,7 @@ router.post('/redeem-preview', async (req, res, next) => {
  * deducts points in ONE transaction — a double-submit finds no code the second
  * time, and any failure rolls back so the code stays live and reusable.
  */
-router.post('/redeem', async (req, res, next) => {
+router.post('/redeem', requirePin, async (req, res, next) => {
   try {
     const code = String(req.body?.code ?? '').trim();
     if (!/^\d{4}$/.test(code)) throw new Error('CODE_INVALID');
@@ -211,7 +215,7 @@ function validReward(title, cost, emoji) {
 }
 
 /** POST /api/vendor/rewards  { title, costInPoints, emoji } */
-router.post('/rewards', async (req, res, next) => {
+router.post('/rewards', requirePin, async (req, res, next) => {
   try {
     const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.emoji);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
@@ -229,7 +233,7 @@ router.post('/rewards', async (req, res, next) => {
 });
 
 /** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, emoji?, active? } */
-router.patch('/rewards/:id', async (req, res, next) => {
+router.patch('/rewards/:id', requirePin, async (req, res, next) => {
   try {
     const updates = {};
     if (req.body?.title != null || req.body?.costInPoints != null || req.body?.emoji != null) {
@@ -265,8 +269,10 @@ router.patch('/rewards/:id', async (req, res, next) => {
 
 /**
  * POST /api/vendor/verify-pin  { pin }
- * Gates redeem + items until the page is refreshed (session lives client-side
- * in memory, so a reload always re-asks).
+ * On a correct PIN, mints a server-side session token (vendor_pin_sessions) the
+ * terminal must send as `X-Vendor-Pin` on redeem/manage requests — so the PIN is
+ * enforced server-side, not just in the UI. Token is memory-only client-side, so
+ * a page reload re-asks; it also expires server-side after one shift.
  */
 router.post('/verify-pin', async (req, res, next) => {
   try {
@@ -274,7 +280,20 @@ router.post('/verify-pin', async (req, res, next) => {
     if (!req.vendor.pin_hash) return res.json({ ok: true, note: 'No PIN set for this vendor.' });
     const ok = await bcrypt.compare(String(pin ?? ''), req.vendor.pin_hash);
     if (!ok) return res.status(401).json({ error: 'BAD_PIN', message: 'Incorrect PIN.' });
-    res.json({ ok: true });
+
+    const token = randomUUID();
+    const expiresAt = new Date(Date.now() + PIN_SESSION_HOURS * 60 * 60 * 1000).toISOString();
+    // housekeeping: clear this vendor's expired sessions, then record the new one
+    await supabaseAdmin.from('vendor_pin_sessions').delete().lt('expires_at', new Date().toISOString());
+    const { error } = await supabaseAdmin.from('vendor_pin_sessions').insert({
+      token,
+      vendor_id: req.vendor.id,
+      user_id: req.user.id,
+      expires_at: expiresAt,
+    });
+    if (error) throw error;
+
+    res.json({ ok: true, token });
   } catch (err) {
     next(err);
   }
