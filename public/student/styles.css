@@ -276,6 +276,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .tier-scale span { text-align: center; }
 
 .home-main { flex: 1; padding: 1.7rem 0 1rem; }
+/* home-main has no horizontal padding (so the carousel is full-bleed), so inset
+   the code card to match the 1.3rem gutter used by .home-sub. */
+.home-main .my-code { width: auto; margin: 0 1.3rem; }
 .home-sub { margin: 0 1.3rem 1rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
 
 /* horizontal, scroll-snapped row of vendor cards */
@@ -498,7 +501,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    ===================================================== */
 
 #app {
-  max-width: 30rem; margin: 0 auto;
+  margin: 0 auto;
   height: 100vh; height: 100dvh;
   display: flex; flex-direction: column;
   overflow: hidden;
@@ -522,6 +525,21 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   position: relative;
+}
+
+/* Sliding between the carousel (#home) and a vendor's redeem screen (#vendor):
+   drilling in slides them leftward, backing out slides them rightward. JS drives
+   the direction/transforms; these rules just stack the two panes for the slide. */
+#tab-home.home-sliding { overflow: hidden; }
+#tab-home.home-sliding > #home,
+#tab-home.home-sliding > #vendor {
+  position: absolute; inset: 0;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+#tab-home.home-sliding-run > #home,
+#tab-home.home-sliding-run > #vendor {
+  transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
 }
 
 /* ---------- bottom nav ---------- */

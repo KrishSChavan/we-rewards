@@ -39,7 +39,16 @@ const $ = (id) => document.getElementById(id);
   // bottom nav: slide between Home / History / Account
   $('tabbar').addEventListener('click', (e) => {
     const btn = e.target.closest('.tab-btn');
-    if (btn) setTab(Number(btn.dataset.tab));
+    if (!btn) return;
+    const tab = Number(btn.dataset.tab);
+    // Home tapped while drilled into a vendor's redeem screen → return to the
+    // carousel with a leftward slide, rather than re-selecting the open tab.
+    if (tab === 0 && !$('vendor').hidden) {
+      if (activeTab === 0) backToHomeSlide();   // on screen: animate the slide
+      else { backToHome(); setTab(0); }         // off screen: reset, then slide the tab in
+      return;
+    }
+    setTab(tab);
   });
   // appearance: dark-mode toggle (the <head> script already applied the theme)
   applyTheme(currentTheme());
@@ -52,7 +61,7 @@ const $ = (id) => document.getElementById(id);
   $('tier-info-close').addEventListener('click', closeTierInfo);
   // click on the backdrop (but not the card) closes the popover
   $('tier-info').addEventListener('click', (e) => { if (e.target === $('tier-info')) closeTierInfo(); });
-  $('back-btn').addEventListener('click', backToHome);
+  $('back-btn').addEventListener('click', backToHomeSlide);
   $('items').addEventListener('click', onItemTap);
   $('item-close').addEventListener('click', closeItemModal);
   $('item-redeem').addEventListener('click', onRedeemTap);
@@ -423,9 +432,7 @@ function openVendor(vendorId) {
   $('pb-vendor').textContent = v.name.toUpperCase();
   renderItems();
   applyBalance(v.balance ?? 0);
-  $('home').hidden = true;
-  $('vendor').hidden = false;
-  $('tab-home').scrollTop = 0;                // scroll the tab page, not the window
+  slidePanes($('vendor'), $('home'), 1);      // vendor screen in from the right, home out left
 }
 
 function backToHome() {
@@ -435,6 +442,56 @@ function backToHome() {
   $('home').hidden = false;
   loadVendors();                              // refresh card balances on the way back
   $('tab-home').scrollTop = 0;
+}
+
+// Slide between the two Home-tab panes. `incoming` enters from `dir` (1 = from
+// the right, moving left — drilling into a vendor; -1 = from the left, moving
+// right — backing out) while `outgoing` exits the other way; `outgoing` hides
+// once it settles. JS drives the transforms against the .home-sliding layout.
+function slidePanes(incoming, outgoing, dir) {
+  const page = $('tab-home');
+  if (page.classList.contains('home-sliding')) return;   // a slide is already running
+
+  // Reduced motion (or no matchMedia support): skip the animation, just swap.
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    incoming.hidden = false;
+    outgoing.hidden = true;
+    page.scrollTop = 0;
+    return;
+  }
+
+  incoming.hidden = false;                       // both panes on screen for the transition
+  page.classList.add('home-sliding');
+  incoming.style.transform = `translateX(${dir * 100}%)`;   // incoming waits off one edge
+  outgoing.style.transform = 'translateX(0)';
+  void page.offsetWidth;                          // commit the start positions
+
+  page.classList.add('home-sliding-run');         // arm the transition...
+  incoming.style.transform = 'translateX(0)';     // ...then slide the pair across
+  outgoing.style.transform = `translateX(${dir * -100}%)`;
+
+  let done = false;
+  const settle = (e) => {
+    if (e && e.target !== incoming) return;       // ignore transitions bubbling from children
+    if (done) return;
+    done = true;
+    incoming.removeEventListener('transitionend', settle);
+    page.classList.remove('home-sliding', 'home-sliding-run');
+    incoming.style.transform = '';
+    outgoing.style.transform = '';
+    outgoing.hidden = true;
+    page.scrollTop = 0;
+  };
+  incoming.addEventListener('transitionend', settle);
+  setTimeout(settle, 420);                        // fallback if transitionend never fires
+}
+
+// Back arrow / Home tap: carousel in from the left, vendor screen out to the right.
+function backToHomeSlide() {
+  vendor = null;
+  balanceReady = false;
+  loadVendors();                                  // refresh card balances on the way back
+  slidePanes($('home'), $('vendor'), -1);
 }
 
 /* ---------- live balance: socket push + ticker + notification ---------- */
