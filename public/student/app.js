@@ -41,6 +41,12 @@ const $ = (id) => document.getElementById(id);
     const btn = e.target.closest('.tab-btn');
     if (btn) setTab(Number(btn.dataset.tab));
   });
+  // appearance: dark-mode toggle (the <head> script already applied the theme)
+  applyTheme(currentTheme());
+  $('dark-toggle').addEventListener('click', () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+  });
   $('vendor-carousel').addEventListener('click', onVendorTap);
   $('tier-info-btn').addEventListener('click', openTierInfo);
   $('tier-info-close').addEventListener('click', closeTierInfo);
@@ -103,10 +109,64 @@ function render(session) {
     $('vendor').hidden = true;
     setTab(0, false);
   }
+  fillAccount(session);
   loadVendors();
   loadTier();
   startMyCode();
   connectSocket();
+}
+
+/* ---------- appearance: theme ---------- */
+
+const THEME_KEY = 'psu-theme';
+
+// an explicit saved choice wins; otherwise follow the OS setting
+function currentTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === 'dark' || saved === 'light') return saved;
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', theme === 'dark' ? '#0f1826' : '#12294b');
+  $('dark-toggle').setAttribute('aria-checked', theme === 'dark' ? 'true' : 'false');
+}
+
+function setTheme(theme) {
+  localStorage.setItem(THEME_KEY, theme);
+  applyTheme(theme);
+}
+
+/* ---------- account tab: profile card ---------- */
+
+function fillAccount(session) {
+  const user = session?.user;
+  const meta = user?.user_metadata ?? {};
+  const email = user?.email ?? meta.email ?? '';
+  const name = meta.full_name ?? meta.name ?? '';
+  const avatar = meta.avatar_url ?? meta.picture ?? '';
+
+  $('account-email').textContent = email || '—';
+  $('account-name').textContent = name;
+  $('account-name').hidden = !name;
+  setAvatar(avatar, name || email);
+}
+
+// Show the Google avatar; fall back to the first initial if it's missing/blocked.
+function setAvatar(url, seed) {
+  const img = $('account-avatar');
+  const fb = $('account-avatar-fallback');
+  fb.textContent = (seed || '?').trim().charAt(0).toUpperCase() || '?';
+  if (url) {
+    img.onload = () => { img.hidden = false; fb.hidden = true; };
+    img.onerror = () => { img.hidden = true; fb.hidden = false; };
+    img.src = url;
+  } else {
+    img.hidden = true;
+    fb.hidden = false;
+  }
 }
 
 /* ---------- bottom nav: sliding tabs ---------- */

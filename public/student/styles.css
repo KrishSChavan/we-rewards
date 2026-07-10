@@ -18,6 +18,36 @@
   --muted: #5a6678;
   --danger: #d63b2f;
   --danger-press: #a52a20;
+
+  /* semantic roles that diverge from --ink/--navy in dark mode:
+     --edge  = the chunky borders + hard offset shadows
+     --brand = brand-colored text/numbers sitting on light surfaces
+     --hairline = subtle separators (e.g. the nav's top border) */
+  --edge: #101d33;
+  --brand: #12294b;
+  --hairline: #e5eaf2;
+}
+
+/* Dark theme — set data-theme="dark" on <html>. Backgrounds go dark, text goes
+   light, and the borders/hard-shadows soften to a subtle line so the playful
+   "sticker" cards read on a dark page instead of glowing white. */
+:root[data-theme="dark"] {
+  --ink: #e8eef7;
+  --paper: #0f1826;
+  --card: #1c2b45;
+  --navy: #17335c;
+  --navy-press: #0f2447;
+  --sky: #cfe1f5;
+  --sky-line: #3a5074;
+  --accent: #96bee6;
+  --success: #43cf88;
+  --warn: #e6a53c;
+  --muted: #94a3ba;
+  --danger: #ec5a4e;
+  --danger-press: #b23a30;
+  --edge: #35496a;
+  --brand: #8fbdf0;
+  --hairline: #2a3a56;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -43,8 +73,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .wordmark em { font-style: normal; color: var(--navy); background: var(--sky); padding: 0.1em 0.35em; border-radius: 0.3em; }
 
 .nav-signin {
-  font-weight: 700; font-size: 0.95rem; color: var(--navy);
-  padding: 0.6rem 1.1rem; border: 2.5px solid var(--navy); border-radius: 0.6rem;
+  font-weight: 700; font-size: 0.95rem; color: var(--brand);
+  padding: 0.6rem 1.1rem; border: 2.5px solid var(--brand); border-radius: 0.6rem;
 }
 
 /* ---------- hero ---------- */
@@ -60,7 +90,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font-size: clamp(2.6rem, 7vw, 4.6rem);
   font-weight: 900; line-height: 0.98; letter-spacing: -0.01em;
 }
-.hl { color: var(--navy); background: linear-gradient(transparent 55%, var(--accent) 55%); }
+.hl { color: var(--brand); background: linear-gradient(transparent 55%, var(--accent) 55%); }
 
 .hero-sub {
   margin-top: 1.2rem; font-size: 1.15rem; line-height: 1.55;
@@ -73,11 +103,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--card); color: var(--ink);
   font-size: 1.15rem; font-weight: 700;
   padding: 1rem 1.6rem; border-radius: 0.9rem;
-  border: 3px solid var(--ink);
-  box-shadow: 0 4px 0 var(--ink);
+  border: 3px solid var(--edge);
+  box-shadow: 0 4px 0 var(--edge);
   transition: transform 80ms ease, box-shadow 80ms ease;
 }
-.google-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+.google-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
 
 .auth-error { margin-top: 0.9rem; color: #a93226; font-weight: 700; }
 .fine { margin-top: 0.9rem; color: var(--muted); font-size: 0.92rem; font-weight: 500; }
@@ -101,19 +131,19 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   display: grid; grid-template-columns: repeat(12, 1fr); gap: 3px;
   background: #fff; padding: 0.7rem; border-radius: 0.7rem; aspect-ratio: 3.2;
 }
-.mock-qr i { background: var(--ink); border-radius: 1px; }
+.mock-qr i { background: #101d33; border-radius: 1px; }   /* stays dark on the white QR */
 .mock-qr i:nth-child(3n), .mock-qr i:nth-child(7n) { background: transparent; }
 
 .mock-hint { font-size: 0.9rem; font-weight: 700; color: var(--sky); }
 
 .chip {
-  position: absolute; background: var(--card); border: 3px solid var(--ink);
+  position: absolute; background: var(--card); border: 3px solid var(--edge);
   border-radius: 2rem; padding: 0.45rem 0.9rem;
   font-weight: 900; font-size: 0.95rem;
-  box-shadow: 0 3px 0 var(--ink);
+  box-shadow: 0 3px 0 var(--edge);
 }
 .chip-1 { top: 8%; right: 4%; transform: rotate(-6deg); color: var(--success); }
-.chip-2 { bottom: 4%; left: 6%; transform: rotate(4deg); color: var(--navy); }
+.chip-2 { bottom: 4%; left: 6%; transform: rotate(4deg); color: var(--brand); }
 
 /* ---------- how it works ---------- */
 
@@ -199,7 +229,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   position: relative;
   width: min(23rem, 100%);
   background: var(--card); color: var(--ink);
-  border: 3px solid var(--ink); border-radius: 1.1rem;
+  border: 3px solid var(--edge); border-radius: 1.1rem;
   box-shadow: 0 12px 30px rgba(16, 29, 51, 0.3);
   padding: 1.3rem 1.3rem 1.4rem;
   transform: translateY(-8px) scale(0.97);
@@ -212,8 +242,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .tier-info-card p:last-child { margin-bottom: 0; }
 .tier-info-card ul { list-style: none; margin: 0 0 0.7rem; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
 .tier-info-card li { font-size: 0.9rem; line-height: 1.4; font-weight: 500; padding-left: 1rem; position: relative; }
-.tier-info-card li::before { content: "•"; position: absolute; left: 0.1rem; color: var(--navy); font-weight: 900; }
-.tier-info-card strong { color: var(--navy); font-weight: 900; }
+.tier-info-card li::before { content: "•"; position: absolute; left: 0.1rem; color: var(--brand); font-weight: 900; }
+.tier-info-card strong { color: var(--brand); font-weight: 900; }
 
 .tier-info-close {
   position: absolute; top: 0.6rem; right: 0.6rem;
@@ -265,8 +295,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   scroll-snap-align: start;
   scroll-snap-stop: always;          /* grab the closest card, don't fly past it */
   aspect-ratio: 4 / 5;
-  background: var(--card); border: 3px solid var(--ink); border-radius: 1.3rem;
-  box-shadow: 0 5px 0 var(--ink);
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.3rem;
+  box-shadow: 0 5px 0 var(--edge);
   padding: 1.5rem;
   display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 0.4rem;
   text-align: left;
@@ -278,9 +308,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* a lone vendor fills the full width (after the parent's padding) */
 .vendor-carousel.single .vendor-card { flex-basis: 100%; max-width: none; }
 
-.vc-name { font-weight: 900; font-size: 1.5rem; line-height: 1.12; }
+.vc-name { font-weight: 900; font-size: 1.5rem; line-height: 1.12; color: var(--ink); }
 .vc-points { display: flex; align-items: baseline; gap: 0.3rem; }   /* points sit below the name */
-.vc-num { font-size: 3.4rem; font-weight: 900; line-height: 1; color: var(--navy); font-variant-numeric: tabular-nums; }
+.vc-num { font-size: 3.4rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; }
 .vc-points small { font-size: 1rem; font-weight: 700; color: var(--muted); }
 
 /* big red sign-out (now lives on the Account tab) */
@@ -353,8 +383,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .my-code {
   width: 100%; text-align: center;
-  background: var(--card); border: 3px solid var(--ink); border-radius: 1.1rem;
-  padding: 1.3rem; box-shadow: 0 4px 0 var(--ink);
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 1.3rem; box-shadow: 0 4px 0 var(--edge);
   display: flex; flex-direction: column; align-items: center; gap: 0.35rem;
 }
 .mc-label { font-size: 0.8rem; font-weight: 900; letter-spacing: 0.16em; color: var(--muted); }
@@ -364,7 +394,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font-size: clamp(2rem, 11.5vw, 3.4rem); font-weight: 900; line-height: 1.05;
   letter-spacing: 0.08em; text-indent: 0.08em;   /* keep glyphs visually centered */
   white-space: nowrap; max-width: 100%;
-  color: var(--navy); font-variant-numeric: tabular-nums;
+  color: var(--brand); font-variant-numeric: tabular-nums;
 }
 .mc-sub { font-size: 0.92rem; font-weight: 500; color: var(--muted); }
 
@@ -377,7 +407,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .item-card {
   width: 100%; text-align: left;
-  background: var(--card); border: 3px solid var(--ink); border-radius: 1.1rem;
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
   padding: 1rem 1.2rem;
   display: flex; align-items: center; gap: 1rem;
   transition: transform 80ms ease;
@@ -390,9 +420,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--sky); border-radius: 0.9rem;
 }
 .ic-body { flex: 1; min-width: 0; }
-.ic-title { font-weight: 900; font-size: 1.15rem; line-height: 1.15; }
+.ic-title { font-weight: 900; font-size: 1.15rem; line-height: 1.15; color: var(--ink)}
 .ic-status { font-size: 0.9rem; font-weight: 700; color: var(--success); margin-top: 0.2rem; }
-.ic-cost { font-weight: 900; color: var(--navy); white-space: nowrap; font-size: 1.05rem; }
+.ic-cost { font-weight: 900; color: var(--brand); white-space: nowrap; font-size: 1.05rem; }
 
 .item-card.locked { opacity: 0.55; }
 .item-card.locked .ic-emoji { background: #e3e7ee; filter: grayscale(1); }
@@ -414,7 +444,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .detail-card {
   position: relative; width: 100%;
   background: var(--card);
-  border-top: 3px solid var(--ink);
+  border-top: 3px solid var(--edge);
   border-radius: 1.5rem 1.5rem 0 0;
   padding: 2.2rem 1.5rem calc(1.7rem + env(safe-area-inset-bottom, 0px));
   display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
@@ -427,12 +457,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .detail-close {
   position: absolute; top: 0.9rem; right: 0.9rem;
   width: 2.6rem; height: 2.6rem; border-radius: 50%;
-  border: 2.5px solid var(--ink); background: var(--paper);
+  border: 2.5px solid var(--edge); background: var(--paper);
   font-size: 1.1rem; font-weight: 900;
 }
 .detail-emoji { font-size: 3.4rem; }
 .detail-title { font-size: 1.7rem; font-weight: 900; line-height: 1.1; }
-.detail-cost { font-weight: 900; color: var(--navy); font-size: 1.15rem; }
+.detail-cost { font-weight: 900; color: var(--brand); font-size: 1.15rem; }
 .detail-desc { color: var(--muted); font-weight: 500; line-height: 1.5; }
 .detail-status { font-weight: 700; font-size: 1rem; min-height: 1.3em; }
 .detail-status.ok { color: var(--success); }
@@ -455,7 +485,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .item-code-value {
   font-size: clamp(2.2rem, 12vw, 3.2rem); font-weight: 900;
   letter-spacing: 0.12em; text-indent: 0.12em;
-  color: var(--navy); font-variant-numeric: tabular-nums;
+  color: var(--brand); font-variant-numeric: tabular-nums;
 }
 .item-code-timer {
   font-size: 1.1rem; font-weight: 800; color: var(--navy);
@@ -500,7 +530,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   flex-shrink: 0;
   display: flex;
   background: var(--card);
-  border-top: 2px solid #e5eaf2;
+  border-top: 2px solid var(--hairline);
   padding-bottom: env(safe-area-inset-bottom);
   z-index: 30;
 }
@@ -516,11 +546,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .tab-btn svg { width: 25px; height: 25px; display: block; }
 .tab-btn:active { transform: scale(0.92); }
-.tab-btn.is-active { color: var(--navy); }
+.tab-btn.is-active { color: var(--brand); }
 /* little tab indicator riding the top edge of the bar */
 .tab-btn.is-active::before {
   content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-  width: 2.2rem; height: 3px; border-radius: 0 0 3px 3px; background: var(--navy);
+  width: 2.2rem; height: 3px; border-radius: 0 0 3px 3px; background: var(--brand);
 }
 
 /* ---------- history + account pages ---------- */
@@ -544,8 +574,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .history-row {
   display: flex; align-items: center; gap: 0.85rem;
-  background: var(--card); border: 2.5px solid var(--ink); border-radius: 1rem;
-  padding: 0.8rem 1rem; box-shadow: 0 3px 0 var(--ink);
+  background: var(--card); border: 2.5px solid var(--edge); border-radius: 1rem;
+  padding: 0.8rem 1rem; box-shadow: 0 3px 0 var(--edge);
 }
 .hr-icon {
   flex-shrink: 0; width: 2.7rem; height: 2.7rem;
@@ -570,11 +600,62 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* ---------- account ---------- */
 
 .account-body { flex: 1; display: flex; flex-direction: column; gap: 1rem; }
-.account-placeholder {
-  color: var(--muted); font-weight: 600; line-height: 1.5;
-  background: var(--card); border: 2.5px dashed var(--sky-line);
-  border-radius: 1rem; padding: 1.2rem;
+
+/* profile card: avatar + email */
+.account-card {
+  display: flex; align-items: center; gap: 1rem;
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 1rem 1.15rem; box-shadow: 0 4px 0 var(--edge);
 }
+.account-avatar-wrap {
+  flex-shrink: 0; width: 3.2rem; height: 3.2rem; border-radius: 50%;
+  overflow: hidden; display: grid; place-items: center;
+  background: var(--navy);
+}
+.account-avatar { width: 100%; height: 100%; object-fit: cover; display: block; }
+.account-avatar-fallback { color: #fff; font-weight: 900; font-size: 1.4rem; line-height: 1; }
+.account-id { display: flex; flex-direction: column; min-width: 0; gap: 0.1rem; }
+.account-name {
+  font-weight: 900; font-size: 1.05rem; line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.account-email {
+  font-weight: 600; font-size: 0.9rem; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* section heading (shared look with the history day dividers) */
+.account-section-title {
+  margin: 0.6rem 0 -0.2rem;
+  font-weight: 900; letter-spacing: 0.14em; font-size: 0.72rem;
+  text-transform: uppercase; color: var(--muted);
+}
+
+.setting-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 1rem 1.15rem; box-shadow: 0 4px 0 var(--edge);
+}
+.setting-label { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.setting-name { font-weight: 900; font-size: 1.05rem; }
+.setting-desc { font-weight: 600; font-size: 0.85rem; color: var(--muted); }
+
+/* toggle switch */
+.switch {
+  flex-shrink: 0; position: relative;
+  width: 3.4rem; height: 2rem; border-radius: 999px;
+  background: var(--sky-line); border: 2.5px solid var(--edge);
+  transition: background 180ms ease;
+}
+.switch-knob {
+  position: absolute; top: 50%; left: 0.18rem; transform: translateY(-50%);
+  width: 1.35rem; height: 1.35rem; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: left 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.switch[aria-checked="true"] { background: var(--success); }
+.switch[aria-checked="true"] .switch-knob { left: calc(100% - 1.35rem - 0.18rem); }
+
 #account-signout { margin-top: auto; }   /* sign-out hugs the bottom of the tab */
 
 /* ---------- responsive ---------- */

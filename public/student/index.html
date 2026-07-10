@@ -6,6 +6,18 @@
   <title>PSU Eats Rewards — eat local, earn free food</title>
   <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
   <meta name="theme-color" content="#12294b" />
+  <!-- apply the saved (or system) theme before first paint to avoid a flash -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('psu-theme');
+        if (t !== 'dark' && t !== 'light') {
+          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="manifest" href="/manifest.json" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -172,10 +184,33 @@
           <div id="account">
             <header class="page-head">
               <h1 class="page-title">Account</h1>
-              <p class="page-sub">Settings coming soon</p>
             </header>
+
             <div class="account-body">
-              <p class="account-placeholder">More account settings are on the way.</p>
+              <!-- profile card: Google avatar on the left, email on the right -->
+              <div class="account-card">
+                <span class="account-avatar-wrap">
+                  <img id="account-avatar" class="account-avatar" alt="" referrerpolicy="no-referrer" hidden />
+                  <span id="account-avatar-fallback" class="account-avatar-fallback" aria-hidden="true">?</span>
+                </span>
+                <span class="account-id">
+                  <span id="account-name" class="account-name" hidden></span>
+                  <span id="account-email" class="account-email">—</span>
+                </span>
+              </div>
+
+              <!-- appearance -->
+              <h2 class="account-section-title">Appearance</h2>
+              <div class="setting-row">
+                <span class="setting-label">
+                  <span class="setting-name">Dark mode</span>
+                  <span class="setting-desc">Switch the app to a darker look</span>
+                </span>
+                <button id="dark-toggle" class="switch" type="button" role="switch" aria-checked="false" aria-label="Dark mode">
+                  <span class="switch-knob"></span>
+                </button>
+              </div>
+
               <button id="account-signout" class="signout-big">Sign out</button>
             </div>
           </div>
