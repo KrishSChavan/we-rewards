@@ -190,7 +190,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .brand-word { font-weight: 900; letter-spacing: 0.01em; font-size: 2rem; line-height: 1; }
 .brand-word em { font-style: normal; color: var(--accent); }
 
-/* 30-day tier meter under the wordmark: fill toward the 2x / 3x cutoffs */
+/* 30-day tier meter under the wordmark: fill toward the 1.5x / 2x cutoffs */
 .tier-bar { position: relative; margin-top: 1.15rem; text-align: left; }
 
 .tier-top {

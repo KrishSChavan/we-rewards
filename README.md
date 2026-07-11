@@ -61,7 +61,7 @@ config — the terminal never sends a point value.
   time, so changing the ratio updates every button automatically.
 - Exact entry awards `floor(amount × ratio)`. Always floor, never round up.
 - The base award is then multiplied by the customer's **tier multiplier**
-  (1x / 2x / 3x, see below).
+  (1x / 1.5x / 2x, see below) and floored to whole points.
 
 ## Engagement tiers (earn multipliers)
 
@@ -74,8 +74,8 @@ looping through vendors beats whaling one. Anti-farming: visits count once
 per vendor per day, and each visit credits at most $30 of spend.
 
 - Score < 350 → **1x** (the vendor's own ratio)
-- 350–699 → **2x**
-- 700+ → **3x**
+- 350–699 → **1.5x**
+- 700+ → **2x**
 
 The score is computed live per request (no cron): the home screen shows it as
 the tier bar (`GET /api/me/tier`), the terminal shows the customer's

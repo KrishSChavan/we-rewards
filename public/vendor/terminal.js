@@ -10,7 +10,7 @@ let rewards = [];          // vendor's rewards from /api/vendor/rewards
 let mode = 'award';        // 'award' | 'redeem' | 'manage'
 let pinTarget = null;      // where the PIN gate leads on success
 let currentEarnCode = null;    // customer's 6-char earn code on the award pad
-let currentMultiplier = 1;     // scanned customer's tier multiplier (1x/2x/3x)
+let currentMultiplier = 1;     // scanned customer's tier multiplier (1x/1.5x/2x)
 let pendingRedeemCode = null;  // 4-digit redeem code awaiting vendor confirmation
 let padValue = '';         // exact-amount entry string
 let pinValue = '';
@@ -254,7 +254,7 @@ function renderPad() {
   const amt = Number(padValue || 0);
   const base = Math.floor(amt * config.pointsPerDollar);
   $('pad-amount').textContent = amt.toFixed(2);
-  $('pad-points').textContent = base * currentMultiplier;
+  $('pad-points').textContent = Math.floor(base * currentMultiplier); // match server flooring
   $('pad-mult').hidden = currentMultiplier <= 1;
   $('pad-mult').textContent = currentMultiplier > 1 ? `(${base} × ${currentMultiplier}x member)` : '';
   $('pad-award').disabled = amt <= 0;

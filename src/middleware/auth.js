@@ -66,11 +66,19 @@ export async function requireVendor(req, res, next) {
   });
 }
 
+// A PIN session also drops after this many minutes of inactivity, so an
+// unattended terminal re-asks for the PIN even inside the 8-hour shift window
+// (PIN_SESSION_HOURS in routes/vendor.js is the absolute cap; this is idle).
+const PIN_IDLE_MINUTES = 30;
+
 /**
  * Gates the sensitive vendor routes (redeem + manage) behind the staff PIN.
  * Must run AFTER requireVendor (needs req.vendor + req.user). Vendors without a
  * PIN configured are not gated. Otherwise the terminal must present the session
  * token minted by POST /verify-pin, sent as the `X-Vendor-Pin` header.
+ *
+ * A session must be BOTH within its absolute expiry (expires_at) AND used within
+ * the last PIN_IDLE_MINUTES; each successful check slides last_used_at forward.
  */
 export async function requirePin(req, res, next) {
   try {
@@ -81,19 +89,32 @@ export async function requirePin(req, res, next) {
       return res.status(401).json({ error: 'PIN_REQUIRED', message: 'Enter the staff PIN to continue.' });
     }
 
+    const now = new Date();
+    const idleCutoff = new Date(now.getTime() - PIN_IDLE_MINUTES * 60 * 1000).toISOString();
+
     const { data, error } = await supabaseAdmin
       .from('vendor_pin_sessions')
       .select('token')
       .eq('token', token)
       .eq('vendor_id', req.vendor.id)
       .eq('user_id', req.user.id)
-      .gt('expires_at', new Date().toISOString())
+      .gt('expires_at', now.toISOString()) // absolute 8-hour shift cap
+      .gt('last_used_at', idleCutoff)       // idle timeout
       .maybeSingle();
 
     if (error) throw error;
     if (!data) {
       return res.status(401).json({ error: 'PIN_REQUIRED', message: 'Enter the staff PIN to continue.' });
     }
+
+    // Sliding window: this successful use resets the idle clock. Non-fatal if it
+    // fails — the request is already authorized, and a stale last_used_at only
+    // risks an early re-prompt, never an over-long session.
+    await supabaseAdmin
+      .from('vendor_pin_sessions')
+      .update({ last_used_at: now.toISOString() })
+      .eq('token', token);
+
     next();
   } catch (err) {
     next(err);

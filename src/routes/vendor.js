@@ -106,7 +106,9 @@ router.post('/award', async (req, res, next) => {
     // required (never trust a multiplier sent by the terminal).
     const tierProfile = await computeTierProfile(userId);
     const { tier, multiplier } = tierProfile;
-    const points = basePoints * multiplier;
+    // Floor to whole points: multipliers can be fractional (e.g. 1.5x) but
+    // points/balances are integer columns and award_points takes an integer.
+    const points = Math.floor(basePoints * multiplier);
 
     const { data, error } = await supabaseAdmin.rpc('award_points', {
       p_user_id: userId,

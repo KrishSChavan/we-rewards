@@ -15,10 +15,12 @@ const SPEND_TARGET = 250;       // monthly spend for full credit
 const MEAL_TICKET = 11;         // avg ticket that reads as "they're getting a meal"
 
 // Score cutoffs → earn multiplier. Tier 1 is the vendor's own ratio untouched.
+// Fractional multipliers are fine: the award path floors basePoints * multiplier
+// to whole points (see routes/vendor.js), and user_scores.multiplier is numeric.
 export const TIERS = [
   { tier: 1, multiplier: 1, minScore: 0 },
-  { tier: 2, multiplier: 2, minScore: 350 },
-  { tier: 3, multiplier: 3, minScore: 700 },
+  { tier: 2, multiplier: 1.5, minScore: 350 },
+  { tier: 3, multiplier: 2, minScore: 700 },
 ];
 
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
