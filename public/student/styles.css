@@ -1,5 +1,5 @@
 /* =====================================================
-   PSU Eats Rewards — student app
+   WeRewards — student app
    Same family as the terminal (PSU navy, Archivo) but
    warmer and more playful: this side has to feel fun.
    ===================================================== */
@@ -90,7 +90,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font-size: clamp(2.6rem, 7vw, 4.6rem);
   font-weight: 900; line-height: 0.98; letter-spacing: -0.01em;
 }
-.hl { color: var(--brand); background: linear-gradient(transparent 55%, var(--accent) 55%); }
+.hl { color: var(--brand); background: linear-gradient(transparent 90%, var(--accent) 70%); }
 
 .hero-sub {
   margin-top: 1.2rem; font-size: 1.15rem; line-height: 1.55;
@@ -126,13 +126,16 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .mock-points { font-size: 3.4rem; font-weight: 900; line-height: 1.1; }
 .mock-points small { font-size: 0.35em; font-weight: 700; margin-left: 0.25em; letter-spacing: 0.08em; }
 
-.mock-qr {
+.mock-code {
   margin: 1rem 0 0.8rem;
-  display: grid; grid-template-columns: repeat(12, 1fr); gap: 3px;
-  background: #fff; padding: 0.7rem; border-radius: 0.7rem; aspect-ratio: 3.2;
+  display: flex; flex-direction: column; align-items: center; gap: 0.35rem;
+  background: #fff; padding: 0.8rem 0.7rem; border-radius: 0.7rem;
 }
-.mock-qr i { background: #101d33; border-radius: 1px; }   /* stays dark on the white QR */
-.mock-qr i:nth-child(3n), .mock-qr i:nth-child(7n) { background: transparent; }
+.mock-code-label { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.18em; color: #7a8aa3; }
+.mock-code-value {
+  font-size: 2rem; font-weight: 900; letter-spacing: 0.32em; color: #101d33;
+  text-indent: 0.32em;   /* balance the trailing letter-spacing so it reads centered */
+}
 
 .mock-hint { font-size: 0.9rem; font-weight: 700; color: var(--sky); }
 
@@ -143,7 +146,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   box-shadow: 0 3px 0 var(--edge);
 }
 .chip-1 { top: 8%; right: 4%; transform: rotate(-6deg); color: var(--success); }
-.chip-2 { bottom: 4%; left: 6%; transform: rotate(4deg); color: var(--brand); }
+.chip-2 { bottom: -7%; left: 6%; transform: rotate(4deg); color: var(--brand); }
 
 /* ---------- how it works ---------- */
 

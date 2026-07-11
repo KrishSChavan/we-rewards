@@ -1,5 +1,5 @@
 -- ============================================================
--- PSU Eats Rewards — Supabase Schema (MVP: per-vendor points)
+-- WeRewards — Supabase Schema (MVP: per-vendor points)
 -- Run this in the Supabase SQL Editor on a fresh project.
 -- ============================================================
 

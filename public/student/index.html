@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>PSU Eats Rewards — eat local, earn free food</title>
+  <title>WeRewards — eat local, earn free food</title>
   <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
   <meta name="theme-color" content="#12294b" />
   <!-- apply the saved (or system) theme before first paint to avoid a flash
@@ -21,7 +21,7 @@
   <!-- ================= LANDING + AUTH ================= -->
   <div id="landing" hidden>
     <header class="nav">
-      <span class="wordmark">PSU EATS <em>REWARDS</em></span>
+      <span class="wordmark">We<em>Rewards</em></span>
       <button class="nav-signin" data-signin>Sign in</button>
     </header>
 
@@ -49,10 +49,9 @@
         <div class="mock-card">
           <p class="mock-vendor">YALLAH TACO</p>
           <p class="mock-points">165<small>pts</small></p>
-          <div class="mock-qr">
-            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          <div class="mock-code">
+            <span class="mock-code-label">YOUR CODE</span>
+            <span class="mock-code-value">7K2Q9F</span>
           </div>
           <p class="mock-hint">35 pts to a free drink</p>
         </div>
@@ -67,12 +66,12 @@
         <li>
           <span class="step-num">1</span>
           <h3>Show your code</h3>
-          <p>Sign in once and your personal QR code lives on your phone. Show it at the counter when you pay.</p>
+          <p>Sign in once and a short code appears in the app. Read it out (or show your phone) at the counter when you pay.</p>
         </li>
         <li>
           <span class="step-num">2</span>
           <h3>Earn points</h3>
-          <p>The shop scans it and points land instantly. Every spot sets its own rewards — watch them stack up.</p>
+          <p>The shop enters your code and points land instantly. Every spot sets its own rewards — watch them stack up.</p>
         </li>
         <li>
           <span class="step-num">3</span>
@@ -141,7 +140,7 @@
             <!-- points bar: back button (left) replaces the old sign-out link -->
             <header class="points-bar">
               <button id="back-btn" class="pb-back" aria-label="Back to your spots">←</button>
-              <p id="pb-vendor" class="pb-vendor">PSU EATS</p>
+              <p id="pb-vendor" class="pb-vendor">WEREWARDS</p>
               <div class="pb-points">
                 <span id="pb-balance">0</span><small>pts</small>
               </div>

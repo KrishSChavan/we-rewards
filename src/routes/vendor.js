@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { getTierProfile } from '../lib/tiers.js';
+import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireVendor, requirePin } from '../middleware/auth.js';
 import { emitBalance } from '../lib/realtime.js';
 
@@ -66,7 +66,7 @@ router.post('/scan', async (req, res, next) => {
     const [{ data: profile }, { data: bal }, tierProfile] = await Promise.all([
       supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle(),
       supabaseAdmin.from('point_balances').select('balance').eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle(),
-      getTierProfile(userId),
+      computeTierProfile(userId), // read-only: scan just displays the tier
     ]);
     res.json({
       userId,
@@ -102,8 +102,10 @@ router.post('/award', async (req, res, next) => {
     }
 
     // Tier is computed before this purchase lands, so today's transaction
-    // can't bump its own multiplier mid-award.
-    const { tier, multiplier } = await getTierProfile(userId);
+    // can't bump its own multiplier mid-award. Server-side recompute is
+    // required (never trust a multiplier sent by the terminal).
+    const tierProfile = await computeTierProfile(userId);
+    const { tier, multiplier } = tierProfile;
     const points = basePoints * multiplier;
 
     const { data, error } = await supabaseAdmin.rpc('award_points', {
@@ -116,6 +118,8 @@ router.post('/award', async (req, res, next) => {
 
     const newBalance = data?.[0]?.new_balance;
     emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
+    // Snapshot the score for analytics — off the critical path, non-fatal.
+    persistTierSnapshot(userId, tierProfile).catch(() => {});
 
     const { data: profile } = await supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle();
     res.json({
@@ -310,6 +314,103 @@ router.get('/recent', async (req, res, next) => {
       .limit(20);
     if (error) throw error;
     res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/vendor/analytics  (PIN-gated — owner-level revenue/customer data)
+ * Aggregates this vendor's last 30 local days of transactions into today /
+ * 7-day / 30-day totals, a 14-day daily series, and top redeemed rewards.
+ * One query + in-memory rollup; transactions is the source of truth (not the
+ * user_scores cache).
+ */
+router.get('/analytics', requirePin, async (req, res, next) => {
+  try {
+    const DAY = 86_400_000;
+    const startToday = new Date();
+    startToday.setHours(0, 0, 0, 0);
+    const t0 = startToday.getTime();      // start of today, server-local
+    const t7 = t0 - 6 * DAY;              // start of the 7-day window (incl. today)
+    const since = new Date(t0 - 29 * DAY).toISOString(); // 30 local days incl. today
+
+    const { data: txns, error } = await supabaseAdmin
+      .from('transactions')
+      .select('type, points, dollar_amount, created_at, user_id, rewards(title)')
+      .eq('vendor_id', req.vendor.id)
+      .gte('created_at', since)
+      .limit(10_000);
+    if (error) throw error;
+
+    const dayKey = (ms) => {
+      const d = new Date(ms);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+    const blank = () => ({ earnPoints: 0, redeemPoints: 0, awards: 0, redemptions: 0, revenue: 0, customers: new Set() });
+    const today = blank(), last7 = blank(), last30 = blank();
+    const custDays = new Map();   // user_id -> Set(dayKey)  (returning-customer calc)
+    const dayAgg = new Map();     // dayKey  -> { revenue, awards, earnPoints }
+    const rewardCounts = new Map(); // reward title -> redemption count
+
+    for (const tx of txns ?? []) {
+      const ms = new Date(tx.created_at).getTime();
+      const earn = tx.type === 'earn';
+      const pts = Number(tx.points) || 0;
+      const rev = earn ? Number(tx.dollar_amount) || 0 : 0;
+
+      const add = (b) => {
+        if (earn) { b.earnPoints += pts; b.awards += 1; b.revenue += rev; }
+        else { b.redeemPoints += Math.abs(pts); b.redemptions += 1; }
+        if (tx.user_id) b.customers.add(tx.user_id);
+      };
+      add(last30);
+      if (ms >= t7) add(last7);
+      if (ms >= t0) add(today);
+
+      const k = dayKey(ms);
+      if (earn && tx.user_id) {
+        if (!custDays.has(tx.user_id)) custDays.set(tx.user_id, new Set());
+        custDays.get(tx.user_id).add(k);
+      }
+      if (earn) {
+        const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, earnPoints: 0 };
+        da.revenue += rev; da.awards += 1; da.earnPoints += pts;
+        dayAgg.set(k, da);
+      } else {
+        const title = tx.rewards?.title ?? 'Reward';
+        rewardCounts.set(title, (rewardCounts.get(title) ?? 0) + 1);
+      }
+    }
+
+    const finish = (b) => ({
+      earnPoints: b.earnPoints,
+      redeemPoints: b.redeemPoints,
+      awards: b.awards,
+      redemptions: b.redemptions,
+      revenue: Number(b.revenue.toFixed(2)),
+      customers: b.customers.size,
+    });
+
+    const daily = [];
+    for (let i = 13; i >= 0; i--) {
+      const k = dayKey(t0 - i * DAY);
+      const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, earnPoints: 0 };
+      daily.push({ date: k, revenue: Number(da.revenue.toFixed(2)), awards: da.awards, earnPoints: da.earnPoints });
+    }
+
+    const topRewards = [...rewardCounts.entries()]
+      .map(([title, count]) => ({ title, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    res.json({
+      today: finish(today),
+      last7: finish(last7),
+      last30: { ...finish(last30), returningCustomers: [...custDays.values()].filter((s) => s.size >= 2).length },
+      daily,
+      topRewards,
+    });
   } catch (err) {
     next(err);
   }

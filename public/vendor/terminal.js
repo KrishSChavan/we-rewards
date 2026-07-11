@@ -1,4 +1,4 @@
-/* PSU Eats Rewards — vendor terminal client
+/* WeRewards — vendor terminal client
    Tabs:  AWARD  → type customer's 6-char code → name + balance + $ keypad → award
           REDEEM → PIN → type 4-digit redeem code → confirm (name + points + item) → deduct
           ITEMS  → PIN → manage rewards (add / edit / on-off)
@@ -26,7 +26,7 @@ let editingRewardId = null;
 const $ = (id) => document.getElementById(id);
 const screens = [
   'screen-login', 'screen-scan', 'screen-pad',
-  'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage',
+  'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
 ];
 
 /* ---------- boot ---------- */
@@ -44,6 +44,8 @@ const screens = [
   $('tab-award').addEventListener('click', () => switchMode('award'));
   $('tab-redeem').addEventListener('click', () => switchMode('redeem'));
   $('tab-manage').addEventListener('click', () => switchMode('manage'));
+  $('tab-stats').addEventListener('click', () => switchMode('stats'));
+  $('stats-refresh').addEventListener('click', () => loadAnalytics());
   $('pad-cancel').addEventListener('click', () => enterScan());
   $('pad-award').addEventListener('click', awardExact);
   $('amount-keypad').addEventListener('click', onAmountKey);
@@ -123,7 +125,8 @@ function handlePinRequired(res, data) {
     pinUnlocked = false;
     pinToken = null;
     pinValue = '';
-    pinTarget = mode === 'manage' ? 'manage' : 'redeem';
+    // gated fetches only fire from redeem/manage/stats, so `mode` is the target
+    pinTarget = mode === 'award' ? 'redeem' : mode;
     renderPinDots();
     $('pin-error').hidden = true;
     show('screen-pin');
@@ -144,6 +147,14 @@ function setTabs(active) {
   $('tab-award').classList.toggle('is-active', active === 'award');
   $('tab-redeem').classList.toggle('is-active', active === 'redeem');
   $('tab-manage').classList.toggle('is-active', active === 'manage');
+  $('tab-stats').classList.toggle('is-active', active === 'stats');
+}
+
+// Land on the screen for a PIN-gated mode once it's unlocked.
+function enterModeScreen(m) {
+  if (m === 'manage') enterManage();
+  else if (m === 'stats') enterStats();
+  else enterRedeemScan();
 }
 
 function switchMode(next) {
@@ -157,8 +168,8 @@ function switchMode(next) {
     return;
   }
 
-  // redeem and manage are behind the PIN — but only once per page session.
-  // pinUnlocked is a plain in-memory flag, so refreshing the page re-asks.
+  // redeem, manage, and stats are behind the PIN — but only once per page
+  // session. pinUnlocked is a plain in-memory flag, so refreshing re-asks.
   if (config.hasPin && !pinUnlocked) {
     mode = next;
     pinTarget = next;
@@ -169,7 +180,7 @@ function switchMode(next) {
   } else {
     mode = next;
     setTabs(next);
-    next === 'redeem' ? enterRedeemScan() : enterManage();
+    enterModeScreen(next);
   }
 }
 
@@ -275,7 +286,7 @@ async function awardExact() {
   }
 }
 
-/* ---------- REDEEM flow: scan reward QR → confirm → deduct ---------- */
+/* ---------- REDEEM flow: enter 4-digit code → confirm → deduct ---------- */
 
 function renderPinDots() {
   [...$('pin-dots').children].forEach((dot, i) => dot.classList.toggle('filled', i < pinValue.length));
@@ -300,7 +311,7 @@ async function onPinKey(e) {
     if (res.ok) {
       pinUnlocked = true;       // stays unlocked until the page is refreshed
       pinToken = data.token ?? null; // server session token for gated requests
-      pinTarget === 'manage' ? enterManage() : enterRedeemScan();
+      enterModeScreen(pinTarget);
     } else {
       $('pin-error').hidden = false;
     }
@@ -505,6 +516,9 @@ function flood(kind, big, small, after, ms) {
   $('flood-icon').textContent = kind === 'success' ? '\u2713' : '\u2715';
   $('flood-big').textContent = big;
   $('flood-small').textContent = small || '';
+  // Announce the result to screen readers (the flood is display:none when hidden,
+  // so it can't be the live region itself).
+  $('a11y-status').textContent = small ? `${big}. ${small}` : big;
 
   el.hidden = false;
   void el.offsetWidth;                 // reflow so the fade-in transition runs
@@ -548,4 +562,94 @@ async function refreshLastActivity() {
         ? `Last: ${who} +${last.points} pts`
         : `Last: ${who} redeemed ${last.rewards?.title ?? 'a reward'}`;
   } catch { /* non-critical */ }
+}
+
+/* ---------- STATS (analytics) ---------- */
+
+function enterStats() {
+  show('screen-stats');
+  loadAnalytics();
+}
+
+async function loadAnalytics() {
+  try {
+    const res = await authFetch('/api/vendor/analytics');
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (res.ok) renderAnalytics(data);   // keep the prior render on a transient failure
+  } catch { /* keep the prior render */ }
+}
+
+const money = (n) => '$' + (Number(n) || 0).toFixed(2);
+const num = (n) => (Number(n) || 0).toLocaleString();
+
+function renderAnalytics(d) {
+  $('st-revenue').textContent = money(d.today?.revenue);
+  $('st-awarded').textContent = num(d.today?.earnPoints);
+  $('st-redemptions').textContent = num(d.today?.redemptions);
+  $('st-customers').textContent = num(d.today?.customers);
+
+  buildChart(d.daily ?? []);
+  fillSummary('stats-7', d.last7 ?? {});
+  fillSummary('stats-30', d.last30 ?? {});
+  renderTopRewards(d.topRewards ?? []);
+}
+
+// Single-series bar chart: revenue per day, baseline-anchored, thin marks with
+// rounded tops, 2px gaps. No per-bar labels (a couple of date ticks instead).
+function buildChart(daily) {
+  const wrap = $('stats-chart');
+  wrap.innerHTML = '';
+  const max = Math.max(1, ...daily.map((x) => Number(x.revenue) || 0));
+  $('chart-max').textContent = daily.length ? `peak ${money(max)}` : '';
+
+  const mid = Math.floor((daily.length - 1) / 2);
+  daily.forEach((x, i) => {
+    const rev = Number(x.revenue) || 0;
+    const h = Math.round((rev / max) * 100);
+    const showTick = i === 0 || i === daily.length - 1 || i === mid;
+    const col = document.createElement('div');
+    col.className = 'chart-col';
+    col.innerHTML = `
+      <span class="chart-bar-wrap"><span class="chart-bar${rev > 0 ? '' : ' zero'}" style="height:${h}%"></span></span>
+      <span class="chart-tick">${showTick ? tickLabel(x.date) : ''}</span>`;
+    col.querySelector('.chart-bar').title = `${x.date}: ${money(rev)} · ${num(x.awards)} awards`;
+    wrap.appendChild(col);
+  });
+}
+
+function fillSummary(id, b) {
+  const rows = [
+    ['Revenue', money(b.revenue)],
+    ['Points awarded', num(b.earnPoints)],
+    ['Redemptions', num(b.redemptions)],
+    ['Customers', num(b.customers)],
+  ];
+  if (b.returningCustomers != null) rows.push(['Returning', num(b.returningCustomers)]);
+  $(id).innerHTML = rows
+    .map(([k, v]) => `<li><span>${k}</span><strong>${v}</strong></li>`)
+    .join('');
+}
+
+function renderTopRewards(list) {
+  const wrap = $('stats-top');
+  if (!list.length) {
+    wrap.innerHTML = `<p class="stats-empty">No redemptions in the last 30 days.</p>`;
+    return;
+  }
+  const max = Math.max(...list.map((r) => r.count));
+  wrap.innerHTML = list
+    .map((r) => `
+      <div class="top-row">
+        <span class="top-title">${escapeHtml(r.title)}</span>
+        <span class="top-bar-wrap"><span class="top-bar" style="width:${Math.round((r.count / max) * 100)}%"></span></span>
+        <span class="top-count">${num(r.count)}</span>
+      </div>`)
+    .join('');
+}
+
+// 'YYYY-MM-DD' -> 'M/D'
+function tickLabel(iso) {
+  const [, m, d] = String(iso).split('-');
+  return `${Number(m)}/${Number(d)}`;
 }

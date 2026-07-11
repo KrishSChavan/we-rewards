@@ -1,6 +1,6 @@
 {
-  "name": "PSU Eats Rewards",
-  "short_name": "PSU Eats",
+  "name": "WeRewards",
+  "short_name": "WeRewards",
   "description": "Earn points at local spots around Penn State and eat free.",
   "start_url": "/",
   "display": "standalone",

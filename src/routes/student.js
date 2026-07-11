@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { getTierProfile } from '../lib/tiers.js';
+import { computeTierProfile } from '../lib/tiers.js';
 import { requireUser } from '../middleware/auth.js';
 
 const router = Router();
@@ -95,7 +95,7 @@ router.post('/redeem-code', async (req, res, next) => {
  */
 router.get('/tier', async (req, res, next) => {
   try {
-    res.json(await getTierProfile(req.user.id));
+    res.json(await computeTierProfile(req.user.id));
   } catch (err) {
     next(err);
   }

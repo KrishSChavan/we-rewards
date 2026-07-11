@@ -25,12 +25,13 @@ const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
 /**
  * Score a student's last 30 days of earn activity and map it to a tier.
- * Persists the result to user_scores (transactions stays the source of
- * truth) and returns { score, tier, multiplier, nextMultiplier,
- * nextTierScore, cutoffs, maxScore, windowDays, revisits } — everything
- * the home-screen bar needs to render.
+ * PURE READ — does not write anything (the home bar polls this on every
+ * balance push, so writing here caused heavy write-amplification). Returns
+ * everything the home bar needs plus the raw components/aggregates, so a
+ * caller that wants a durable snapshot can hand the result to
+ * persistTierSnapshot() without recomputing.
  */
-export async function getTierProfile(userId) {
+export async function computeTierProfile(userId) {
   const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const [{ count: vendorCount, error: vErr }, { data: txns, error: tErr }, { data: prof }] = await Promise.all([
@@ -81,25 +82,6 @@ export async function getTierProfile(userId) {
   const current = [...TIERS].reverse().find((t) => score >= t.minScore) ?? TIERS[0];
   const next = TIERS.find((t) => t.minScore > score) ?? null;
 
-  // Snapshot the computed score into user_scores so it lives in the DB.
-  // Non-fatal: scans/awards must still work if migration-005 hasn't run yet.
-  const { error: sErr } = await supabaseAdmin.from('user_scores').upsert({
-    user_id: userId,
-    score,
-    tier: current.tier,
-    multiplier: current.multiplier,
-    breadth: Number(B.toFixed(4)),
-    loyalty: Number(L.toFixed(4)),
-    spend: Number(S.toFixed(4)),
-    distinct_vendors: distinct,
-    revisit_vendors: revisitVendors,
-    total_visits: totalVisits,
-    total_spend: Number(totalSpend.toFixed(2)),
-    window_days: WINDOW_DAYS,
-    computed_at: new Date().toISOString(),
-  });
-  if (sErr) console.error(`user_scores upsert failed (run migration-005?): ${sErr.message}`);
-
   return {
     score,
     tier: current.tier,
@@ -110,5 +92,38 @@ export async function getTierProfile(userId) {
     maxScore: 1000,
     windowDays: WINDOW_DAYS,
     revisits: prof?.revisits ?? 0, // lifetime counter, maintained by award_points
+    // raw components + aggregates — ignored by the UI, used by persistTierSnapshot
+    breadth: B,
+    loyalty: L,
+    spend: S,
+    distinctVendors: distinct,
+    revisitVendors,
+    totalVisits,
+    totalSpend,
   };
+}
+
+/**
+ * Snapshot a computed tier profile into user_scores so analytics can read
+ * scores straight from the DB (transactions stays the source of truth). Called
+ * after an award lands — NOT on reads. Non-fatal: awards must still succeed if
+ * this write fails (e.g. migration-005 not yet run).
+ */
+export async function persistTierSnapshot(userId, p) {
+  const { error } = await supabaseAdmin.from('user_scores').upsert({
+    user_id: userId,
+    score: p.score,
+    tier: p.tier,
+    multiplier: p.multiplier,
+    breadth: Number(p.breadth.toFixed(4)),
+    loyalty: Number(p.loyalty.toFixed(4)),
+    spend: Number(p.spend.toFixed(4)),
+    distinct_vendors: p.distinctVendors,
+    revisit_vendors: p.revisitVendors,
+    total_visits: p.totalVisits,
+    total_spend: Number(p.totalSpend.toFixed(2)),
+    window_days: p.windowDays,
+    computed_at: new Date().toISOString(),
+  });
+  if (error) console.error(`user_scores upsert failed (run migration-005?): ${error.message}`);
 }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Terminal — PSU Eats Rewards</title>
+  <title>Terminal — WeRewards</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
@@ -14,7 +14,7 @@
   <!-- ===== LOGIN (shown once per device) ===== -->
   <section id="screen-login" class="screen" hidden>
     <div class="login-card">
-      <p class="brand">PSU EATS REWARDS</p>
+      <p class="brand">WEREWARDS</p>
       <h1>Terminal sign-in</h1>
       <label>Email
         <input id="login-email" type="email" autocomplete="username" inputmode="email" />
@@ -36,6 +36,7 @@
         <button id="tab-award" class="tab is-active">AWARD</button>
         <button id="tab-redeem" class="tab tab-redeem">REDEEM</button>
         <button id="tab-manage" class="tab tab-manage">ITEMS</button>
+        <button id="tab-stats" class="tab tab-stats">STATS</button>
       </nav>
     </header>
 
@@ -143,6 +144,47 @@
         <div id="reward-list" class="reward-list"></div>
       </section>
 
+      <!-- ===== STATS: ANALYTICS ===== -->
+      <section id="screen-stats" class="screen stats-screen" hidden>
+        <div class="stats-inner">
+          <div class="stats-head">
+            <h2>Today</h2>
+            <button id="stats-refresh" class="stats-refresh" type="button" aria-label="Refresh stats">↻</button>
+          </div>
+
+          <div class="stat-tiles">
+            <div class="stat-tile"><span id="st-revenue" class="stat-num">$0.00</span><span class="stat-label">Revenue</span></div>
+            <div class="stat-tile"><span id="st-awarded" class="stat-num">0</span><span class="stat-label">Points awarded</span></div>
+            <div class="stat-tile"><span id="st-redemptions" class="stat-num">0</span><span class="stat-label">Redemptions</span></div>
+            <div class="stat-tile"><span id="st-customers" class="stat-num">0</span><span class="stat-label">Customers</span></div>
+          </div>
+
+          <div class="stats-card">
+            <div class="stats-card-head">
+              <h3>Revenue · last 14 days</h3>
+              <span id="chart-max" class="chart-max"></span>
+            </div>
+            <div id="stats-chart" class="stats-chart" role="img" aria-label="Daily revenue for the last 14 days"></div>
+          </div>
+
+          <div class="stats-2col">
+            <div class="stats-card">
+              <h3>Last 7 days</h3>
+              <ul id="stats-7" class="stats-list"></ul>
+            </div>
+            <div class="stats-card">
+              <h3>Last 30 days</h3>
+              <ul id="stats-30" class="stats-list"></ul>
+            </div>
+          </div>
+
+          <div class="stats-card">
+            <h3>Top rewards · 30 days</h3>
+            <div id="stats-top" class="stats-top"></div>
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -177,6 +219,11 @@
       </div>
     </div>
   </div>
+
+  <!-- Screen-reader announcement for the result flood. The flood itself is
+       display:none when hidden, so a live region inside it wouldn't announce;
+       this always-present region does. -->
+  <div id="a11y-status" class="sr-only" role="status" aria-live="assertive" aria-atomic="true"></div>
 
   <!-- ===== FULL-SCREEN RESULT FLOOD ===== -->
   <div id="flood" class="flood" hidden>

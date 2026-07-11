@@ -150,4 +150,4 @@ io.on('connection', (socket) => {
 setIo(io);
 
 const port = process.env.PORT || 3000;
-server.listen(port, () => console.log(`We-Rewards running on http://localhost:${port}`));
+server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));

@@ -1,4 +1,4 @@
-/* PSU Eats Rewards — student app
+/* WeRewards — student app
    Home (vendor carousel) → tap a card → vendor screen (points bar with back
    button → your earn code → rewards → item detail modal → redemption code). */
 

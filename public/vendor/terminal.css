@@ -1,5 +1,5 @@
 /* =====================================================
-   PSU Eats Rewards — vendor terminal
+   WeRewards — vendor terminal
    Design intent: legible from arm's length, tappable with
    a thumb mid-rush, state readable from across the counter.
    Ink navy on cool paper; color floods announce results.
@@ -50,8 +50,8 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .tabs { display: flex; gap: 0.5rem; }
 
 .tab {
-  font-size: 1.15rem; font-weight: 900; letter-spacing: 0.08em;
-  padding: 0.8rem 1.9rem; border-radius: 0.6rem;
+  font-size: 1.1rem; font-weight: 900; letter-spacing: 0.06em;
+  padding: 0.8rem 1.35rem; border-radius: 0.6rem;
   background: transparent; color: var(--ink);
   border: 3px solid var(--ink);
 }
@@ -219,6 +219,12 @@ button { font-family: inherit; border: none; cursor: pointer; }
 }
 .pin-dots i.filled { background: var(--ink); }
 
+/* Visually hidden, but read by screen readers (live-region announcements). */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
 /* ---------- result flood ---------- */
 
 .flood {
@@ -354,6 +360,64 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .reward-toggle.is-on { background: var(--success); border-color: var(--success); color: #fff; }
 
 .reward-list-empty { color: var(--muted); font-weight: 700; font-size: 1.2rem; padding: 2rem 0; text-align: center; }
+
+/* ---------- stats (analytics) ---------- */
+
+.stats-screen { justify-content: flex-start; padding-top: 1.5rem; overflow-y: auto; align-items: center; }
+.stats-inner { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 1rem; }
+
+.stats-head { display: flex; align-items: center; justify-content: space-between; }
+.stats-head h2 { font-size: 2rem; font-weight: 900; }
+.stats-refresh {
+  width: 3rem; height: 3rem; border-radius: 0.7rem; font-size: 1.5rem; line-height: 1;
+  background: var(--card); border: 3px solid var(--ink); color: var(--ink);
+}
+.stats-refresh:active { background: var(--sky); }
+
+.stat-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.7rem; }
+.stat-tile {
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 1rem 0.8rem; display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start;
+}
+.stat-num { font-size: 1.9rem; font-weight: 900; line-height: 1.05; }
+.stat-label { font-size: 0.85rem; font-weight: 700; color: var(--muted); letter-spacing: 0.02em; }
+
+.stats-card {
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.8rem;
+}
+.stats-card h3 { font-size: 1.15rem; font-weight: 900; letter-spacing: 0.02em; }
+.stats-card-head { display: flex; align-items: baseline; justify-content: space-between; }
+.chart-max { font-size: 0.9rem; font-weight: 700; color: var(--muted); }
+
+/* single-series bar chart: bars grow from a shared baseline */
+.stats-chart { display: flex; align-items: flex-end; gap: 2px; height: 8rem; }
+.chart-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.3rem; height: 100%; }
+.chart-bar-wrap { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; min-height: 0; }
+.chart-bar {
+  width: 100%; background: var(--navy); border-radius: 4px 4px 0 0; min-height: 2px;
+}
+.chart-bar.zero { background: var(--sky-line); min-height: 2px; }   /* faint stub for $0 days */
+.chart-tick { font-size: 0.72rem; font-weight: 700; color: var(--muted); height: 0.9rem; }
+
+.stats-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.stats-list { list-style: none; display: flex; flex-direction: column; gap: 0.45rem; }
+.stats-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.stats-list span { color: var(--muted); font-weight: 600; font-size: 0.98rem; }
+.stats-list strong { font-size: 1.15rem; font-weight: 900; }
+
+.stats-top { display: flex; flex-direction: column; gap: 0.6rem; }
+.top-row { display: grid; grid-template-columns: minmax(6rem, 10rem) 1fr auto; align-items: center; gap: 0.7rem; }
+.top-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-bar-wrap { background: var(--sky); border-radius: 999px; height: 0.7rem; overflow: hidden; }
+.top-bar { display: block; height: 100%; background: var(--navy); border-radius: 999px; }
+.top-count { font-weight: 900; min-width: 2ch; text-align: right; }
+.stats-empty { color: var(--muted); font-weight: 700; }
+
+@media (max-width: 34rem) {
+  .stat-tiles { grid-template-columns: repeat(2, 1fr); }
+  .stats-2col { grid-template-columns: 1fr; }
+}
 
 /* ---------- overlay form ---------- */
 

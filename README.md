@@ -1,15 +1,29 @@
-# We-Rewards
+# WeRewards
 
 Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one Express app.
 
 ## Architecture
 
-- **`/`** — student PWA (rotating identity QR, balances, redeem)
-- **`/terminal`** — vendor terminal web app (scan → award/redeem, big buttons)
+- **`/`** — student PWA (rotating identity code, balances, redeem)
+- **`/terminal`** — vendor terminal web app (enter code → award/redeem, big buttons, stats)
 - **`/api/me/*`** — student endpoints (Supabase JWT auth)
 - **`/api/vendor/*`** — vendor endpoints (Supabase JWT + `vendor_staff` link)
 - **Supabase** — auth, Postgres, RLS for client reads; all writes go through
   server-side RPCs (`award_points`, `redeem_by_code`) which are atomic.
+
+## Security model (server-enforced)
+
+- **Service-only RPCs.** `award_points`, `create_earn_code`, `create_redeem_code`,
+  and `redeem_by_code` are `SECURITY DEFINER` and have `EXECUTE` **revoked** from
+  `anon`/`authenticated` (migration-007) — only the server's `service_role` key
+  can call them, so a signed-in client can't mint points directly.
+- **Staff PIN, server-side.** Redeem + item management require a PIN. `verify-pin`
+  mints a session token stored in `vendor_pin_sessions`; the server checks it
+  (`X-Vendor-Pin` header) on those routes — the gate is not just UI.
+- **Rate limiting + headers.** `express-rate-limit` caps brute-force surfaces
+  (the 4-digit PIN especially); `helmet` sets a strict CSP + security headers.
+- **Keys.** The browser only ever gets the public anon/publishable key (RLS
+  protects reads). The `service_role`/secret key is server-only — never shipped.
 
 **Code security model:** the student shows a 6-char A–Z0–9 identity code
 (server-generated, always a letter/digit mix, unique among all live codes,
@@ -22,7 +36,8 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-006.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-007.sql` in order.
+   (migration-007 locks down the RPCs and adds the PIN-session table — required.)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
@@ -78,9 +93,15 @@ from the DB. `profiles.revisits` is a lifetime counter: +1 the first time a
 student earns at a vendor on a new day after a previous visit — incremented
 inside `award_points` atomically, backfilled by migration-005.
 
-## Build order from here
+## Vendor analytics
 
-1. Student PWA: auth → balances screen → identity + redemption short codes
-2. Vendor terminal UI: code entry → tier buttons → confirm → auto-return
-3. Redeem flow both sides
-4. Manifest + service worker (offline shell), then pilot with one vendor
+`GET /api/vendor/analytics` (PIN-gated) aggregates the vendor's last 30 days of
+transactions server-side into today / 7-day / 30-day totals (points awarded &
+redeemed, revenue, redemptions, unique + returning customers), a 14-day daily
+series, and top redeemed rewards. The terminal's **STATS** tab renders it. It's
+computed from `transactions` (the source of truth), not the `user_scores` cache.
+
+## What's next
+
+Tracked in [`next-steps.md`](next-steps.md): automated tests + CI, a void/refund
+flow, vendor self-service settings, and student data export/deletion.
