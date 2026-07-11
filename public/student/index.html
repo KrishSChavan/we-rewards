@@ -207,6 +207,23 @@
                 </button>
               </div>
 
+              <!-- your data: export + delete -->
+              <h2 class="account-section-title">Your data</h2>
+              <button id="account-export" class="data-btn" type="button">
+                <span class="data-btn-label">
+                  <span class="data-btn-name">Download my data</span>
+                  <span class="data-btn-desc">Your profile, balances, and full history as a file</span>
+                </span>
+                <span class="data-btn-chevron" aria-hidden="true">↓</span>
+              </button>
+              <button id="account-delete" class="data-btn danger" type="button">
+                <span class="data-btn-label">
+                  <span class="data-btn-name">Delete my account</span>
+                  <span class="data-btn-desc">Permanently remove your profile, points, and codes</span>
+                </span>
+                <span class="data-btn-chevron" aria-hidden="true">→</span>
+              </button>
+
               <button id="account-signout" class="signout-big">Sign out</button>
             </div>
           </div>
@@ -244,6 +261,22 @@
 
   <!-- live points notification (award / redeem) -->
   <div id="points-toast" class="points-toast" hidden></div>
+
+  <!-- delete-account confirmation sheet -->
+  <div id="delete-modal" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <button id="delete-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="detail-emoji">⚠️</p>
+      <h2 class="detail-title">Delete your account?</h2>
+      <p class="detail-desc">
+        This permanently removes your profile, points, and codes. Your past visits stay in each
+        shop's totals but are no longer linked to you. This can't be undone.
+      </p>
+      <p id="delete-error" class="auth-error" hidden></p>
+      <button id="delete-confirm" class="btn-redeem danger">Yes, delete my account</button>
+      <button id="delete-cancel" class="detail-textbtn" type="button">Cancel</button>
+    </div>
+  </div>
 
   <!-- tier info popover: fades in on the (i), closes via ✕ or outside click -->
   <div id="tier-info" class="tier-info-overlay" hidden>

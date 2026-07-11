@@ -1,108 +1,69 @@
 # Next steps
 
-Deferred work, roughly in priority order. Each entry says *why it matters*, *what
-to build*, and *where it touches the code*.
+The four items that used to live here — **automated tests + CI**, a **void/refund
+flow**, **vendor self-service settings**, and **student data export/deletion** —
+are now implemented. What each became, and the smaller follow-ups they left behind,
+are below.
 
 ---
 
-## 0. Landing page UI
+## ✅ Done
 
-**changes** there is a bar that is covering the EAT FREE words so move that bar down a little. Also the Free drink pill is hiding the hint behind it so move the pill down a little.
+### 1. Automated tests + CI
+- `node:test` (no new runtime deps). `npm test` / `npm run test:unit` / `npm run test:integration`.
+- **Unit:** `scoreProfile` (extracted as a pure function from `computeTierProfile`)
+  covers the score/tier/multiplier mapping and both anti-farming caps; a middleware
+  test covers the `requirePin` no-token / no-PIN branches.
+- **Integration + security** (`test/integration/`): award, single-use redeem,
+  insufficient-balance rollback, expired code, and the void/refund reversal;
+  anon/authenticated denied on `award_points`/`redeem_by_code`; a PIN route with no
+  `X-Vendor-Pin` returns `PIN_REQUIRED`. **Opt-in** — skip unless `TEST_SUPABASE_*`
+  point at a disposable project.
+- **CI:** `.github/workflows/ci.yml` runs the unit suite on push/PR (+ advisory `npm audit`).
 
+### 2. Void / refund
+- `supabase/migration-010.sql`: `reverses` / `reversed_by` link columns +
+  `reverse_transaction(p_transaction_id, p_vendor_id)` (SECURITY DEFINER,
+  service-role only). Writes a compensating (negated) row, never deletes; balance
+  clamps at 0; refuses to double-reverse or reverse a reversal.
+- `POST /api/vendor/reverse` (PIN-gated); analytics rollup made sign-aware so a
+  void nets out. Terminal **STATS → Recent activity** has a two-tap **Undo**.
 
-## 1. Automated tests + CI
+### 3. Vendor self-service settings
+- `GET`/`PATCH /api/vendor/settings` (PIN-gated) with strict validation; PIN
+  re-hashed with bcrypt and existing sessions invalidated on change. Terminal
+  **SETTINGS** tab edits ratio, exact-entry, tier buttons, and PIN. No schema change.
 
-**Why.** Points behave like money. The atomic RPCs (`award_points`,
-`redeem_by_code`) and the tier math (`src/lib/tiers.js`) are the places a subtle
-regression silently hands out free food or double-redeems a reward. There is
-currently no test suite, so every change is validated by hand.
-
-**What to build.**
-- A test runner (Node's built-in `node:test`, or Vitest) with an npm `test` script.
-- **Unit tests** for `computeTierProfile` — feed synthetic transaction sets and
-  assert the score/tier/multiplier and the anti-farming caps (one visit per
-  vendor per day, $30 spend cap per visit).
-- **Integration tests** against a disposable Supabase (local `supabase start`, or
-  a throwaway project) for the money paths: award adds the right points, redeem
-  deducts atomically, a double-submit of one redeem code only redeems once, an
-  insufficient balance rolls back, and an expired/rotated code is rejected.
-- **Security regression tests** that lock in migration-007: an `anon`/`authenticated`
-  client is *denied* on `award_points`/`redeem_by_code`, and a redeem/manage
-  request without a valid `X-Vendor-Pin` returns `PIN_REQUIRED`.
-- **CI** (GitHub Actions): run the suite on every push/PR. Optionally `npm audit`.
-
-**Where.** New `test/` dir; `package.json` scripts; `.github/workflows/ci.yml`.
-No product code changes — this documents and protects existing behavior.
-
----
-
-## 2. Void / refund flow
-
-**Why.** Cashiers will fat-finger amounts (award on $150 instead of $15) and
-redeem the wrong item. Today the only fix is editing rows in the Supabase
-dashboard — impractical mid-shift and invisible in the audit trail.
-
-**What to build.**
-- A new RPC `reverse_transaction(p_transaction_id, p_vendor_id)` (SECURITY
-  DEFINER, service-role only like the others) that, in one transaction: verifies
-  the transaction belongs to this vendor, writes a *compensating* transaction
-  (an `earn` becomes a negative correction, a `redeem` refunds the points),
-  adjusts `point_balances`, and refuses to double-reverse. Keep the original row
-  — never delete — so history stays auditable.
-- A server route `POST /api/vendor/reverse` (behind `requireVendor` + `requirePin`).
-- Terminal UI: a "Last transaction" strip on the AWARD/REDEEM result with an
-  "Undo" affordance, or a short recent-activity list on the STATS tab with a
-  reverse button. Confirm-before-acting, then a flood result.
-
-**Where.** New `supabase/migration-008.sql`; `src/routes/vendor.js`;
-`public/vendor/terminal.js` + `terminal.css`. Consider a `reversed_by`/`reverses`
-column on `transactions` to link the pair.
+### 4. Student data export + deletion
+- `GET /api/me/export` (JSON download) and `POST /api/me/delete` in the Account tab.
+- Deletion cascades profile/balances/codes/score; `supabase/migration-011.sql`
+  switches `transactions.user_id` to `ON DELETE SET NULL` so history is **anonymized**
+  (kept), not cascade-deleted — vendor revenue totals stay intact.
 
 ---
 
-## 3. Vendor self-service settings
+## ✅ Also done (a second pass)
 
-**Why.** `points_per_dollar`, the tier button ranges (`vendors.tiers`),
-`allow_exact_entry`, and the staff PIN can only be changed by editing the
-`vendors` row in the dashboard or re-running the onboarding script. A vendor
-can't tune their own economics.
+- **Quick-amount buttons are now a set dollar value** (`{label, amount}`, was a
+  `{min,max}` range) and **render as tap-to-award buttons on the AWARD screen**.
+  `migration-012.sql` converts existing rows; `allow_exact_entry = false` now hides
+  the keypad (falling back to it if a vendor has no quick buttons).
+- **Cashier-facing "Undo last"** on the AWARD/REDEEM scan screens (two-tap confirm,
+  PIN-gated), in addition to the per-row Undo on STATS.
 
-**What to build.**
-- `GET`/`PATCH /api/vendor/settings` (behind `requireVendor` + `requirePin`) with
-  strict validation: ratio within sane bounds, tiers well-formed
-  (ascending, non-overlapping), PIN re-hashed with bcrypt when changed.
-- A "Settings" area on the terminal (likely a section within STATS or a 5th tab)
-  to edit ratio, toggle exact entry, edit tier buttons, and change the PIN.
-- Changing the PIN should invalidate existing `vendor_pin_sessions` for that
-  vendor (delete its rows) so old sessions can't linger.
+## Smaller follow-ups still open
 
-**Where.** `src/routes/vendor.js`; `public/vendor/*`. Reuse the existing bcrypt
-hashing from `scripts/onboard-vendor.js`. No schema change needed (columns exist).
-
----
-
-## 4. Student data deletion + export
-
-**Why.** The app collects Google identity (name, email, avatar) and full spend
-history. "Delete my data" and "download my data" are baseline privacy
-expectations (and GDPR/CCPA-style obligations) and there is no path today.
-
-**What to build.**
-- `GET /api/me/export` — returns the signed-in student's profile, balances, and
-  transaction history as JSON (a download in the Account tab).
-- `POST /api/me/delete` — deletes the auth user via the admin API; the existing
-  `on delete cascade` foreign keys already remove `profiles`, `point_balances`,
-  `transactions`, `earn_codes`, `redeem_codes`, `user_scores`. Decide the policy
-  for vendor-side history: keep **anonymized** transaction rows (so a vendor's
-  revenue totals don't silently change) vs. full cascade — document whichever you
-  choose.
-- Account tab UI: "Download my data" and a confirm-guarded "Delete my account."
-
-**Where.** `src/routes/student.js`; `public/student/app.js` + `index.html`
-(Account tab). Deletion uses `supabaseAdmin.auth.admin.deleteUser(...)`.
+- **Run the DB test suite for real.** The integration/security suites are written
+  but unverified here (no local Docker for `supabase start`). Stand up a disposable
+  project (or a CI `supabase/setup-cli` job), apply schema + migrations, set
+  `TEST_SUPABASE_*`, and confirm they pass; add the secrets to CI.
+- **Multi-instance rate limiting.** The in-memory `express-rate-limit` store is
+  correct for one instance only; swap in a shared store (e.g. `rate-limit-redis`)
+  before running more than one.
 
 ---
 
-*Not tracked here because they're already done: the security hardening
-(migration-007 RPC lockdown, server-side PIN, rate limiting, helmet), the tier
-write-amplification fix, the vendor analytics screen, and the UX/docs cleanup.*
+*Already done before this pass (unchanged): the security hardening (migration-007
+RPC lockdown, server-side PIN + idle timeout, rate limiting, helmet), the tier
+write-amplification fix, fractional multipliers, the vendor analytics screen, and
+the UX/docs cleanup.*

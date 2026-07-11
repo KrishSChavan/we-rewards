@@ -51,6 +51,7 @@ router.get('/config', (req, res) => {
     name: v.name,
     pointsPerDollar: Number(v.points_per_dollar),
     allowExactEntry: v.allow_exact_entry,
+    tiers: v.tiers ?? [],
     hasPin: Boolean(v.pin_hash),
   });
 });
@@ -196,6 +197,36 @@ router.post('/redeem', requirePin, async (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/vendor/reverse  { transactionId }
+ * Void a transaction the vendor made in error (wrong amount, wrong item). The
+ * atomic reverse_transaction RPC writes a compensating row (never deletes),
+ * adjusts the balance (clamped at 0), and refuses to double-reverse — see
+ * migration-010. PIN-gated: this moves points, so it's owner-level.
+ */
+router.post('/reverse', requirePin, async (req, res, next) => {
+  try {
+    const transactionId = String(req.body?.transactionId ?? '').trim();
+    if (!/^[0-9a-f-]{36}$/i.test(transactionId)) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'A transaction to undo is required.' });
+    }
+
+    const { data, error } = await supabaseAdmin.rpc('reverse_transaction', {
+      p_transaction_id: transactionId,
+      p_vendor_id: req.vendor.id,
+    });
+    if (error) throw error;
+    if (!data?.length) throw new Error('TX_NOT_FOUND');
+
+    const { affected_user: userId, new_balance: newBalance, reversed_type: type, reversed_points: points } = data[0];
+    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push to the student
+
+    res.json({ newBalance, type, points });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** GET /api/vendor/rewards — all rewards incl. inactive, for the Items screen */
 router.get('/rewards', async (req, res, next) => {
   try {
@@ -305,12 +336,14 @@ router.post('/verify-pin', async (req, res, next) => {
   }
 });
 
-/** GET /api/vendor/recent — last 20 transactions, for the terminal's history strip */
+/** GET /api/vendor/recent — last 20 transactions, for the terminal's history strip.
+ *  Includes reversal links so the UI can mark rows already voided (reversed_by)
+ *  and the compensating rows themselves (reverses) as not undoable. */
 router.get('/recent', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('transactions')
-      .select('id, type, points, dollar_amount, created_at, profiles:user_id(name), rewards(title)')
+      .select('id, type, points, dollar_amount, created_at, reverses, reversed_by, profiles:user_id(name), rewards(title)')
       .eq('vendor_id', req.vendor.id)
       .order('created_at', { ascending: false })
       .limit(20);
@@ -355,6 +388,12 @@ router.get('/analytics', requirePin, async (req, res, next) => {
     const dayAgg = new Map();     // dayKey  -> { revenue, awards, earnPoints }
     const rewardCounts = new Map(); // reward title -> redemption count
 
+    // Reversals (migration-010) post a COMPENSATING row that negates the
+    // original's points + dollar_amount. So every total below adds SIGNED values
+    // and nets a voided transaction back out: a reversed earn contributes its
+    // +award and −correction (0 net), and the counts step ±1 by sign. For
+    // pre-reversal data (all earns positive, all redeems negative) this is
+    // identical to the old unconditional +1s.
     for (const tx of txns ?? []) {
       const ms = new Date(tx.created_at).getTime();
       const earn = tx.type === 'earn';
@@ -362,8 +401,8 @@ router.get('/analytics', requirePin, async (req, res, next) => {
       const rev = earn ? Number(tx.dollar_amount) || 0 : 0;
 
       const add = (b) => {
-        if (earn) { b.earnPoints += pts; b.awards += 1; b.revenue += rev; }
-        else { b.redeemPoints += Math.abs(pts); b.redemptions += 1; }
+        if (earn) { b.earnPoints += pts; b.awards += pts >= 0 ? 1 : -1; b.revenue += rev; }
+        else { b.redeemPoints += -pts; b.redemptions += pts <= 0 ? 1 : -1; }
         if (tx.user_id) b.customers.add(tx.user_id);
       };
       add(last30);
@@ -371,17 +410,19 @@ router.get('/analytics', requirePin, async (req, res, next) => {
       if (ms >= t0) add(today);
 
       const k = dayKey(ms);
-      if (earn && tx.user_id) {
+      // Returning-customer calc counts real award-days only (a voided award
+      // shouldn't register as a visit).
+      if (earn && tx.user_id && pts > 0) {
         if (!custDays.has(tx.user_id)) custDays.set(tx.user_id, new Set());
         custDays.get(tx.user_id).add(k);
       }
       if (earn) {
         const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, earnPoints: 0 };
-        da.revenue += rev; da.awards += 1; da.earnPoints += pts;
+        da.revenue += rev; da.awards += pts >= 0 ? 1 : -1; da.earnPoints += pts;
         dayAgg.set(k, da);
       } else {
         const title = tx.rewards?.title ?? 'Reward';
-        rewardCounts.set(title, (rewardCounts.get(title) ?? 0) + 1);
+        rewardCounts.set(title, (rewardCounts.get(title) ?? 0) + (pts <= 0 ? 1 : -1));
       }
     }
 
@@ -403,6 +444,7 @@ router.get('/analytics', requirePin, async (req, res, next) => {
 
     const topRewards = [...rewardCounts.entries()]
       .map(([title, count]) => ({ title, count }))
+      .filter((r) => r.count > 0)   // a fully-reversed reward can net to 0
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
@@ -413,6 +455,112 @@ router.get('/analytics', requirePin, async (req, res, next) => {
       daily,
       topRewards,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- vendor self-service settings ---------- */
+
+const RATIO_MIN = 0.5;
+const RATIO_MAX = 1000;
+
+/** Validate quick-amount buttons: 1–8 rows, each a label + a fixed dollar amount. */
+function validTiers(raw) {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 8) {
+    return { error: 'Add between 1 and 8 quick-amount buttons.' };
+  }
+  const tiers = [];
+  for (const row of raw) {
+    const label = String(row?.label ?? '').trim();
+    const amount = Number(row?.amount);
+    if (!label || label.length > 40) return { error: 'Each button needs a label (up to 40 characters).' };
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) {
+      return { error: `“${label || 'button'}”: enter a dollar amount greater than 0.` };
+    }
+    tiers.push({ label, amount: Math.round(amount * 100) / 100 }); // numeric-safe dollars
+  }
+  return { tiers };
+}
+
+/** Validate a settings PATCH body → { updates } (DB columns) + optional plaintext pin, or { error }. */
+function validSettings(body) {
+  const updates = {};
+  let pin = null;
+
+  if (body?.pointsPerDollar != null) {
+    const r = Number(body.pointsPerDollar);
+    if (!Number.isFinite(r) || r < RATIO_MIN || r > RATIO_MAX) {
+      return { error: `Points per dollar must be between ${RATIO_MIN} and ${RATIO_MAX}.` };
+    }
+    updates.points_per_dollar = Math.round(r * 100) / 100; // column is numeric(6,2)
+  }
+
+  if (body?.allowExactEntry != null) {
+    if (typeof body.allowExactEntry !== 'boolean') return { error: 'Exact entry must be on or off.' };
+    updates.allow_exact_entry = body.allowExactEntry;
+  }
+
+  if (body?.tiers != null) {
+    const t = validTiers(body.tiers);
+    if (t.error) return { error: t.error };
+    updates.tiers = t.tiers;
+  }
+
+  if (body?.pin != null && body.pin !== '') {
+    if (!/^\d{4}$/.test(String(body.pin))) return { error: 'The staff PIN must be exactly 4 digits.' };
+    pin = String(body.pin);
+  }
+
+  if (!Object.keys(updates).length && pin == null) return { error: 'Nothing to update.' };
+  return { updates, pin };
+}
+
+const settingsView = (v) => ({
+  pointsPerDollar: Number(v.points_per_dollar),
+  allowExactEntry: v.allow_exact_entry,
+  tiers: v.tiers ?? [],
+  hasPin: Boolean(v.pin_hash),
+});
+
+/** GET /api/vendor/settings — current economics + config for the Settings tab. */
+router.get('/settings', requirePin, (req, res) => {
+  res.json(settingsView(req.vendor));
+});
+
+/**
+ * PATCH /api/vendor/settings  { pointsPerDollar?, allowExactEntry?, tiers?, pin? }
+ * Lets a vendor tune their own economics. Strict validation (ratio bounds,
+ * well-formed ascending/non-overlapping tiers, 4-digit PIN). A PIN change is
+ * re-hashed with bcrypt and invalidates every existing PIN session for this
+ * vendor — including this request's own token — so old sessions can't linger.
+ */
+router.patch('/settings', requirePin, async (req, res, next) => {
+  try {
+    const v = validSettings(req.body ?? {});
+    if (v.error) return res.status(400).json({ error: 'BAD_SETTINGS', message: v.error });
+
+    const updates = { ...v.updates };
+    let pinChanged = false;
+    if (v.pin != null) {
+      updates.pin_hash = await bcrypt.hash(v.pin, 10);
+      pinChanged = true;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .update(updates)
+      .eq('id', req.vendor.id)
+      .select()
+      .single();
+    if (error) throw error;
+
+    if (pinChanged) {
+      // Drop every session for this vendor; the terminal must re-enter the PIN.
+      await supabaseAdmin.from('vendor_pin_sessions').delete().eq('vendor_id', req.vendor.id);
+    }
+
+    res.json({ ...settingsView(data), pinChanged });
   } catch (err) {
     next(err);
   }

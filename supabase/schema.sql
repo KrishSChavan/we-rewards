@@ -18,13 +18,13 @@ create table public.vendors (
   name              text not null,
   slug              text not null unique,           -- e.g. 'yallah-taco'
   points_per_dollar numeric(6,2) not null default 10,
-  -- Tier buttons shown on the terminal. Points are derived at award time:
-  -- floor(midpoint(min,max) * points_per_dollar)
+  -- Quick-amount buttons shown on the terminal's AWARD screen. Each is a fixed
+  -- dollar amount; points are derived at award time: floor(amount * points_per_dollar).
   tiers             jsonb not null default '[
-    {"label": "Snack",    "min": 1,  "max": 5},
-    {"label": "Small",    "min": 5,  "max": 10},
-    {"label": "Meal",     "min": 10, "max": 15},
-    {"label": "Big order","min": 15, "max": 25}
+    {"label": "Snack",     "amount": 3},
+    {"label": "Small",     "amount": 7},
+    {"label": "Meal",      "amount": 12},
+    {"label": "Big order", "amount": 20}
   ]'::jsonb,
   allow_exact_entry boolean not null default true,
   pin_hash          text,                            -- bcrypt hash, gates redeem mode

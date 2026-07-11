@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from 'socket.io';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -114,6 +114,10 @@ app.use((err, _req, res, _next) => {
     REWARD_NOT_FOUND: [404, 'Reward not found or inactive.'],
     CODE_INVALID: [401, 'That code is expired or invalid. Ask the customer to refresh their code.'],
     CODE_SPACE_EXHAUSTED: [503, 'Too many active codes right now — try again in a moment.'],
+    TX_NOT_FOUND: [404, 'That transaction was not found for this vendor.'],
+    ALREADY_REVERSED: [409, 'That transaction was already undone.'],
+    CANNOT_REVERSE_REVERSAL: [400, 'That entry is itself an undo — nothing to reverse.'],
+    REVERSAL_EXPIRED: [403, 'Too late to undo — undo is only available for one minute after a transaction.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {
@@ -149,5 +153,15 @@ io.on('connection', (socket) => {
 
 setIo(io);
 
-const port = process.env.PORT || 3000;
-server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));
+// Exported so tests can mount the app on an ephemeral port without booting the
+// real listener. `app` is the Express handler; `server` is the HTTP+Socket.IO
+// server used when run directly.
+export { app, server };
+
+// Only start listening when run directly (`node server.js`), not when imported
+// by a test that just wants the `app` handler.
+const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isMain) {
+  const port = process.env.PORT || 3000;
+  server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));
+}

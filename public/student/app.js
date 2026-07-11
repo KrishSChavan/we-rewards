@@ -36,6 +36,13 @@ const $ = (id) => document.getElementById(id);
     await sb.auth.signOut();
     render(null);
   });
+  // account → your data: export + delete
+  $('account-export').addEventListener('click', exportMyData);
+  $('account-delete').addEventListener('click', openDeleteModal);
+  $('delete-cancel').addEventListener('click', closeDeleteModal);
+  $('delete-close').addEventListener('click', closeDeleteModal);
+  $('delete-confirm').addEventListener('click', confirmDelete);
+  $('delete-modal').addEventListener('click', (e) => { if (e.target === $('delete-modal')) closeDeleteModal(); });
   // bottom nav: slide between Home / History / Account
   $('tabbar').addEventListener('click', (e) => {
     const btn = e.target.closest('.tab-btn');
@@ -175,6 +182,70 @@ function setAvatar(url, seed) {
   } else {
     img.hidden = true;
     fb.hidden = false;
+  }
+}
+
+/* ---------- account tab: export + delete my data ---------- */
+
+// Download everything the server holds about this student as a JSON file.
+async function exportMyData() {
+  const btn = $('account-export');
+  const name = btn.querySelector('.data-btn-name');
+  const label = name.textContent;
+  btn.disabled = true;
+  name.textContent = 'Preparing…';
+  try {
+    const res = await authFetch('/api/me/export');
+    if (!res.ok) throw new Error();
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'werewards-data.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    name.textContent = 'Downloaded ✓';
+  } catch {
+    name.textContent = 'Couldn’t download — try again';
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { name.textContent = label; }, 2200);
+  }
+}
+
+function openDeleteModal() {
+  $('delete-error').hidden = true;
+  $('delete-confirm').disabled = false;
+  const ov = $('delete-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+}
+
+function closeDeleteModal() {
+  const ov = $('delete-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
+}
+
+async function confirmDelete() {
+  const btn = $('delete-confirm');
+  btn.disabled = true;
+  $('delete-error').hidden = true;
+  try {
+    const res = await authFetch('/api/me/delete', { method: 'POST' });
+    if (!res.ok) throw new Error();
+    // Account gone — drop the local session and return to the landing page.
+    await sb.auth.signOut();
+    closeDeleteModal();
+    render(null);
+  } catch {
+    $('delete-error').textContent = 'Couldn’t delete your account. Try again in a moment.';
+    $('delete-error').hidden = false;
+    btn.disabled = false;
   }
 }
 

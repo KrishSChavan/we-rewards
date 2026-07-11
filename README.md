@@ -36,8 +36,11 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-007.sql` in order.
-   (migration-007 locks down the RPCs and adds the PIN-session table — required.)
+   `supabase/migration-002.sql` through `supabase/migration-012.sql` in order.
+   (migration-007 locks down the RPCs and adds the PIN-session table — required;
+   migration-010 adds the void/refund RPC; migration-011 lets account deletion
+   anonymize a student's transactions instead of being blocked by them;
+   migration-012 switches the quick-amount buttons to a fixed dollar amount.)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
@@ -57,7 +60,8 @@ config — the terminal never sends a point value.
 ## Point math
 
 - Ratio: `points_per_dollar` per vendor (e.g., 10).
-- Tier buttons award `floor(midpoint(min, max) × ratio)` — derived at request
+- Quick-amount buttons (the terminal's AWARD screen) award `floor(amount × ratio)`
+  from a fixed dollar `amount` per button (edited in SETTINGS) — derived at request
   time, so changing the ratio updates every button automatically.
 - Exact entry awards `floor(amount × ratio)`. Always floor, never round up.
 - The base award is then multiplied by the customer's **tier multiplier**
@@ -101,7 +105,59 @@ redeemed, revenue, redemptions, unique + returning customers), a 14-day daily
 series, and top redeemed rewards. The terminal's **STATS** tab renders it. It's
 computed from `transactions` (the source of truth), not the `user_scores` cache.
 
+## Void / refund
+
+Cashiers fat-finger amounts and redeem the wrong item. `POST /api/vendor/reverse`
+(PIN-gated) calls the atomic `reverse_transaction` RPC (migration-010): it writes
+a **compensating** transaction that negates the original's points and dollar
+amount — never deletes — adjusts the balance (clamped at 0, so clawing back
+already-spent points can't go negative), and refuses to double-reverse or reverse
+a reversal. The original and its correction are linked (`reversed_by` / `reverses`).
+The terminal's **STATS → Recent activity** list has a two-tap **Undo** on each real
+award/redeem, and the AWARD/REDEEM scan screens carry a quick **Undo last** button
+(two-tap, PIN-gated) for fixing a mistake mid-shift. Undo is only allowed within
+**1 minute** of the transaction — enforced in the RPC, not just the UI — so a
+vendor can fix an immediate slip but can't quietly claw points back from a customer
+later. Analytics sums are signed, so a voided transaction nets back out.
+
+## Vendor self-service settings
+
+`GET`/`PATCH /api/vendor/settings` (PIN-gated) let a vendor tune their own
+economics from the terminal's **SETTINGS** tab: points-per-dollar (bounded), the
+exact-entry toggle, the quick-amount buttons (label + fixed dollar amount each),
+and the staff PIN. The quick-amount buttons render as tap-to-award buttons on the
+AWARD screen. A PIN change is re-hashed with bcrypt and **invalidates every
+existing PIN session** for that vendor, so the terminal re-asks for the new PIN.
+
+## Student data export + deletion
+
+Privacy baseline in the student app's **Account** tab:
+- `GET /api/me/export` — the student's profile, balances, full transaction
+  history, and latest score snapshot, as a JSON download.
+- `POST /api/me/delete` — deletes the auth user. `on delete cascade` removes the
+  profile, balances, live codes, and score; transaction rows are **kept but
+  anonymized** (`user_id → null`, migration-011) so vendors' revenue totals don't
+  silently change.
+
+## Tests
+
+`node:test`, no extra runtime deps. `npm test` runs everything; `npm run test:unit`
+is the always-on, DB-free subset.
+
+- **Unit** (`test/*.test.js`) — the pure engagement-scoring math and its
+  anti-farming caps (`scoreProfile`), and the `requirePin` gate's no-DB branches.
+- **Integration + security** (`test/integration/*.test.js`) — the atomic money
+  RPCs (award, single-use redeem, insufficient-balance rollback, expired code,
+  void/refund) and the security regressions (anon/authenticated can't execute the
+  money RPCs; a PIN route with no `X-Vendor-Pin` returns `PIN_REQUIRED`). These
+  are **opt-in**: they skip unless `TEST_SUPABASE_URL` (+ `TEST_SUPABASE_ANON_KEY`,
+  `TEST_SUPABASE_SERVICE_ROLE_KEY`) point at a **disposable** project with the
+  schema + migrations applied — never your pilot DB. CI runs the unit tests on
+  every push/PR (`.github/workflows/ci.yml`); wire the `TEST_SUPABASE_*` secrets
+  to run the DB suite there too.
+
 ## What's next
 
-Tracked in [`next-steps.md`](next-steps.md): automated tests + CI, a void/refund
-flow, vendor self-service settings, and student data export/deletion.
+The four items previously tracked in [`next-steps.md`](next-steps.md) — tests + CI,
+void/refund, vendor self-service settings, and student data export/deletion — are
+all implemented (see the sections above).

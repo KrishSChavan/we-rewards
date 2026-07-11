@@ -18,15 +18,27 @@ let pinUnlocked = false;   // set once the PIN is entered correctly; lives in
                            // memory only, so a page refresh always re-asks
 let pinToken = null;       // server-side PIN session token from verify-pin, sent
                            // as X-Vendor-Pin on redeem/manage requests
+let pinAction = null;      // callback to run after a successful PIN unlock (e.g.
+                           // "undo last" from the un-gated award screen)
 let selectedEmoji = '🎁';  // emoji picked in the item form
 let busy = false;          // guards double-taps / double-submits
 let idleTimeout = null;
 let editingRewardId = null;
+let lastActivity = null;   // most recent transaction (for the "Undo last" button)
+let undoLastArmed = false; // two-tap confirm state for "Undo last"
+let undoLastTimer = null;
+let undoExpiryTimer = null; // hides "Undo last" when the 1-min window elapses
+
+// Undo is only allowed within 1 minute of a transaction (anti-abuse). The server
+// enforces this authoritatively (reverse_transaction RPC); the client mirrors it
+// so the button simply disappears once the window is gone.
+const UNDO_WINDOW_MS = 60_000;
 
 const $ = (id) => document.getElementById(id);
 const screens = [
   'screen-login', 'screen-scan', 'screen-pad',
   'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
+  'screen-settings',
 ];
 
 /* ---------- boot ---------- */
@@ -45,9 +57,18 @@ const screens = [
   $('tab-redeem').addEventListener('click', () => switchMode('redeem'));
   $('tab-manage').addEventListener('click', () => switchMode('manage'));
   $('tab-stats').addEventListener('click', () => switchMode('stats'));
+  $('tab-settings').addEventListener('click', () => switchMode('settings'));
   $('stats-refresh').addEventListener('click', () => loadAnalytics());
+  $('settings-save').addEventListener('click', saveSettings);
+  $('settings-reset').addEventListener('click', () => renderSettings(loadedSettings));
+  $('tier-add').addEventListener('click', () => addTierRow());
+  $('set-ratio').addEventListener('input', updateRatioExample);
+  $('set-exact').addEventListener('click', () => toggleSwitch($('set-exact')));
   $('pad-cancel').addEventListener('click', () => enterScan());
-  $('pad-award').addEventListener('click', awardExact);
+  $('pad-award').addEventListener('click', () => awardAmount(Number(padValue)));
+  $('quick-awards').addEventListener('click', onQuickAward);
+  $('undo-last-award').addEventListener('click', onUndoLastTap);
+  $('undo-last-redeem').addEventListener('click', onUndoLastTap);
   $('amount-keypad').addEventListener('click', onAmountKey);
   $('pin-keypad').addEventListener('click', onPinKey);
   $('redeem-cancel').addEventListener('click', () => enterRedeemScan());
@@ -148,18 +169,21 @@ function setTabs(active) {
   $('tab-redeem').classList.toggle('is-active', active === 'redeem');
   $('tab-manage').classList.toggle('is-active', active === 'manage');
   $('tab-stats').classList.toggle('is-active', active === 'stats');
+  $('tab-settings').classList.toggle('is-active', active === 'settings');
 }
 
 // Land on the screen for a PIN-gated mode once it's unlocked.
 function enterModeScreen(m) {
   if (m === 'manage') enterManage();
   else if (m === 'stats') enterStats();
+  else if (m === 'settings') enterSettings();
   else enterRedeemScan();
 }
 
 function switchMode(next) {
   if (mode === next) return;
   pinValue = '';
+  pinAction = null;   // a tab switch cancels any deferred PIN action (e.g. undo)
 
   if (next === 'award') {
     mode = 'award';
@@ -228,6 +252,8 @@ async function submitEarnCode() {
     $('customer-tier').textContent = `${currentMultiplier}x`;
     $('customer-tier').classList.toggle('is-boosted', currentMultiplier > 1);
     padValue = '';
+    renderQuickAwards();
+    setupExactEntry();
     renderPad();
     show('screen-pad');
   } catch {
@@ -260,13 +286,64 @@ function renderPad() {
   $('pad-award').disabled = amt <= 0;
 }
 
-async function awardExact() {
+// Fixed dollar amount for a quick-award button. Tolerates a legacy {min,max}
+// range row (pre-migration-012) by falling back to its midpoint.
+function tierAmount(t) {
+  if (t?.amount != null) return Number(t.amount);
+  if (t?.min != null && t?.max != null) return (Number(t.min) + Number(t.max)) / 2;
+  return NaN;
+}
+
+// A dollar amount rendered without trailing ".00" but with cents when needed.
+const fmtAmount = (n) => (n % 1 ? n.toFixed(2) : String(n));
+
+/** Render the vendor's tap-to-award quick buttons above the keypad. */
+function renderQuickAwards() {
+  const wrap = $('quick-awards');
+  const tiers = Array.isArray(config.tiers) ? config.tiers : [];
+  wrap.innerHTML = '';
+  const usable = tiers.filter((t) => tierAmount(t) > 0);
+  wrap.hidden = usable.length === 0;
+  usable.forEach((t) => {
+    const amt = tierAmount(t);
+    const pts = Math.floor(Math.floor(amt * config.pointsPerDollar) * currentMultiplier); // match server flooring
+    const b = document.createElement('button');
+    b.className = 'quick-award';
+    b.dataset.amt = amt;
+    b.innerHTML =
+      `<span class="qa-label">${escapeHtml(t.label)}</span>` +
+      `<span class="qa-amt">$${fmtAmount(amt)}</span>` +
+      `<span class="qa-pts">+${pts} pts</span>`;
+    wrap.appendChild(b);
+  });
+}
+
+// Show/hide the exact-amount keypad per the vendor's setting. If there are no
+// quick buttons, the keypad is always shown so awarding is still possible.
+function setupExactEntry() {
+  const hasQuick = !$('quick-awards').hidden;
+  const exactOn = config.allowExactEntry !== false || !hasQuick;
+  $('exact-entry').hidden = !exactOn;
+  $('pad-award').hidden = !exactOn;
+}
+
+function onQuickAward(e) {
+  const btn = e.target.closest('.quick-award');
+  if (!btn) return;
+  awardAmount(Number(btn.dataset.amt));
+}
+
+/** Award `dollarAmount` to the scanned customer (used by both the keypad and the
+ *  quick-award buttons). The server computes points from its own ratio + tier. */
+async function awardAmount(dollarAmount) {
   if (busy || !currentEarnCode) return;
+  const amt = Number(dollarAmount);
+  if (!(amt > 0)) return;
   busy = true;
   try {
     const res = await authFetch('/api/vendor/award', {
       method: 'POST',
-      body: JSON.stringify({ code: currentEarnCode, exactAmount: Number(padValue) }),
+      body: JSON.stringify({ code: currentEarnCode, exactAmount: amt }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -311,7 +388,8 @@ async function onPinKey(e) {
     if (res.ok) {
       pinUnlocked = true;       // stays unlocked until the page is refreshed
       pinToken = data.token ?? null; // server session token for gated requests
-      enterModeScreen(pinTarget);
+      if (pinAction) { const fn = pinAction; pinAction = null; fn(); } // deferred action (e.g. undo)
+      else enterModeScreen(pinTarget);
     } else {
       $('pin-error').hidden = false;
     }
@@ -555,13 +633,84 @@ async function refreshLastActivity() {
     const res = await authFetch('/api/vendor/recent');
     if (!res.ok) return;
     const [last] = await res.json();
-    if (!last) return ($('last-activity').textContent = 'No activity yet today.');
-    const who = last.profiles?.name ?? 'Customer';
-    $('last-activity').textContent =
-      last.type === 'earn'
-        ? `Last: ${who} +${last.points} pts`
-        : `Last: ${who} redeemed ${last.rewards?.title ?? 'a reward'}`;
+    lastActivity = null;
+    if (!last) {
+      $('last-activity').textContent = 'No activity yet today.';
+    } else {
+      const who = last.profiles?.name ?? 'Customer';
+      const isReversal = last.reverses != null;        // this row is itself an undo
+      const createdAt = new Date(last.created_at).getTime();
+      const withinWindow = Date.now() - createdAt < UNDO_WINDOW_MS;
+      const undoable = !isReversal && last.reversed_by == null && withinWindow;
+      lastActivity = { id: last.id, type: last.type, undoable, createdAt };
+      $('last-activity').textContent = isReversal
+        ? `Last: undo · ${who}`
+        : last.type === 'earn'
+          ? `Last: ${who} +${last.points} pts`
+          : `Last: ${who} redeemed ${last.rewards?.title ?? 'a reward'}`;
+    }
+    undoLastArmed = false;
+    scheduleUndoExpiry();
+    renderUndoLast();
   } catch { /* non-critical */ }
+}
+
+// Auto-hide "Undo last" the instant its 1-minute window runs out, even if the
+// cashier leaves the scan screen open and nothing else refreshes.
+function scheduleUndoExpiry() {
+  clearTimeout(undoExpiryTimer);
+  if (!lastActivity?.undoable) return;
+  const remaining = lastActivity.createdAt + UNDO_WINDOW_MS - Date.now();
+  undoExpiryTimer = setTimeout(() => {
+    if (lastActivity) lastActivity.undoable = false;
+    undoLastArmed = false;
+    renderUndoLast();
+  }, Math.max(0, remaining));
+}
+
+// Show/hide + label the "Undo last" buttons on both scan screens.
+function renderUndoLast() {
+  const canUndo = Boolean(lastActivity?.undoable);
+  ['undo-last-award', 'undo-last-redeem'].forEach((id) => {
+    const btn = $(id);
+    if (!btn) return;
+    btn.hidden = !canUndo;
+    btn.textContent = undoLastArmed ? 'Tap again to undo' : 'Undo last';
+    btn.classList.toggle('is-armed', undoLastArmed);
+  });
+}
+
+// Two-tap confirm, then reverse the most recent transaction.
+function onUndoLastTap() {
+  if (!lastActivity?.undoable) return;
+  if (!undoLastArmed) {
+    undoLastArmed = true;
+    clearTimeout(undoLastTimer);
+    undoLastTimer = setTimeout(() => { undoLastArmed = false; renderUndoLast(); }, 4000);
+    renderUndoLast();
+    return;
+  }
+  clearTimeout(undoLastTimer);
+  undoLastArmed = false;
+  renderUndoLast();
+  requestUndoLast();
+}
+
+// Reverse is PIN-gated but the award/redeem scan screens are not, so if the PIN
+// isn't unlocked yet, detour through the PIN pad and finish the undo after.
+function requestUndoLast() {
+  const tx = lastActivity;
+  if (!tx?.id || !tx.undoable) return;
+  const run = () => performReverse(tx.id, null);
+  if (config.hasPin && !pinUnlocked) {
+    pinAction = run;
+    pinValue = '';
+    renderPinDots();
+    $('pin-error').hidden = true;
+    show('screen-pin');
+    return;
+  }
+  run();
 }
 
 /* ---------- STATS (analytics) ---------- */
@@ -593,6 +742,111 @@ function renderAnalytics(d) {
   fillSummary('stats-7', d.last7 ?? {});
   fillSummary('stats-30', d.last30 ?? {});
   renderTopRewards(d.topRewards ?? []);
+  loadRecent();
+}
+
+/* ---------- STATS: recent activity + undo (reverse a transaction) ---------- */
+
+let recentItems = [];
+let undoArmedId = null;      // txn id whose Undo button is armed for a confirming 2nd tap
+let undoArmTimer = null;
+
+async function loadRecent() {
+  try {
+    const res = await authFetch('/api/vendor/recent');
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (res.ok) { recentItems = Array.isArray(data) ? data : []; renderRecent(); }
+  } catch { /* keep the prior render */ }
+}
+
+function renderRecent() {
+  const wrap = $('recent-list');
+  if (!recentItems.length) {
+    wrap.innerHTML = `<p class="stats-empty">No activity yet.</p>`;
+    return;
+  }
+  wrap.innerHTML = '';
+  recentItems.forEach((tx) => {
+    const earn = tx.type === 'earn';
+    const who = tx.profiles?.name ?? 'Customer';
+    const isReversal = tx.reverses != null;         // this row is itself an undo
+    const alreadyVoided = tx.reversed_by != null;   // this row was already undone
+    const time = new Date(tx.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+    // Signed points: earns are +, redeems and corrections carry their own sign.
+    const pts = tx.points > 0 ? `+${tx.points}` : `${tx.points}`;
+    const what = earn
+      ? (isReversal ? `Correction · ${who}` : `Award · ${who}`)
+      : (isReversal ? `Refund · ${who}` : `Redeem · ${who}${tx.rewards?.title ? ` · ${tx.rewards.title}` : ''}`);
+
+    const row = document.createElement('div');
+    row.className = `recent-row${alreadyVoided ? ' is-voided' : ''}`;
+
+    const info = document.createElement('div');
+    info.className = 'recent-info';
+    info.innerHTML = `<span class="recent-what">${escapeHtml(what)}</span><span class="recent-meta">${escapeHtml(pts)} pts · ${escapeHtml(time)}</span>`;
+    row.appendChild(info);
+
+    // Undoable = a real award/redeem, not voided, not itself a correction, and
+    // still inside the 1-minute window (the server enforces the window too).
+    const inWindow = Date.now() - new Date(tx.created_at).getTime() < UNDO_WINDOW_MS;
+    if (!isReversal && !alreadyVoided && inWindow) {
+      const btn = document.createElement('button');
+      btn.className = 'recent-undo';
+      btn.textContent = undoArmedId === tx.id ? 'Tap again to undo' : 'Undo';
+      if (undoArmedId === tx.id) btn.classList.add('is-armed');
+      btn.addEventListener('click', () => onUndoTap(tx.id));
+      row.appendChild(btn);
+    } else if (isReversal || alreadyVoided) {
+      const tag = document.createElement('span');
+      tag.className = 'recent-tag';
+      tag.textContent = alreadyVoided ? 'Undone' : (earn ? 'Correction' : 'Refund');
+      row.appendChild(tag);
+    }
+    // else: a real award/redeem past the 1-minute window — just history, no undo.
+    wrap.appendChild(row);
+  });
+}
+
+// Two-tap confirm: first tap arms the button, a second tap within 4s commits.
+function onUndoTap(txId) {
+  if (undoArmedId !== txId) {
+    undoArmedId = txId;
+    clearTimeout(undoArmTimer);
+    undoArmTimer = setTimeout(() => { undoArmedId = null; renderRecent(); }, 4000);
+    renderRecent();
+    return;
+  }
+  clearTimeout(undoArmTimer);
+  undoArmedId = null;
+  performReverse(txId, () => loadAnalytics());   // re-renders stats + recent list
+}
+
+/** Reverse a transaction. `after` runs (alongside a scan-strip refresh) once the
+ *  result flood closes — the STATS list passes loadAnalytics; "Undo last" passes
+ *  nothing (it just refreshes the scan strip). */
+async function performReverse(txId, after) {
+  if (busy) return;
+  busy = true;
+  const refresh = () => { refreshLastActivity(); after?.(); };
+  try {
+    const res = await authFetch('/api/vendor/reverse', {
+      method: 'POST',
+      body: JSON.stringify({ transactionId: txId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) {
+      return flood('error', 'COULDN’T UNDO', data.message || 'That entry can’t be undone.', refresh);
+    }
+    const back = data.type === 'redeem' ? 'points refunded' : 'points removed';
+    flood('success', 'UNDONE', `Balance now ${data.newBalance} · ${back}`, refresh);
+  } catch {
+    flood('error', 'NO CONNECTION', 'Check the internet and try again.', refresh);
+  } finally {
+    busy = false;
+  }
 }
 
 // Single-series bar chart: revenue per day, baseline-anchored, thin marks with
@@ -652,4 +906,132 @@ function renderTopRewards(list) {
 function tickLabel(iso) {
   const [, m, d] = String(iso).split('-');
   return `${Number(m)}/${Number(d)}`;
+}
+
+/* ---------- SETTINGS (self-service economics) ---------- */
+
+let loadedSettings = null;   // last-loaded server state, for the Reset button
+
+function enterSettings() {
+  show('screen-settings');
+  loadSettings();
+}
+
+async function loadSettings() {
+  try {
+    const res = await authFetch('/api/vendor/settings');
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (res.ok) { loadedSettings = data; renderSettings(data); }
+  } catch { /* keep whatever's on screen */ }
+}
+
+function renderSettings(s) {
+  if (!s) return;
+  $('set-ratio').value = s.pointsPerDollar ?? '';
+  setSwitch($('set-exact'), s.allowExactEntry !== false);
+  $('set-pin').value = '';
+  $('settings-error').hidden = true;
+  renderTierEditor(s.tiers ?? []);
+  updateRatioExample();
+}
+
+function setSwitch(el, on) {
+  el.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+function switchOn(el) {
+  return el.getAttribute('aria-checked') === 'true';
+}
+function toggleSwitch(el) {
+  setSwitch(el, !switchOn(el));
+}
+
+function updateRatioExample() {
+  const r = Number($('set-ratio').value);
+  $('set-ratio-eg').textContent = Number.isFinite(r) && r > 0 ? `${Math.floor(10 * r)} pts` : '—';
+}
+
+/* tier-button editor: a list of {label, min, max} rows */
+
+function renderTierEditor(tiers) {
+  const wrap = $('tier-editor');
+  wrap.innerHTML = '';
+  (tiers.length ? tiers : [{ label: '', amount: '' }]).forEach((t) => addTierRow(t));
+}
+
+function addTierRow(t = { label: '', amount: '' }) {
+  const wrap = $('tier-editor');
+  const row = document.createElement('div');
+  row.className = 'tier-row';
+  row.innerHTML = `
+    <input class="tier-label" type="text" maxlength="40" placeholder="Label (e.g. Meal)" />
+    <span class="tier-money">$</span>
+    <input class="tier-amount" type="number" inputmode="decimal" min="0" step="0.5" placeholder="amount" />
+    <button class="tier-remove" type="button" aria-label="Remove button">✕</button>`;
+  const amt = tierAmount(t);
+  row.querySelector('.tier-label').value = t.label ?? '';
+  row.querySelector('.tier-amount').value = Number.isFinite(amt) ? amt : '';
+  row.querySelector('.tier-remove').addEventListener('click', () => row.remove());
+  wrap.appendChild(row);
+}
+
+function collectTiers() {
+  return [...$('tier-editor').querySelectorAll('.tier-row')]
+    .map((row) => ({
+      label: row.querySelector('.tier-label').value.trim(),
+      amount: row.querySelector('.tier-amount').value.trim(),
+    }))
+    .filter((t) => t.label !== '' || t.amount !== '') // drop fully-blank rows
+    .map((t) => ({ label: t.label, amount: Number(t.amount) }));
+}
+
+async function saveSettings() {
+  if (busy) return;
+  $('settings-error').hidden = true;
+
+  const body = {
+    pointsPerDollar: Number($('set-ratio').value),
+    allowExactEntry: switchOn($('set-exact')),
+    tiers: collectTiers(),
+  };
+  const pin = $('set-pin').value.trim();
+  if (pin) body.pin = pin;
+
+  busy = true;
+  $('settings-save').disabled = true;
+  try {
+    const res = await authFetch('/api/vendor/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) {
+      $('settings-error').textContent = data.message || 'Couldn’t save settings.';
+      $('settings-error').hidden = false;
+      return;
+    }
+
+    loadedSettings = data;
+    // Refresh the cached vendor config so the award pad + PIN gating pick up the
+    // new ratio / exact-entry / PIN state immediately.
+    const cfg = await authFetch('/api/vendor/config');
+    if (cfg.ok) config = await cfg.json();
+
+    if (data.pinChanged) {
+      // The server dropped every session (incl. ours). Re-gate so the terminal
+      // re-asks for the new PIN before any further sensitive action.
+      pinUnlocked = false;
+      pinToken = null;
+      flood('success', 'SETTINGS SAVED', 'New PIN set — re-enter it to continue.', () => switchMode('award'));
+    } else {
+      flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => renderSettings(loadedSettings));
+    }
+  } catch {
+    $('settings-error').textContent = 'No connection — try again.';
+    $('settings-error').hidden = false;
+  } finally {
+    busy = false;
+    $('settings-save').disabled = false;
+  }
 }

@@ -37,6 +37,7 @@
         <button id="tab-redeem" class="tab tab-redeem">REDEEM</button>
         <button id="tab-manage" class="tab tab-manage">ITEMS</button>
         <button id="tab-stats" class="tab tab-stats">STATS</button>
+        <button id="tab-settings" class="tab tab-settings">SETTINGS</button>
       </nav>
     </header>
 
@@ -53,6 +54,7 @@
         </form>
         <p class="code-hint">Ask the customer for the 6-character code shown in their app.</p>
         <p id="last-activity" class="last-activity"></p>
+        <button id="undo-last-award" class="undo-last" type="button" hidden>Undo last</button>
       </section>
 
       <!-- ===== AWARD: CUSTOMER + EXACT AMOUNT ===== -->
@@ -70,20 +72,29 @@
             </div>
           </div>
         </div>
-        <div class="pad-readout">
-          <p class="pad-amount">$<span id="pad-amount">0.00</span></p>
-          <p class="pad-points">= <strong id="pad-points">0</strong> pts <span id="pad-mult" class="pad-mult" hidden></span></p>
-        </div>
-        <div class="keypad" id="amount-keypad">
-          <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
-          <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
-          <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
-          <button data-k="." class="key-dim">.</button><button data-k="0">0</button><button data-k="back" class="key-dim">⌫</button>
-        </div>
-        <div class="pad-actions">
-          <button id="pad-cancel" class="btn-ghost">Cancel</button>
-          <button id="pad-award" class="btn-primary" disabled>Award points</button>
-        </div>
+       <div class="pad-inner">
+          <div class="pad-shortcut-wrapper">
+            <div id="quick-awards" class="quick-awards" hidden></div>
+          </div>
+          <div class="pad-exact-wrapper">
+            <div id="exact-entry" class="exact-entry">
+              <div class="pad-readout">
+                <p class="pad-amount">$<span id="pad-amount">0.00</span></p>
+                <p class="pad-points">= <strong id="pad-points">0</strong> pts <span id="pad-mult" class="pad-mult" hidden></span></p>
+              </div>
+              <div class="keypad" id="amount-keypad">
+                <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+                <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+                <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+                <button data-k="." class="key-dim">.</button><button data-k="0">0</button><button data-k="back" class="key-dim">⌫</button>
+              </div>
+            </div>
+            <div class="pad-actions">
+              <button id="pad-cancel" class="btn-ghost">Cancel</button>
+              <button id="pad-award" class="btn-primary" disabled>Award points</button>
+            </div>
+          </div>
+       </div>
       </section>
 
       <!-- ===== REDEEM: PIN GATE ===== -->
@@ -109,6 +120,7 @@
           <button type="submit" class="btn-confirm code-submit">Find redemption</button>
         </form>
         <p class="last-activity">Customer taps an item in their app, then Redeem, to get their 4-digit code.</p>
+        <button id="undo-last-redeem" class="undo-last" type="button" hidden>Undo last</button>
       </section>
 
       <!-- ===== REDEEM: CONFIRM ("is this the user?") ===== -->
@@ -181,6 +193,62 @@
           <div class="stats-card">
             <h3>Top rewards · 30 days</h3>
             <div id="stats-top" class="stats-top"></div>
+          </div>
+
+          <div class="stats-card">
+            <h3>Recent activity</h3>
+            <p class="manage-note">Made a mistake? Undo an award or redemption — it writes a correction, never deletes.</p>
+            <div id="recent-list" class="recent-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== SETTINGS: self-service economics ===== -->
+      <section id="screen-settings" class="screen settings-screen" hidden>
+        <div class="settings-inner">
+          <div class="stats-head">
+            <h2>Settings</h2>
+          </div>
+
+          <div class="stats-card">
+            <h3>Earning rate</h3>
+            <label class="settings-field">Points per $1 spent
+              <input id="set-ratio" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" />
+            </label>
+            <p class="manage-note">Customers earn <strong id="set-ratio-eg">—</strong> for a $10 purchase (before their tier multiplier).</p>
+          </div>
+
+          <div class="stats-card">
+            <div class="setting-row">
+              <span class="setting-label">
+                <span class="setting-name">Exact amount entry</span>
+                <span class="setting-desc">Let staff type the exact purchase amount on the keypad.</span>
+              </span>
+              <button id="set-exact" class="switch" type="button" role="switch" aria-checked="true" aria-label="Exact amount entry">
+                <span class="switch-knob"></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="stats-card">
+            <h3>Quick amount buttons</h3>
+            <p class="manage-note">Tap-to-award buttons on the AWARD screen. Each is a set purchase amount; points are that amount × your rate.</p>
+            <div id="tier-editor" class="tier-editor"></div>
+            <button id="tier-add" class="btn-ghost btn-compact" type="button">+ Add button</button>
+          </div>
+
+          <div class="stats-card">
+            <h3>Staff PIN</h3>
+            <label class="settings-field">New 4-digit PIN
+              <input id="set-pin" type="text" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="leave blank to keep current" />
+            </label>
+            <p class="manage-note">Changing the PIN signs out every terminal — everyone re-enters the new PIN next time.</p>
+          </div>
+
+          <p id="settings-error" class="field-error" hidden></p>
+          <div class="pad-actions settings-actions">
+            <button id="settings-reset" class="btn-ghost" type="button">Reset</button>
+            <button id="settings-save" class="btn-primary" type="button">Save settings</button>
           </div>
         </div>
       </section>

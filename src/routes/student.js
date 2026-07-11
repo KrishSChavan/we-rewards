@@ -119,4 +119,56 @@ router.get('/history', async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/me/export
+ * Everything WeRewards holds about the signed-in student, as a JSON download:
+ * profile (Google identity we store), per-vendor balances, full transaction
+ * history, and the latest engagement-score snapshot. A privacy baseline.
+ */
+router.get('/export', async (req, res, next) => {
+  try {
+    const uid = req.user.id;
+    const [profile, balances, transactions, scores] = await Promise.all([
+      supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at').eq('user_id', uid).maybeSingle(),
+      supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
+      supabaseAdmin
+        .from('transactions')
+        .select('id, vendor_id, type, points, dollar_amount, reward_id, created_at, vendors(name), rewards(title)')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false }),
+      supabaseAdmin.from('user_scores').select('*').eq('user_id', uid).maybeSingle(),
+    ]);
+    for (const r of [profile, balances, transactions, scores]) if (r.error) throw r.error;
+
+    res.setHeader('Content-Disposition', 'attachment; filename="werewards-data.json"');
+    res.json({
+      exportedAt: new Date().toISOString(),
+      account: { id: uid, email: req.user.email },
+      profile: profile.data,
+      balances: balances.data ?? [],
+      transactions: transactions.data ?? [],
+      scores: scores.data,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/delete
+ * Deletes the signed-in student's auth user. `on delete cascade` removes the
+ * profile, balances, live codes, and score snapshot; transaction rows are kept
+ * but anonymized (user_id → null, migration-011) so vendors' revenue totals
+ * don't silently change. Irreversible.
+ */
+router.post('/delete', async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(req.user.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

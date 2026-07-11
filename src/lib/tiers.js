@@ -26,29 +26,18 @@ export const TIERS = [
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
 /**
- * Score a student's last 30 days of earn activity and map it to a tier.
- * PURE READ — does not write anything (the home bar polls this on every
- * balance push, so writing here caused heavy write-amplification). Returns
- * everything the home bar needs plus the raw components/aggregates, so a
- * caller that wants a durable snapshot can hand the result to
- * persistTierSnapshot() without recomputing.
+ * Pure scoring: map a set of earn transactions to a score/tier/multiplier.
+ * No I/O — the caller supplies the count of active vendors, the student's earn
+ * transactions in the window, and their lifetime revisit counter. Split out of
+ * computeTierProfile so the math (and its anti-farming caps) is unit-testable
+ * without a database. See test/tiers.test.js.
+ *
+ * @param {object} input
+ * @param {number} input.vendorCount  count of active vendors (breadth denominator)
+ * @param {Array<{vendor_id:string, dollar_amount:number|string|null, created_at:string}>} input.txns
+ * @param {number} [input.revisits]   lifetime revisit counter (passed through untouched)
  */
-export async function computeTierProfile(userId) {
-  const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-
-  const [{ count: vendorCount, error: vErr }, { data: txns, error: tErr }, { data: prof }] = await Promise.all([
-    supabaseAdmin.from('vendors').select('id', { count: 'exact', head: true }).eq('active', true),
-    supabaseAdmin
-      .from('transactions')
-      .select('vendor_id, dollar_amount, created_at')
-      .eq('user_id', userId)
-      .eq('type', 'earn')
-      .gte('created_at', since),
-    supabaseAdmin.from('profiles').select('revisits').eq('user_id', userId).maybeSingle(),
-  ]);
-  if (vErr) throw vErr;
-  if (tErr) throw tErr;
-
+export function scoreProfile({ vendorCount, txns, revisits = 0 }) {
   // Collapse to one visit per vendor per day (anti-farming), summing that
   // day's spend at the vendor but crediting at most SPEND_CAP_PER_VISIT of it.
   const visitDays = new Map(); // "vendorId|YYYY-MM-DD" -> dollars that day
@@ -93,7 +82,7 @@ export async function computeTierProfile(userId) {
     cutoffs: TIERS.slice(1).map((t) => t.minScore),
     maxScore: 1000,
     windowDays: WINDOW_DAYS,
-    revisits: prof?.revisits ?? 0, // lifetime counter, maintained by award_points
+    revisits, // lifetime counter, maintained by award_points
     // raw components + aggregates — ignored by the UI, used by persistTierSnapshot
     breadth: B,
     loyalty: L,
@@ -103,6 +92,34 @@ export async function computeTierProfile(userId) {
     totalVisits,
     totalSpend,
   };
+}
+
+/**
+ * Score a student's last 30 days of earn activity and map it to a tier.
+ * PURE READ — does not write anything (the home bar polls this on every
+ * balance push, so writing here caused heavy write-amplification). Returns
+ * everything the home bar needs plus the raw components/aggregates, so a
+ * caller that wants a durable snapshot can hand the result to
+ * persistTierSnapshot() without recomputing. Fetches the inputs, then defers
+ * the math to the pure scoreProfile() above.
+ */
+export async function computeTierProfile(userId) {
+  const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  const [{ count: vendorCount, error: vErr }, { data: txns, error: tErr }, { data: prof }] = await Promise.all([
+    supabaseAdmin.from('vendors').select('id', { count: 'exact', head: true }).eq('active', true),
+    supabaseAdmin
+      .from('transactions')
+      .select('vendor_id, dollar_amount, created_at')
+      .eq('user_id', userId)
+      .eq('type', 'earn')
+      .gte('created_at', since),
+    supabaseAdmin.from('profiles').select('revisits').eq('user_id', userId).maybeSingle(),
+  ]);
+  if (vErr) throw vErr;
+  if (tErr) throw tErr;
+
+  return scoreProfile({ vendorCount: vendorCount ?? 0, txns: txns ?? [], revisits: prof?.revisits ?? 0 });
 }
 
 /**

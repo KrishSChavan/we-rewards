@@ -6,7 +6,10 @@
     "dev": "node --watch server.js",
     "nodemon": "nodemon server.js",
     "start": "node server.js",
-    "onboard": "node scripts/onboard-vendor.js"
+    "onboard": "node scripts/onboard-vendor.js",
+    "test": "node --import ./test/setup.js --test test/*.test.js test/integration/*.test.js",
+    "test:unit": "node --import ./test/setup.js --test test/*.test.js",
+    "test:integration": "node --import ./test/setup.js --test test/integration/*.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

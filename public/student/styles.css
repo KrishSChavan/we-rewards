@@ -677,6 +677,28 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .switch[aria-checked="true"] { background: var(--success); }
 .switch[aria-checked="true"] .switch-knob { left: calc(100% - 1.35rem - 0.18rem); }
 
+/* your-data action buttons (export / delete) */
+.data-btn {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  width: 100%; text-align: left; font-size: 1rem;
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 1rem 1.15rem; box-shadow: 0 4px 0 var(--edge);
+  transition: transform 60ms ease, box-shadow 60ms ease;
+}
+.data-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+.data-btn:disabled { opacity: 0.55; }
+.data-btn-label { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.data-btn-name { font-weight: 900; font-size: 1.05rem; }
+.data-btn-desc { font-weight: 600; font-size: 0.85rem; color: var(--muted); }
+.data-btn-chevron { flex-shrink: 0; font-weight: 900; font-size: 1.2rem; color: var(--muted); }
+.data-btn.danger .data-btn-name,
+.data-btn.danger .data-btn-chevron { color: var(--danger); }
+
+/* delete-confirm sheet: reuse .btn-redeem, tinted danger, + a text Cancel */
+.btn-redeem.danger { background: var(--danger); }
+.btn-redeem.danger:active { background: var(--danger-press); }
+.detail-textbtn { margin-top: 0.1rem; color: var(--muted); font-weight: 800; font-size: 1rem; padding: 0.6rem 1rem; }
+
 #account-signout { margin-top: auto; }   /* sign-out hugs the bottom of the tab */
 
 /* ---------- responsive ---------- */
