@@ -20,6 +20,28 @@ export async function requireUser(req, res, next) {
   }
 }
 
+// Operator allowlist for the /admin dashboard. Comma-separated emails in the
+// ADMIN_EMAILS env var; matched case-insensitively against the signed-in user.
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
+  .split(',')
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+/**
+ * requireUser + confirms the signed-in user is a platform operator (their email
+ * is in ADMIN_EMAILS). Gates the /api/admin/* analytics + error-log routes. The
+ * gate is server-side: the static /admin page is public, but its data isn't.
+ */
+export async function requireAdmin(req, res, next) {
+  requireUser(req, res, () => {
+    const email = (req.user?.email || '').toLowerCase();
+    if (!email || !ADMIN_EMAILS.includes(email)) {
+      return res.status(403).json({ error: 'NOT_ADMIN', message: 'Admin access only.' });
+    }
+    next();
+  });
+}
+
 /**
  * requireUser + confirms the user is staff of a vendor.
  * Attaches req.vendor = the vendor row.

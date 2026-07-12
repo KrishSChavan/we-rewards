@@ -6,8 +6,10 @@ Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one
 
 - **`/`** — student PWA (rotating identity code, balances, redeem)
 - **`/terminal`** — vendor terminal web app (enter code → award/redeem, big buttons, stats)
+- **`/admin`** — operator dashboard (platform analytics + error log; `ADMIN_EMAILS`-gated)
 - **`/api/me/*`** — student endpoints (Supabase JWT auth)
 - **`/api/vendor/*`** — vendor endpoints (Supabase JWT + `vendor_staff` link)
+- **`/api/admin/*`** — operator endpoints (Supabase JWT + `ADMIN_EMAILS` allow-list)
 - **Supabase** — auth, Postgres, RLS for client reads; all writes go through
   server-side RPCs (`award_points`, `redeem_by_code`) which are atomic.
 
@@ -36,18 +38,23 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-012.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-013.sql` in order.
    (migration-007 locks down the RPCs and adds the PIN-session table — required;
    migration-010 adds the void/refund RPC; migration-011 lets account deletion
    anonymize a student's transactions instead of being blocked by them;
-   migration-012 switches the quick-amount buttons to a fixed dollar amount.)
+   migration-012 switches the quick-amount buttons to a fixed dollar amount;
+   migration-013 adds the `error_logs` table behind the `/admin` dashboard.)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
    - Supabase → Authentication → Providers → Google → paste Client ID + Secret
    - Supabase → Authentication → URL Configuration → set Site URL to where the app runs
      (`http://localhost:3000` in dev) — OAuth redirects go there
-3. `cp .env.example .env` and fill in the keys.
+3. `cp .env.example .env` and fill in the keys. Set `ADMIN_EMAILS` to the
+   Google account(s) allowed into the `/admin` dashboard, and (in prod) add
+   `https://YOUR_APP/admin` + `http://localhost:3000/admin` to Supabase →
+   Authentication → URL Configuration → Redirect URLs so admin sign-in returns
+   to the dashboard.
 4. `npm install && npm run dev`
 5. Onboard your first vendor:
    ```
@@ -139,10 +146,55 @@ Privacy baseline in the student app's **Account** tab:
   anonymized** (`user_id → null`, migration-011) so vendors' revenue totals don't
   silently change.
 
+## Operator admin dashboard
+
+`/admin` is a separate, operator-only page (Google sign-in; the account's email
+must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
+`requireAdmin`, so the static page is public but its data is not):
+
+- `GET /api/admin/overview` — platform analytics: lifetime totals (vendors,
+  students, transactions), today / 7-day / 30-day activity (awards, redemptions,
+  points, revenue, active + new customers), a 14-day revenue series, and top
+  vendors by revenue.
+- `GET /api/admin/errors` — the unified **error log**: unexpected server 500s
+  (captured in the central error handler) plus client-side crashes from the
+  student PWA and vendor terminal, which post uncaught errors +
+  unhandled rejections to `POST /api/client-error` (unauthenticated,
+  size-capped, rate-limited). Rows carry a `source` (`server` / `student` /
+  `vendor` / `admin`), message, stack, path, and best-effort user id. Stored in
+  `error_logs` (migration-013), server-only writes, no client read path.
+
 ## Tests
 
 `node:test`, no extra runtime deps. `npm test` runs everything; `npm run test:unit`
 is the always-on, DB-free subset.
+
+### Running the DB tests locally
+
+The integration + security suites need a real Supabase stack and are **opt-in**
+(they skip unless `TEST_SUPABASE_URL` is set). Never point them at your pilot DB —
+they create and delete users/vendors. With Docker running:
+
+```bash
+npx supabase init                 # once — creates supabase/config.toml
+npx supabase start                # boots local Postgres + auth + REST; prints keys
+```
+
+Apply the schema + every migration to the local DB (they aren't in the CLI's
+`migrations/` layout, so pipe them in order), then run the suite against the URL
++ keys `supabase start` printed:
+
+```bash
+# schema first, then migration-002 … migration-013, e.g. via:
+#   docker exec -i supabase_db_<project> psql -U postgres -d postgres < supabase/schema.sql
+# (local-only: also GRANT table privileges to anon/authenticated/service_role,
+#  which hosted Supabase does automatically)
+
+TEST_SUPABASE_URL=http://127.0.0.1:54321 \
+TEST_SUPABASE_ANON_KEY=<local anon key> \
+TEST_SUPABASE_SERVICE_ROLE_KEY=<local service_role key> \
+npm run test:integration
+```
 
 - **Unit** (`test/*.test.js`) — the pure engagement-scoring math and its
   anti-farming caps (`scoreProfile`), and the `requirePin` gate's no-DB branches.

@@ -19,9 +19,31 @@ let historyLoaded = false;  // has the history tab fetched at least once?
 
 const $ = (id) => document.getElementById(id);
 
+/* ---------- client crash reporting ---------- */
+// Uncaught errors + promise rejections post to /api/client-error so they land in
+// the same error log the operator /admin dashboard reads. Best-effort: attaches
+// the auth token if we have a session, never blocks, never throws.
+function installErrorReporter() {
+  const send = async (message, stack, context) => {
+    let auth = {};
+    try {
+      const { data } = (await sb?.auth?.getSession?.()) ?? {};
+      if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
+    } catch { /* not signed in yet */ }
+    fetch('/api/client-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({ source: 'student', message, stack, url: location.pathname, context }),
+    }).catch(() => {});
+  };
+  window.addEventListener('error', (e) => send(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno }));
+  window.addEventListener('unhandledrejection', (e) => send(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
+}
+
 /* ---------- boot ---------- */
 
 (async function boot() {
+  installErrorReporter();
   const pub = await (await fetch('/api/public-config')).json();
   // Student + vendor apps share this origin and Supabase project, so they MUST
   // use separate auth storage keys — otherwise signing into the vendor terminal

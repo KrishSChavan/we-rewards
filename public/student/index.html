@@ -310,7 +310,13 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Pinned to an exact version + Subresource Integrity: the browser refuses to
+       run this file if its bytes don't match the hash, so a tampered/compromised
+       CDN build can't hijack the page or steal auth tokens. Bump BOTH the version
+       and the hash together when upgrading supabase-js. -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
+          integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
+          crossorigin="anonymous"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="/app.js"></script>
 </body>

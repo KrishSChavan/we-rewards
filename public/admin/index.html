@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin — WeRewards</title>
+  <meta name="description" content="WeRewards operator dashboard — platform analytics and error logs." />
+  <meta name="theme-color" content="#0f1826" />
+  <!-- Installable PWA (scoped to /admin) so operators can add it to a phone. -->
+  <link rel="manifest" href="/admin/manifest.json" />
+  <link rel="apple-touch-icon" href="/admin/icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="WR Admin" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+
+  <!-- ===== LOGIN ===== -->
+  <section id="login" class="login" hidden>
+    <div class="login-card">
+      <p class="brand">WEREWARDS</p>
+      <h1>Admin</h1>
+      <p class="muted">Operator dashboard — analytics &amp; error logs.</p>
+      <button id="login-btn" class="btn-primary">Sign in with Google</button>
+      <p id="login-error" class="field-error" hidden></p>
+      <p class="login-note">Only allow-listed operator accounts can see data.</p>
+    </div>
+  </section>
+
+  <!-- ===== DASHBOARD ===== -->
+  <div id="dash" hidden>
+    <header class="topbar">
+      <span class="wordmark">WeRewards <em>Admin</em></span>
+      <div class="topbar-right">
+        <span id="admin-email" class="admin-email"></span>
+        <button id="refresh-btn" class="btn-ghost btn-compact" aria-label="Refresh">↻</button>
+        <button id="signout-btn" class="btn-ghost btn-compact">Sign out</button>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- lifetime totals -->
+      <div class="tiles">
+        <div class="tile"><span id="tot-vendors" class="tile-num">0</span><span class="tile-label">Vendors</span></div>
+        <div class="tile"><span id="tot-students" class="tile-num">0</span><span class="tile-label">Students</span></div>
+        <div class="tile"><span id="tot-transactions" class="tile-num">0</span><span class="tile-label">Transactions</span></div>
+        <div id="tot-errors-card" class="tile"><span id="tot-errors" class="tile-num">0</span><span class="tile-label">Errors · 24h</span><span id="tot-errors-sub" class="tile-sub"></span></div>
+      </div>
+
+      <!-- today -->
+      <div class="card">
+        <h3>Today</h3>
+        <div class="tiles tiles-4">
+          <div class="tile tile-sm"><span id="td-revenue" class="tile-num">$0.00</span><span class="tile-label">Revenue</span></div>
+          <div class="tile tile-sm"><span id="td-awards" class="tile-num">0</span><span class="tile-label">Awards</span></div>
+          <div class="tile tile-sm"><span id="td-redemptions" class="tile-num">0</span><span class="tile-label">Redemptions</span></div>
+          <div class="tile tile-sm"><span id="td-customers" class="tile-num">0</span><span class="tile-label">Active students</span></div>
+        </div>
+      </div>
+
+      <!-- revenue chart -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Revenue · last 14 days</h3>
+          <span id="chart-max" class="chart-max"></span>
+        </div>
+        <div id="chart" class="chart" role="img" aria-label="Platform revenue, last 14 days"></div>
+      </div>
+
+      <!-- windows -->
+      <div class="two-col">
+        <div class="card"><h3>Last 7 days</h3><ul id="win-7" class="stat-list"></ul></div>
+        <div class="card"><h3>Last 30 days</h3><ul id="win-30" class="stat-list"></ul></div>
+      </div>
+
+      <!-- top vendors -->
+      <div class="card">
+        <h3>Top vendors · revenue · 30 days</h3>
+        <div id="top-vendors" class="top-vendors"></div>
+      </div>
+
+      <!-- errors -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Error log</h3>
+          <div class="err-filters">
+            <button class="err-filter is-active" data-src="">All</button>
+            <button class="err-filter" data-src="server">Server</button>
+            <button class="err-filter" data-src="student">Student</button>
+            <button class="err-filter" data-src="vendor">Vendor</button>
+            <button class="err-filter" data-src="admin">Admin</button>
+          </div>
+        </div>
+        <p class="muted">Server 500s and client crashes (tap a row for the stack). Newest first.</p>
+        <div id="error-list" class="error-list"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
+          integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
+          crossorigin="anonymous"></script>
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

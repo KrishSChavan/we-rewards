@@ -11,7 +11,13 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // Scope cleanup to this app's own cache family. CacheStorage is shared per
+      // origin, so deleting every non-current cache would wipe the /admin PWA's
+      // cache ('werewards-admin-*'), which lives here too. Only prune old
+      // 'werewards-v*' versions.
+      .then((keys) => Promise.all(
+        keys.filter((k) => k.startsWith('werewards-v') && k !== CACHE).map((k) => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });

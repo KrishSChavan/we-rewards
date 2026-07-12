@@ -9,14 +9,31 @@ import 'dotenv/config';
 
 import studentRoutes from './src/routes/student.js';
 import vendorRoutes from './src/routes/vendor.js';
+import adminRoutes from './src/routes/admin.js';
 import { supabaseAuth } from './src/lib/supabase.js';
 import { setIo } from './src/lib/realtime.js';
+import { logError } from './src/lib/errors.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
-// Behind a proxy in prod (Render/Fly/etc.) so express-rate-limit sees real IPs.
-app.set('trust proxy', 1);
+// Behind a proxy in prod (Render/Fly/etc.) so express-rate-limit sees the real
+// client IP from X-Forwarded-For. This number MUST equal the count of trusted
+// proxies between the internet and this process, or the rate limiters can be
+// defeated by a spoofed header:
+//   • one PaaS proxy (Render/Fly/Railway/Heroku) → 1  (the default)
+//   • a second hop in front (e.g. Cloudflare → Render) → 2
+//   • no proxy (bare `node server.js` on a public port) → 0/false
+// Override per-environment with TRUST_PROXY rather than editing code.
+const trustProxy = process.env.TRUST_PROXY;
+app.set(
+  'trust proxy',
+  trustProxy == null ? 1
+  : trustProxy === 'false' ? false
+  : trustProxy === 'true' ? true
+  : Number.isNaN(Number(trustProxy)) ? trustProxy   // e.g. a subnet string
+  : Number(trustProxy)
+);
 
 // ---- Security headers (helmet) ----
 // CSP is allow-listed to exactly what the two apps load: supabase-js from
@@ -36,7 +53,12 @@ app.use(helmet({
       'style-src': ["'self'", 'https://fonts.googleapis.com', "'unsafe-inline'"],
       'font-src': ["'self'", 'https://fonts.gstatic.com'],
       'img-src': ["'self'", 'data:', 'https://*.googleusercontent.com'],
-      'connect-src': ["'self'", supabaseOrigin, 'ws:', 'wss:'].filter(Boolean),
+      // Only two connection targets: our own origin ('self' — covers the REST API
+      // and the same-origin Socket.IO transport, which falls back to same-origin
+      // long-polling if a browser won't upgrade ws under 'self') and Supabase
+      // (auth + REST). No bare ws:/wss: wildcard, so injected code can't open a
+      // socket to an arbitrary host and exfiltrate tokens.
+      'connect-src': ["'self'", supabaseOrigin].filter(Boolean),
       'object-src': ["'none'"],
       'base-uri': ["'self'"],
       'upgrade-insecure-requests': null, // don't force https in local dev
@@ -81,13 +103,24 @@ const redeemLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many attempts — wait a minute and try again.' },
 });
+// Client crash reports post here (unauthenticated — errors happen pre-login too),
+// so cap the write rate hard to keep it from being used to spam the log table.
+const clientErrorLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED' },
+});
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
 app.use('/api/vendor/redeem-preview', redeemLimiter);
+app.use('/api/client-error', clientErrorLimiter);
 
-// Static: student PWA at / , vendor terminal at /terminal
+// Static: student PWA at / , vendor terminal at /terminal , operator dash at /admin
 app.use('/', express.static(path.join(__dirname, 'public/student')));
 app.use('/terminal', express.static(path.join(__dirname, 'public/vendor')));
+app.use('/admin', express.static(path.join(__dirname, 'public/admin')));
 
 // Per-user API data must always be fresh — no ETag/304 revalidation, which was
 // letting the browser serve a stale cached balance.
@@ -99,6 +132,37 @@ app.use('/api', (_req, res, next) => {
 // API
 app.use('/api/me', studentRoutes);      // student-authenticated endpoints
 app.use('/api/vendor', vendorRoutes);   // vendor-authenticated endpoints
+app.use('/api/admin', adminRoutes);     // operator-only (ADMIN_EMAILS) analytics + errors
+
+// Client crash reporting: the student PWA and vendor terminal post uncaught
+// errors here so they land in the same error_logs the /admin page reads.
+// Unauthenticated (errors can happen before sign-in), validated + size-capped,
+// and rate-limited above. Any auth token is used best-effort to attribute a user.
+const CLIENT_ERROR_SOURCES = new Set(['student', 'vendor', 'admin']);
+app.post('/api/client-error', async (req, res) => {
+  const b = req.body ?? {};
+  if (!CLIENT_ERROR_SOURCES.has(b.source)) {
+    return res.status(400).json({ error: 'BAD_SOURCE' });
+  }
+  let userId = null;
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (token) {
+    try {
+      const { data } = await supabaseAuth.auth.getUser(token);
+      userId = data?.user?.id ?? null;
+    } catch { /* anonymous client error — fine */ }
+  }
+  await logError({
+    source: b.source,
+    message: b.message,
+    stack: b.stack,
+    path: b.url,
+    userId,
+    userAgent: req.headers['user-agent'],
+    context: b.context,
+  });
+  res.status(204).end();
+});
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
@@ -108,7 +172,7 @@ app.get('/api/public-config', (_req, res) =>
 );
 
 // Central error handler — routes call next(err)
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   const known = {
     INSUFFICIENT_POINTS: [400, 'Not enough points for this reward.'],
     REWARD_NOT_FOUND: [404, 'Reward not found or inactive.'],
@@ -125,6 +189,17 @@ app.use((err, _req, res, _next) => {
     return res.status(status).json({ error: key, message });
   }
   console.error(err);
+  // Unexpected failure → record it so it shows up on the /admin dashboard.
+  logError({
+    source: 'server',
+    message: err?.message,
+    stack: err?.stack,
+    path: req?.originalUrl,
+    method: req?.method,
+    status: 500,
+    userId: req?.user?.id ?? null,
+    userAgent: req?.headers?.['user-agent'],
+  });
   res.status(500).json({ error: 'SERVER_ERROR', message: 'Something went wrong.' });
 });
 

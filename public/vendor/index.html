@@ -304,7 +304,11 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Pinned version + Subresource Integrity — see the note in the student app.
+       Keep this in sync with public/student/index.html and public/admin/index.html. -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
+          integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
+          crossorigin="anonymous"></script>
   <script src="/terminal/terminal.js"></script>
 </body>
 </html>

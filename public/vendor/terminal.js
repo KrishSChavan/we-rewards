@@ -35,6 +35,27 @@ let undoExpiryTimer = null; // hides "Undo last" when the 1-min window elapses
 const UNDO_WINDOW_MS = 60_000;
 
 const $ = (id) => document.getElementById(id);
+
+/* ---------- client crash reporting ---------- */
+// Uncaught errors + rejections post to /api/client-error → the operator /admin
+// error log. Best-effort, non-blocking.
+function installErrorReporter() {
+  const send = async (message, stack, context) => {
+    let auth = {};
+    try {
+      const { data } = (await sb?.auth?.getSession?.()) ?? {};
+      if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
+    } catch { /* not signed in yet */ }
+    fetch('/api/client-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({ source: 'vendor', message, stack, url: location.pathname, context }),
+    }).catch(() => {});
+  };
+  window.addEventListener('error', (e) => send(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno }));
+  window.addEventListener('unhandledrejection', (e) => send(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
+}
+
 const screens = [
   'screen-login', 'screen-scan', 'screen-pad',
   'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
@@ -44,6 +65,7 @@ const screens = [
 /* ---------- boot ---------- */
 
 (async function boot() {
+  installErrorReporter();
   const pub = await (await fetch('/api/public-config')).json();
   // Separate storage key from the student app (same origin + project) so a
   // vendor sign-in never clobbers a student session on the same device.

@@ -1,69 +1,77 @@
 # Next steps
 
-The four items that used to live here — **automated tests + CI**, a **void/refund
-flow**, **vendor self-service settings**, and **student data export/deletion** —
-are now implemented. What each became, and the smaller follow-ups they left behind,
-are below.
+## Polish / hardening — do later (not yet implemented)
+
+Lower-severity items from the security review. None are exploitable by an
+outsider; they're insider-fraud limits and error-handling cleanups. Tackle when
+convenient — not blocking for the pilot.
+
+### 1. Award caps (rogue-cashier fraud limit)
+`POST /api/vendor/award` isn't PIN-gated (cashiers award all day, by design) and
+today accepts up to `$500 × ratio × 2x` in one tap with no per-shift ceiling — a
+dishonest cashier could mint points to an accomplice. Add sanity limits:
+- a lower per-award dollar cap (e.g. $200, or a vendor-configurable max), and/or
+- a per-cashier daily total, and/or
+- require the staff PIN for awards above some threshold.
+The audit log + Undo already give *detection*; this adds *prevention*.
+See `src/routes/vendor.js` (`/award`, the `dollarAmount > 500` check).
+
+### 2. PIN brute-force lockout (per-vendor, not just per-IP)
+The 4-digit staff PIN is only protected by a per-IP rate limit
+(`pinLimiter`, 15/15 min in `server.js`). An attacker who already has a vendor
+login can rotate IPs to keep guessing. Track failed attempts **per vendor** in
+the DB and lock PIN entry for a few minutes after N failures, independent of IP.
+Optionally allow a 6-digit PIN. Lower priority: the attacker must already be
+signed-in staff and the payoff is limited (refunds/settings/analytics).
+
+### 3. Return 400, not 500, on malformed IDs
+A few endpoints pass request-body IDs straight into a query on a `uuid` column;
+a non-UUID value makes Postgres throw and surfaces as a generic 500 instead of a
+clean 400. Not exploitable (Supabase parameterizes — no SQL injection), just
+wrong status codes + noisier logs. Add the same UUID-shape guard already used in
+`/api/vendor/reverse` (`/^[0-9a-f-]{36}$/i`) before the query.
+- `POST /api/vendor/reverse` — regex-passing-but-invalid UUIDs (e.g. 36 dashes)
+  reach the RPC and 500.
+- Also audit `create_redeem_code` / other body-ID → RPC paths. (Note: the
+  `/api/me/redeem-code` reward lookup ignores the query error and returns 404
+  `REWARD_NOT_FOUND`, so it's already 4xx — not a 500.)
 
 ---
 
-## ✅ Done
+## Operational follow-ups (still open)
 
-### 1. Automated tests + CI
-- `node:test` (no new runtime deps). `npm test` / `npm run test:unit` / `npm run test:integration`.
-- **Unit:** `scoreProfile` (extracted as a pure function from `computeTierProfile`)
-  covers the score/tier/multiplier mapping and both anti-farming caps; a middleware
-  test covers the `requirePin` no-token / no-PIN branches.
-- **Integration + security** (`test/integration/`): award, single-use redeem,
-  insufficient-balance rollback, expired code, and the void/refund reversal;
-  anon/authenticated denied on `award_points`/`redeem_by_code`; a PIN route with no
-  `X-Vendor-Pin` returns `PIN_REQUIRED`. **Opt-in** — skip unless `TEST_SUPABASE_*`
-  point at a disposable project.
-- **CI:** `.github/workflows/ci.yml` runs the unit suite on push/PR (+ advisory `npm audit`).
-
-### 2. Void / refund
-- `supabase/migration-010.sql`: `reverses` / `reversed_by` link columns +
-  `reverse_transaction(p_transaction_id, p_vendor_id)` (SECURITY DEFINER,
-  service-role only). Writes a compensating (negated) row, never deletes; balance
-  clamps at 0; refuses to double-reverse or reverse a reversal.
-- `POST /api/vendor/reverse` (PIN-gated); analytics rollup made sign-aware so a
-  void nets out. Terminal **STATS → Recent activity** has a two-tap **Undo**.
-
-### 3. Vendor self-service settings
-- `GET`/`PATCH /api/vendor/settings` (PIN-gated) with strict validation; PIN
-  re-hashed with bcrypt and existing sessions invalidated on change. Terminal
-  **SETTINGS** tab edits ratio, exact-entry, tier buttons, and PIN. No schema change.
-
-### 4. Student data export + deletion
-- `GET /api/me/export` (JSON download) and `POST /api/me/delete` in the Account tab.
-- Deletion cascades profile/balances/codes/score; `supabase/migration-011.sql`
-  switches `transactions.user_id` to `ON DELETE SET NULL` so history is **anonymized**
-  (kept), not cascade-deleted — vendor revenue totals stay intact.
+- **Multi-instance readiness.** The in-memory `express-rate-limit` store and the
+  adapter-less Socket.IO are correct for ONE instance only. Before scaling
+  horizontally, swap in a shared rate-limit store (e.g. `rate-limit-redis`) and
+  the Socket.IO Redis adapter.
+- **Vendor password reset / change-password flow.** Vendors sign in with the
+  email+password from the onboard script and have no way to change it in the
+  terminal. Add a change-password (and/or reset) flow before handing terminals
+  to real vendors.
+- **Privacy policy + ToS.** The app collects PII and already offers export/delete
+  (`/api/me/export`, `/api/me/delete`); surface a policy before a public launch.
 
 ---
 
-## ✅ Also done (a second pass)
+## ✅ Done (recent security-review pass)
 
-- **Quick-amount buttons are now a set dollar value** (`{label, amount}`, was a
-  `{min,max}` range) and **render as tap-to-award buttons on the AWARD screen**.
-  `migration-012.sql` converts existing rows; `allow_exact_entry = false` now hides
-  the keypad (falling back to it if a vendor has no quick buttons).
-- **Cashier-facing "Undo last"** on the AWARD/REDEEM scan screens (two-tap confirm,
-  PIN-gated), in addition to the per-row Undo on STATS.
+- **DB test suite run for real.** The integration + security suites now pass
+  against a real Supabase stack (local `supabase start`), not just in code —
+  atomic award/redeem/rollback, expired codes, void/refund + balance clamp +
+  1-minute window, and the anon/authenticated RPC-denial + PIN-gate regressions.
+  See "Running the DB tests locally" in the README.
+- **Supply-chain: SRI on supabase-js.** Both apps (+ /admin) pin an exact
+  supabase-js version from jsDelivr with a Subresource Integrity hash, so a
+  tampered CDN build can't run. Bump the version + hash together on upgrade.
+- **CSP `connect-src` scoped.** Dropped the bare `ws:`/`wss:` wildcard — only
+  `'self'` + the Supabase origin, so injected code can't open a socket to an
+  arbitrary host.
+- **`trust proxy` made explicit + configurable** via `TRUST_PROXY` (default 1 =
+  one PaaS proxy), with a note on when to change it.
+- **Operator `/admin` dashboard** (`ADMIN_EMAILS` allow-list): platform
+  analytics + a unified error log capturing server 500s and client-side crashes
+  from both apps (`error_logs`, migration-013; `/api/client-error`).
 
-## Smaller follow-ups still open
-
-- **Run the DB test suite for real.** The integration/security suites are written
-  but unverified here (no local Docker for `supabase start`). Stand up a disposable
-  project (or a CI `supabase/setup-cli` job), apply schema + migrations, set
-  `TEST_SUPABASE_*`, and confirm they pass; add the secrets to CI.
-- **Multi-instance rate limiting.** The in-memory `express-rate-limit` store is
-  correct for one instance only; swap in a shared store (e.g. `rate-limit-redis`)
-  before running more than one.
-
----
-
-*Already done before this pass (unchanged): the security hardening (migration-007
-RPC lockdown, server-side PIN + idle timeout, rate limiting, helmet), the tier
-write-amplification fix, fractional multipliers, the vendor analytics screen, and
-the UX/docs cleanup.*
+*Previously done (unchanged): migration-007 RPC lockdown, server-side PIN +
+idle timeout, rate limiting, helmet, void/refund, vendor self-service settings,
+student data export/deletion, tests + CI.*
