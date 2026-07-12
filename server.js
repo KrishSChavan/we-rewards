@@ -13,6 +13,7 @@ import adminRoutes from './src/routes/admin.js';
 import { supabaseAuth } from './src/lib/supabase.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
+import { requireJson } from './src/middleware/require-json.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -67,6 +68,11 @@ app.use(helmet({
   // Google avatars are cross-origin; don't let COEP/CORP block them.
   crossOriginEmbedderPolicy: false,
 }));
+
+// JSON-only content-type gate. Refuse any non-JSON request body (esp. XML — the
+// XXE vector) with 415 BEFORE express.json() or any other parser runs. We ship no
+// XML parser, so this is belt-and-suspenders that fails closed. See require-json.js.
+app.use(requireJson);
 
 app.use(express.json());
 
