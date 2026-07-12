@@ -1,0 +1,15 @@
+{
+  "name": "WeRewards Terminal",
+  "short_name": "WR Terminal",
+  "description": "Vendor point-of-sale — award points, redeem rewards, and manage items.",
+  "start_url": "/terminal/",
+  "scope": "/terminal/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef1f6",
+  "theme_color": "#12294b",
+  "icons": [
+    { "src": "/terminal/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/terminal/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

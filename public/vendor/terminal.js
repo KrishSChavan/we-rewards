@@ -107,6 +107,12 @@ const screens = [
   const { data } = await sb.auth.getSession();
   if (data?.session) await enterApp();
   else show('screen-login');
+
+  // Register the PWA service worker (scope /terminal/) so the terminal is
+  // installable to a device and its shell works offline. Best-effort.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/terminal/sw.js').catch(() => {});
+  }
 })();
 
 async function signIn() {
