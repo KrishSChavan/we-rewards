@@ -2,6 +2,9 @@
   "name": "psu-rewards",
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "node --watch server.js",
     "nodemon": "nodemon server.js",
