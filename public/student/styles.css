@@ -465,6 +465,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   width: 2.6rem; height: 2.6rem; border-radius: 50%;
   border: 2.5px solid var(--edge); background: var(--paper);
   font-size: 1.1rem; font-weight: 900;
+  color: var(--ink);
 }
 .detail-emoji { font-size: 3.4rem; }
 .detail-title { font-size: 1.7rem; font-weight: 900; line-height: 1.1; }
@@ -688,7 +689,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .data-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
 .data-btn:disabled { opacity: 0.55; }
 .data-btn-label { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-.data-btn-name { font-weight: 900; font-size: 1.05rem; }
+.data-btn-name { font-weight: 900; font-size: 1.05rem; color: var(--ink) }
 .data-btn-desc { font-weight: 600; font-size: 0.85rem; color: var(--muted); }
 .data-btn-chevron { flex-shrink: 0; font-weight: 900; font-size: 1.2rem; color: var(--muted); }
 .data-btn.danger .data-btn-name,
