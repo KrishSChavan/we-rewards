@@ -49,16 +49,17 @@ config — the terminal never sends a point value.
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
    - Supabase → Authentication → Providers → Google → paste Client ID + Secret
    - Supabase → Authentication → URL Configuration → set Site URL to where the app runs
-     (`http://localhost:3000` in dev) — OAuth redirects go there
+     (`https://we-rewards.com` in prod, `http://localhost:3000` in dev) — OAuth
+     redirects go there
 3. `cp .env.example .env` and fill in the keys. Set `ADMIN_EMAILS` to the
-   Google account(s) allowed into the `/admin` dashboard, and (in prod) add
-   `https://YOUR_APP/admin` + `http://localhost:3000/admin` to Supabase →
-   Authentication → URL Configuration → Redirect URLs so admin sign-in returns
-   to the dashboard.
+   Google account(s) allowed into the `/admin` dashboard, and add these to
+   Supabase → Authentication → URL Configuration → Redirect URLs so sign-in
+   returns to the right place:
+   `https://we-rewards.com/**`, `http://localhost:3000/**`.
 4. `npm install && npm run dev`
 5. Onboard your first vendor:
    ```
-   npm run onboard -- --name "Yallah Taco" --slug yallah-taco \
+   npm run onboard -- --name "Local Eats" --slug local-eats \
      --email owner@example.com --password TempPass123! --ratio 10 --pin 4321
    ```
 6. Add that vendor's rewards rows in the Supabase table editor

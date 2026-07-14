@@ -16,7 +16,7 @@ create table public.profiles (
 create table public.vendors (
   id                uuid primary key default gen_random_uuid(),
   name              text not null,
-  slug              text not null unique,           -- e.g. 'yallah-taco'
+  slug              text not null unique,           -- e.g. 'local-eats'
   points_per_dollar numeric(6,2) not null default 10,
   -- Quick-amount buttons shown on the terminal's AWARD screen. Each is a fixed
   -- dollar amount; points are derived at award time: floor(amount * points_per_dollar).

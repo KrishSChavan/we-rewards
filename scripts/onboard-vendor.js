@@ -2,8 +2,8 @@
  * One-time vendor onboarding (you run this, not the vendor):
  *
  *   node scripts/onboard-vendor.js \
- *     --name "Yallah Taco" --slug yallah-taco \
- *     --email owner@yallah.com --password TempPass123! \
+ *     --name "Local Eats" --slug local-eats \
+ *     --email owner@example.com --password TempPass123! \
  *     --ratio 10 --pin 4321
  *
  * Creates: auth user for the vendor login, vendors row, vendor_staff link.
