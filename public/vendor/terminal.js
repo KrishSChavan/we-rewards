@@ -103,6 +103,8 @@ const screens = [
   $('redeem-code-form').addEventListener('submit', (e) => { e.preventDefault(); submitRedeemCode(); });
   $('earn-code-input').addEventListener('input', (e) => { e.target.value = normalizeEarn(e.target.value); });
   $('redeem-code-input').addEventListener('input', (e) => { e.target.value = normalizeRedeem(e.target.value); });
+  $('earn-keypad').addEventListener('click', (e) => onCodeKey(e, 'earn-code-input', normalizeEarn));
+  $('redeem-keypad').addEventListener('click', (e) => onCodeKey(e, 'redeem-code-input', normalizeRedeem));
 
   const { data } = await sb.auth.getSession();
   if (data?.session) await enterApp();
@@ -246,6 +248,23 @@ function normalizeEarn(v) {
 
 function normalizeRedeem(v) {
   return String(v || '').replace(/\D/g, '').slice(0, 4);
+}
+
+// On-screen number pad next to a code field: digits append, ⌫ deletes the last
+// digit, Clear empties. `normalize` caps the length + strips non-digits, so this
+// stays in lockstep with what the field would accept from a physical keyboard.
+function onCodeKey(e, inputId, normalize) {
+  const btn = e.target.closest('button');
+  const k = btn?.dataset?.k;
+  if (!k) return;
+  const input = $(inputId);
+  let v = input.value;
+  if (k === 'back') v = v.slice(0, -1);
+  else if (k === 'clear') v = '';
+  else v = v + k;
+  input.value = normalize(v);
+  // Deliberately don't focus the input: the value is set directly, and focusing
+  // would re-surface the device's native keyboard over the on-screen pad.
 }
 
 /* ---------- AWARD flow: scan → name + balance + $ keypad ---------- */

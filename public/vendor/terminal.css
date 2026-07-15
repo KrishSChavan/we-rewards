@@ -141,6 +141,25 @@ button { font-family: inherit; border: none; cursor: pointer; }
 
 .last-activity { color: var(--muted); font-weight: 500; font-size: 1.05rem; min-height: 1.4em; text-align: center; }
 
+/* Code field (left) + on-screen number pad (right), spaced neatly. Wraps to a
+   stacked column on narrow screens (see the media query below). */
+.code-pad-layout {
+  display: flex; flex-direction: row; flex-wrap: wrap;
+  /* top-align so the code field lines up with the pad's top row, rather than
+     floating centered against the taller pad */
+  align-items: flex-start; justify-content: center;
+  gap: clamp(1.5rem, 4vw, 3rem);
+  width: 100%;
+}
+.code-pad-left {
+  display: flex; flex-direction: column; gap: 1rem; align-items: stretch;
+  width: min(24rem, 86vw);
+}
+.code-pad-left .code-entry { width: 100%; }
+.code-pad-left .code-hint,
+.code-pad-left .last-activity { margin: 0; }
+/* .code-keypad reuses the shared .keypad grid; nothing extra needed here. */
+
 /* ---------- customer + tiers ---------- */
 
 .customer-screen { justify-content: flex-start; padding-top: 2rem; }
@@ -309,6 +328,9 @@ button { font-family: inherit; border: none; cursor: pointer; }
   .tier-grid { grid-template-columns: 1fr; }
   .customer-head { flex-direction: column; align-items: flex-start; }
   .manage-head { flex-direction: column; align-items: flex-start; gap: 0.8rem; }
+  /* stack the code field above the number pad on phones (re-center now that
+     the cross axis is horizontal) */
+  .code-pad-layout { flex-direction: column; align-items: center; }
 }
 
 /* ---------- quick-redeem buttons ---------- */

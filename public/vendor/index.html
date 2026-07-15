@@ -54,13 +54,23 @@
       <!-- ===== AWARD: ENTER CODE ===== -->
       <section id="screen-scan" class="screen scan-screen" hidden>
         <h2 class="scan-title">ENTER CUSTOMER<br />CODE</h2>
-        <form id="earn-code-form" class="code-entry">
-          <input id="earn-code-input" class="code-input" type="text" inputmode="numeric"
-                 autocomplete="off" spellcheck="false"
-                 maxlength="6" placeholder="123456" aria-label="Customer's 6-digit code" />
-          <button type="submit" class="btn-primary code-submit">Find customer</button>
-        </form>
-        <p class="code-hint">Ask the customer for the 6-digit code shown in their app.</p>
+        <div class="code-pad-layout">
+          <div class="code-pad-left">
+            <form id="earn-code-form" class="code-entry">
+              <input id="earn-code-input" class="code-input" type="text" inputmode="numeric"
+                     autocomplete="off" spellcheck="false"
+                     maxlength="6" placeholder="123456" aria-label="Customer's 6-digit code" />
+              <button type="submit" class="btn-primary code-submit">Find customer</button>
+            </form>
+            <p class="code-hint">Ask the customer for the 6-digit code shown in their app.</p>
+          </div>
+          <div class="keypad code-keypad" id="earn-keypad" aria-label="Number pad">
+            <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+            <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+            <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+            <button type="button" data-k="clear" class="key-dim">Clear</button><button type="button" data-k="0">0</button><button type="button" data-k="back" class="key-dim">⌫</button>
+          </div>
+        </div>
         <p id="last-activity" class="last-activity"></p>
         <button id="undo-last-award" class="undo-last" type="button" hidden>Undo last</button>
       </section>
@@ -121,13 +131,23 @@
       <!-- ===== REDEEM: ENTER CODE ===== -->
       <section id="screen-redeem-scan" class="screen scan-screen scan-redeem" hidden>
         <h2 class="scan-title">ENTER REDEEM<br />CODE</h2>
-        <form id="redeem-code-form" class="code-entry">
-          <input id="redeem-code-input" class="code-input" type="text" inputmode="numeric"
-                 autocomplete="off" spellcheck="false"
-                 maxlength="4" placeholder="0000" aria-label="4-digit redemption code" />
-          <button type="submit" class="btn-confirm code-submit">Find redemption</button>
-        </form>
-        <p class="last-activity">Customer taps an item in their app, then Redeem, to get their 4-digit code.</p>
+        <div class="code-pad-layout">
+          <div class="code-pad-left">
+            <form id="redeem-code-form" class="code-entry">
+              <input id="redeem-code-input" class="code-input" type="text" inputmode="numeric"
+                     autocomplete="off" spellcheck="false"
+                     maxlength="4" placeholder="0000" aria-label="4-digit redemption code" />
+              <button type="submit" class="btn-confirm code-submit">Find redemption</button>
+            </form>
+            <p class="last-activity">Customer taps an item in their app, then Redeem, to get their 4-digit code.</p>
+          </div>
+          <div class="keypad code-keypad" id="redeem-keypad" aria-label="Number pad">
+            <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+            <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+            <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+            <button type="button" data-k="clear" class="key-dim">Clear</button><button type="button" data-k="0">0</button><button type="button" data-k="back" class="key-dim">⌫</button>
+          </div>
+        </div>
         <button id="undo-last-redeem" class="undo-last" type="button" hidden>Undo last</button>
       </section>
 
