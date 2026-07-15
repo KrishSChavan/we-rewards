@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v13';
+const CACHE = 'werewards-v14';
 const SHELL = ['/', '/theme-init.js', '/styles.css', '/app.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
