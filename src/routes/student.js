@@ -37,7 +37,7 @@ router.get('/balances', async (req, res, next) => {
 
 /**
  * POST /api/me/earn-code
- * The 6-char A–Z0–9 identity code the student shows to earn points. The RPC
+ * The 6-digit identity code the student shows to earn points. The RPC
  * reuses the student's live code (stable across the app's periodic refresh) and
  * guarantees it's unique across all live codes. Client refreshes every ~2 min.
  */

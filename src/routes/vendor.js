@@ -14,10 +14,10 @@ router.use(requireVendor);
 
 // ---- short-code resolution (replaces the old signed QR tokens) ----
 
-/** Resolve a live 6-char earn code to its student, or throw CODE_INVALID. */
+/** Resolve a live 6-digit earn code to its student, or throw CODE_INVALID. */
 async function resolveEarnCode(code) {
-  const c = String(code ?? '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{6}$/.test(c)) throw new Error('CODE_INVALID');
+  const c = String(code ?? '').trim();
+  if (!/^[0-9]{6}$/.test(c)) throw new Error('CODE_INVALID');
   const { data } = await supabaseAdmin
     .from('earn_codes')
     .select('user_id')
@@ -58,7 +58,7 @@ router.get('/config', (req, res) => {
 
 /**
  * POST /api/vendor/scan  { code }
- * Resolve the customer's 6-char earn code so the terminal can show name +
+ * Resolve the customer's 6-digit earn code so the terminal can show name +
  * balance BEFORE the vendor enters an amount. Doesn't award anything.
  */
 router.post('/scan', async (req, res, next) => {

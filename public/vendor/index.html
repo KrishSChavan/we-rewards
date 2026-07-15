@@ -55,12 +55,12 @@
       <section id="screen-scan" class="screen scan-screen" hidden>
         <h2 class="scan-title">ENTER CUSTOMER<br />CODE</h2>
         <form id="earn-code-form" class="code-entry">
-          <input id="earn-code-input" class="code-input" type="text" inputmode="text"
-                 autocomplete="off" autocapitalize="characters" spellcheck="false"
-                 maxlength="6" placeholder="A1B2C3" aria-label="Customer's 6-character code" />
+          <input id="earn-code-input" class="code-input" type="text" inputmode="numeric"
+                 autocomplete="off" spellcheck="false"
+                 maxlength="6" placeholder="123456" aria-label="Customer's 6-digit code" />
           <button type="submit" class="btn-primary code-submit">Find customer</button>
         </form>
-        <p class="code-hint">Ask the customer for the 6-character code shown in their app.</p>
+        <p class="code-hint">Ask the customer for the 6-digit code shown in their app.</p>
         <p id="last-activity" class="last-activity"></p>
         <button id="undo-last-award" class="undo-last" type="button" hidden>Undo last</button>
       </section>

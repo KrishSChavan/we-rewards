@@ -27,8 +27,8 @@ Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one
 - **Keys.** The browser only ever gets the public anon/publishable key (RLS
   protects reads). The `service_role`/secret key is server-only — never shipped.
 
-**Code security model:** the student shows a 6-char A–Z0–9 identity code
-(server-generated, always a letter/digit mix, unique among all live codes,
+**Code security model:** the student shows a 6-digit identity code
+(server-generated, unique among all live codes,
 ~5-min TTL, refreshed client-side). Redemption codes are 4 digits, unique
 among all live codes, and
 single-use — consumed atomically on redeem (`redeem_by_code`) and freed for
@@ -38,12 +38,13 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-013.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-014.sql` in order.
    (migration-007 locks down the RPCs and adds the PIN-session table — required;
    migration-010 adds the void/refund RPC; migration-011 lets account deletion
    anonymize a student's transactions instead of being blocked by them;
    migration-012 switches the quick-amount buttons to a fixed dollar amount;
-   migration-013 adds the `error_logs` table behind the `/admin` dashboard.)
+   migration-013 adds the `error_logs` table behind the `/admin` dashboard;
+   migration-014 switches earn codes to 6 numeric digits.)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`

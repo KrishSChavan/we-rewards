@@ -1,5 +1,5 @@
 /* WeRewards — vendor terminal client
-   Tabs:  AWARD  → type customer's 6-char code → name + balance + $ keypad → award
+   Tabs:  AWARD  → type customer's 6-digit code → name + balance + $ keypad → award
           REDEEM → PIN → type 4-digit redeem code → confirm (name + points + item) → deduct
           ITEMS  → PIN → manage rewards (add / edit / on-off)
 */
@@ -9,7 +9,7 @@ let config = null;         // vendor config from /api/vendor/config
 let rewards = [];          // vendor's rewards from /api/vendor/rewards
 let mode = 'award';        // 'award' | 'redeem' | 'manage'
 let pinTarget = null;      // where the PIN gate leads on success
-let currentEarnCode = null;    // customer's 6-char earn code on the award pad
+let currentEarnCode = null;    // customer's 6-digit earn code on the award pad
 let currentMultiplier = 1;     // scanned customer's tier multiplier (1x/1.5x/2x)
 let pendingRedeemCode = null;  // 4-digit redeem code awaiting vendor confirmation
 let padValue = '';         // exact-amount entry string
@@ -238,10 +238,10 @@ function switchMode(next) {
 
 /* ---------- code entry helpers ---------- */
 
-// Earn codes are 6-char A–Z0–9; redeem codes are 4 digits. Normalize as the
+// Earn codes are 6 digits; redeem codes are 4 digits. Normalize as the
 // vendor types so the field only ever holds valid characters.
 function normalizeEarn(v) {
-  return String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+  return String(v || '').replace(/\D/g, '').slice(0, 6);
 }
 
 function normalizeRedeem(v) {
@@ -263,7 +263,7 @@ async function submitEarnCode() {
   if (busy) return;
   const code = normalizeEarn($('earn-code-input').value);
   if (code.length !== 6) {
-    return flood('error', 'ENTER 6 CHARACTERS', 'The customer’s code is 6 letters/numbers.', enterScan);
+    return flood('error', 'ENTER 6 DIGITS', 'The customer’s code is 6 numbers.', enterScan);
   }
   busy = true;
   try {
