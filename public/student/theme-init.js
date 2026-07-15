@@ -5,7 +5,7 @@
   try {
     var t = localStorage.getItem('psu-theme');
     if (t !== 'dark' && t !== 'light') {
-      t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      t = 'dark';   // dark is the default until the user explicitly chooses
     }
     document.documentElement.setAttribute('data-theme', t);
   } catch (e) {}

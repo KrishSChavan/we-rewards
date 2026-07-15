@@ -158,11 +158,11 @@ function render(session) {
 
 const THEME_KEY = 'psu-theme';
 
-// an explicit saved choice wins; otherwise follow the OS setting
+// an explicit saved choice wins; otherwise default to dark
 function currentTheme() {
   const saved = localStorage.getItem(THEME_KEY);
   if (saved === 'dark' || saved === 'light') return saved;
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return 'dark';
 }
 
 function applyTheme(theme) {
