@@ -509,16 +509,17 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .install-steps-lead { width: 100%; font-weight: 800; color: var(--ink); font-size: 1.05rem; }
 
 /* numbered steps: reuse the sticker look (chunky border, hard offset) */
-.install-step-list { width: 100%; list-style: none; display: flex; flex-direction: column; gap: 0.6rem; }
+.install-step-list { width: 100%; list-style: none; display: flex; flex-direction: column; gap: 0.6rem; counter-reset: install-step; }
 .install-step-list li {
   display: flex; align-items: flex-start; gap: 0.75rem;
+  counter-increment: install-step;
   background: var(--paper);
   border: 2.5px solid var(--edge); border-radius: 0.9rem;
   padding: 0.8rem 0.9rem;
   font-weight: 600; line-height: 1.4; color: var(--ink);
 }
 .install-step-list li::before {
-  content: counter(list-item);
+  content: counter(install-step);
   flex: 0 0 1.7rem; height: 1.7rem;
   display: grid; place-items: center;
   background: var(--navy); color: #fff;
