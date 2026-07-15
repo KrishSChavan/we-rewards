@@ -500,6 +500,32 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   padding: 0.4rem 0.85rem; border-radius: 999px; font-variant-numeric: tabular-nums;
 }
 
+/* ---------- "add to home screen" prompt ---------- */
+
+/* both the ask and the steps span the sheet's full width */
+.install-ask, .install-steps { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 0.4rem; }
+.install-steps { text-align: left; gap: 0.7rem; }
+
+.install-steps-lead { width: 100%; font-weight: 800; color: var(--ink); font-size: 1.05rem; }
+
+/* numbered steps: reuse the sticker look (chunky border, hard offset) */
+.install-step-list { width: 100%; list-style: none; display: flex; flex-direction: column; gap: 0.6rem; }
+.install-step-list li {
+  display: flex; align-items: flex-start; gap: 0.75rem;
+  background: var(--paper);
+  border: 2.5px solid var(--edge); border-radius: 0.9rem;
+  padding: 0.8rem 0.9rem;
+  font-weight: 600; line-height: 1.4; color: var(--ink);
+}
+.install-step-list li::before {
+  content: counter(list-item);
+  flex: 0 0 1.7rem; height: 1.7rem;
+  display: grid; place-items: center;
+  background: var(--navy); color: #fff;
+  border-radius: 50%; font-weight: 900; font-size: 0.95rem;
+}
+.install-step-list .step-ico { font-size: 1.15rem; }
+
 /* =====================================================
    Signed-in app shell: sliding tabs + bottom nav
    ===================================================== */

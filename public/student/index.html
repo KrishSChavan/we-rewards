@@ -278,6 +278,35 @@
     </div>
   </div>
 
+  <!-- "add to home screen" prompt: shown once per page load on a phone browser
+       (skipped when already installed / running standalone). "Yes" expands to
+       device-specific steps for iOS Safari vs Android Chrome. -->
+  <div id="install-modal" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <button id="install-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="detail-emoji">📲</p>
+      <h2 class="detail-title">Add WeRewards to your phone</h2>
+      <p class="detail-desc">
+        Pop it on your home screen and it opens like a real app — full screen, loads
+        faster, and your code is one tap away. No app store, no download.
+      </p>
+
+      <!-- initial ask -->
+      <div id="install-ask" class="install-ask">
+        <button id="install-yes" class="btn-redeem" type="button">Yes, show me how</button>
+        <button id="install-no" class="detail-textbtn" type="button">Not now</button>
+      </div>
+
+      <!-- expands on "Yes": steps filled per-device by app.js -->
+      <div id="install-steps" class="install-steps" hidden>
+        <button id="install-native" class="btn-redeem" type="button" hidden>Install app</button>
+        <p id="install-steps-lead" class="install-steps-lead"></p>
+        <ol id="install-steps-list" class="install-step-list"></ol>
+        <button id="install-done" class="detail-textbtn" type="button">Got it</button>
+      </div>
+    </div>
+  </div>
+
   <!-- tier info popover: fades in on the (i), closes via ✕ or outside click -->
   <div id="tier-info" class="tier-info-overlay" hidden>
     <div id="tier-info-card" class="tier-info-card" role="dialog" aria-label="How the tier score works">
