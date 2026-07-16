@@ -275,7 +275,8 @@ function enterScan() {
   show('screen-scan');
   const input = $('earn-code-input');
   input.value = '';
-  input.focus();
+  // Don't auto-focus: on a tablet that pops the native keyboard, and entry now
+  // goes through the on-screen digit pad. Tapping the field still works.
 }
 
 async function submitEarnCode() {
@@ -448,7 +449,8 @@ function enterRedeemScan() {
   show('screen-redeem-scan');
   const input = $('redeem-code-input');
   input.value = '';
-  input.focus();
+  // Don't auto-focus: on a tablet that pops the native keyboard, and entry now
+  // goes through the on-screen digit pad. Tapping the field still works.
 }
 
 /** 4-digit code entered → preview (nothing deducted yet) → "is this the user?" */
