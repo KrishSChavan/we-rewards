@@ -89,7 +89,7 @@
           <h3>Vendors</h3>
           <span id="vendors-count" class="chart-max"></span>
         </div>
-        <p class="muted">Toggle a vendor off to cut it off completely — hidden from students and its terminal is blocked. Points and history are kept, so turning it back on restores everything.</p>
+        <p class="muted">Toggle a vendor off to cut it off completely — hidden from students and its terminal is blocked. Points and history are kept, so turning it back on restores everything. <strong>Delete</strong> wipes a vendor and its data (logo, rewards, balances, login) for good; past transactions stay but show as a generic “Vendor” — that can’t be undone.</p>
         <p id="vendor-error" class="field-error" role="alert" hidden></p>
         <div id="vendor-list" class="vendor-list"></div>
       </div>
@@ -106,7 +106,10 @@
             <button class="err-filter" data-src="admin">Admin</button>
           </div>
         </div>
-        <p class="muted">Server 500s and client crashes (tap a row for the stack). Newest first.</p>
+        <div class="card-note-row">
+          <p class="muted">Server 500s and client crashes (tap a row for the stack). Newest first.</p>
+          <button id="clear-errors-btn" class="btn-clear" type="button">Clear all</button>
+        </div>
         <div id="error-list" class="error-list"></div>
       </div>
     </main>

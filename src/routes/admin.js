@@ -216,6 +216,66 @@ router.patch('/vendors/:id', async (req, res, next) => {
 });
 
 /**
+ * DELETE /api/admin/vendors/:id
+ * Hard-delete a vendor — the irreversible counterpart to the `active` toggle.
+ * Removing the vendors row cascades away everything vendor-scoped (staff links,
+ * balances, rewards, redeem codes, PIN sessions) and clears the logo, which is
+ * stored on the row itself. Transaction rows are KEPT but anonymized:
+ * migration-017 switches the vendor_id + reward_id FKs to ON DELETE SET NULL, so
+ * a student's history survives (rendered as a generic "Vendor") and the platform
+ * totals don't silently drop.
+ *
+ * The vendor's dedicated login account(s) are removed too, so nothing lingers —
+ * but ONLY a login that, after this delete, is no longer staff of any vendor. A
+ * multi-location owner who still runs another vendor keeps their login (and its
+ * access there). Deleting the auth user cascades its profile/balances; its own
+ * transactions, if any, anonymize via migration-011. Best-effort and non-fatal:
+ * the vendor is already gone, so a failed auth cleanup just leaves an inert
+ * login rather than 500-ing the whole request. Unlike the toggle, none of this
+ * can be undone.
+ */
+router.delete('/vendors/:id', async (req, res, next) => {
+  try {
+    // Same guard as PATCH: a malformed id is a clean 404, not a uuid cast 500.
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    }
+
+    // Read the linked login accounts BEFORE the delete — the vendors delete
+    // cascades vendor_staff away, so they're unreadable afterward.
+    const { data: staff, error: staffErr } = await supabaseAdmin
+      .from('vendor_staff')
+      .select('user_id')
+      .eq('vendor_id', req.params.id);
+    if (staffErr) throw staffErr;
+
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .delete()
+      .eq('id', req.params.id)
+      .select('id')          // returns the row only if one was actually deleted
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+
+    // Remove each login that's now orphaned (no remaining vendor_staff link).
+    for (const { user_id: uid } of staff ?? []) {
+      const { count } = await supabaseAdmin
+        .from('vendor_staff')
+        .select('vendor_id', { count: 'exact', head: true })
+        .eq('user_id', uid);
+      if (!count) {
+        await supabaseAdmin.auth.admin.deleteUser(uid).catch(() => {});
+      }
+    }
+
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /api/admin/errors?source=&limit=
  * The most recent error_logs rows (server 500s + client-reported errors),
  * newest first. Optional `source` filter (server|student|vendor|admin).
@@ -236,6 +296,56 @@ router.get('/errors', async (req, res, next) => {
     const { data, error } = await q;
     if (error) throw error;
     res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/admin/errors/:id
+ * Permanently remove one error_logs row — the operator dismissing a log they've
+ * handled (or noise) so it never shows on the dashboard again. Deletes only the
+ * one row; irreversible.
+ */
+router.delete('/errors/:id', async (req, res, next) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Error not found.' });
+    }
+    const { data, error } = await supabaseAdmin
+      .from('error_logs')
+      .delete()
+      .eq('id', req.params.id)
+      .select('id')          // returns the row only if one was actually deleted
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Error not found.' });
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/admin/errors?source=
+ * Bulk-clear the error log — the "Clear all" control. With a valid `source`
+ * filter it clears just that source (matching whatever the dashboard is filtered
+ * to); with no source it wipes the whole log. Irreversible.
+ */
+router.delete('/errors', async (req, res, next) => {
+  try {
+    const source = req.query.source;
+    let q = supabaseAdmin.from('error_logs').delete();
+    if (source && ['server', 'student', 'vendor', 'admin'].includes(source)) {
+      q = q.eq('source', source);
+    } else {
+      // PostgREST refuses an unfiltered DELETE; `id is not null` matches every
+      // row (id is the primary key, never null) to clear the whole table.
+      q = q.not('id', 'is', null);
+    }
+    const { error } = await q;
+    if (error) throw error;
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

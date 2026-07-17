@@ -38,7 +38,7 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-016.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-017.sql` in order.
    (migration-007 locks down the RPCs and adds the PIN-session table — required;
    migration-010 adds the void/refund RPC; migration-011 lets account deletion
    anonymize a student's transactions instead of being blocked by them;
@@ -46,7 +46,9 @@ config — the terminal never sends a point value.
    migration-013 adds the `error_logs` table behind the `/admin` dashboard;
    migration-014 switches earn codes to 6 numeric digits;
    migration-015 adds the vendor address + geocoded lat/lng for the map card;
-   migration-016 adds the vendor logo column.)
+   migration-016 adds the vendor logo column;
+   migration-017 lets an admin hard-delete a vendor by anonymizing its
+   transactions instead of being blocked by them.)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
@@ -160,6 +162,15 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   students, transactions), today / 7-day / 30-day activity (awards, redemptions,
   points, revenue, active + new customers), a 14-day revenue series, and top
   vendors by revenue.
+- `GET /api/admin/vendors` + `PATCH /api/admin/vendors/:id` — the vendor control
+  panel: flip a vendor's `active` kill-switch (off = hidden from students and its
+  terminal blocked, but all data kept, so it's reversible) or set its street
+  address. `DELETE /api/admin/vendors/:id` **hard-deletes** a vendor — cascades
+  away its rewards / balances / staff links and clears the logo, while
+  transactions are kept but anonymized (`vendor_id → null`, migration-017) so a
+  student's history renders the gone vendor as a generic "Vendor". It also
+  removes each linked login account, but only one left staffing no other vendor
+  (a multi-location owner keeps theirs). Irreversible, unlike the toggle.
 - `GET /api/admin/errors` — the unified **error log**: unexpected server 500s
   (captured in the central error handler) plus client-side crashes from the
   student PWA and vendor terminal, which post uncaught errors +

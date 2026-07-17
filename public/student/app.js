@@ -456,7 +456,10 @@ function renderHistory(items) {
 
 function historyRow(tx) {
   const earn = tx.type === 'earn';
-  const vendorName = tx.vendors?.name ?? 'a spot';
+  // Falls back to a generic label when the vendor is gone: a deleted vendor
+  // (admin dashboard) leaves anonymized transactions with vendor_id → null, so
+  // the joined vendors row is missing (migration-017).
+  const vendorName = tx.vendors?.name ?? 'Vendor';
   const reward = tx.rewards?.title;
   const time = new Date(tx.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 

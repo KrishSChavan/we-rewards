@@ -22,6 +22,7 @@ const $ = (id) => document.getElementById(id);
   $('login-btn').addEventListener('click', signIn);
   $('signout-btn').addEventListener('click', signOut);
   $('refresh-btn').addEventListener('click', loadAll);
+  $('clear-errors-btn').addEventListener('click', clearErrors);
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
 
@@ -126,10 +127,7 @@ function renderOverview(d) {
   $('tot-vendors').textContent = num(d.totals?.vendors);
   $('tot-students').textContent = num(d.totals?.students);
   $('tot-transactions').textContent = num(d.totals?.transactions);
-  const err24 = d.errors?.last24h ?? 0;
-  $('tot-errors').textContent = num(err24);
-  $('tot-errors-card').classList.toggle('is-alert', err24 > 0);
-  $('tot-errors-sub').textContent = `${num(d.errors?.total)} all-time`;
+  renderErrorCard(d.errors ?? {});
 
   // today
   $('td-revenue').textContent = money(d.today?.revenue);
@@ -141,6 +139,28 @@ function renderOverview(d) {
   fillWindow('win-7', d.last7 ?? {});
   fillWindow('win-30', d.last30 ?? {});
   renderTopVendors(d.topVendors ?? []);
+}
+
+// The top "Errors · 24h" tile: 24h count, all-time subtotal, and a red alert
+// border when there's anything in the last 24h. Split out so a log deletion can
+// refresh just this tile (via refreshErrorCard) without rebuilding the dashboard.
+function renderErrorCard(errors) {
+  const err24 = errors?.last24h ?? 0;
+  $('tot-errors').textContent = num(err24);
+  $('tot-errors-card').classList.toggle('is-alert', err24 > 0);
+  $('tot-errors-sub').textContent = `${num(errors?.total)} all-time`;
+}
+
+// Re-pull the error counts after a delete so the top tile stays in sync with the
+// log below it. Overview is the source of truth for the counts (server-side
+// count queries); we render only its `errors` block and leave the rest untouched.
+async function refreshErrorCard() {
+  try {
+    const res = await authFetch('/api/admin/overview');
+    if (!res.ok) return;
+    const d = await res.json();
+    renderErrorCard(d.errors ?? {});
+  } catch { /* non-fatal — the tile just keeps its last value until next refresh */ }
 }
 
 function fillWindow(id, b) {
@@ -200,7 +220,7 @@ function paintVendorRow(row, toggle, v) {
 
 function showVendorError() {
   const el = $('vendor-error');
-  el.textContent = 'Couldn’t update that vendor. Check your connection and try again.';
+  el.textContent = 'Couldn’t complete that action. Check your connection and try again.';
   el.hidden = false;
 }
 
@@ -239,7 +259,19 @@ function renderVendors() {
     paintVendorRow(row, toggle, v);
     toggle.addEventListener('click', () => toggleVendor(v, toggle, row));
 
-    top.append(info, toggle);
+    // Permanent delete — the irreversible counterpart to the on/off switch.
+    const del = document.createElement('button');
+    del.className = 'vendor-delete';
+    del.type = 'button';
+    del.textContent = 'Delete';
+    del.setAttribute('aria-label', `Delete ${v.name}`);
+    del.addEventListener('click', () => deleteVendor(v, del, row));
+
+    const actions = document.createElement('div');
+    actions.className = 'vendor-actions';
+    actions.append(toggle, del);
+
+    top.append(info, actions);
 
     // Address editor: sets the street address shown as a tappable map on the
     // student card. Saving geocodes it server-side; the note shows the result.
@@ -340,6 +372,36 @@ async function toggleVendor(v, toggle, row) {
   }
 }
 
+// Permanently delete a vendor. Unlike the toggle (reversible, non-destructive),
+// this wipes the vendor and everything it owns and CANNOT be undone — so it's
+// gated behind an explicit confirm that spells out what's removed vs. kept.
+async function deleteVendor(v, btn, row) {
+  if (!confirm(
+    `Permanently DELETE “${v.name}”?\n\n` +
+    `This removes the vendor and all its data — logo, rewards, point balances, ` +
+    `and its login account — and CANNOT be undone. Past transactions are kept ` +
+    `but show as “Vendor” in student history.\n\n` +
+    `To just take it offline instead, use the ON/OFF switch.`
+  )) return;
+
+  $('vendor-error').hidden = true;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/vendors/${v.id}`, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) { showVendorError(); btn.disabled = false; return; }
+    // Drop it from the in-memory roster and the DOM, then refresh the count. If
+    // that was the last vendor, re-render to show the "No vendors yet." state.
+    vendors = vendors.filter((x) => x.id !== v.id);
+    row.remove();
+    if (!vendors.length) renderVendors();
+    else $('vendors-count').textContent = vendorCountText();
+  } catch {
+    showVendorError();
+    btn.disabled = false;
+  }
+}
+
 // Single-series revenue bars for the last 14 days (mirrors the vendor terminal).
 function buildChart(daily) {
   const wrap = $('chart');
@@ -404,13 +466,57 @@ function renderErrors(items) {
         <span class="err-badge err-${escapeHtml(e.source)}">${escapeHtml(e.source)}</span>
         <span class="err-msg">${escapeHtml(e.message)}</span>
         <span class="err-when">${escapeHtml(when)}</span>
+        <button class="err-del" type="button" title="Delete this error" aria-label="Delete this error">×</button>
       </summary>
       <div class="err-detail">
         <p class="err-where">${escapeHtml(where || '—')}${e.status ? ` · ${e.status}` : ''}</p>
         ${details ? `<pre>${escapeHtml(details)}</pre>` : ''}
       </div>`;
+    row.querySelector('.err-del').addEventListener('click', (ev) => deleteError(e.id, row, ev));
     wrap.appendChild(row);
   });
+}
+
+// Permanently delete one error_logs row. The X lives inside <summary>, so we
+// stop the click from toggling the row open/closed. On success we just drop the
+// row from the DOM (and repaint the empty state if it was the last one).
+async function deleteError(id, row, ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/errors/${id}`, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) { btn.disabled = false; return; }
+    row.remove();
+    refreshErrorCard();                                 // keep the top tile in sync
+    if (!$('error-list').children.length) loadErrors(); // re-fetch → "No errors" state
+  } catch {
+    btn.disabled = false;
+  }
+}
+
+// Bulk-clear the log. Respects the active source filter: with a filter on, it
+// clears just that source (what you're looking at); with "All" selected, it
+// wipes the whole log. Confirmed first — unlike the single-row ×, this is bulk.
+async function clearErrors() {
+  const scope = errorSource ? `all “${errorSource}” errors` : 'ALL errors';
+  if (!confirm(`Permanently delete ${scope} from the log? This can’t be undone.`)) return;
+
+  const btn = $('clear-errors-btn');
+  btn.disabled = true;
+  try {
+    const q = errorSource ? `?source=${encodeURIComponent(errorSource)}` : '';
+    const res = await authFetch('/api/admin/errors' + q, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    if (res.ok) {
+      await loadErrors();   // repaint the (now empty) list
+      refreshErrorCard();   // keep the top tile in sync
+    }
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ---------- report this page's own errors ---------- */
