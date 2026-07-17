@@ -73,4 +73,58 @@ describe('security regressions', { skip: dbConfigured ? false : 'set TEST_SUPABA
       await cleanup({ userIds: [owner.id] });
     }
   });
+
+  // The operator kill-switch: a vendor with active=false is fully cut off at the
+  // terminal. requireVendor gates every /api/vendor/* route, so /config — the
+  // first call the terminal makes — is a faithful proxy for "the terminal works".
+  test('a disabled vendor is cut off at the terminal (403 VENDOR_DISABLED)', async () => {
+    process.env.SUPABASE_URL = process.env.TEST_SUPABASE_URL;
+    process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY;
+    process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY;
+    const { app } = await import('../../server.js');
+
+    const offVendor = await createVendor({ pointsPerDollar: 10 });
+    const owner = await createUser({ password: 'OwnerPw123!' });
+    let listener;
+    try {
+      await linkStaff(offVendor.id, owner.id);
+      const client = newAnonClient();
+      await client.auth.signInWithPassword({ email: owner.email, password: owner.password });
+      const { data: { session } } = await client.auth.getSession();
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      };
+
+      listener = app.listen(0);
+      const port = listener.address().port;
+      const base = `http://127.0.0.1:${port}`;
+
+      // While active, the terminal can read its config.
+      const okRes = await fetch(`${base}/api/vendor/config`, { headers: authHeaders });
+      assert.equal(okRes.status, 200, 'an active vendor can load its config');
+
+      // Operator flips it off → every vendor route is now blocked.
+      const { error: offErr } = await admin.from('vendors').update({ active: false }).eq('id', offVendor.id);
+      assert.equal(offErr, null);
+
+      const cfg = await fetch(`${base}/api/vendor/config`, { headers: authHeaders });
+      assert.equal(cfg.status, 403);
+      assert.equal((await cfg.json()).error, 'VENDOR_DISABLED');
+
+      const award = await fetch(`${base}/api/vendor/award`, {
+        method: 'POST', headers: authHeaders, body: JSON.stringify({ code: '123456', exactAmount: 5 }),
+      });
+      assert.equal(award.status, 403, 'awarding is blocked while disabled');
+      assert.equal((await award.json()).error, 'VENDOR_DISABLED');
+
+      // Turning it back on restores access (non-destructive toggle).
+      await admin.from('vendors').update({ active: true }).eq('id', offVendor.id);
+      const back = await fetch(`${base}/api/vendor/config`, { headers: authHeaders });
+      assert.equal(back.status, 200, 're-enabling restores the terminal');
+    } finally {
+      listener?.close();
+      await cleanup({ vendorId: offVendor.id, userIds: [owner.id] });
+    }
+  });
 });

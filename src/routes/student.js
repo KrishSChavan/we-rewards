@@ -68,11 +68,17 @@ router.post('/redeem-code', async (req, res, next) => {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'vendorId and rewardId required.' });
     }
 
-    const [{ data: reward }, { data: bal }] = await Promise.all([
+    const [{ data: vendorRow }, { data: reward }, { data: bal }] = await Promise.all([
+      supabaseAdmin.from('vendors').select('active').eq('id', vendorId).maybeSingle(),
       supabaseAdmin.from('rewards').select('cost_in_points, active').eq('id', rewardId).eq('vendor_id', vendorId).maybeSingle(),
       supabaseAdmin.from('point_balances').select('balance').eq('user_id', req.user.id).eq('vendor_id', vendorId).maybeSingle(),
     ]);
 
+    // Belt-and-suspenders for a stale client: a vendor disabled by the operator
+    // between page-load and redeem is cut off here too, not just hidden on the
+    // next refresh. (The terminal is already blocked, so the code couldn't be
+    // used anyway — this just gives a clear error instead of a dead code.)
+    if (!vendorRow?.active) throw new Error('VENDOR_UNAVAILABLE');
     if (!reward?.active) throw new Error('REWARD_NOT_FOUND');
     if ((bal?.balance ?? 0) < reward.cost_in_points) throw new Error('INSUFFICIENT_POINTS');
 

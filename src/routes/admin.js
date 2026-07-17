@@ -38,7 +38,10 @@ router.get('/overview', async (req, res, next) => {
       errors24h, errorsTotal,
       txRes,
     ] = await Promise.all([
-      supabaseAdmin.from('vendors').select('id', { count: 'exact', head: true }).eq('active', true),
+      // Count ALL vendors (active + disabled) so the headline total doesn't drop
+      // like a deletion when the operator toggles one off — the Vendors card
+      // below shows the on/off split. Matches newVendors (also unfiltered).
+      supabaseAdmin.from('vendors').select('id', { count: 'exact', head: true }),
       supabaseAdmin.from('profiles').select('user_id', { count: 'exact', head: true }),
       supabaseAdmin.from('transactions').select('id', { count: 'exact', head: true }),
       supabaseAdmin.from('profiles').select('user_id', { count: 'exact', head: true }).gte('created_at', since30),
@@ -123,6 +126,56 @@ router.get('/overview', async (req, res, next) => {
       topVendors,
       errors: { last24h: errors24h.count ?? 0, total: errorsTotal.count ?? 0 },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/vendors
+ * Every vendor — active AND inactive — for the operator's on/off control panel.
+ * The public/student surfaces only ever see active=true, so this is the one
+ * place the full roster is listed. Newest first.
+ */
+router.get('/vendors', async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .select('id, name, slug, active, points_per_dollar, created_at')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json(data ?? []);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH /api/admin/vendors/:id  { active: boolean }
+ * The kill-switch. Flip a vendor on or off platform-wide. Off = fully cut off:
+ * hidden from students (active=true filters) and its terminal is blocked at
+ * requireVendor. Non-destructive — balances, rewards, and history are preserved,
+ * so toggling back on restores the vendor exactly as it was.
+ */
+router.patch('/vendors/:id', async (req, res, next) => {
+  try {
+    if (typeof req.body?.active !== 'boolean') {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'active (true/false) is required.' });
+    }
+    // Reject a malformed id up front so a bad path param is a clean 404 rather
+    // than a Postgres uuid cast error (22P02) surfacing as a logged 500.
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    }
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .update({ active: req.body.active })
+      .eq('id', req.params.id)
+      .select('id, name, slug, active, points_per_dollar, created_at')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    res.json(data);
   } catch (err) {
     next(err);
   }

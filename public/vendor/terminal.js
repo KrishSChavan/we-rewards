@@ -137,8 +137,12 @@ async function signIn() {
 async function enterApp() {
   const res = await authFetch('/api/vendor/config');
   if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
     await sb.auth.signOut();
-    $('login-error').textContent = 'This account is not linked to a vendor.';
+    // A vendor toggled off by the operator returns VENDOR_DISABLED with a clear
+    // message; anything else falls back to the generic not-linked copy. Show the
+    // server's message when we have one so a deactivated vendor knows why.
+    $('login-error').textContent = data?.message || 'This account is not linked to a vendor.';
     $('login-error').hidden = false;
     show('screen-login');
     return;

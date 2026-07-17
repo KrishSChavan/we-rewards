@@ -5,6 +5,7 @@
 
 let sb = null;
 let errorSource = '';   // '' = all sources; else server|student|vendor|admin
+let vendors = [];       // full roster (active + inactive) for the on/off panel
 
 const $ = (id) => document.getElementById(id);
 
@@ -105,7 +106,7 @@ async function authFetch(path, opts = {}) {
 async function loadAll() {
   // Overview is the access check: only load the rest once it confirms admin.
   const ok = await loadOverview();
-  if (ok) await loadErrors();
+  if (ok) await Promise.all([loadVendors(), loadErrors()]);
 }
 
 async function loadOverview() {
@@ -169,6 +170,106 @@ function renderTopVendors(list) {
       <span class="topv-bar-wrap"><span class="topv-bar" style="width:${Math.round((v.revenue / max) * 100)}%"></span></span>
       <span class="topv-val">${money(v.revenue)}</span>
     </div>`).join('');
+}
+
+/* ---------- vendor on/off control ---------- */
+
+async function loadVendors() {
+  const res = await authFetch('/api/admin/vendors');
+  if (res.status === 403) return denyAccess(); // safety net; overview already gates
+  if (!res.ok) return;
+  vendors = await res.json();
+  renderVendors();
+}
+
+function vendorCountText() {
+  const live = vendors.filter((v) => v.active).length;
+  return `${live} on · ${vendors.length - live} off`;
+}
+
+// Apply a vendor's on/off state to its existing row + toggle. Updating in place
+// (rather than rebuilding the list) keeps keyboard focus on the switch the
+// operator just activated and lets the aria-checked change be announced there.
+function paintVendorRow(row, toggle, v) {
+  toggle.classList.toggle('is-on', v.active);
+  toggle.setAttribute('aria-checked', v.active ? 'true' : 'false');
+  const label = toggle.querySelector('.vt-label');
+  if (label) label.textContent = v.active ? 'ON' : 'OFF';
+  row.classList.toggle('is-off', !v.active);
+}
+
+function showVendorError() {
+  const el = $('vendor-error');
+  el.textContent = 'Couldn’t update that vendor. Check your connection and try again.';
+  el.hidden = false;
+}
+
+function renderVendors() {
+  const wrap = $('vendor-list');
+  const countEl = $('vendors-count');
+  $('vendor-error').hidden = true;
+  if (!vendors.length) {
+    countEl.textContent = '';
+    wrap.innerHTML = `<p class="muted">No vendors yet.</p>`;
+    return;
+  }
+  countEl.textContent = vendorCountText();
+
+  wrap.innerHTML = '';
+  vendors.forEach((v) => {
+    const row = document.createElement('div');
+    row.className = 'vendor-row';
+
+    const info = document.createElement('div');
+    info.className = 'vendor-info';
+    info.innerHTML =
+      `<span class="vendor-name">${escapeHtml(v.name)}</span>` +
+      `<span class="vendor-meta">${escapeHtml(v.slug)} · ${num(v.points_per_dollar)} pts/$</span>`;
+
+    // role=switch with the vendor name as its accessible name; aria-checked
+    // carries the on/off state (SR reads e.g. "Local Eats, switch, on").
+    const toggle = document.createElement('button');
+    toggle.className = 'vendor-toggle';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-label', v.name);
+    toggle.innerHTML = `<span class="vt-track"><span class="vt-knob"></span></span><span class="vt-label"></span>`;
+    paintVendorRow(row, toggle, v);
+    toggle.addEventListener('click', () => toggleVendor(v, toggle, row));
+
+    row.append(info, toggle);
+    wrap.appendChild(row);
+  });
+}
+
+async function toggleVendor(v, toggle, row) {
+  const turningOff = v.active;
+  // Turning a vendor off is disruptive (it cuts the live terminal off and hides
+  // the vendor from students), so confirm that direction. Turning back on is
+  // harmless, so it's one tap. Nothing is destroyed either way.
+  if (turningOff && !confirm(
+    `Turn OFF “${v.name}”?\n\nIts terminal will stop working and it disappears from the student app immediately. Points and history are kept — you can turn it back on anytime.`
+  )) return;
+
+  $('vendor-error').hidden = true;
+  toggle.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/vendors/${v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ active: !v.active }),
+    });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) { showVendorError(); toggle.disabled = false; return; }
+    const updated = await res.json();
+    // `v` is the live array element, so mutating it updates our in-memory roster
+    // too. Repaint just this row and refresh the count — focus stays on the switch.
+    Object.assign(v, updated);
+    paintVendorRow(row, toggle, v);
+    $('vendors-count').textContent = vendorCountText();
+    toggle.disabled = false;
+  } catch {
+    showVendorError();
+    toggle.disabled = false;
+  }
 }
 
 // Single-series revenue bars for the last 14 days (mirrors the vendor terminal).

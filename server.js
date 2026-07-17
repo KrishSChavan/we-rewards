@@ -182,6 +182,7 @@ app.use((err, req, res, _next) => {
   const known = {
     INSUFFICIENT_POINTS: [400, 'Not enough points for this reward.'],
     REWARD_NOT_FOUND: [404, 'Reward not found or inactive.'],
+    VENDOR_UNAVAILABLE: [404, 'This spot is no longer available.'],
     CODE_INVALID: [401, 'That code is expired or invalid. Ask the customer to refresh their code.'],
     CODE_SPACE_EXHAUSTED: [503, 'Too many active codes right now — try again in a moment.'],
     TX_NOT_FOUND: [404, 'That transaction was not found for this vendor.'],

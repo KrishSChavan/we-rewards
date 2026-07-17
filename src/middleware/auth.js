@@ -80,6 +80,19 @@ export async function requireVendor(req, res, next) {
         }
       }
 
+      // Operator kill-switch: a vendor toggled off in the admin portal is fully
+      // cut off. Every /api/vendor/* route runs through here, so a single gate
+      // stops the terminal cold — no config, scan, award, redeem, or manage —
+      // the same way active=true hides the vendor from students. Data is
+      // preserved (balances/rewards untouched), so flipping it back on restores
+      // everything.
+      if (chosen.vendors.active === false) {
+        return res.status(403).json({
+          error: 'VENDOR_DISABLED',
+          message: 'This vendor has been deactivated. Contact the WeRewards team.',
+        });
+      }
+
       req.vendor = chosen.vendors;
       next();
     } catch (err) {
