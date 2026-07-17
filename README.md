@@ -38,13 +38,15 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-014.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-016.sql` in order.
    (migration-007 locks down the RPCs and adds the PIN-session table — required;
    migration-010 adds the void/refund RPC; migration-011 lets account deletion
    anonymize a student's transactions instead of being blocked by them;
    migration-012 switches the quick-amount buttons to a fixed dollar amount;
    migration-013 adds the `error_logs` table behind the `/admin` dashboard;
-   migration-014 switches earn codes to 6 numeric digits.)
+   migration-014 switches earn codes to 6 numeric digits;
+   migration-015 adds the vendor address + geocoded lat/lng for the map card;
+   migration-016 adds the vendor logo column.)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`

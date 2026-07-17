@@ -24,6 +24,8 @@ let selectedEmoji = '🎁';  // emoji picked in the item form
 let busy = false;          // guards double-taps / double-submits
 let idleTimeout = null;
 let editingRewardId = null;
+let logoValue = null;      // current logo data-URL (null = none) shown in Settings
+let logoChanged = false;   // only PATCH the logo when the vendor actually changed it
 let lastActivity = null;   // most recent transaction (for the "Undo last" button)
 let undoLastArmed = false; // two-tap confirm state for "Undo last"
 let undoLastTimer = null;
@@ -86,6 +88,8 @@ const screens = [
   $('tier-add').addEventListener('click', () => addTierRow());
   $('set-ratio').addEventListener('input', updateRatioExample);
   $('set-exact').addEventListener('click', () => toggleSwitch($('set-exact')));
+  $('set-logo-input').addEventListener('change', onLogoPick);
+  $('set-logo-remove').addEventListener('click', removeLogo);
   $('pad-cancel').addEventListener('click', () => enterScan());
   $('pad-award').addEventListener('click', () => awardAmount(Number(padValue)));
   $('quick-awards').addEventListener('click', onQuickAward);
@@ -983,10 +987,96 @@ function renderSettings(s) {
   if (!s) return;
   $('set-ratio').value = s.pointsPerDollar ?? '';
   setSwitch($('set-exact'), s.allowExactEntry !== false);
+  $('set-address').value = s.address ?? '';
+  logoValue = s.logo ?? null;
+  logoChanged = false;
+  setLogoPreview(logoValue);
   $('set-pin').value = '';
   $('settings-error').hidden = true;
   renderTierEditor(s.tiers ?? []);
   updateRatioExample();
+}
+
+/* ---- logo: pick a file, shrink it to a ~128px square data-URL ---- */
+
+const LOGO_MAX_PX = 128;                 // stored icon size
+const LOGO_MAX_FILE = 8 * 1024 * 1024;   // reject huge source files up front
+
+function setLogoPreview(dataUrl) {
+  const box = $('set-logo-preview');
+  box.style.backgroundImage = dataUrl ? `url('${dataUrl}')` : 'none';
+  box.classList.toggle('is-empty', !dataUrl);
+  $('set-logo-remove').hidden = !dataUrl;
+  $('set-logo-error').hidden = true;
+  $('set-logo-warn').hidden = true;
+}
+
+async function onLogoPick(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';                   // let the same file be re-picked later
+  if (!file) return;
+  if (file.size > LOGO_MAX_FILE) {
+    showLogoError('That image is too large — pick one under 8 MB.');
+    return;
+  }
+  try {
+    const { dataUrl, aspect } = await shrinkImage(file, LOGO_MAX_PX);
+    logoValue = dataUrl;
+    logoChanged = true;
+    setLogoPreview(logoValue);
+    // Non-blocking nudge: a clearly non-square image looks small and letterboxed
+    // next to the name + points. The logo is still saved as-is.
+    if (aspect >= 1.4) {
+      $('set-logo-warn').textContent = 'That image isn’t square, so it’ll appear small with empty space on the sides. A square logo looks best.';
+      $('set-logo-warn').hidden = false;
+    }
+  } catch {
+    showLogoError('Couldn’t read that image. Try a PNG or JPG — HEIC and PDF files aren’t supported.');
+  }
+}
+
+function showLogoError(msg) {
+  $('set-logo-error').textContent = msg;
+  $('set-logo-error').hidden = false;
+}
+
+function removeLogo() {
+  logoValue = null;
+  logoChanged = true;
+  setLogoPreview(null);
+}
+
+// Decode a picked File into something drawable. createImageBitmap is the most
+// robust path — it decodes large images and honours EXIF orientation, off the
+// main thread — so we try it first and fall back to an <img> where it's missing.
+// (Neither can read HEIC or PDF; those surface as a clear error to the vendor.)
+async function decodeImage(file) {
+  if ('createImageBitmap' in window) {
+    try { return await createImageBitmap(file); } catch { /* fall through to <img> */ }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+    img.src = url;
+  });
+}
+
+// Shrink the image to fit maxPx and return a PNG data-URL (keeps transparency)
+// plus the source aspect ratio (max/min side) so we can nudge non-square logos.
+async function shrinkImage(file, maxPx) {
+  const src = await decodeImage(file);
+  const aspect = Math.max(src.width, src.height) / Math.min(src.width, src.height);
+  const scale = Math.min(1, maxPx / Math.max(src.width, src.height));
+  const w = Math.max(1, Math.round(src.width * scale));
+  const h = Math.max(1, Math.round(src.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext('2d').drawImage(src, 0, 0, w, h);
+  src.close?.();   // release the ImageBitmap if that's what we got
+  return { dataUrl: canvas.toDataURL('image/png'), aspect };
 }
 
 function setSwitch(el, on) {
@@ -1046,7 +1136,9 @@ async function saveSettings() {
     pointsPerDollar: Number($('set-ratio').value),
     allowExactEntry: switchOn($('set-exact')),
     tiers: collectTiers(),
+    address: $('set-address').value.trim(),
   };
+  if (logoChanged) body.logo = logoValue;   // null clears it; a data-URL sets it
   const pin = $('set-pin').value.trim();
   if (pin) body.pin = pin;
 

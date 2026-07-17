@@ -220,6 +220,9 @@ function renderVendors() {
     const row = document.createElement('div');
     row.className = 'vendor-row';
 
+    const top = document.createElement('div');
+    top.className = 'vendor-top';
+
     const info = document.createElement('div');
     info.className = 'vendor-info';
     info.innerHTML =
@@ -236,9 +239,74 @@ function renderVendors() {
     paintVendorRow(row, toggle, v);
     toggle.addEventListener('click', () => toggleVendor(v, toggle, row));
 
-    row.append(info, toggle);
+    top.append(info, toggle);
+
+    // Address editor: sets the street address shown as a tappable map on the
+    // student card. Saving geocodes it server-side; the note shows the result.
+    const addr = document.createElement('div');
+    addr.className = 'vendor-addr';
+    const input = document.createElement('input');
+    input.className = 'vendor-addr-input';
+    input.type = 'text';
+    input.maxLength = 300;
+    input.placeholder = 'Street address (optional) — shown as a map';
+    input.value = v.address || '';
+    const save = document.createElement('button');
+    save.className = 'vendor-addr-save';
+    save.type = 'button';
+    save.textContent = 'Save';
+    const note = document.createElement('span');
+    note.className = 'vendor-addr-note';
+    setAddrNote(note, v);
+    save.addEventListener('click', () => saveVendorAddress(v, input, save, note));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveVendorAddress(v, input, save, note); });
+    addr.append(input, save, note);
+
+    row.append(top, addr);
     wrap.appendChild(row);
   });
+}
+
+// Reflect whether the saved address resolved to map coordinates.
+function setAddrNote(note, v) {
+  note.classList.remove('is-err', 'is-ok');
+  if (!v.address) { note.textContent = ''; return; }
+  if (v.latitude != null && v.longitude != null) {
+    note.textContent = '📍 on map';
+    note.classList.add('is-ok');
+  } else {
+    note.textContent = "couldn’t locate";
+    note.classList.add('is-err');
+  }
+}
+
+async function saveVendorAddress(v, input, save, note) {
+  const address = input.value.trim();
+  save.disabled = true;
+  note.classList.remove('is-err', 'is-ok');
+  note.textContent = 'Saving…';
+  try {
+    const res = await authFetch(`/api/admin/vendors/${v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ address }),
+    });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      note.textContent = 'Save failed';
+      note.classList.add('is-err');
+      save.disabled = false;
+      return;
+    }
+    const updated = await res.json();
+    Object.assign(v, updated);   // keep the in-memory roster in sync
+    input.value = v.address || '';
+    setAddrNote(note, v);
+    save.disabled = false;
+  } catch {
+    note.textContent = 'No connection';
+    note.classList.add('is-err');
+    save.disabled = false;
+  }
 }
 
 async function toggleVendor(v, toggle, row) {

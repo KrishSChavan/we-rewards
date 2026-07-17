@@ -29,6 +29,11 @@ create table public.vendors (
   allow_exact_entry boolean not null default true,
   pin_hash          text,                            -- bcrypt hash, gates redeem mode
   active            boolean not null default true,
+  address           text,                            -- street address (optional); shown as a map on the student card
+  latitude          double precision,                -- geocoded from address (Nominatim) on save
+  longitude         double precision,
+  logo              text,                            -- optional logo, ~128px base64 data-URL; shown by the vendor's name
+  has_logo          boolean generated always as (logo is not null) stored,  -- lets /balances flag a logo without selecting the base64
   created_at        timestamptz not null default now()
 );
 

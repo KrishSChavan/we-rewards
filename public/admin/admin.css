@@ -109,10 +109,31 @@ h1, h3 { margin: 0; }
 /* ---------- vendor on/off control ---------- */
 .vendor-list { display: grid; gap: 0.5rem; margin-top: 0.85rem; }
 .vendor-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  display: flex; flex-direction: column; gap: 0.55rem;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
   padding: 0.6rem 0.75rem;
 }
+.vendor-top { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+
+/* per-vendor street address → map on the student card */
+.vendor-addr { display: flex; align-items: center; gap: 0.4rem; }
+.vendor-addr-input {
+  flex: 1 1 auto; min-width: 0; font: inherit; font-size: 0.8rem;
+  padding: 0.4rem 0.55rem; border-radius: 8px;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+}
+.vendor-addr-input::placeholder { color: var(--muted); }
+.vendor-addr-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vendor-addr-save {
+  flex-shrink: 0; font: inherit; font-size: 0.75rem; font-weight: 700; cursor: pointer;
+  padding: 0.4rem 0.7rem; border-radius: 8px;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+}
+.vendor-addr-save:not(:disabled):hover { background: var(--panel-2); }
+.vendor-addr-save:disabled { opacity: 0.6; cursor: default; }
+.vendor-addr-note { flex-shrink: 0; font-size: 0.72rem; color: var(--muted); min-width: 4.5em; }
+.vendor-addr-note.is-ok { color: var(--good); }
+.vendor-addr-note.is-err { color: var(--bad); }
 /* Dim only the name/meta when off — NOT the toggle, which stays fully legible so
    the "turn back on" control never becomes the faintest thing in the row. */
 .vendor-row.is-off .vendor-info { opacity: 0.55; }

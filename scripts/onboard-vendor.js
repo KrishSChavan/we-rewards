@@ -4,14 +4,18 @@
  *   node scripts/onboard-vendor.js \
  *     --name "Local Eats" --slug local-eats \
  *     --email owner@example.com --password TempPass123! \
- *     --ratio 10 --pin 4321
+ *     --ratio 10 --pin 4321 --address "123 College Ave, State College, PA"
  *
  * Creates: auth user for the vendor login, vendors row, vendor_staff link.
  * Default tiers are applied; edit them in the Supabase dashboard or add flags later.
+ * --address is optional; if given, it's geocoded (Nominatim) so the student app
+ * can show a map on the vendor card. The vendor can also set/edit it later in the
+ * terminal Settings tab.
  */
 import bcrypt from 'bcryptjs';
 import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
+import { geocode } from '../src/lib/geocode.js';
 
 const args = Object.fromEntries(
   process.argv.slice(2).join(' ').split('--').filter(Boolean)
@@ -34,6 +38,13 @@ const { data: userData, error: userErr } = await supabase.auth.admin.createUser(
 });
 if (userErr) { console.error('Auth user failed:', userErr.message); process.exit(1); }
 
+// Optional address → geocode once so the vendor card can show a map.
+const address = args.address ? String(args.address).trim() : null;
+const coords = address ? await geocode(address) : null;
+if (address && !coords) {
+  console.warn(`⚠ Could not geocode "${address}" — saving address without map coordinates.`);
+}
+
 const { data: vendor, error: vendErr } = await supabase
   .from('vendors')
   .insert({
@@ -41,6 +52,9 @@ const { data: vendor, error: vendErr } = await supabase
     slug: args.slug,
     points_per_dollar: Number(args.ratio),
     pin_hash: await bcrypt.hash(String(args.pin), 10),
+    address,
+    latitude: coords?.lat ?? null,
+    longitude: coords?.lng ?? null,
   })
   .select()
   .single();

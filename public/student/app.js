@@ -604,6 +604,53 @@ async function loadVendors() {
   }
 }
 
+const TILE_Z = 16;   // OSM zoom for the vendor card thumbnail (~street level)
+
+// Build a 2×2 OpenStreetMap tile mosaic centred on (lat,lng) as the inner HTML
+// for a vendor card's .vc-map. Keyless — tiles are pulled straight from
+// tile.openstreetmap.org (no API key). Four tiles guarantee the point stays
+// covered even when it sits near a single tile's edge; the inner block is then
+// translated so the exact point lands dead-centre under the 📍 pin.
+function vendorMapHtml(lat, lng) {
+  const n = 2 ** TILE_Z;
+  const latRad = (lat * Math.PI) / 180;
+  const xf = ((lng + 180) / 360) * n;
+  const yf = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n;
+  const x = Math.floor(xf);
+  const y = Math.floor(yf);
+  const px = (xf - x) * 256;                 // point's pixel within its own tile (0..256)
+  const py = (yf - y) * 256;
+  const x0 = px < 128 ? x - 1 : x;           // top-left tile of the surrounding 2×2 block
+  const y0 = py < 128 ? y - 1 : y;
+  const mx = (x - x0) * 256 + px;            // point's pixel within the 512×512 mosaic
+  const my = (y - y0) * 256 + py;
+  const tile = (tx, ty, left, top) =>
+    `<img class="vc-tile" alt="" loading="lazy" style="left:${left}px;top:${top}px"` +
+    ` src="https://tile.openstreetmap.org/${TILE_Z}/${tx}/${ty}.png" />`;
+  return (
+    `<span class="vc-map">` +
+    `<span class="vc-map-inner" style="transform:translate(${-mx}px,${-my}px)">` +
+    tile(x0, y0, 0, 0) + tile(x0 + 1, y0, 256, 0) +
+    tile(x0, y0 + 1, 0, 256) + tile(x0 + 1, y0 + 1, 256, 256) +
+    `</span>` +
+    `<span class="vc-map-pin" aria-hidden="true">📍</span>` +
+    `</span>`
+  );
+}
+
+// Open the platform's own maps app with directions to `address` (keyless deep
+// links): iOS → Apple Maps, Android → the OS map chooser, else → Google Maps web.
+function openMaps(address) {
+  const q = encodeURIComponent(address);
+  const ua = navigator.userAgent || '';
+  let url;
+  if (/iphone|ipad|ipod/i.test(ua)) url = `https://maps.apple.com/?daddr=${q}`;
+  else if (/android/i.test(ua)) url = `geo:0,0?q=${q}`;
+  else url = `https://www.google.com/maps/dir/?api=1&destination=${q}`;
+  const win = window.open(url, '_blank', 'noopener');
+  if (!win) location.href = url;   // popup blocked / custom scheme → navigate directly
+}
+
 function renderVendors() {
   const wrap = $('vendor-carousel');
   wrap.innerHTML = '';
@@ -614,9 +661,26 @@ function renderVendors() {
     const card = document.createElement('button');
     card.className = 'vendor-card';
     card.dataset.id = v.vendorId;
+    const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
+    if (!map) card.classList.add('no-map');   // center name + points when there's no map
+    const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)}</span>` : '';
+    // Logo (if any) loads from the cacheable endpoint, sized to the name+points height.
+    const logo = v.hasLogo
+      ? `<span class="vc-logo" role="img" aria-label="${escapeHtml(v.name)} logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
+      : '';
+    // Column layout: [logo | name + points], then address, then the map at the bottom.
     card.innerHTML = `
-      <span class="vc-name">${escapeHtml(v.name)}</span>
-      <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>`;
+      <span class="vc-body">
+        <span class="vc-head">
+          ${logo}
+          <span class="vc-title">
+            <span class="vc-name">${escapeHtml(v.name)}</span>
+            <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
+          </span>
+        </span>
+        ${address}
+      </span>
+      ${map}`;
     wrap.appendChild(card);
   });
 }
@@ -633,7 +697,15 @@ function patchVendorCard(vendorId, next) {
 
 function onVendorTap(e) {
   const card = e.target.closest('.vendor-card');
-  if (card) openVendor(card.dataset.id);
+  if (!card) return;
+  // Tapping the map or the address opens directions in the user's maps app;
+  // the rest of the card still opens the vendor's rewards screen.
+  if (e.target.closest('.vc-map, .vc-address')) {
+    const v = allVendors.find((x) => String(x.vendorId) === card.dataset.id);
+    if (v?.address) openMaps(v.address);
+    return;
+  }
+  openVendor(card.dataset.id);
 }
 
 function openVendor(vendorId) {

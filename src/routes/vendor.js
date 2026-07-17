@@ -5,6 +5,15 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireVendor, requirePin } from '../middleware/auth.js';
 import { emitBalance } from '../lib/realtime.js';
+import { geocode } from '../lib/geocode.js';
+
+// Max stored address length — keeps a pasted essay out of the column and the geocoder.
+const ADDRESS_MAX = 300;
+
+// Logo is a base64 data-URL, resized to ~128px client-side. Cap the stored
+// string (~375KB decoded) so a hand-crafted request can't bloat the row.
+const LOGO_MAX_CHARS = 500_000;
+const LOGO_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
 
 // A staff PIN session (from verify-pin) stays valid for one shift.
 const PIN_SESSION_HOURS = 8;
@@ -507,6 +516,24 @@ function validSettings(body) {
     updates.tiers = t.tiers;
   }
 
+  if (body?.address != null) {
+    const a = String(body.address).trim();
+    if (a.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
+    updates.address = a || null; // '' clears the address (and its coordinates)
+  }
+
+  // logo: null/'' clears it; otherwise a small base64 image data-URL.
+  if (body && Object.prototype.hasOwnProperty.call(body, 'logo')) {
+    const logo = body.logo;
+    if (logo == null || logo === '') {
+      updates.logo = null;
+    } else if (typeof logo === 'string' && logo.length <= LOGO_MAX_CHARS && LOGO_DATA_URL.test(logo)) {
+      updates.logo = logo;
+    } else {
+      return { error: 'Logo must be a small PNG, JPEG, or WebP image.' };
+    }
+  }
+
   if (body?.pin != null && body.pin !== '') {
     if (!/^\d{4}$/.test(String(body.pin))) return { error: 'The staff PIN must be exactly 4 digits.' };
     pin = String(body.pin);
@@ -521,6 +548,8 @@ const settingsView = (v) => ({
   allowExactEntry: v.allow_exact_entry,
   tiers: v.tiers ?? [],
   hasPin: Boolean(v.pin_hash),
+  address: v.address ?? '',
+  logo: v.logo ?? null,
 });
 
 /** GET /api/vendor/settings — current economics + config for the Settings tab. */
@@ -545,6 +574,19 @@ router.patch('/settings', requirePin, async (req, res, next) => {
     if (v.pin != null) {
       updates.pin_hash = await bcrypt.hash(v.pin, 10);
       pinChanged = true;
+    }
+
+    // Only re-geocode when the address actually changed (the Settings form
+    // always sends `address`, so compare against the stored value to avoid a
+    // Nominatim hit on every unrelated save). Clearing the address ('' → null)
+    // also clears its coordinates; a geocode miss keeps the address but drops
+    // coords (no map until it resolves on a later save).
+    if ('address' in updates && updates.address !== (req.vendor.address ?? null)) {
+      const coords = updates.address ? await geocode(updates.address) : null;
+      updates.latitude = coords?.lat ?? null;
+      updates.longitude = coords?.lng ?? null;
+    } else {
+      delete updates.address; // unchanged — don't rewrite it or its coords
     }
 
     const { data, error } = await supabaseAdmin

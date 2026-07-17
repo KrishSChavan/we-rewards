@@ -300,24 +300,67 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   flex: 0 0 75%; max-width: 300px;   /* ~75% of the view (after padding), capped at 300px */
   scroll-snap-align: start;
   scroll-snap-stop: always;          /* grab the closest card, don't fly past it */
-  aspect-ratio: 4 / 5;
   background: var(--card); border: 3px solid var(--edge); border-radius: 1.3rem;
   box-shadow: 0 5px 0 var(--edge);
-  padding: 1.5rem;
-  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 0.4rem;
+  padding: 0; overflow: hidden;      /* map bleeds to the rounded edges */
+  display: flex; flex-direction: column;
   text-align: left;
   transition: transform 90ms ease;
-  height: 150px;
+  min-height: 200px;                 /* cards stretch to the tallest in the row */
 }
 .vendor-card:hover { transform: scale(1.02); }
 .vendor-card:active { transform: scale(0.98); }
 /* a lone vendor fills the full width (after the parent's padding) */
 .vendor-carousel.single .vendor-card { flex-basis: 100%; max-width: none; }
 
+/* name, points, and address stack at the top; the map sits at the bottom */
+.vc-body {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 0.35rem;
+  padding: 1.1rem 1.3rem;
+}
+/* no map → the body fills the whole card, so centre name + points in the middle */
+.vendor-card.no-map .vc-body { align-items: center; text-align: center; }
+
+/* logo sits left of the name+points; it stretches to their combined height */
+.vc-head { display: flex; align-items: stretch; gap: 0.7rem; }
+.vc-title { display: flex; flex-direction: column; justify-content: center; gap: 0.35rem; min-width: 0; }
+.vc-logo {
+  flex: 0 0 auto; align-self: stretch;
+  aspect-ratio: 1 / 1;                /* square: width follows the stretched height */
+  background-size: contain; background-repeat: no-repeat; background-position: center;
+  border-radius: 0.5rem;
+}
+
 .vc-name { font-weight: 900; font-size: 1.5rem; line-height: 1.12; color: var(--ink); }
 .vc-points { display: flex; align-items: baseline; gap: 0.3rem; }   /* points sit below the name */
-.vc-num { font-size: 3.4rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; }
+.vc-num { font-size: 3rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; }
 .vc-points small { font-size: 1rem; font-weight: 700; color: var(--muted); }
+/* tappable address line (opens the maps app, like the map itself) */
+.vc-address {
+  margin-top: 0.6rem;                /* extra breathing room below the points */
+  font-size: 0.82rem; font-weight: 600; color: var(--muted); line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* tappable rectangular map (bottom of the card) — a 2×2 OSM tile mosaic centred
+   on the vendor, with a pin. Tapping it opens the user's maps app (see app.js). */
+.vc-map {
+  position: relative; display: block;
+  flex: 0 0 150px; height: 150px;
+  overflow: hidden;
+  background: #e5e7eb;                /* map-grey while tiles load / at edges */
+  border-top: 2px solid var(--edge);
+}
+.vc-map-inner { position: absolute; left: 50%; top: 50%; width: 512px; height: 512px; }
+.vc-tile { position: absolute; width: 256px; height: 256px; display: block; }
+.vc-map-pin {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -100%);  /* pin tip sits on the exact point */
+  font-size: 1.6rem; line-height: 1;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .4));
+  pointer-events: none;
+}
 
 /* big red sign-out (now lives on the Account tab) */
 .signout-big {

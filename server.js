@@ -10,7 +10,7 @@ import 'dotenv/config';
 import studentRoutes from './src/routes/student.js';
 import vendorRoutes from './src/routes/vendor.js';
 import adminRoutes from './src/routes/admin.js';
-import { supabaseAuth } from './src/lib/supabase.js';
+import { supabaseAuth, supabaseAdmin } from './src/lib/supabase.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
 import { requireJson } from './src/middleware/require-json.js';
@@ -38,9 +38,10 @@ app.set(
 
 // ---- Security headers (helmet) ----
 // CSP is allow-listed to exactly what the two apps load: supabase-js from
-// jsDelivr, Google Fonts, Google avatar images, and Supabase REST/auth/realtime
-// + socket.io over ws/wss. Misconfiguring this breaks the apps — keep in sync
-// with the <script>/<link> tags and the SUPABASE_URL.
+// jsDelivr, Google Fonts, Google avatar images, OpenStreetMap tiles (vendor map
+// thumbnails), and Supabase REST/auth/realtime + socket.io over ws/wss.
+// Misconfiguring this breaks the apps — keep in sync with the <script>/<link>
+// tags and the SUPABASE_URL.
 const supabaseOrigin = (() => {
   try { return new URL(process.env.SUPABASE_URL).origin; } catch { return ''; }
 })();
@@ -53,7 +54,9 @@ app.use(helmet({
       'script-src': ["'self'", 'https://cdn.jsdelivr.net'],
       'style-src': ["'self'", 'https://fonts.googleapis.com', "'unsafe-inline'"],
       'font-src': ["'self'", 'https://fonts.gstatic.com'],
-      'img-src': ["'self'", 'data:', 'https://*.googleusercontent.com'],
+      // Google avatars + OpenStreetMap tiles for the vendor map thumbnails
+      // (keyless; served straight from tile.openstreetmap.org).
+      'img-src': ["'self'", 'data:', 'https://*.googleusercontent.com', 'https://tile.openstreetmap.org'],
       // Only two connection targets: our own origin ('self' — covers the REST API
       // and the same-origin Socket.IO transport, which falls back to same-origin
       // long-polling if a browser won't upgrade ws under 'self') and Supabase
@@ -74,7 +77,11 @@ app.use(helmet({
 // XML parser, so this is belt-and-suspenders that fails closed. See require-json.js.
 app.use(requireJson);
 
-app.use(express.json());
+// Bodies are tiny everywhere except a vendor saving a logo, which arrives as a
+// base64 data-URL (resized client-side to ~128px, so tens of KB). 600kb gives
+// that headroom; still small enough that the requireJson gate + rate limits keep
+// the large-body DoS surface negligible.
+app.use(express.json({ limit: '600kb' }));
 
 // ---- Rate limiting ----
 // In-memory store — correct for a single instance (the pilot). If this is ever
@@ -171,6 +178,26 @@ app.post('/api/client-error', async (req, res) => {
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Public vendor logo. Served as real image bytes (decoded from the base64
+// data-URL stored on the vendor) so the student card can use a plain <img>/
+// background that the browser caches — keeping the polled /balances payload
+// lean. Logos are shown to everyone, so no auth; only active vendors resolve.
+app.get('/api/vendor-logo/:id', async (req, res) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(404).end();
+    const { data, error } = await supabaseAdmin
+      .from('vendors').select('logo, active').eq('id', req.params.id).maybeSingle();
+    if (error || !data?.active || !data.logo) return res.status(404).end();
+    const m = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(data.logo);
+    if (!m) return res.status(404).end();
+    res.set('Content-Type', m[1]);
+    res.set('Cache-Control', 'public, max-age=300');
+    res.send(Buffer.from(m[2], 'base64'));
+  } catch {
+    res.status(404).end();
+  }
+});
 
 // Safe-to-expose config for browser clients (anon key is public by design; RLS protects data)
 app.get('/api/public-config', (_req, res) =>

@@ -14,7 +14,7 @@ router.use(requireUser);
 router.get('/balances', async (req, res, next) => {
   try {
     const [{ data: vendors, error: vErr }, { data: balances, error: bErr }] = await Promise.all([
-      supabaseAdmin.from('vendors').select('id, name, slug, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: true }),
+      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: true }),
       supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
     ]);
     if (vErr) throw vErr;
@@ -26,6 +26,10 @@ router.get('/balances', async (req, res, next) => {
         vendorId: v.id,
         name: v.name,
         slug: v.slug,
+        address: v.address ?? null,
+        latitude: v.latitude ?? null,
+        longitude: v.longitude ?? null,
+        hasLogo: Boolean(v.has_logo),
         balance: balanceMap[v.id] ?? 0,
         rewards: (v.rewards ?? []).filter((r) => r.active),
       }))

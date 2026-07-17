@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireAdmin } from '../middleware/auth.js';
+import { geocode } from '../lib/geocode.js';
 
 const router = Router();
 router.use(requireAdmin);
 
 const DAY = 86_400_000;
+const ADDRESS_MAX = 300;   // keep a pasted essay out of the column and the geocoder
 
 const dayKey = (ms) => {
   const d = new Date(ms);
@@ -141,7 +143,7 @@ router.get('/vendors', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('vendors')
-      .select('id, name, slug, active, points_per_dollar, created_at')
+      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, created_at')
       .order('created_at', { ascending: false });
     if (error) throw error;
     res.json(data ?? []);
@@ -151,27 +153,59 @@ router.get('/vendors', async (req, res, next) => {
 });
 
 /**
- * PATCH /api/admin/vendors/:id  { active: boolean }
- * The kill-switch. Flip a vendor on or off platform-wide. Off = fully cut off:
- * hidden from students (active=true filters) and its terminal is blocked at
- * requireVendor. Non-destructive — balances, rewards, and history are preserved,
- * so toggling back on restores the vendor exactly as it was.
+ * PATCH /api/admin/vendors/:id  { active?: boolean, address?: string }
+ * Operator edits for one vendor. Two independent updates:
+ *  - `active` is the kill-switch. Off = fully cut off: hidden from students
+ *    (active=true filters) and its terminal is blocked at requireVendor.
+ *    Non-destructive — balances, rewards, and history are preserved, so
+ *    toggling back on restores the vendor exactly as it was.
+ *  - `address` sets/clears the street address shown as a map on the student
+ *    card. It's geocoded (Nominatim) so latitude/longitude stay in sync; a
+ *    geocode miss keeps the address but drops coords (no map until it resolves).
+ *    Sending '' clears the address and its coordinates.
  */
 router.patch('/vendors/:id', async (req, res, next) => {
   try {
-    if (typeof req.body?.active !== 'boolean') {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'active (true/false) is required.' });
-    }
     // Reject a malformed id up front so a bad path param is a clean 404 rather
     // than a Postgres uuid cast error (22P02) surfacing as a logged 500.
     if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
     }
+
+    const body = req.body ?? {};
+    const updates = {};
+
+    if (body.active != null) {
+      if (typeof body.active !== 'boolean') {
+        return res.status(400).json({ error: 'BAD_REQUEST', message: 'active must be true or false.' });
+      }
+      updates.active = body.active;
+    }
+
+    if (body.address != null) {
+      const a = String(body.address).trim();
+      if (a.length > ADDRESS_MAX) {
+        return res.status(400).json({ error: 'BAD_REQUEST', message: `Address must be ${ADDRESS_MAX} characters or fewer.` });
+      }
+      updates.address = a || null;
+    }
+
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send active and/or address).' });
+    }
+
+    // Geocode a changed address so the student card's map stays in sync.
+    if ('address' in updates) {
+      const coords = updates.address ? await geocode(updates.address) : null;
+      updates.latitude = coords?.lat ?? null;
+      updates.longitude = coords?.lng ?? null;
+    }
+
     const { data, error } = await supabaseAdmin
       .from('vendors')
-      .update({ active: req.body.active })
+      .update(updates)
       .eq('id', req.params.id)
-      .select('id, name, slug, active, points_per_dollar, created_at')
+      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, created_at')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });

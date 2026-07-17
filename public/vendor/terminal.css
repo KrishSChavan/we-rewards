@@ -507,6 +507,21 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .settings-field input:focus { outline: none; border-color: var(--navy); }
 .settings-actions { justify-content: flex-end; }
 
+/* logo picker: a square preview beside choose/remove buttons */
+.logo-field { display: flex; align-items: center; gap: 1rem; }
+.logo-preview {
+  width: 5rem; height: 5rem; flex: none; border-radius: 0.9rem;
+  border: 2.5px solid var(--ink); background: var(--card);
+  background-size: contain; background-repeat: no-repeat; background-position: center;
+}
+.logo-preview.is-empty {
+  border-style: dashed; border-color: var(--sky-line);
+  background-image: none;
+}
+.logo-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.logo-pick { cursor: pointer; }   /* it's a <label> wrapping a hidden file input */
+.field-warn { color: var(--redeem); font-weight: 700; font-size: 1.05rem; }
+
 /* on/off switch (matches the student app's affordance) */
 .switch {
   position: relative; width: 3.6rem; height: 2.1rem; flex: none;
