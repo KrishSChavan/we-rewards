@@ -507,6 +507,19 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .settings-field input:focus { outline: none; border-color: var(--navy); }
 .settings-actions { justify-content: flex-end; }
 
+/* unsaved-changes cue: an amber note above the actions + a dot on the tab, plus
+   a ring on Save so the way out of the state is obvious. */
+.settings-dirty { color: var(--redeem); font-weight: 800; font-size: 1.05rem; text-align: right; }
+#settings-save.is-dirty { box-shadow: 0 0 0 3px var(--redeem); }
+.tab-settings.is-dirty::after {
+  content: ""; display: inline-block; vertical-align: middle;
+  width: 0.55rem; height: 0.55rem; margin-left: 0.45rem;
+  border-radius: 50%; background: var(--redeem);
+}
+.tab-settings.is-active.is-dirty::after { background: #f0c060; }
+/* the specific section(s) holding unsaved edits get an amber border too */
+.settings-screen .stats-card.is-edited { border-color: var(--redeem); box-shadow: 0 0 0 2px var(--redeem); }
+
 /* logo picker: a square preview beside choose/remove buttons */
 .logo-field { display: flex; align-items: center; gap: 1rem; }
 .logo-preview {
@@ -582,6 +595,14 @@ button { font-family: inherit; border: none; cursor: pointer; }
   border: 2.5px solid var(--ink); border-radius: 0.6rem;
 }
 .form-card .pad-actions { justify-content: flex-end; }
+
+/* unsaved-changes guard: Discard / Save split, "Keep editing" quietly below */
+.guard-actions { justify-content: space-between; }
+.guard-stay {
+  align-self: center; padding: 0.3rem 0.6rem;
+  background: transparent; color: var(--muted);
+  font-weight: 700; font-size: 1.05rem;
+}
 
 /* ---------- emoji picker ---------- */
 

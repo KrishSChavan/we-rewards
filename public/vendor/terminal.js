@@ -30,6 +30,8 @@ let lastActivity = null;   // most recent transaction (for the "Undo last" butto
 let undoLastArmed = false; // two-tap confirm state for "Undo last"
 let undoLastTimer = null;
 let undoExpiryTimer = null; // hides "Undo last" when the 1-min window elapses
+let settingsBaseline = null; // keyed snapshot of the Settings form at load/save, for the unsaved-changes guard
+let pendingMode = null;    // tab the vendor tried to open while Settings had unsaved edits
 
 // Undo is only allowed within 1 minute of a transaction (anti-abuse). The server
 // enforces this authoritatively (reverse_transaction RPC); the client mirrors it
@@ -83,13 +85,23 @@ const screens = [
   $('tab-stats').addEventListener('click', () => switchMode('stats'));
   $('tab-settings').addEventListener('click', () => switchMode('settings'));
   $('stats-refresh').addEventListener('click', () => loadAnalytics());
-  $('settings-save').addEventListener('click', saveSettings);
+  $('settings-save').addEventListener('click', () => saveSettings());
   $('settings-reset').addEventListener('click', () => renderSettings(loadedSettings));
-  $('tier-add').addEventListener('click', () => addTierRow());
+  $('tier-add').addEventListener('click', () => { addTierRow(); refreshSettingsDirty(); });
   $('set-ratio').addEventListener('input', updateRatioExample);
-  $('set-exact').addEventListener('click', () => toggleSwitch($('set-exact')));
+  $('set-exact').addEventListener('click', () => { toggleSwitch($('set-exact')); refreshSettingsDirty(); });
   $('set-logo-input').addEventListener('change', onLogoPick);
   $('set-logo-remove').addEventListener('click', removeLogo);
+  // Any keystroke inside Settings re-checks whether there's something unsaved.
+  $('screen-settings').addEventListener('input', refreshSettingsDirty);
+  $('guard-save').addEventListener('click', guardSaveAndLeave);
+  $('guard-discard').addEventListener('click', guardDiscardAndLeave);
+  $('guard-stay').addEventListener('click', closeSettingsGuard);
+  // Refreshing / closing the tab with unsaved Settings edits gets the browser's
+  // native "leave site?" prompt (mirrors the in-app guard for real navigation).
+  window.addEventListener('beforeunload', (e) => {
+    if (isSettingsDirty()) { e.preventDefault(); e.returnValue = ''; }
+  });
   $('pad-cancel').addEventListener('click', () => enterScan());
   $('pad-award').addEventListener('click', () => awardAmount(Number(padValue)));
   $('quick-awards').addEventListener('click', onQuickAward);
@@ -219,6 +231,21 @@ function enterModeScreen(m) {
 }
 
 function switchMode(next) {
+  if (mode === next) return;
+
+  // Leaving Settings with unsaved edits: hold the navigation and ask first, so a
+  // vendor can't lose changes by tapping another tab. The guard's buttons decide
+  // whether the switch goes through (Save & leave / Discard) or is cancelled.
+  if (mode === 'settings' && isSettingsDirty()) {
+    pendingMode = next;
+    $('settings-guard').hidden = false;
+    return;
+  }
+
+  proceedSwitchMode(next);
+}
+
+function proceedSwitchMode(next) {
   if (mode === next) return;
   pinValue = '';
   pinAction = null;   // a tab switch cancels any deferred PIN action (e.g. undo)
@@ -974,6 +1001,76 @@ function enterSettings() {
   loadSettings();
 }
 
+/* ---- unsaved-changes guard ----
+   The form is captured field-by-field, keyed to match each card's data-card
+   attribute, and compared against a baseline taken whenever the form matches the
+   server (load / Reset / Save). Any difference means there are unsaved edits,
+   which the leave-guard blocks on; per-key differences highlight each card. */
+
+function settingsSnapshot() {
+  return {
+    ratio: $('set-ratio').value.trim(),
+    exact: switchOn($('set-exact')),
+    tiers: collectTiers(),
+    address: $('set-address').value.trim(),
+    pin: $('set-pin').value.trim(),
+    logo: logoValue,
+  };
+}
+
+// Deep-equal by value for a single card's slice of the snapshot.
+const sameField = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+function isSettingsDirty() {
+  // Baseline is null until Settings has been rendered once — nothing to guard yet.
+  return settingsBaseline !== null && !sameField(settingsSnapshot(), settingsBaseline);
+}
+
+// Mark the current form state as "saved" (the new baseline) and refresh the cue.
+function resetSettingsBaseline() {
+  settingsBaseline = settingsSnapshot();
+  refreshSettingsDirty();
+}
+
+// Show/hide the "Unsaved changes" note, the Save ring, and the SETTINGS tab dot,
+// and give an amber border to each specific card that holds an unsaved edit.
+function refreshSettingsDirty() {
+  const snap = settingsSnapshot();
+  const base = settingsBaseline;
+  const dirty = base !== null && !sameField(snap, base);
+  $('settings-dirty').hidden = !dirty;
+  $('settings-save').classList.toggle('is-dirty', dirty);
+  $('tab-settings').classList.toggle('is-dirty', dirty);
+  document.querySelectorAll('#screen-settings .stats-card[data-card]').forEach((card) => {
+    const key = card.dataset.card;
+    const edited = base !== null && !sameField(snap[key], base[key]);
+    card.classList.toggle('is-edited', edited);
+  });
+}
+
+function closeSettingsGuard() {
+  $('settings-guard').hidden = true;
+  pendingMode = null;   // "Keep editing" — cancel the pending tab switch
+}
+
+// Discard: revert every field to the last-loaded server state, then leave.
+function guardDiscardAndLeave() {
+  const target = pendingMode;
+  $('settings-guard').hidden = true;
+  pendingMode = null;
+  renderSettings(loadedSettings);   // reverts fields + re-baselines to clean
+  if (target) proceedSwitchMode(target);
+}
+
+// Save & leave: persist, then navigate once the save succeeds. A failed save
+// keeps the vendor on Settings (with the error shown) rather than losing edits.
+async function guardSaveAndLeave() {
+  const target = pendingMode;
+  $('settings-guard').hidden = true;
+  pendingMode = null;
+  await saveSettings(target);
+}
+
 async function loadSettings() {
   try {
     const res = await authFetch('/api/vendor/settings');
@@ -995,6 +1092,7 @@ function renderSettings(s) {
   $('settings-error').hidden = true;
   renderTierEditor(s.tiers ?? []);
   updateRatioExample();
+  resetSettingsBaseline();   // freshly-rendered form matches the server = nothing unsaved
 }
 
 /* ---- logo: pick a file, shrink it to a ~128px square data-URL ---- */
@@ -1024,6 +1122,7 @@ async function onLogoPick(e) {
     logoValue = dataUrl;
     logoChanged = true;
     setLogoPreview(logoValue);
+    refreshSettingsDirty();
     // Non-blocking nudge: a clearly non-square image looks small and letterboxed
     // next to the name + points. The logo is still saved as-is.
     if (aspect >= 1.4) {
@@ -1044,6 +1143,7 @@ function removeLogo() {
   logoValue = null;
   logoChanged = true;
   setLogoPreview(null);
+  refreshSettingsDirty();
 }
 
 // Decode a picked File into something drawable. createImageBitmap is the most
@@ -1114,7 +1214,7 @@ function addTierRow(t = { label: '', amount: '' }) {
   const amt = tierAmount(t);
   row.querySelector('.tier-label').value = t.label ?? '';
   row.querySelector('.tier-amount').value = Number.isFinite(amt) ? amt : '';
-  row.querySelector('.tier-remove').addEventListener('click', () => row.remove());
+  row.querySelector('.tier-remove').addEventListener('click', () => { row.remove(); refreshSettingsDirty(); });
   wrap.appendChild(row);
 }
 
@@ -1128,7 +1228,9 @@ function collectTiers() {
     .map((t) => ({ label: t.label, amount: Number(t.amount) }));
 }
 
-async function saveSettings() {
+// `afterTarget` (set by the leave-guard's "Save & leave") is the tab to open once
+// the save succeeds; omitted for a plain Save, which stays on Settings.
+async function saveSettings(afterTarget) {
   if (busy) return;
   $('settings-error').hidden = true;
 
@@ -1158,6 +1260,9 @@ async function saveSettings() {
     }
 
     loadedSettings = data;
+    // Everything's persisted now — re-baseline so the leave-guard (and the flood's
+    // navigation callbacks) see a clean form and don't re-prompt.
+    resetSettingsBaseline();
     // Refresh the cached vendor config so the award pad + PIN gating pick up the
     // new ratio / exact-entry / PIN state immediately.
     const cfg = await authFetch('/api/vendor/config');
@@ -1169,6 +1274,9 @@ async function saveSettings() {
       pinUnlocked = false;
       pinToken = null;
       flood('success', 'SETTINGS SAVED', 'New PIN set — re-enter it to continue.', () => switchMode('award'));
+    } else if (afterTarget) {
+      // "Save & leave" — head to the tab the vendor was trying to reach.
+      flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => proceedSwitchMode(afterTarget));
     } else {
       flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => renderSettings(loadedSettings));
     }

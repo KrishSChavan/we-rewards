@@ -238,7 +238,7 @@
             <h2>Settings</h2>
           </div>
 
-          <div class="stats-card">
+          <div class="stats-card" data-card="ratio">
             <h3>Earning rate</h3>
             <label class="settings-field">Points per $1 spent
               <input id="set-ratio" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" />
@@ -246,7 +246,7 @@
             <p class="manage-note">Customers earn <strong id="set-ratio-eg">—</strong> for a $10 purchase (before their tier multiplier).</p>
           </div>
 
-          <div class="stats-card">
+          <div class="stats-card" data-card="exact">
             <div class="setting-row">
               <span class="setting-label">
                 <span class="setting-name">Exact amount entry</span>
@@ -258,14 +258,14 @@
             </div>
           </div>
 
-          <div class="stats-card">
+          <div class="stats-card" data-card="tiers">
             <h3>Quick amount buttons</h3>
             <p class="manage-note">Tap-to-award buttons on the AWARD screen. Each is a set purchase amount; points are that amount × your rate.</p>
             <div id="tier-editor" class="tier-editor"></div>
             <button id="tier-add" class="btn-ghost btn-compact" type="button">+ Add button</button>
           </div>
 
-          <div class="stats-card">
+          <div class="stats-card" data-card="address">
             <h3>Location</h3>
             <label class="settings-field">Street address
               <input id="set-address" type="text" autocomplete="off" maxlength="300" placeholder="123 College Ave, State College, PA" />
@@ -273,7 +273,7 @@
             <p class="manage-note">Shown as a tappable map on your customers' cards — tapping it opens directions in their maps app. Leave blank to hide the map.</p>
           </div>
 
-          <div class="stats-card">
+          <div class="stats-card" data-card="logo">
             <h3>Logo</h3>
             <div class="logo-field">
               <span id="set-logo-preview" class="logo-preview is-empty" aria-hidden="true"></span>
@@ -289,7 +289,7 @@
             <p class="manage-note">Shown next to your name on customers' cards. Square images look best — we shrink it to a small icon.</p>
           </div>
 
-          <div class="stats-card">
+          <div class="stats-card" data-card="pin">
             <h3>Staff PIN</h3>
             <label class="settings-field">New 4-digit PIN
               <input id="set-pin" type="text" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="leave blank to keep current" />
@@ -298,6 +298,7 @@
           </div>
 
           <p id="settings-error" class="field-error" hidden></p>
+          <p id="settings-dirty" class="settings-dirty" role="status" hidden>● Unsaved changes — save before leaving this tab.</p>
           <div class="pad-actions settings-actions">
             <button id="settings-reset" class="btn-ghost" type="button">Reset</button>
             <button id="settings-save" class="btn-primary" type="button">Save settings</button>
@@ -337,6 +338,20 @@
         <button id="reward-form-cancel" class="btn-ghost">Cancel</button>
         <button id="reward-form-save" class="btn-primary">Save item</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ===== UNSAVED SETTINGS GUARD ===== -->
+  <!-- Shown when the vendor tries to leave SETTINGS with edits they haven't saved. -->
+  <div id="settings-guard" class="overlay" hidden>
+    <div class="form-card">
+      <h2>Unsaved changes</h2>
+      <p class="manage-note">You've changed your settings but haven't saved them yet. What would you like to do?</p>
+      <div class="pad-actions guard-actions">
+        <button id="guard-discard" class="btn-ghost" type="button">Discard</button>
+        <button id="guard-save" class="btn-primary" type="button">Save &amp; leave</button>
+      </div>
+      <button id="guard-stay" class="guard-stay" type="button">Keep editing</button>
     </div>
   </div>
 
