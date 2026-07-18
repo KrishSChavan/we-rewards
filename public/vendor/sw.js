@@ -8,7 +8,7 @@
    scoped to this app's own 'werewards-terminal-' prefix — deleting every other
    cache here would wipe the student and admin PWA caches (and vice-versa). */
 
-const CACHE = 'werewards-terminal-v1';
+const CACHE = 'werewards-terminal-v2';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/manifest.json',
   '/terminal/icons/icon-192.png', '/terminal/icons/icon-512.png',

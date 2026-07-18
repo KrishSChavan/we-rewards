@@ -29,6 +29,11 @@ Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one
   (`X-Vendor-Pin` header) on those routes — the gate is not just UI.
 - **Rate limiting + headers.** `express-rate-limit` caps brute-force surfaces
   (the 4-digit PIN especially); `helmet` sets a strict CSP + security headers.
+  On top of the per-IP limit, wrong PINs also lock the vendor **per-vendor**
+  after 5 failures (migration-020), so an attacker can't rotate IPs to keep guessing.
+- **Award limits.** A single award is hard-capped at **$200** server-side (no
+  daily cap, no PIN bypass), and awards are **idempotent** on a client token
+  (migration-019) so a retried award after a dropped response can't double-award.
 - **Keys.** The browser only ever gets the public anon/publishable key (RLS
   protects reads). The `service_role`/secret key is server-only — never shipped.
 
@@ -43,7 +48,7 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-018.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-021.sql` in order.
    (migration-007 locks down the RPCs and adds the PIN-session table — required;
    migration-010 adds the void/refund RPC; migration-011 lets account deletion
    anonymize a student's transactions instead of being blocked by them;
@@ -55,7 +60,15 @@ config — the terminal never sends a point value.
    migration-017 lets an admin hard-delete a vendor by anonymizing its
    transactions instead of being blocked by them;
    migration-018 adds `vendor_applications` (the public `/join` queue) and
-   `push_subscriptions` (admin web-push alerts).)
+   `push_subscriptions` (admin web-push alerts);
+   migration-019 adds award idempotency (`transactions.client_token`) so a
+   retried award can't double-award — replaces `award_points` with a 5-arg
+   version, so re-run the migration-007 grants it carries;
+   migration-020 adds the per-vendor staff-PIN lockout
+   (`vendors.failed_pin_attempts` / `pin_locked_until` + `record_pin_result`);
+   migration-021 adds error-log retention (`prune_error_logs` + a daily pg_cron
+   job) — if pg_cron isn't enabled it just raises a NOTICE, so enable pg_cron and
+   re-run its final `DO` block to schedule the daily prune.)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`

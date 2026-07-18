@@ -14,6 +14,7 @@ import applyRoutes from './src/routes/apply.js';
 import { supabaseAuth, supabaseAdmin } from './src/lib/supabase.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
+import { recordServerError } from './src/lib/alerts.js';
 import { requireJson } from './src/middleware/require-json.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -238,7 +239,7 @@ app.use((err, req, res, _next) => {
     return res.status(status).json({ error: key, message });
   }
   console.error(err);
-  // Unexpected failure → record it so it shows up on the /admin dashboard.
+  // Unexpected failure → record it so it shows up on the /admin dashboard...
   logError({
     source: 'server',
     message: err?.message,
@@ -249,6 +250,8 @@ app.use((err, req, res, _next) => {
     userId: req?.user?.id ?? null,
     userAgent: req?.headers?.['user-agent'],
   });
+  // ...and push the operator if these are spiking (throttled, best-effort).
+  recordServerError();
   res.status(500).json({ error: 'SERVER_ERROR', message: 'Something went wrong.' });
 });
 
@@ -288,4 +291,27 @@ const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import
 if (isMain) {
   const port = process.env.PORT || 3000;
   server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));
+
+  // Graceful shutdown. Heroku sends SIGTERM on every deploy and cycles dynos
+  // ~daily, then SIGKILLs after ~30s. Draining first lets in-flight awards /
+  // redeems finish instead of being cut mid-request. io.close() disconnects the
+  // Socket.IO clients and closes the underlying HTTP server, firing the callback
+  // once existing connections drain; the unref'd timer is a hard backstop if a
+  // keep-alive connection never idles out before Heroku's grace period ends.
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received — draining connections and shutting down`);
+    io.close(() => {
+      console.log('server closed cleanly');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.error('forced shutdown after grace period');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }

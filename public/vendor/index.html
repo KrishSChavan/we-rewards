@@ -297,6 +297,23 @@
             <p class="manage-note">Changing the PIN signs out every terminal — everyone re-enters the new PIN next time.</p>
           </div>
 
+          <!-- Login password. Independent of the batched "Save settings" below —
+               its own button calls Supabase auth directly (no server route). -->
+          <div class="stats-card">
+            <h3>Login password</h3>
+            <p class="manage-note">Change the password for this terminal's email login. You'll stay signed in on this device — use the new password next time you sign in.</p>
+            <label class="settings-field">New password
+              <input id="set-pw-new" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="at least 8 characters" />
+            </label>
+            <label class="settings-field">Confirm new password
+              <input id="set-pw-confirm" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="re-type it" />
+            </label>
+            <p id="set-pw-msg" class="field-error" hidden></p>
+            <div class="pad-actions">
+              <button id="set-pw-save" class="btn-primary btn-compact" type="button">Update password</button>
+            </div>
+          </div>
+
           <p id="settings-error" class="field-error" hidden></p>
           <p id="settings-dirty" class="settings-dirty" role="status" hidden>● Unsaved changes — save before leaving this tab.</p>
           <div class="pad-actions settings-actions">

@@ -74,6 +74,58 @@ describe('security regressions', { skip: dbConfigured ? false : 'set TEST_SUPABA
     }
   });
 
+  // Per-vendor PIN lockout (migration-020): repeated wrong PINs lock the vendor
+  // independent of source IP, and a correct PIN clears the counter. Driven
+  // through the HTTP verify-pin route so the whole path is exercised.
+  test('too many wrong PINs lock the vendor (429 PIN_LOCKED)', async () => {
+    process.env.SUPABASE_URL = process.env.TEST_SUPABASE_URL;
+    process.env.SUPABASE_ANON_KEY = process.env.TEST_SUPABASE_ANON_KEY;
+    process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY;
+    const { app } = await import('../../server.js');
+
+    const lockVendor = await createVendor({ pointsPerDollar: 10, pin: '4321' });
+    const owner = await createUser({ password: 'OwnerPw123!' });
+    let listener;
+    try {
+      await linkStaff(lockVendor.id, owner.id);
+      const client = newAnonClient();
+      await client.auth.signInWithPassword({ email: owner.email, password: owner.password });
+      const { data: { session } } = await client.auth.getSession();
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` };
+
+      listener = app.listen(0);
+      const port = listener.address().port;
+      const verify = (pin) => fetch(`http://127.0.0.1:${port}/api/vendor/verify-pin`, {
+        method: 'POST', headers, body: JSON.stringify({ pin }),
+      });
+
+      // Threshold is 5 (migration-020). The first four wrong PINs are 401 BAD_PIN;
+      // the fifth trips the lock and returns 429 PIN_LOCKED.
+      for (let i = 0; i < 4; i++) {
+        const r = await verify('0000');
+        assert.equal(r.status, 401, `wrong PIN #${i + 1} is a plain 401`);
+        assert.equal((await r.json()).error, 'BAD_PIN');
+      }
+      const locked = await verify('0000');
+      assert.equal(locked.status, 429, 'the 5th wrong PIN locks the vendor');
+      assert.equal((await locked.json()).error, 'PIN_LOCKED');
+
+      // While locked, even the CORRECT PIN is refused (the lock is checked first).
+      const duringLock = await verify('4321');
+      assert.equal(duringLock.status, 429, 'a correct PIN is refused while locked');
+      assert.equal((await duringLock.json()).error, 'PIN_LOCKED');
+
+      // Clearing the lock in the DB, the correct PIN works and resets the counter.
+      await admin.from('vendors').update({ pin_locked_until: null, failed_pin_attempts: 0 }).eq('id', lockVendor.id);
+      const ok = await verify('4321');
+      assert.equal(ok.status, 200, 'the correct PIN unlocks once the window passes');
+      assert.ok((await ok.json()).token, 'a PIN session token is minted');
+    } finally {
+      listener?.close();
+      await cleanup({ vendorId: lockVendor.id, userIds: [owner.id] });
+    }
+  });
+
   // The operator kill-switch: a vendor with active=false is fully cut off at the
   // terminal. requireVendor gates every /api/vendor/* route, so /config — the
   // first call the terminal makes — is a faithful proxy for "the terminal works".

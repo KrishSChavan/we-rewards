@@ -32,6 +32,10 @@ let undoLastTimer = null;
 let undoExpiryTimer = null; // hides "Undo last" when the 1-min window elapses
 let settingsBaseline = null; // keyed snapshot of the Settings form at load/save, for the unsaved-changes guard
 let pendingMode = null;    // tab the vendor tried to open while Settings had unsaved edits
+// Idempotency for awards: reuse one token across a retry of the SAME award
+// (customer + amount) so the server can dedupe if a network drop hid a success.
+// { key, token } — kept only while the last attempt failed at the network layer.
+let pendingAward = null;
 
 // Undo is only allowed within 1 minute of a transaction (anti-abuse). The server
 // enforces this authoritatively (reverse_transaction RPC); the client mirrors it
@@ -87,6 +91,7 @@ const screens = [
   $('stats-refresh').addEventListener('click', () => loadAnalytics());
   $('settings-save').addEventListener('click', () => saveSettings());
   $('settings-reset').addEventListener('click', () => renderSettings(loadedSettings));
+  $('set-pw-save').addEventListener('click', () => updatePassword());
   $('tier-add').addEventListener('click', () => { addTierRow(); refreshSettingsDirty(); });
   $('set-ratio').addEventListener('input', updateRatioExample);
   $('set-exact').addEventListener('click', () => { toggleSwitch($('set-exact')); refreshSettingsDirty(); });
@@ -354,7 +359,8 @@ function onAmountKey(e) {
   else {
     const next = padValue + k;
     const [, dec] = next.split('.');
-    if ((dec?.length ?? 0) <= 2 && Number(next) <= 500) padValue = next;
+    // $200 hard per-award ceiling — matches MAX_AWARD_DOLLARS in src/routes/vendor.js.
+    if ((dec?.length ?? 0) <= 2 && Number(next) <= 200) padValue = next;
   }
   renderPad();
 }
@@ -423,11 +429,26 @@ async function awardAmount(dollarAmount) {
   const amt = Number(dollarAmount);
   if (!(amt > 0)) return;
   busy = true;
+
+  // Reuse the same idempotency token only for a PROMPT retry of the identical
+  // award (same customer + amount) after a network failure — so the server can
+  // dedupe a hidden success. Outside that short window, or for any other award,
+  // start fresh so a genuine repeat purchase is never silently deduped.
+  const key = `${currentEarnCode}:${amt}`;
+  const now = Date.now();
+  if (!pendingAward || pendingAward.key !== key || now - pendingAward.at > 120_000) {
+    pendingAward = { key, token: crypto.randomUUID(), at: now };
+  }
+  const requestId = pendingAward.token;
+
   try {
     const res = await authFetch('/api/vendor/award', {
       method: 'POST',
-      body: JSON.stringify({ code: currentEarnCode, exactAmount: amt }),
+      body: JSON.stringify({ code: currentEarnCode, exactAmount: amt, requestId }),
     });
+    // Got a definitive response — this attempt is resolved, so don't reuse the
+    // token (only an unanswered network failure warrants a retry).
+    pendingAward = null;
     const data = await res.json();
     if (!res.ok) {
       return flood('error', 'DIDN\u2019T GO THROUGH', data.message, enterScan);
@@ -440,6 +461,10 @@ async function awardAmount(dollarAmount) {
       enterScan();
     });
   } catch {
+    // Network failure: the server MAY have processed it. Keep pendingAward and
+    // refresh its window so a prompt re-tap of the same award reuses the token
+    // and the server dedupes it.
+    if (pendingAward && pendingAward.key === key) pendingAward.at = Date.now();
     flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterScan);
   } finally {
     busy = false;
@@ -474,6 +499,11 @@ async function onPinKey(e) {
       if (pinAction) { const fn = pinAction; pinAction = null; fn(); } // deferred action (e.g. undo)
       else enterModeScreen(pinTarget);
     } else {
+      // Show the lockout message when the vendor is temporarily locked out
+      // (too many wrong PINs), otherwise the plain "incorrect PIN" hint.
+      $('pin-error').textContent = data.error === 'PIN_LOCKED'
+        ? (data.message || 'Too many incorrect PINs. Wait a few minutes and try again.')
+        : 'Incorrect PIN — try again.';
       $('pin-error').hidden = false;
     }
   }
@@ -1089,6 +1119,11 @@ function renderSettings(s) {
   logoChanged = false;
   setLogoPreview(logoValue);
   $('set-pin').value = '';
+  // The password card is independent of the batched save — clear its fields and
+  // any lingering message whenever Settings (re)renders.
+  $('set-pw-new').value = '';
+  $('set-pw-confirm').value = '';
+  $('set-pw-msg').hidden = true;
   $('settings-error').hidden = true;
   renderTierEditor(s.tiers ?? []);
   updateRatioExample();
@@ -1209,7 +1244,7 @@ function addTierRow(t = { label: '', amount: '' }) {
   row.innerHTML = `
     <input class="tier-label" type="text" maxlength="40" placeholder="Label (e.g. Meal)" />
     <span class="tier-money">$</span>
-    <input class="tier-amount" type="number" inputmode="decimal" min="0" step="0.5" placeholder="amount" />
+    <input class="tier-amount" type="number" inputmode="decimal" min="0" max="200" step="0.5" placeholder="amount" />
     <button class="tier-remove" type="button" aria-label="Remove button">✕</button>`;
   const amt = tierAmount(t);
   row.querySelector('.tier-label').value = t.label ?? '';
@@ -1287,4 +1322,41 @@ async function saveSettings(afterTarget) {
     busy = false;
     $('settings-save').disabled = false;
   }
+}
+
+/* ---- change the login password ----
+   A logged-in vendor updates their own Supabase auth password directly from the
+   browser (sb.auth.updateUser) — no server route, no email/SMTP. Independent of
+   the batched settings save above: its own button, its own inline feedback, and
+   the session stays valid so the vendor keeps working after changing it. */
+async function updatePassword() {
+  if (busy) return;
+  const pw = $('set-pw-new').value;
+  const confirm = $('set-pw-confirm').value;
+  // Match the /join application rules (8–72; bcrypt only reads the first 72 bytes).
+  if (pw.length < 8 || pw.length > 72) return pwMsg('Password must be 8–72 characters.', false);
+  if (pw !== confirm) return pwMsg('The two passwords don’t match.', false);
+
+  busy = true;
+  $('set-pw-save').disabled = true;
+  try {
+    const { error } = await sb.auth.updateUser({ password: pw });
+    if (error) { pwMsg(error.message || 'Couldn’t update the password — try again.', false); return; }
+    $('set-pw-new').value = '';
+    $('set-pw-confirm').value = '';
+    pwMsg('Password updated. Use it next time you sign in.', true);
+  } catch {
+    pwMsg('No connection — try again.', false);
+  } finally {
+    busy = false;
+    $('set-pw-save').disabled = false;
+  }
+}
+
+// Inline feedback for the password card: green on success, red on error.
+function pwMsg(text, ok) {
+  const el = $('set-pw-msg');
+  el.textContent = text;
+  el.className = ok ? 'field-success' : 'field-error';
+  el.hidden = false;
 }

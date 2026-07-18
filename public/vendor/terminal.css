@@ -111,6 +111,7 @@ button { font-family: inherit; border: none; cursor: pointer; }
 }
 
 .field-error { color: var(--error); font-weight: 700; font-size: 1.05rem; }
+.field-success { color: var(--success); font-weight: 700; font-size: 1.05rem; }
 
 /* ---------- scan screens ---------- */
 

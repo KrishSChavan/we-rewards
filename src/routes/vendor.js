@@ -18,6 +18,13 @@ const LOGO_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
 // A staff PIN session (from verify-pin) stays valid for one shift.
 const PIN_SESSION_HOURS = 8;
 
+// Hard per-transaction award ceiling. A single award can never exceed this many
+// dollars — the fraud limit on a rogue/lost terminal (award isn't PIN-gated).
+// Enforced server-side; there is intentionally NO daily cap and NO PIN bypass.
+// Keep in sync with the keypad + quick-button caps in public/vendor/terminal.js
+// and validTiers below.
+const MAX_AWARD_DOLLARS = 200;
+
 const router = Router();
 router.use(requireVendor);
 
@@ -98,13 +105,25 @@ router.post('/scan', async (req, res, next) => {
  */
 router.post('/award', async (req, res, next) => {
   try {
-    const { code, exactAmount } = req.body ?? {};
+    const { code, exactAmount, requestId } = req.body ?? {};
     const userId = await resolveEarnCode(code);
     const ratio = Number(req.vendor.points_per_dollar);
 
+    // Idempotency key: a client-generated token the terminal reuses when it
+    // retries an award after a network failure (see terminal.js). award_points
+    // treats a repeat token as a no-op, so a retry can't double-award. A missing
+    // or malformed token just falls back to the non-idempotent path (still works).
+    const clientToken = (typeof requestId === 'string' && /^[\w-]{8,64}$/.test(requestId))
+      ? requestId
+      : null;
+
     const dollarAmount = Number(exactAmount);
-    if (!Number.isFinite(dollarAmount) || dollarAmount <= 0 || dollarAmount > 500) {
+    if (!Number.isFinite(dollarAmount) || dollarAmount <= 0) {
       return res.status(400).json({ error: 'BAD_AMOUNT', message: 'Enter a valid amount.' });
+    }
+    // Hard single-transaction ceiling — no daily cap, no PIN override.
+    if (dollarAmount > MAX_AWARD_DOLLARS) {
+      return res.status(400).json({ error: 'AMOUNT_TOO_LARGE', message: `Max award ($${MAX_AWARD_DOLLARS}) reached` });
     }
     const basePoints = Math.floor(dollarAmount * ratio);
     if (basePoints < 1) {
@@ -125,6 +144,7 @@ router.post('/award', async (req, res, next) => {
       p_vendor_id: req.vendor.id,
       p_points: points,
       p_dollar_amount: dollarAmount,
+      p_client_token: clientToken,
     });
     if (error) throw error;
 
@@ -324,8 +344,38 @@ router.post('/verify-pin', async (req, res, next) => {
   try {
     const { pin } = req.body ?? {};
     if (!req.vendor.pin_hash) return res.json({ ok: true, note: 'No PIN set for this vendor.' });
+
+    // Per-vendor lockout (independent of the per-IP pinLimiter): if this vendor
+    // is currently locked from too many wrong PINs, refuse before checking, so
+    // an attacker rotating IPs still can't keep guessing.
+    const lockedUntil = req.vendor.pin_locked_until ? new Date(req.vendor.pin_locked_until) : null;
+    if (lockedUntil && lockedUntil > new Date()) {
+      return res.status(429).json({
+        error: 'PIN_LOCKED',
+        message: 'Too many incorrect PINs. Wait a few minutes and try again.',
+        retryAfterSeconds: Math.ceil((lockedUntil - Date.now()) / 1000),
+      });
+    }
+
     const ok = await bcrypt.compare(String(pin ?? ''), req.vendor.pin_hash);
-    if (!ok) return res.status(401).json({ error: 'BAD_PIN', message: 'Incorrect PIN.' });
+    if (!ok) {
+      // Record the failure atomically; the RPC locks the vendor at the threshold.
+      const { data: lock } = await supabaseAdmin.rpc('record_pin_result', {
+        p_vendor_id: req.vendor.id, p_success: false,
+      });
+      const newLock = lock?.[0]?.locked_until ? new Date(lock[0].locked_until) : null;
+      if (newLock && newLock > new Date()) {
+        return res.status(429).json({
+          error: 'PIN_LOCKED',
+          message: 'Too many incorrect PINs. Wait a few minutes and try again.',
+          retryAfterSeconds: Math.ceil((newLock - Date.now()) / 1000),
+        });
+      }
+      return res.status(401).json({ error: 'BAD_PIN', message: 'Incorrect PIN.' });
+    }
+
+    // Correct PIN — clear any accumulated failure count / lock.
+    await supabaseAdmin.rpc('record_pin_result', { p_vendor_id: req.vendor.id, p_success: true });
 
     const token = randomUUID();
     const expiresAt = new Date(Date.now() + PIN_SESSION_HOURS * 60 * 60 * 1000).toISOString();
@@ -484,8 +534,10 @@ function validTiers(raw) {
     const label = String(row?.label ?? '').trim();
     const amount = Number(row?.amount);
     if (!label || label.length > 40) return { error: 'Each button needs a label (up to 40 characters).' };
-    if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) {
-      return { error: `“${label || 'button'}”: enter a dollar amount greater than 0.` };
+    // Cap at the per-award ceiling so a saved button can always actually award
+    // (an amount over MAX_AWARD_DOLLARS would be rejected on tap by /award).
+    if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_AWARD_DOLLARS) {
+      return { error: `“${label || 'button'}”: enter a dollar amount between $0 and $${MAX_AWARD_DOLLARS}.` };
     }
     tiers.push({ label, amount: Math.round(amount * 100) / 100 }); // numeric-safe dollars
   }
@@ -573,6 +625,9 @@ router.patch('/settings', requirePin, async (req, res, next) => {
     let pinChanged = false;
     if (v.pin != null) {
       updates.pin_hash = await bcrypt.hash(v.pin, 10);
+      // A new PIN starts clean — drop any accumulated failures / active lock.
+      updates.failed_pin_attempts = 0;
+      updates.pin_locked_until = null;
       pinChanged = true;
     }
 

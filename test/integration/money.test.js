@@ -40,6 +40,30 @@ describe('money paths (RPCs)', { skip: dbConfigured ? false : 'set TEST_SUPABASE
     assert.equal(Number(tx.dollar_amount), 15);
   });
 
+  test('award_points is idempotent on client_token: a repeat is a no-op', async () => {
+    const token = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const start = await balance();
+
+    const first = await admin.rpc('award_points', {
+      p_user_id: student.id, p_vendor_id: vendor.id, p_points: 60, p_dollar_amount: 6, p_client_token: token,
+    });
+    assert.equal(first.error, null);
+    assert.equal(first.data[0].new_balance, start + 60);
+
+    // Same token again (the retry-after-a-hidden-success case): no second award.
+    const second = await admin.rpc('award_points', {
+      p_user_id: student.id, p_vendor_id: vendor.id, p_points: 60, p_dollar_amount: 6, p_client_token: token,
+    });
+    assert.equal(second.error, null);
+    assert.equal(second.data[0].new_balance, start + 60, 'balance only moved once');
+
+    // Exactly one earn transaction carries that token.
+    const { count } = await admin
+      .from('transactions').select('id', { count: 'exact', head: true })
+      .eq('vendor_id', vendor.id).eq('client_token', token);
+    assert.equal(count, 1, 'only one transaction is recorded for the token');
+  });
+
   test('a redeem code is single-use: a double-submit only redeems once', async () => {
     const reward = await createReward(vendor.id, { cost: 50 });
     // ensure enough balance
