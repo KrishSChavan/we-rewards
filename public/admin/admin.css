@@ -65,6 +65,30 @@ h1, h3 { margin: 0; }
 
 .wrap { margin: 0 auto; padding: 1.25rem; display: grid; gap: 1.1rem; }
 
+/* ---------- view tabs (Dashboard | Applications) ---------- */
+.tabs {
+  display: flex; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.8rem 1.25rem 0;
+}
+.tab {
+  position: relative;
+  font: inherit; font-size: 0.85rem; font-weight: 800; letter-spacing: 0.04em;
+  padding: 0.5rem 1rem; border-radius: 10px; cursor: pointer;
+  background: transparent; color: var(--muted); border: 1px solid var(--line);
+}
+.tab:hover { background: var(--panel-2); }
+.tab.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* red count bubble pinned to the tab's top-right corner */
+.tab-badge {
+  position: absolute; top: -0.5rem; right: -0.5rem;
+  min-width: 1.25rem; height: 1.25rem; padding: 0 0.3rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bad); color: #fff;
+  font-size: 0.72rem; font-weight: 900; line-height: 1;
+  border-radius: 999px; border: 2px solid var(--bg);
+}
+
 /* ---------- tiles ---------- */
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem; }
 .tiles-4 { margin-top: 0.8rem; }
@@ -172,6 +196,46 @@ h1, h3 { margin: 0; }
 .vendor-delete:not(:disabled):hover { background: var(--bad); color: #fff; border-color: var(--bad); }
 .vendor-delete:disabled { opacity: 0.6; cursor: default; }
 .vendor-delete:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
+
+/* ---------- vendor applications ---------- */
+.app-list { display: grid; gap: 0.6rem; margin-top: 0.85rem; }
+.app-row {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.75rem 0.85rem;
+}
+.app-top { display: flex; align-items: flex-start; gap: 0.75rem; }
+.app-logo {
+  width: 48px; height: 48px; flex: none; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--panel);
+  object-fit: contain;
+}
+.app-logo.is-empty {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted); font-weight: 900; font-size: 1.1rem;
+}
+.app-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.app-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-meta { color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+.app-meta a { color: var(--accent); text-decoration: none; }
+.app-meta a:hover { text-decoration: underline; }
+.app-when { color: var(--muted); font-size: 0.72rem; white-space: nowrap; flex-shrink: 0; }
+.app-message {
+  margin: 0; padding: 0.5rem 0.65rem; border-radius: 8px;
+  background: var(--panel); border: 1px dashed var(--line);
+  color: var(--ink); font-size: 0.82rem; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.app-actions { display: flex; align-items: center; gap: 0.5rem; justify-content: flex-end; }
+.app-accept, .app-reject {
+  font: inherit; font-size: 0.78rem; font-weight: 700; cursor: pointer;
+  padding: 0.45rem 0.9rem; border-radius: 8px;
+}
+.app-accept { background: var(--good); color: #06281a; border: 1px solid var(--good); }
+.app-accept:not(:disabled):hover { filter: brightness(1.1); }
+.app-reject { background: transparent; color: var(--bad); border: 1px solid var(--line); }
+.app-reject:not(:disabled):hover { background: var(--bad); color: #fff; border-color: var(--bad); }
+.app-accept:disabled, .app-reject:disabled { opacity: 0.6; cursor: default; }
+.app-error { color: var(--bad); font-size: 0.78rem; font-weight: 700; flex: 1; text-align: left; }
 
 /* ---------- errors ---------- */
 .err-filters { display: flex; gap: 0.35rem; flex-wrap: wrap; }

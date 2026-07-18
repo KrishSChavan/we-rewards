@@ -6,6 +6,9 @@
 let sb = null;
 let errorSource = '';   // '' = all sources; else server|student|vendor|admin
 let vendors = [];       // full roster (active + inactive) for the on/off panel
+let applications = [];  // pending vendor applications (the Applications tab)
+let vapidKey = null;    // server's public VAPID key; null = push disabled
+let pushInitDone = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -23,6 +26,9 @@ const $ = (id) => document.getElementById(id);
   $('signout-btn').addEventListener('click', signOut);
   $('refresh-btn').addEventListener('click', loadAll);
   $('clear-errors-btn').addEventListener('click', clearErrors);
+  $('tab-dashboard').addEventListener('click', () => setView('dashboard'));
+  $('tab-applications').addEventListener('click', () => setView('applications'));
+  $('push-btn').addEventListener('click', enablePush);
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
 
@@ -107,7 +113,22 @@ async function authFetch(path, opts = {}) {
 async function loadAll() {
   // Overview is the access check: only load the rest once it confirms admin.
   const ok = await loadOverview();
-  if (ok) await Promise.all([loadVendors(), loadErrors()]);
+  if (ok) {
+    await Promise.all([loadVendors(), loadErrors(), loadApplications()]);
+    initPush();   // best-effort, runs once — after admin access is confirmed
+  }
+}
+
+/* ---------- view tabs ---------- */
+
+// Two mutually exclusive views under one topbar; `hidden` is the source of
+// truth (same convention as the #login/#dash panels).
+function setView(view) {
+  const apps = view === 'applications';
+  $('view-dashboard').hidden = apps;
+  $('view-applications').hidden = !apps;
+  $('tab-dashboard').classList.toggle('is-active', !apps);
+  $('tab-applications').classList.toggle('is-active', apps);
 }
 
 async function loadOverview() {
@@ -424,6 +445,247 @@ function buildChart(daily) {
 }
 
 const tickLabel = (iso) => { const [, m, d] = String(iso).split('-'); return `${Number(m)}/${Number(d)}`; };
+
+/* ---------- vendor applications ---------- */
+
+async function loadApplications() {
+  const res = await authFetch('/api/admin/applications');
+  if (res.status === 403) return denyAccess(); // safety net; overview already gates
+  if (!res.ok) return;
+  applications = await res.json();
+  renderApplications();
+}
+
+// The red bubble on the Applications tab: pending count, hidden at zero.
+function updateAppsBadge() {
+  const badge = $('apps-badge');
+  badge.textContent = applications.length > 99 ? '99+' : String(applications.length);
+  badge.hidden = applications.length === 0;
+  $('apps-count').textContent = applications.length
+    ? `${applications.length} pending` : '';
+}
+
+function showAppsError(msg) {
+  const el = $('apps-error');
+  el.textContent = msg || 'Couldn’t complete that action. Check your connection and try again.';
+  el.hidden = false;
+}
+
+// Applicant fields are untrusted text → built with DOM APIs / textContent only
+// (same rule as renderVendors). The logo is server-validated, but the data:image
+// check here keeps a bad row from ever becoming a live URL.
+function renderApplications() {
+  updateAppsBadge();
+  const wrap = $('app-list');
+  $('apps-error').hidden = true;
+  wrap.innerHTML = '';
+  if (!applications.length) {
+    wrap.innerHTML = `<p class="muted">No pending applications. Share <strong>/join</strong> with prospective vendors.</p>`;
+    return;
+  }
+
+  applications.forEach((a) => {
+    const row = document.createElement('div');
+    row.className = 'app-row';
+
+    const top = document.createElement('div');
+    top.className = 'app-top';
+
+    let logo;
+    if (a.logo && /^data:image\//.test(a.logo)) {
+      logo = document.createElement('img');
+      logo.className = 'app-logo';
+      logo.alt = '';
+      logo.src = a.logo;
+    } else {
+      logo = document.createElement('span');
+      logo.className = 'app-logo is-empty';
+      logo.textContent = (a.business_name || '?').charAt(0).toUpperCase();
+    }
+
+    const info = document.createElement('div');
+    info.className = 'app-info';
+    const name = document.createElement('span');
+    name.className = 'app-name';
+    name.textContent = a.business_name;
+    const contact = document.createElement('span');
+    contact.className = 'app-meta';
+    contact.textContent = `${a.contact_name} · ${a.phone}`;
+    const email = document.createElement('span');
+    email.className = 'app-meta';
+    const mail = document.createElement('a');
+    mail.href = `mailto:${a.email}`;
+    mail.textContent = a.email;
+    email.appendChild(mail);
+    info.append(name, contact, email);
+    if (a.address) {
+      const addr = document.createElement('span');
+      addr.className = 'app-meta';
+      addr.textContent = a.address;
+      info.appendChild(addr);
+    }
+
+    const when = document.createElement('span');
+    when.className = 'app-when';
+    when.textContent = new Date(a.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+    top.append(logo, info, when);
+    row.appendChild(top);
+
+    if (a.message) {
+      const msg = document.createElement('p');
+      msg.className = 'app-message';
+      msg.textContent = a.message;
+      row.appendChild(msg);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'app-actions';
+    const err = document.createElement('span');
+    err.className = 'app-error';
+    err.hidden = true;
+    const accept = document.createElement('button');
+    accept.className = 'app-accept';
+    accept.type = 'button';
+    accept.textContent = 'Accept';
+    accept.setAttribute('aria-label', `Accept ${a.business_name}`);
+    const reject = document.createElement('button');
+    reject.className = 'app-reject';
+    reject.type = 'button';
+    reject.textContent = 'Reject';
+    reject.setAttribute('aria-label', `Reject ${a.business_name}`);
+    accept.addEventListener('click', () => acceptApplication(a, row, accept, reject, err));
+    reject.addEventListener('click', () => rejectApplication(a, row, accept, reject, err));
+    actions.append(err, accept, reject);
+    row.appendChild(actions);
+
+    wrap.appendChild(row);
+  });
+}
+
+// Drop one application from the in-memory list + DOM, keeping badge/count and
+// the empty state in sync.
+function removeApplicationRow(a, row) {
+  applications = applications.filter((x) => x.id !== a.id);
+  row.remove();
+  updateAppsBadge();
+  if (!applications.length) renderApplications();
+}
+
+// Accept = onboard now: the server creates the login (from the password chosen
+// when applying), the vendor row, and the staff link, then deletes the application.
+async function acceptApplication(a, row, accept, reject, err) {
+  if (!confirm(
+    `Accept “${a.business_name}”?\n\nThis creates the vendor immediately — they can sign in to the terminal right away with the email and password from their application.`
+  )) return;
+
+  err.hidden = true;
+  accept.disabled = true;
+  reject.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/applications/${a.id}/accept`, { method: 'POST' });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      let msg = 'Accept failed — try again.';
+      try { msg = (await res.json())?.message || msg; } catch { /* keep generic */ }
+      // 404 = another admin (or a double-click) already handled it — reload the list.
+      if (res.status === 404) { removeApplicationRow(a, row); return; }
+      err.textContent = msg;
+      err.hidden = false;
+      accept.disabled = false;
+      reject.disabled = false;
+      return;
+    }
+    removeApplicationRow(a, row);
+    // The new vendor should show up in the roster + totals without a manual refresh.
+    loadVendors();
+    loadOverview();
+  } catch {
+    err.textContent = 'No connection — try again.';
+    err.hidden = false;
+    accept.disabled = false;
+    reject.disabled = false;
+  }
+}
+
+// Reject = permanent delete of the application (nothing else was ever created).
+async function rejectApplication(a, row, accept, reject, err) {
+  if (!confirm(
+    `Reject the application from “${a.business_name}”?\n\nThis permanently deletes it — including their contact info and chosen password. They can always apply again.`
+  )) return;
+
+  err.hidden = true;
+  accept.disabled = true;
+  reject.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/applications/${a.id}`, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok && res.status !== 404) {
+      err.textContent = 'Reject failed — try again.';
+      err.hidden = false;
+      accept.disabled = false;
+      reject.disabled = false;
+      return;
+    }
+    removeApplicationRow(a, row);
+  } catch {
+    err.textContent = 'No connection — try again.';
+    err.hidden = false;
+    accept.disabled = false;
+    reject.disabled = false;
+  }
+}
+
+/* ---------- web-push: new-application alerts ---------- */
+
+// Runs once per page load, after admin access is confirmed. If notifications
+// are already granted, silently (re-)subscribe — the server upserts, so
+// repeating this every load just keeps the subscription fresh. If permission
+// was never asked, reveal the 🔔 button: requestPermission() must run from a
+// user gesture (Safari enforces this). If denied, stay out of the way.
+async function initPush() {
+  if (pushInitDone) return;
+  pushInitDone = true;
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+    const res = await authFetch('/api/admin/push/public-key');
+    if (!res.ok) return;
+    vapidKey = (await res.json())?.publicKey ?? null;
+    if (!vapidKey) return;   // server has no VAPID keys → push disabled
+    if (Notification.permission === 'granted') await subscribePush();
+    else if (Notification.permission === 'default') $('push-btn').hidden = false;
+  } catch { /* push is a nice-to-have — never let it break the dashboard */ }
+}
+
+async function enablePush() {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { $('push-btn').hidden = true; return; }
+    await subscribePush();
+    $('push-btn').hidden = true;
+  } catch { $('push-btn').hidden = true; }
+}
+
+async function subscribePush() {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(vapidKey),
+  });
+  const { endpoint, keys } = sub.toJSON();
+  await authFetch('/api/admin/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify({ endpoint, keys }),
+  });
+}
+
+// Standard VAPID key decoder: base64url → the Uint8Array PushManager expects.
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
 
 /* ---------- error log ---------- */
 

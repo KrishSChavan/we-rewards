@@ -37,12 +37,19 @@
       <span class="wordmark">WeRewards <em>Admin</em></span>
       <div class="topbar-right">
         <span id="admin-email" class="admin-email"></span>
+        <button id="push-btn" class="btn-ghost btn-compact" title="Get notified when a new vendor application arrives" hidden>🔔 Notify</button>
         <button id="refresh-btn" class="btn-ghost btn-compact" aria-label="Refresh">↻</button>
         <button id="signout-btn" class="btn-ghost btn-compact">Sign out</button>
       </div>
     </header>
 
-    <main class="wrap">
+    <nav class="tabs" aria-label="View">
+      <button id="tab-dashboard" class="tab is-active" type="button">Dashboard</button>
+      <button id="tab-applications" class="tab" type="button">Applications<span id="apps-badge" class="tab-badge" hidden>0</span></button>
+    </nav>
+
+    <main>
+    <div id="view-dashboard" class="wrap">
       <!-- lifetime totals -->
       <div class="tiles">
         <div class="tile"><span id="tot-vendors" class="tile-num">0</span><span class="tile-label">Vendors</span></div>
@@ -112,6 +119,20 @@
         </div>
         <div id="error-list" class="error-list"></div>
       </div>
+    </div>
+
+    <!-- ===== APPLICATIONS TAB ===== -->
+    <div id="view-applications" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>Vendor applications</h3>
+          <span id="apps-count" class="chart-max"></span>
+        </div>
+        <p class="muted">Applications from the public page at <strong>/join</strong>, oldest first. <strong>Accept</strong> onboards the vendor on the spot — their terminal login works immediately with the password they chose. <strong>Reject</strong> permanently deletes the application and everything in it.</p>
+        <p id="apps-error" class="field-error" role="alert" hidden></p>
+        <div id="app-list" class="app-list"></div>
+      </div>
+    </div>
     </main>
   </div>
 

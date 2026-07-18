@@ -1,0 +1,129 @@
+/* =====================================================
+   WeRewards — public vendor application page (/join)
+   Same visual language as the vendor terminal login card:
+   ink navy on cool paper, chunky borders, Archivo.
+   ===================================================== */
+
+:root {
+  --ink: #101d33;
+  --paper: #eef1f6;
+  --card: #ffffff;
+  --navy: #12294b;
+  --navy-press: #0b1c36;
+  --sky-line: #a9c4e4;
+  --error: #a93226;
+  --muted: #5a6678;
+  font-size: 16px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+body {
+  font-family: "Archivo", system-ui, -apple-system, sans-serif;
+  /* Soft top-lit paper so the flat fill has a little depth. */
+  background: radial-gradient(circle at 50% -10%, #ffffff, var(--paper) 60%);
+  background-attachment: fixed;
+  color: var(--ink);
+  min-height: 100dvh;
+}
+
+/* Branded backdrop: the WeRewards wordmark tiled as a faint navy watermark,
+   set on a diagonal. No standalone logo asset exists, so the mark is drawn as
+   text inside an inline SVG (covered by the CSP's `img-src data:`). The layer
+   is oversized and rotated so the corners never go blank, and kept very low
+   opacity so it reads as texture behind the card, never competing with it. */
+body::before {
+  content: "";
+  position: fixed;
+  top: -50%; left: -50%;
+  width: 200%; height: 200%;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='320'%20height='120'%3E%3Ctext%20x='16'%20y='44'%20font-family='Archivo,Arial,sans-serif'%20font-size='24'%20font-weight='800'%20fill='%2312294b'%3EWeRewards%3C/text%3E%3Ctext%20x='150'%20y='100'%20font-family='Archivo,Arial,sans-serif'%20font-size='24'%20font-weight='800'%20fill='%2312294b'%3EWeRewards%3C/text%3E%3C/svg%3E");
+  background-repeat: repeat;
+  transform: rotate(-22deg);
+  transform-origin: center;
+  opacity: 0.06;
+  pointer-events: none;
+  z-index: -1;
+}
+
+[hidden] { display: none !important; }
+
+.page {
+  min-height: 100dvh;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 2rem 1rem 3rem;
+}
+
+.card {
+  /* width: min(34rem, 100%); */
+  /* Capped so the card stays a readable column and the watermark backdrop
+     shows around it — drop this if you want the card full-bleed. */
+  width: 100%; max-width: 34rem;
+  background: var(--card);
+  border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 2.2rem;
+  display: flex; flex-direction: column; gap: 0.9rem;
+  /* Subtle lift off the patterned background. */
+  box-shadow: 0 18px 40px -24px rgba(16, 29, 51, 0.45);
+}
+
+.brand { font-weight: 900; letter-spacing: 0.18em; font-size: 0.8rem; color: var(--navy); }
+h1 { font-size: 1.8rem; font-weight: 900; line-height: 1.1; }
+.lede { color: var(--muted); font-size: 1rem; line-height: 1.45; }
+
+form { display: flex; flex-direction: column; gap: 1.05rem; margin-top: 0.6rem; }
+
+label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; font-size: 1rem; }
+.opt { color: var(--muted); font-weight: 500; font-style: normal; font-size: 0.85rem; }
+
+input[type="text"], input[type="email"], input[type="tel"], input[type="password"], textarea {
+  font: inherit; font-size: 1.15rem; font-weight: 500; padding: 0.85rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+  background: var(--card); color: var(--ink); width: 100%;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--navy); box-shadow: 0 0 0 2px var(--sky-line); }
+textarea { resize: vertical; min-height: 4.5rem; }
+
+.row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem; }
+
+.hint { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+
+/* logo picker — square preview beside the choose/remove buttons */
+.logo-field { display: flex; align-items: flex-start; gap: 1rem; }
+.logo-preview {
+  width: 5rem; height: 5rem; flex: none; border-radius: 0.9rem;
+  border: 2.5px solid var(--ink); background: var(--card);
+  background-size: contain; background-repeat: no-repeat; background-position: center;
+}
+.logo-preview.is-empty { border-style: dashed; border-color: var(--sky-line); }
+.logo-actions { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+.logo-label { font-weight: 700; }
+.logo-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.btn-small {
+  font: inherit; font-size: 0.9rem; font-weight: 700; cursor: pointer;
+  padding: 0.5rem 0.9rem; border-radius: 0.5rem;
+  background: var(--card); color: var(--ink); border: 2.5px solid var(--ink);
+}
+.btn-small:active { background: var(--paper); }
+.btn-small-danger { color: var(--error); border-color: var(--error); }
+
+.field-error { color: var(--error); font-weight: 700; font-size: 1rem; }
+
+.btn-primary {
+  font: inherit; cursor: pointer; border: none;
+  background: var(--navy); color: #fff;
+  font-size: 1.35rem; font-weight: 900; letter-spacing: 0.03em;
+  padding: 1.1rem 2rem; border-radius: 0.8rem;
+  margin-top: 0.3rem;
+}
+.btn-primary:active { background: var(--navy-press); }
+.btn-primary:disabled { opacity: 0.35; cursor: default; }
+
+.fine-print { color: var(--muted); font-size: 0.8rem; line-height: 1.4; }
+
+.done-card { text-align: left; }
+
+@media (max-width: 480px) {
+  .card { padding: 1.5rem; }
+  .row-2 { grid-template-columns: 1fr; }
+}

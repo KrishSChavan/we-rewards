@@ -21,7 +21,8 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.1",
     "helmet": "^8.0.0",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "web-push": "^3.6.7"
   },
   "description": "Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one Express app.",
   "main": "server.js",

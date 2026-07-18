@@ -6,10 +6,15 @@ Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one
 
 - **`/`** — student PWA (rotating identity code, balances, redeem)
 - **`/terminal`** — vendor terminal web app (enter code → award/redeem, big buttons, stats)
-- **`/admin`** — operator dashboard (platform analytics + error log; `ADMIN_EMAILS`-gated)
+- **`/admin`** — operator dashboard (platform analytics + error log + vendor
+  applications; `ADMIN_EMAILS`-gated)
+- **`/join`** — public vendor application page; applications land in the admin
+  dashboard's Applications tab for accept/reject
 - **`/api/me/*`** — student endpoints (Supabase JWT auth)
 - **`/api/vendor/*`** — vendor endpoints (Supabase JWT + `vendor_staff` link)
 - **`/api/admin/*`** — operator endpoints (Supabase JWT + `ADMIN_EMAILS` allow-list)
+- **`/api/apply`** — public vendor-application submit (unauthenticated, tightly
+  rate-limited)
 - **Supabase** — auth, Postgres, RLS for client reads; all writes go through
   server-side RPCs (`award_points`, `redeem_by_code`) which are atomic.
 
@@ -38,7 +43,7 @@ config — the terminal never sends a point value.
 ## Setup
 
 1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
-   `supabase/migration-002.sql` through `supabase/migration-017.sql` in order.
+   `supabase/migration-002.sql` through `supabase/migration-018.sql` in order.
    (migration-007 locks down the RPCs and adds the PIN-session table — required;
    migration-010 adds the void/refund RPC; migration-011 lets account deletion
    anonymize a student's transactions instead of being blocked by them;
@@ -48,7 +53,9 @@ config — the terminal never sends a point value.
    migration-015 adds the vendor address + geocoded lat/lng for the map card;
    migration-016 adds the vendor logo column;
    migration-017 lets an admin hard-delete a vendor by anonymizing its
-   transactions instead of being blocked by them.)
+   transactions instead of being blocked by them;
+   migration-018 adds `vendor_applications` (the public `/join` queue) and
+   `push_subscriptions` (admin web-push alerts).)
 2. Enable Google sign-in (for students):
    - Google Cloud Console → create an OAuth 2.0 Client ID (Web application)
    - Authorized redirect URI: `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
@@ -62,13 +69,20 @@ config — the terminal never sends a point value.
    returns to the right place:
    `https://we-rewards.com/**`, `http://localhost:3000/**`.
 4. `npm install && npm run dev`
-5. Onboard your first vendor:
+5. Onboard your first vendor — either point them at the public `/join` page
+   and accept the application from the `/admin` **Applications** tab, or run
+   the CLI directly:
    ```
    npm run onboard -- --name "Local Eats" --slug local-eats \
      --email owner@example.com --password TempPass123! --ratio 10 --pin 4321
    ```
 6. Add that vendor's rewards rows in the Supabase table editor
    (`rewards`: vendor_id, title, cost_in_points).
+7. (Optional) Web-push alerts for new vendor applications: run
+   `npx web-push generate-vapid-keys`, put the keys in `.env`
+   (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`), then click
+   **🔔 Notify** in the `/admin` topbar and allow notifications. With no keys
+   set, push is silently disabled and everything else works.
 
 ## Point math
 

@@ -7,7 +7,7 @@
    scoped to this app's own 'werewards-admin-' prefix — deleting every other
    cache here would wipe the student PWA's cache (and vice-versa). */
 
-const CACHE = 'werewards-admin-v1';
+const CACHE = 'werewards-admin-v2';
 const SHELL = [
   '/admin/', '/admin/admin.css', '/admin/admin.js', '/admin/manifest.json',
   '/admin/icons/icon-192.png', '/admin/icons/icon-512.png',
@@ -42,5 +42,31 @@ self.addEventListener('fetch', (e) => {
         return res;
       })
       .catch(() => caches.match(e.request).then((hit) => hit || caches.match('/admin/')))
+  );
+});
+
+/* Web push: "new vendor application" alerts sent by the server (src/lib/push.js)
+   to every subscribed operator browser — this fires even with the dashboard
+   closed. Payload: { title, body, url }. */
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data?.json() ?? {}; } catch { /* non-JSON payload — show defaults */ }
+  e.waitUntil(self.registration.showNotification(d.title || 'WeRewards Admin', {
+    body: d.body || '',
+    icon: '/admin/icons/icon-192.png',
+    badge: '/admin/icons/icon-192.png',
+    data: { url: d.url || '/admin/' },
+  }));
+});
+
+// Clicking the notification focuses an open dashboard if there is one,
+// otherwise opens a fresh /admin window.
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const hit = list.find((c) => new URL(c.url).pathname.startsWith('/admin'));
+      return hit ? hit.focus() : clients.openWindow(e.notification.data?.url || '/admin/');
+    })
   );
 });

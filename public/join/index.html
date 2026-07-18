@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Become a vendor — WeRewards</title>
+  <meta name="description" content="Apply to join WeRewards — reward your student customers with points on every purchase." />
+  <meta name="theme-color" content="#12294b" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/join/join.css" />
+</head>
+<body>
+
+  <main class="page">
+
+    <!-- ===== APPLICATION FORM ===== -->
+    <section id="form-card" class="card">
+      <p class="brand">WEREWARDS</p>
+      <h1>Become a vendor</h1>
+      <p class="lede">Tell us about your business! We review every application. Once you're approved, you can sign in to your terminal right away with the email and password you choose below.</p>
+
+      <form id="apply-form" novalidate>
+        <label>Business name
+          <input id="f-business" type="text" maxlength="80" autocomplete="organization" required />
+        </label>
+
+        <div class="row-2">
+          <label>Contact person
+            <input id="f-contact" type="text" maxlength="80" autocomplete="name" required />
+          </label>
+          <label>Phone
+            <input id="f-phone" type="tel" maxlength="20" autocomplete="tel" inputmode="tel" required />
+          </label>
+        </div>
+
+        <label>Email
+          <input id="f-email" type="email" maxlength="254" autocomplete="email" inputmode="email" required />
+          <span class="hint">This becomes your terminal sign-in.</span>
+        </label>
+
+        <label>Password
+          <input id="f-password" type="password" minlength="8" maxlength="72" autocomplete="new-password" required />
+          <span class="hint">At least 8 characters. You'll use it to sign in once approved.</span>
+        </label>
+
+        <label>Street address <em class="opt">(optional)</em>
+          <input id="f-address" type="text" maxlength="300" autocomplete="street-address" placeholder="123 College Ave, State College, PA" />
+          <span class="hint">Shown as a map on your card in the student app.</span>
+        </label>
+
+        <div class="logo-field">
+          <div id="logo-preview" class="logo-preview is-empty" aria-hidden="true"></div>
+          <div class="logo-actions">
+            <span class="logo-label">Logo <em class="opt">(optional)</em></span>
+            <div class="logo-buttons">
+              <button id="logo-pick" class="btn-small" type="button">Choose image</button>
+              <button id="logo-remove" class="btn-small btn-small-danger" type="button" hidden>Remove</button>
+            </div>
+            <span class="hint">Square images look best. PNG or JPG.</span>
+            <p id="logo-error" class="field-error" hidden></p>
+          </div>
+          <input id="logo-file" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+        </div>
+
+        <label>Anything we should know? <em class="opt">(optional)</em>
+          <textarea id="f-message" maxlength="500" rows="3" placeholder="Hours, what you sell, questions for us…"></textarea>
+        </label>
+
+        <p id="form-error" class="field-error" role="alert" hidden></p>
+        <button id="submit-btn" class="btn-primary" type="submit">Submit application</button>
+        <p class="fine-print">Submitting sends your info to the WeRewards team for review. We'll only use it to set up your account.</p>
+      </form>
+    </section>
+
+    <!-- ===== SUCCESS ===== -->
+    <section id="done-card" class="card done-card" hidden>
+      <p class="brand">WEREWARDS</p>
+      <h1>Application received 🎉</h1>
+      <p class="lede">Thanks! We review every application by hand. Once you're approved, sign in to your terminal at <strong>/terminal</strong> with the email and password you just chose.</p>
+    </section>
+
+  </main>
+
+  <script src="/join/join.js"></script>
+</body>
+</html>

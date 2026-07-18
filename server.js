@@ -10,6 +10,7 @@ import 'dotenv/config';
 import studentRoutes from './src/routes/student.js';
 import vendorRoutes from './src/routes/vendor.js';
 import adminRoutes from './src/routes/admin.js';
+import applyRoutes from './src/routes/apply.js';
 import { supabaseAuth, supabaseAdmin } from './src/lib/supabase.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
@@ -125,15 +126,28 @@ const clientErrorLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED' },
 });
+// Public vendor applications (/join) — unauthenticated writes, and each one bcrypt-hashes a
+// password (CPU) and can carry a logo (~100s of KB), so cap it hard. A real
+// applicant submits once, maybe twice after a validation error.
+const applyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many applications from this connection — try again later.' },
+});
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
 app.use('/api/vendor/redeem-preview', redeemLimiter);
 app.use('/api/client-error', clientErrorLimiter);
+app.use('/api/apply', applyLimiter);
 
-// Static: student PWA at / , vendor terminal at /terminal , operator dash at /admin
+// Static: student PWA at / , vendor terminal at /terminal , operator dash at
+// /admin , public vendor application page at /join
 app.use('/', express.static(path.join(__dirname, 'public/student')));
 app.use('/terminal', express.static(path.join(__dirname, 'public/vendor')));
 app.use('/admin', express.static(path.join(__dirname, 'public/admin')));
+app.use('/join', express.static(path.join(__dirname, 'public/join')));
 
 // Per-user API data must always be fresh — no ETag/304 revalidation, which was
 // letting the browser serve a stale cached balance.
@@ -146,6 +160,7 @@ app.use('/api', (_req, res, next) => {
 app.use('/api/me', studentRoutes);      // student-authenticated endpoints
 app.use('/api/vendor', vendorRoutes);   // vendor-authenticated endpoints
 app.use('/api/admin', adminRoutes);     // operator-only (ADMIN_EMAILS) analytics + errors
+app.use('/api/apply', applyRoutes);     // public vendor applications (rate-limited above)
 
 // Client crash reporting: the student PWA and vendor terminal post uncaught
 // errors here so they land in the same error_logs the /admin page reads.
