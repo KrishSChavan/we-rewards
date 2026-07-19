@@ -1,6 +1,8 @@
 import express from 'express';
 import http from 'node:http';
 import path from 'node:path';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from 'socket.io';
 import helmet from 'helmet';
@@ -144,12 +146,72 @@ app.use('/api/vendor/redeem-preview', redeemLimiter);
 app.use('/api/client-error', clientErrorLimiter);
 app.use('/api/apply', applyLimiter);
 
-// Static: student PWA at / , vendor terminal at /terminal , operator dash at
-// /admin , public vendor application page at /join
-app.use('/', express.static(path.join(__dirname, 'public/student')));
-app.use('/terminal', express.static(path.join(__dirname, 'public/vendor')));
-app.use('/admin', express.static(path.join(__dirname, 'public/admin')));
-app.use('/join', express.static(path.join(__dirname, 'public/join')));
+// Static app shells: student PWA at / , vendor terminal at /terminal , operator
+// dash at /admin , public vendor application page at /join .
+//
+// Cache-busting. Cloudflare (in front of the dyno) caches /app.js, /styles.css,
+// etc. for hours and tells browsers to as well. Those filenames never change,
+// so after a deploy the old bytes keep being served until the cache expires.
+// Fix: stamp every local .js/.css reference in the served HTML with a
+// ?v=<content-hash> of that file. A changed file → new hash → new URL that no
+// cache can serve stale; unchanged files keep their URL (and stay cached). The
+// HTML documents are sent no-cache, so browsers always pick up the freshest
+// tags. Rendered HTML and hashes are memoised — asset bytes don't change while
+// a dyno is alive, and a redeploy starts a fresh process.
+const assetHashes = new Map();   // abs file path -> 8-char content hash (or null if not on disk)
+function assetHash(absPath) {
+  if (!assetHashes.has(absPath)) {
+    let h = null;
+    try { h = crypto.createHash('sha1').update(fs.readFileSync(absPath)).digest('hex').slice(0, 8); }
+    catch { /* not a real on-disk asset (e.g. /socket.io/socket.io.js) — leave the URL alone */ }
+    assetHashes.set(absPath, h);
+  }
+  return assetHashes.get(absPath);
+}
+
+// Add ?v=<hash> to href/src values that point at a local .js/.css file.
+// External URLs (fonts, the supabase CDN) and non-file refs are left untouched.
+const ASSET_REF = /\b(href|src)=(["'])([^"']+\.(?:js|css))(?:\?[^"']*)?\2/gi;
+function versionAssets(html, mount, root) {
+  return html.replace(ASSET_REF, (full, attr, quote, url) => {
+    if (/^(?:https?:)?\/\//i.test(url) || url.startsWith('data:')) return full;   // external / inline
+    // Refs are absolute (e.g. /app.js under mount / , /terminal/x.js under /terminal).
+    // Strip the mount prefix, then resolve against the app's on-disk root.
+    let rel = url;
+    if (mount !== '/' && rel.startsWith(mount + '/')) rel = rel.slice(mount.length);
+    const hash = assetHash(path.join(root, rel.replace(/^\/+/, '')));
+    return hash ? `${attr}=${quote}${url}?v=${hash}${quote}` : full;   // not ours → skip
+  });
+}
+
+const renderedShells = new Map();   // index.html path -> versioned HTML string
+function serveShell(mount, root) {
+  const htmlPath = path.join(root, 'index.html');
+  return (_req, res) => {
+    let html = renderedShells.get(htmlPath);
+    if (html == null) {
+      html = versionAssets(fs.readFileSync(htmlPath, 'utf8'), mount, root);
+      renderedShells.set(htmlPath, html);
+    }
+    res.set('Cache-Control', 'no-cache');   // always revalidate so new ?v= tags are seen
+    res.type('html').send(html);
+  };
+}
+
+const shells = [
+  { mount: '/',         root: path.join(__dirname, 'public/student') },
+  { mount: '/terminal', root: path.join(__dirname, 'public/vendor')  },
+  { mount: '/admin',    root: path.join(__dirname, 'public/admin')   },
+  { mount: '/join',     root: path.join(__dirname, 'public/join')    },
+];
+// Versioned HTML shells first, so they win over express.static's own index.html.
+for (const { mount, root } of shells) {
+  app.get(mount === '/' ? ['/'] : [mount, mount + '/'], serveShell(mount, root));
+}
+// Then the static assets themselves (index disabled — the routes above own the HTML).
+for (const { mount, root } of shells) {
+  app.use(mount, express.static(root, { index: false }));
+}
 
 // Per-user API data must always be fresh — no ETag/304 revalidation, which was
 // letting the browser serve a stale cached balance.
