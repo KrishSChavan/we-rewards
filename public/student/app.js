@@ -666,7 +666,7 @@ function renderVendors() {
     card.dataset.id = v.vendorId;
     const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
     if (!map) card.classList.add('no-map');   // center name + points when there's no map
-    const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)}</span>` : '';
+    const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
     // Logo (if any) loads from the cacheable endpoint, sized to the name+points height.
     const logo = v.hasLogo
       ? `<span class="vc-logo" role="img" aria-label="${escapeHtml(v.name)} logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`

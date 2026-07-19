@@ -319,8 +319,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 0.35rem;
   padding: 1.1rem 1.3rem;
 }
-/* no map → the body fills the whole card, so centre name + points in the middle */
-.vendor-card.no-map .vc-body { align-items: center; text-align: center; }
+/* no map → the body still fills the card, but content stays left-aligned at the top */
+.vendor-card.no-map .vc-body { justify-content: flex-start; }
 
 /* logo sits left of the name+points; it stretches to their combined height */
 .vc-head { display: flex; align-items: stretch; gap: 0.7rem; }
@@ -340,6 +340,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vc-address {
   margin-top: 0.6rem;                /* extra breathing room below the points */
   font-size: 0.82rem; font-weight: 600; color: var(--muted); line-height: 1.25;
+  text-decoration: underline; text-underline-offset: 2px;   /* signal it's clickable */
   display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 
