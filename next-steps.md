@@ -121,31 +121,32 @@ router — no change unless you add Cloudflare in front.
 
 ---
 
-## Phase 4 — Correctness & robustness cleanups
+## Phase 4 — Correctness & robustness cleanups  ✅ DONE (code)
 
-### 4.1 Return 400, not 500, on malformed IDs  ⬜
-Some endpoints pass body IDs straight into a `uuid`-column query; a non-UUID
-throws in Postgres → generic 500 (and noise in the very error log you rely on).
-Not exploitable (parameterized), just wrong status + noise.
-- **Do:** add the UUID-shape guard already used elsewhere (`/^[0-9a-f-]{36}$/i`)
-  before the query. Note `/api/vendor/reverse` already guards but the regex
-  passes 36 dashes, which then 500s in the RPC — tighten to a real UUID pattern.
-- **Where:** audit `src/routes/vendor.js` (`/reverse`) and any body-ID → RPC path.
+All three implemented; no DB migration or dashboard step needed.
 
-### 4.2 Analytics silent-truncation at scale  ⬜
-Admin overview pulls 30 days with `.limit(20_000)` and per-vendor analytics with
-`.limit(10_000)`, rolled up in memory. Past those limits, rows are **silently
-dropped** and totals go quietly wrong.
-- **Do:** at minimum detect when the cap is hit and flag it; better, aggregate in
-  SQL (an RPC) or paginate.
-- **Where:** `src/routes/admin.js` `/overview`, `src/routes/vendor.js` `/analytics`.
+### 4.1 Strict UUID guards — clean 4xx instead of 500  ✅
+A shared `isUuid()` (`src/lib/ids.js`, strict 8-4-4-4-12 hex) replaces the old
+loose `/^[0-9a-f-]{36}$/i` (which accepted 36 dashes and still 500'd). Applied to
+every body/param id → uuid-column path: `vendor.js` `/reverse` + `PATCH
+/rewards/:id` (previously **unguarded**), all five `admin.js` `:id` routes,
+`server.js` `/api/vendor-logo/:id`, and `student.js` `/redeem-code`
+(vendorId/rewardId — was masked as a misleading `VENDOR_UNAVAILABLE`).
 
-### 4.3 Tests for the analytics rollups  ⬜
-The money-RPC and security tests are solid, but the complex **signed-reversal
-rollup math** (analytics/overview) is only hand-verified. It's nearly pure —
-extract the rollup and unit-test the netting (a reversed earn → 0 net, counts
-step by sign, top-rewards filter).
-- **Where:** new `test/*.test.js`; refactor rollup out of the route handlers.
+### 4.2 Analytics truncation detection  ✅
+Both endpoints now name the cap (`TX_LIMIT` = 10k vendor / 20k platform) and set a
+`truncated` flag on the response + `console.warn` when the row count hits it, so
+totals can't silently undercount unnoticed. (Real fix at scale = aggregate in
+SQL; still noted as future work — the flag is the signal to do it.)
+- **Where:** `src/routes/vendor.js` `/analytics`, `src/routes/admin.js` `/overview`.
+
+### 4.3 Rollup math extracted + unit-tested  ✅
+The signed-reversal rollups are now pure functions in `src/lib/analytics.js`
+(`rollupVendorAnalytics`, `rollupPlatformOverview`, `dayKey`) — the routes just
+fetch + call them. 8 new unit tests (`test/analytics.test.js`) lock in the
+netting: a reversed earn → 0 net across every window, redemption counts step by
+sign, a fully-reversed reward/vendor drops from the top-lists, returning-customer
+day-counting, windowing, and the 14-day series. `npm test` → 32 pass.
 
 ---
 

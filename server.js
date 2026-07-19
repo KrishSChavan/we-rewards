@@ -15,6 +15,7 @@ import { supabaseAuth, supabaseAdmin } from './src/lib/supabase.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
 import { recordServerError } from './src/lib/alerts.js';
+import { isUuid } from './src/lib/ids.js';
 import { requireJson } from './src/middleware/require-json.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -201,7 +202,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 // lean. Logos are shown to everyone, so no auth; only active vendors resolve.
 app.get('/api/vendor-logo/:id', async (req, res) => {
   try {
-    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(404).end();
+    if (!isUuid(req.params.id)) return res.status(404).end();
     const { data, error } = await supabaseAdmin
       .from('vendors').select('logo, active').eq('id', req.params.id).maybeSingle();
     if (error || !data?.active || !data.logo) return res.status(404).end();

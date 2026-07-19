@@ -3,17 +3,14 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { geocode } from '../lib/geocode.js';
 import { getVapidPublicKey } from '../lib/push.js';
+import { isUuid } from '../lib/ids.js';
+import { rollupPlatformOverview } from '../lib/analytics.js';
 
 const router = Router();
 router.use(requireAdmin);
 
 const DAY = 86_400_000;
 const ADDRESS_MAX = 300;   // keep a pasted essay out of the column and the geocoder
-
-const dayKey = (ms) => {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
 
 /**
  * GET /api/admin/overview
@@ -34,6 +31,7 @@ router.get('/overview', async (req, res, next) => {
     const since30 = new Date(t0 - 29 * DAY).toISOString();
     const since7ISO = new Date(t7).toISOString();
     const since24h = new Date(now - DAY).toISOString();
+    const TX_LIMIT = 20_000; // rows pulled for the windowed rollup; see truncation check below
 
     const [
       vendors, students, txTotal,
@@ -56,65 +54,20 @@ router.get('/overview', async (req, res, next) => {
         .from('transactions')
         .select('type, points, dollar_amount, created_at, user_id, vendor_id, vendors(name)')
         .gte('created_at', since30)
-        .limit(20_000),
+        .limit(TX_LIMIT),
     ]);
     for (const r of [vendors, students, txTotal, newStudents30, newStudents7, newVendors30, errors24h, errorsTotal, txRes]) {
       if (r.error) throw r.error;
     }
 
-    const blank = () => ({ awards: 0, redemptions: 0, pointsAwarded: 0, pointsRedeemed: 0, revenue: 0, students: new Set() });
-    const today = blank(), last7 = blank(), last30 = blank();
-    const vendorAgg = new Map(); // vendor_id -> { name, revenue, awards }
-    const dayAgg = new Map();    // dayKey -> { revenue, awards, redemptions }
-
-    for (const tx of txRes.data ?? []) {
-      const ms = new Date(tx.created_at).getTime();
-      const earn = tx.type === 'earn';
-      const pts = Number(tx.points) || 0;
-      const rev = earn ? Number(tx.dollar_amount) || 0 : 0;
-
-      const add = (b) => {
-        if (earn) { b.awards += pts >= 0 ? 1 : -1; b.pointsAwarded += pts; b.revenue += rev; }
-        else { b.redemptions += pts <= 0 ? 1 : -1; b.pointsRedeemed += -pts; }
-        if (tx.user_id) b.students.add(tx.user_id);
-      };
-      add(last30);
-      if (ms >= t7) add(last7);
-      if (ms >= t0) add(today);
-
-      if (earn) {
-        const va = vendorAgg.get(tx.vendor_id) ?? { name: tx.vendors?.name ?? 'Vendor', revenue: 0, awards: 0 };
-        va.revenue += rev; va.awards += pts >= 0 ? 1 : -1;
-        vendorAgg.set(tx.vendor_id, va);
-      }
-      const k = dayKey(ms);
-      const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, redemptions: 0 };
-      if (earn) { da.revenue += rev; da.awards += pts >= 0 ? 1 : -1; }
-      else { da.redemptions += pts <= 0 ? 1 : -1; }
-      dayAgg.set(k, da);
+    // Detect a hit on the row cap so the windowed rollup doesn't silently
+    // undercount as the platform grows (see the per-vendor analytics note).
+    const truncated = (txRes.data?.length ?? 0) >= TX_LIMIT;
+    if (truncated) {
+      console.warn(`[overview] hit the ${TX_LIMIT}-row cap — windowed totals may undercount; aggregate in SQL.`);
     }
 
-    const finish = (b) => ({
-      awards: b.awards,
-      redemptions: b.redemptions,
-      pointsAwarded: b.pointsAwarded,
-      pointsRedeemed: b.pointsRedeemed,
-      revenue: Number(b.revenue.toFixed(2)),
-      activeStudents: b.students.size,
-    });
-
-    const daily = [];
-    for (let i = 13; i >= 0; i--) {
-      const k = dayKey(t0 - i * DAY);
-      const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, redemptions: 0 };
-      daily.push({ date: k, revenue: Number(da.revenue.toFixed(2)), awards: da.awards, redemptions: da.redemptions });
-    }
-
-    const topVendors = [...vendorAgg.values()]
-      .map((v) => ({ name: v.name, revenue: Number(v.revenue.toFixed(2)), awards: v.awards }))
-      .filter((v) => v.revenue > 0)
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 5);
+    const roll = rollupPlatformOverview(txRes.data ?? [], t0);
 
     res.json({
       totals: {
@@ -122,12 +75,13 @@ router.get('/overview', async (req, res, next) => {
         students: students.count ?? 0,
         transactions: txTotal.count ?? 0,
       },
-      today: finish(today),
-      last7: { ...finish(last7), newStudents: newStudents7.count ?? 0 },
-      last30: { ...finish(last30), newStudents: newStudents30.count ?? 0, newVendors: newVendors30.count ?? 0 },
-      daily,
-      topVendors,
+      today: roll.today,
+      last7: { ...roll.last7, newStudents: newStudents7.count ?? 0 },
+      last30: { ...roll.last30, newStudents: newStudents30.count ?? 0, newVendors: newVendors30.count ?? 0 },
+      daily: roll.daily,
+      topVendors: roll.topVendors,
       errors: { last24h: errors24h.count ?? 0, total: errorsTotal.count ?? 0 },
+      truncated,
     });
   } catch (err) {
     next(err);
@@ -169,7 +123,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
   try {
     // Reject a malformed id up front so a bad path param is a clean 404 rather
     // than a Postgres uuid cast error (22P02) surfacing as a logged 500.
-    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+    if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
     }
 
@@ -238,7 +192,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
 router.delete('/vendors/:id', async (req, res, next) => {
   try {
     // Same guard as PATCH: a malformed id is a clean 404, not a uuid cast 500.
-    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+    if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
     }
 
@@ -323,7 +277,7 @@ router.get('/applications', async (req, res, next) => {
 router.post('/applications/:id/accept', async (req, res, next) => {
   try {
     // Same guard as the vendor routes: malformed id → clean 404, not a uuid 500.
-    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+    if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
     }
 
@@ -411,7 +365,7 @@ router.post('/applications/:id/accept', async (req, res, next) => {
  */
 router.delete('/applications/:id', async (req, res, next) => {
   try {
-    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+    if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
     }
     const { data, error } = await supabaseAdmin
@@ -498,7 +452,7 @@ router.get('/errors', async (req, res, next) => {
  */
 router.delete('/errors/:id', async (req, res, next) => {
   try {
-    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) {
+    if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Error not found.' });
     }
     const { data, error } = await supabaseAdmin

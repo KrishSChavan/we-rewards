@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile } from '../lib/tiers.js';
 import { requireUser } from '../middleware/auth.js';
+import { isUuid } from '../lib/ids.js';
 
 const router = Router();
 router.use(requireUser);
@@ -68,7 +69,9 @@ router.post('/earn-code', async (req, res, next) => {
 router.post('/redeem-code', async (req, res, next) => {
   try {
     const { vendorId, rewardId } = req.body ?? {};
-    if (!vendorId || !rewardId) {
+    // Validate the shape up front: a malformed id would otherwise hit a uuid
+    // column and error (here it's swallowed into a misleading VENDOR_UNAVAILABLE).
+    if (!isUuid(vendorId) || !isUuid(rewardId)) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'vendorId and rewardId required.' });
     }
 

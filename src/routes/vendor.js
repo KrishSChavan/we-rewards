@@ -6,6 +6,8 @@ import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireVendor, requirePin } from '../middleware/auth.js';
 import { emitBalance } from '../lib/realtime.js';
 import { geocode } from '../lib/geocode.js';
+import { isUuid } from '../lib/ids.js';
+import { rollupVendorAnalytics } from '../lib/analytics.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
@@ -236,7 +238,7 @@ router.post('/redeem', requirePin, async (req, res, next) => {
 router.post('/reverse', requirePin, async (req, res, next) => {
   try {
     const transactionId = String(req.body?.transactionId ?? '').trim();
-    if (!/^[0-9a-f-]{36}$/i.test(transactionId)) {
+    if (!isUuid(transactionId)) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'A transaction to undo is required.' });
     }
 
@@ -301,6 +303,10 @@ router.post('/rewards', requirePin, async (req, res, next) => {
 /** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, emoji?, active? } */
 router.patch('/rewards/:id', requirePin, async (req, res, next) => {
   try {
+    // A malformed id is a clean 404, not a uuid-cast 500 in the update query.
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
+    }
     const updates = {};
     if (req.body?.title != null || req.body?.costInPoints != null || req.body?.emoji != null) {
       const v = validReward(
@@ -422,98 +428,29 @@ router.get('/recent', async (req, res, next) => {
  */
 router.get('/analytics', requirePin, async (req, res, next) => {
   try {
-    const DAY = 86_400_000;
     const startToday = new Date();
     startToday.setHours(0, 0, 0, 0);
     const t0 = startToday.getTime();      // start of today, server-local
-    const t7 = t0 - 6 * DAY;              // start of the 7-day window (incl. today)
-    const since = new Date(t0 - 29 * DAY).toISOString(); // 30 local days incl. today
+    const since = new Date(t0 - 29 * 86_400_000).toISOString(); // 30 local days incl. today
 
+    // Cap the fetch, but detect when we hit it: past TX_LIMIT rows in the window,
+    // the rollup silently undercounts. Rare at pilot scale; the `truncated` flag
+    // lets the UI warn and signals it's time to aggregate in SQL instead.
+    const TX_LIMIT = 10_000;
     const { data: txns, error } = await supabaseAdmin
       .from('transactions')
       .select('type, points, dollar_amount, created_at, user_id, rewards(title)')
       .eq('vendor_id', req.vendor.id)
       .gte('created_at', since)
-      .limit(10_000);
+      .limit(TX_LIMIT);
     if (error) throw error;
 
-    const dayKey = (ms) => {
-      const d = new Date(ms);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    };
-    const blank = () => ({ earnPoints: 0, redeemPoints: 0, awards: 0, redemptions: 0, revenue: 0, customers: new Set() });
-    const today = blank(), last7 = blank(), last30 = blank();
-    const custDays = new Map();   // user_id -> Set(dayKey)  (returning-customer calc)
-    const dayAgg = new Map();     // dayKey  -> { revenue, awards, earnPoints }
-    const rewardCounts = new Map(); // reward title -> redemption count
-
-    // Reversals (migration-010) post a COMPENSATING row that negates the
-    // original's points + dollar_amount. So every total below adds SIGNED values
-    // and nets a voided transaction back out: a reversed earn contributes its
-    // +award and −correction (0 net), and the counts step ±1 by sign. For
-    // pre-reversal data (all earns positive, all redeems negative) this is
-    // identical to the old unconditional +1s.
-    for (const tx of txns ?? []) {
-      const ms = new Date(tx.created_at).getTime();
-      const earn = tx.type === 'earn';
-      const pts = Number(tx.points) || 0;
-      const rev = earn ? Number(tx.dollar_amount) || 0 : 0;
-
-      const add = (b) => {
-        if (earn) { b.earnPoints += pts; b.awards += pts >= 0 ? 1 : -1; b.revenue += rev; }
-        else { b.redeemPoints += -pts; b.redemptions += pts <= 0 ? 1 : -1; }
-        if (tx.user_id) b.customers.add(tx.user_id);
-      };
-      add(last30);
-      if (ms >= t7) add(last7);
-      if (ms >= t0) add(today);
-
-      const k = dayKey(ms);
-      // Returning-customer calc counts real award-days only (a voided award
-      // shouldn't register as a visit).
-      if (earn && tx.user_id && pts > 0) {
-        if (!custDays.has(tx.user_id)) custDays.set(tx.user_id, new Set());
-        custDays.get(tx.user_id).add(k);
-      }
-      if (earn) {
-        const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, earnPoints: 0 };
-        da.revenue += rev; da.awards += pts >= 0 ? 1 : -1; da.earnPoints += pts;
-        dayAgg.set(k, da);
-      } else {
-        const title = tx.rewards?.title ?? 'Reward';
-        rewardCounts.set(title, (rewardCounts.get(title) ?? 0) + (pts <= 0 ? 1 : -1));
-      }
+    const truncated = (txns?.length ?? 0) >= TX_LIMIT;
+    if (truncated) {
+      console.warn(`[analytics] vendor ${req.vendor.id} hit the ${TX_LIMIT}-row cap — 30-day totals may undercount.`);
     }
 
-    const finish = (b) => ({
-      earnPoints: b.earnPoints,
-      redeemPoints: b.redeemPoints,
-      awards: b.awards,
-      redemptions: b.redemptions,
-      revenue: Number(b.revenue.toFixed(2)),
-      customers: b.customers.size,
-    });
-
-    const daily = [];
-    for (let i = 13; i >= 0; i--) {
-      const k = dayKey(t0 - i * DAY);
-      const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, earnPoints: 0 };
-      daily.push({ date: k, revenue: Number(da.revenue.toFixed(2)), awards: da.awards, earnPoints: da.earnPoints });
-    }
-
-    const topRewards = [...rewardCounts.entries()]
-      .map(([title, count]) => ({ title, count }))
-      .filter((r) => r.count > 0)   // a fully-reversed reward can net to 0
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-
-    res.json({
-      today: finish(today),
-      last7: finish(last7),
-      last30: { ...finish(last30), returningCustomers: [...custDays.values()].filter((s) => s.size >= 2).length },
-      daily,
-      topRewards,
-    });
+    res.json({ ...rollupVendorAnalytics(txns ?? [], t0), truncated });
   } catch (err) {
     next(err);
   }
