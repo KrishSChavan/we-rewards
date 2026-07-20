@@ -18,6 +18,7 @@ let activeTab = 0;          // 0 = home, 1 = history, 2 = account
 let historyLoaded = false;  // has the history tab fetched at least once?
 let deferredInstallPrompt = null; // Android/Chrome: captured beforeinstallprompt event
 let installPlatform = null;       // 'ios' | 'android' for the current visitor
+let justSignedIn = false;         // true between a Google sign-in and the consent check
 
 const $ = (id) => document.getElementById(id);
 
@@ -78,6 +79,11 @@ function installErrorReporter() {
   $('delete-close').addEventListener('click', closeDeleteModal);
   $('delete-confirm').addEventListener('click', confirmDelete);
   $('delete-modal').addEventListener('click', (e) => { if (e.target === $('delete-modal')) closeDeleteModal(); });
+  // Consent gate. No ✕ and no backdrop-to-dismiss on purpose: Agree or Decline
+  // are the only exits, so a stray tap can't skip the gate or delete an account.
+  $('consent-terms').addEventListener('change', syncConsentButton);
+  $('consent-accept').addEventListener('click', acceptConsent);
+  $('consent-decline').addEventListener('click', declineConsent);
   // bottom nav: slide between Home / History / Account
   $('tabbar').addEventListener('click', (e) => {
     const btn = e.target.closest('.tab-btn');
@@ -116,7 +122,14 @@ function installErrorReporter() {
   $('item-redeem').addEventListener('click', onRedeemTap);
   $('item-modal').addEventListener('click', (e) => { if (e.target === $('item-modal')) closeItemModal(); });
 
-  sb.auth.onAuthStateChange((_event, session) => {
+  sb.auth.onAuthStateChange((event, session) => {
+    // SIGNED_IN fires when supabase-js consumes the OAuth redirect — i.e. they
+    // just picked a Google account. INITIAL_SESSION fires for a session restored
+    // from storage on page load. The consent gate only prompts on the former, so
+    // a stored session that never cleared the gate is signed out instead of
+    // being ambushed with a modal on load.
+    if (event === 'SIGNED_IN') justSignedIn = true;
+    if (event === 'SIGNED_OUT') justSignedIn = false;
     currentToken = session?.access_token ?? null;   // keep the socket's token fresh
     render(session);
   });
@@ -144,8 +157,14 @@ async function signInWithGoogle() {
 
 function render(session) {
   const wasSignedOut = $('app').hidden;
-  $('landing').hidden = !!session;
-  $('app').hidden = !session;
+  // Signed in is not enough — the app shell stays hidden until the server
+  // confirms current consent, so an unconsented user never sees the UI (and the
+  // data loaders below never fire, which would just 403 anyway).
+  const ready = !!session && consentOk;
+  // Landing stays up until the app is genuinely usable, so the consent check and
+  // the modal have a backdrop instead of a blank screen on a slow connection.
+  $('landing').hidden = ready;
+  $('app').hidden = !ready;
 
   if (!session) {
     $('home').hidden = false;   // reset the Home tab's sub-view for the next sign-in
@@ -157,6 +176,14 @@ function render(session) {
     allVendors = [];
     vendor = null;
     historyLoaded = false;
+    consentOk = false;          // next sign-in re-checks; never trust a stale pass
+    hideConsentModal();
+    return;
+  }
+
+  // Signed in but unverified: ask the server, then this function runs again.
+  if (!ready) {
+    void ensureConsent(session);
     return;
   }
   // A fresh sign-in lands on the Home tab, carousel view. onAuthStateChange also
@@ -353,6 +380,159 @@ async function exportMyData() {
   } finally {
     btn.disabled = false;
     setTimeout(() => { name.textContent = label; }, 2200);
+  }
+}
+
+/* ---------- consent gate ----------
+   Google OAuth signs someone in, but it does not make them a WeRewards user:
+   since migration-022 the server creates the profile only when they accept the
+   Terms + Privacy Policy. Until then every /api/me service route answers 403
+   CONSENT_REQUIRED, so this modal isn't the security boundary — it's the way to
+   satisfy one. Declining deletes the auth user, leaving nothing behind. */
+
+let consentOk = false;        // server confirmed agreement to the CURRENT version
+let consentChecking = false;  // in-flight guard: auth events can fire in bursts
+let consentIsRevision = false;
+
+async function ensureConsent(session) {
+  if (consentChecking) return;
+  consentChecking = true;
+  try {
+    const res = await authFetch('/api/me/consent');
+    if (!res.ok) throw new Error('consent check failed');
+    const info = await res.json();
+
+    if (info.accepted) {
+      consentOk = true;
+      hideConsentModal();
+      render(session);        // re-entry: this time `ready` is true
+      return;
+    }
+
+    // A revision: they have a real account with points, so prompt wherever they
+    // are — silently signing out someone mid-use to re-accept would be worse.
+    if (info.isRevision) {
+      openConsentModal(info);
+      return;
+    }
+
+    // Fresh sign-in: they just picked a Google account and it has no agreement
+    // on record. This is the gate. Their profile stays hidden behind it.
+    if (justSignedIn) {
+      openConsentModal(info);
+      return;
+    }
+
+    // Otherwise this is a stored session from a previous visit that never got
+    // past the gate. Prompting here would ambush them on page load, and the
+    // session is unusable anyway — drop it and show the landing screen.
+    await sb.auth.signOut();
+    render(null);
+  } catch {
+    // Can't confirm consent, so we can't let them in — but don't destroy the
+    // session over a dropped connection. Drop back to the landing screen; a
+    // retry or reload runs the check again.
+    hideConsentModal();
+    $('app').hidden = true;
+    $('landing').hidden = false;
+    $('auth-error').textContent = 'Couldn’t reach WeRewards. Check your connection and try again.';
+    $('auth-error').hidden = false;
+  } finally {
+    consentChecking = false;
+  }
+}
+
+function openConsentModal(info) {
+  consentIsRevision = Boolean(info?.isRevision);
+
+  // Someone re-consenting after a revision already has an account and points,
+  // so both the ask and the cost of declining are different.
+  if (consentIsRevision) {
+    $('consent-title').textContent = 'We’ve updated our terms';
+    $('consent-desc').textContent =
+      'Our Terms of Service and Privacy Policy have changed since you last agreed. Please review them and accept to keep using WeRewards.';
+    $('consent-accept').textContent = 'Agree & continue';
+    $('consent-decline').textContent = 'Decline and delete my account';
+    $('consent-decline-note').textContent =
+      'Declining deletes your account and your points. You can download your data first from the Account tab.';
+  } else {
+    $('consent-title').textContent = 'One quick thing';
+    $('consent-desc').textContent =
+      'Before we set up your account, please read and agree to the two documents below. They open in a new tab, so you won’t lose your place.';
+    $('consent-accept').textContent = 'Agree & create my account';
+    $('consent-decline').textContent = 'No thanks';
+    $('consent-decline-note').textContent =
+      'Choosing “No thanks” signs you out and no account is created.';
+  }
+
+  $('consent-terms').checked = false;
+  $('consent-error').hidden = true;
+  syncConsentButton();
+
+  const ov = $('consent-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+}
+
+function hideConsentModal() {
+  const ov = $('consent-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) { ov.hidden = true; return; }
+  ov.classList.remove('is-open');
+  setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
+}
+
+// The 18+ requirement is a representation in ToS §2, not a separate tick — one
+// box, covering both documents. The server enforces the same single rule.
+function syncConsentButton() {
+  $('consent-accept').disabled = !$('consent-terms').checked;
+}
+
+async function acceptConsent() {
+  const { data } = await sb.auth.getSession();
+  await submitConsent(data?.session ?? null);
+}
+
+// Records the acceptance server-side; this is the call that creates the account.
+async function submitConsent(session) {
+  const btn = $('consent-accept');
+  btn.disabled = true;
+  $('consent-error').hidden = true;
+  try {
+    const res = await authFetch('/api/me/accept-terms', {
+      method: 'POST',
+      body: JSON.stringify({ agreedToTerms: true }),
+    });
+    if (!res.ok) throw new Error('accept failed');
+
+    consentOk = true;
+    hideConsentModal();
+    render(session ?? (await sb.auth.getSession()).data?.session ?? null);
+  } catch {
+    $('consent-error').textContent = 'Couldn’t save that. Check your connection and try again.';
+    $('consent-error').hidden = false;
+    syncConsentButton();   // let them retry if the box is still ticked
+  }
+}
+
+async function declineConsent() {
+  const btn = $('consent-decline');
+  btn.disabled = true;
+  $('consent-error').hidden = true;
+  try {
+    // A first-time decline removes an auth user with no profile behind it; a
+    // revision-decline removes a real account. Same call — the button label and
+    // the note above already told them which one this is.
+    const res = await authFetch('/api/me/decline', { method: 'POST' });
+    if (!res.ok) throw new Error('decline failed');
+    await sb.auth.signOut();
+    hideConsentModal();
+    render(null);
+  } catch {
+    $('consent-error').textContent = 'Couldn’t complete that. Try again in a moment.';
+    $('consent-error').hidden = false;
+  } finally {
+    btn.disabled = false;
   }
 }
 

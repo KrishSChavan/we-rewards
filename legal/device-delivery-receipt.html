@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WeRewards — Device Delivery &amp; Condition Receipt</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #1a1a1a;
+      background: #fff;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2.5rem 2rem 5rem;
+    }
+    /* ── Header ── */
+    .doc-header { text-align: center; margin-bottom: 1.8rem; border-bottom: 3px double #1a1a1a; padding-bottom: 1.5rem; }
+    .doc-label { font-size: 0.78rem; letter-spacing: 0.15em; text-transform: uppercase; color: #555; margin-bottom: 0.4rem; }
+    .doc-title { font-size: 1.5rem; font-weight: bold; letter-spacing: 0.03em; margin-bottom: 0.3rem; }
+    .doc-subtitle { font-size: 0.9rem; font-style: italic; color: #444; }
+    /* ── Blocks ── */
+    .parties-block { border: 1px solid #aaa; padding: 1.1rem 1.4rem; margin: 1.5rem 0; background: #fafafa; }
+    .parties-block p { margin-bottom: 0.5rem; font-size: 0.9rem; }
+    .parties-block strong { font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; }
+    .fill-blank { border-bottom: 1px solid #333; display: inline-block; min-width: 220px; }
+    /* ── Sections ── */
+    h2 { font-size: 0.92rem; letter-spacing: 0.07em; text-transform: uppercase; margin: 1.8rem 0 0.5rem; border-bottom: 1px solid #999; padding-bottom: 0.2rem; }
+    p { margin-bottom: 0.8rem; }
+    ul { margin: 0.4rem 0 0.9rem 1.5rem; }
+    li { margin-bottom: 0.3rem; }
+    /* ── Condition table ── */
+    table { width: 100%; border-collapse: collapse; margin: 0.9rem 0 1.2rem; font-size: 0.86rem; }
+    th { background: #1a1a1a; color: #fff; text-align: left; padding: 0.45rem 0.7rem; font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase; }
+    th.col-state { width: 27%; }
+    td { border: 1px solid #bbb; padding: 0.5rem 0.7rem; vertical-align: middle; }
+    td.item { width: 46%; }
+    .tickbox { display: inline-block; width: 15px; height: 15px; border: 1px solid #333; vertical-align: -2px; margin-right: 0.3rem; }
+    .tick-label { font-size: 0.8rem; margin-right: 0.75rem; white-space: nowrap; }
+    .notes-area { border: 1px solid #333; min-height: 78px; margin: 0.5rem 0 1rem; }
+    /* ── Highlight ── */
+    .highlight {
+      background: #fffbe6;
+      border: 1.5px solid #c8a900;
+      border-radius: 3px;
+      padding: 0.85rem 1.15rem;
+      margin: 1.2rem 0;
+      font-size: 0.87rem;
+    }
+    .highlight strong.hd { display: block; font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.3rem; }
+    /* ── Signature block ── */
+    .sig-section { margin-top: 2.2rem; border-top: 2px solid #1a1a1a; padding-top: 1.3rem; }
+    .sig-section h2 { margin-top: 0; }
+    .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem 3rem; margin-top: 1.1rem; }
+    .sig-party p { font-size: 0.82rem; color: #555; margin-bottom: 0.2rem; }
+    .sig-line { border-bottom: 1px solid #333; margin: 1.3rem 0 0.25rem; }
+    .sig-label { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: #666; }
+    /* ── Print ── */
+    @media print {
+      body { padding: 1.2cm 2cm; font-size: 10.5pt; }
+      h2 { page-break-after: avoid; }
+      table, .notes-area, .sig-grid { page-break-inside: avoid; }
+      .highlight { background: #fff; border: 1px solid #888; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="doc-header">
+    <p class="doc-label">Legal Document — For Printing &amp; Signature</p>
+    <p class="doc-title">WeRewards<br>Device Delivery &amp; Condition Receipt</p>
+    <p class="doc-subtitle">Baseline record for the Terminal Device loaned under Section 4 of the Vendor Agreement</p>
+  </div>
+
+  <p>This Receipt documents the condition of the WeRewards Terminal Device at the time it is delivered to Vendor and again at the time it is returned. It is the record contemplated by <strong>Section 4.5</strong> of the Vendor Agreement between the Parties, and serves as the baseline for any damage claim under <strong>Section 4.3</strong>.</p>
+  <p>Complete the <strong>At Delivery</strong> column and sign Part A when the Device is handed over. Retain this sheet and complete the <strong>At Return</strong> column and Part B when the Device comes back.</p>
+
+  <!-- ══ PARTIES / DEVICE ══ -->
+  <div class="parties-block">
+    <p><strong>Vendor:</strong><br>
+      Business Name: <span class="fill-blank">&nbsp;</span><br>
+      Business Location (where the Device will operate): <span class="fill-blank" style="min-width:300px;">&nbsp;</span><br>
+      Governing Agreement: <span class="tickbox"></span><span class="tick-label">Founding Vendor Agreement</span> <span class="tickbox"></span><span class="tick-label">Standard Vendor Agreement</span><br>
+      Agreement Date: <span class="fill-blank" style="min-width:160px;">&nbsp;</span>
+    </p>
+    <p style="margin-top:0.9rem;"><strong>Device:</strong><br>
+      Make / Model: <span class="fill-blank" style="min-width:280px;">&nbsp;</span><br>
+      Serial Number (or IMEI): <span class="fill-blank" style="min-width:240px;">&nbsp;</span><br>
+      WeRewards Asset Tag (if any): <span class="fill-blank" style="min-width:200px;">&nbsp;</span><br>
+      Date of Delivery: <span class="fill-blank" style="min-width:160px;">&nbsp;</span>
+    </p>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>1. Condition Checklist</h2>
+  <p>Mark the condition of each item. Anything not marked <em>Good</em> must be described in the notes below.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th class="col-state">At Delivery</th>
+        <th class="col-state">At Return</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="item"><strong>Screen</strong> — no cracks, scratches, or dead pixels</td>
+        <td><span class="tickbox"></span><span class="tick-label">Good</span> <span class="tickbox"></span><span class="tick-label">See notes</span></td>
+        <td><span class="tickbox"></span><span class="tick-label">Good</span> <span class="tickbox"></span><span class="tick-label">See notes</span></td>
+      </tr>
+      <tr>
+        <td class="item"><strong>Housing &amp; frame</strong> — no dents, cracks, or separation</td>
+        <td><span class="tickbox"></span><span class="tick-label">Good</span> <span class="tickbox"></span><span class="tick-label">See notes</span></td>
+        <td><span class="tickbox"></span><span class="tick-label">Good</span> <span class="tickbox"></span><span class="tick-label">See notes</span></td>
+      </tr>
+      <tr>
+        <td class="item"><strong>Ports &amp; buttons</strong> — charging port, power, volume all functional</td>
+        <td><span class="tickbox"></span><span class="tick-label">Good</span> <span class="tickbox"></span><span class="tick-label">See notes</span></td>
+        <td><span class="tickbox"></span><span class="tick-label">Good</span> <span class="tickbox"></span><span class="tick-label">See notes</span></td>
+      </tr>
+      <tr>
+        <td class="item"><strong>Powers on and boots</strong> to the WeRewards terminal</td>
+        <td><span class="tickbox"></span><span class="tick-label">Yes</span> <span class="tickbox"></span><span class="tick-label">No</span></td>
+        <td><span class="tickbox"></span><span class="tick-label">Yes</span> <span class="tickbox"></span><span class="tick-label">No</span></td>
+      </tr>
+      <tr>
+        <td class="item"><strong>Charger / power adapter</strong> included</td>
+        <td><span class="tickbox"></span><span class="tick-label">Yes</span> <span class="tickbox"></span><span class="tick-label">No</span></td>
+        <td><span class="tickbox"></span><span class="tick-label">Yes</span> <span class="tickbox"></span><span class="tick-label">No</span></td>
+      </tr>
+      <tr>
+        <td class="item"><strong>Stand / mount / case</strong> included</td>
+        <td><span class="tickbox"></span><span class="tick-label">Yes</span> <span class="tickbox"></span><span class="tick-label">N/A</span></td>
+        <td><span class="tickbox"></span><span class="tick-label">Yes</span> <span class="tickbox"></span><span class="tick-label">N/A</span></td>
+      </tr>
+      <tr>
+        <td class="item"><strong>Photographs taken</strong> — how many?</td>
+        <td>Count: <span class="fill-blank" style="min-width:52px;">&nbsp;</span></td>
+        <td>Count: <span class="fill-blank" style="min-width:52px;">&nbsp;</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. Condition Notes</h2>
+  <p style="margin-bottom:0.2rem;"><strong>At delivery</strong> — describe any existing wear, marks, or defects. Write <em>“None”</em> if the Device is in as-new condition.</p>
+  <div class="notes-area"></div>
+
+  <p style="margin-bottom:0.2rem;"><strong>At return</strong> — describe any change from the delivery condition above.</p>
+  <div class="notes-area"></div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>3. Acknowledgment at Delivery</h2>
+  <p>By signing Part A below, Vendor acknowledges that:</p>
+  <ul>
+    <li>Vendor has received the Device described above in the condition recorded in the <strong>At Delivery</strong> column;</li>
+    <li>The Device remains the <strong>sole property of Company</strong> — this is a loan (a bailment), not a sale or lease;</li>
+    <li>Vendor bears the risk of loss, theft, or damage from the moment of delivery, per Section 4.3 of the Agreement;</li>
+    <li>Vendor will return the Device within <strong>10 calendar days</strong> of any termination of the Agreement, per Section 4.4;</li>
+    <li>Photographs taken at delivery, if any, form part of this record.</li>
+  </ul>
+
+  <div class="highlight">
+    <strong class="hd">Replacement Fee</strong>
+    <p style="margin-bottom:0;">If the Device is lost, stolen, or damaged beyond normal wear and tear — or is not returned within 10 calendar days of termination — Vendor owes Company a replacement fee of <strong>$<span class="fill-blank" style="min-width:70px;">&nbsp;</span></strong>. This figure must match Section 4.3 of the signed Vendor Agreement.</p>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <div class="sig-section">
+    <h2>Part A — Signatures at Delivery</h2>
+    <div class="sig-grid">
+      <div class="sig-party">
+        <p><strong>COMPANY</strong></p>
+        <p>Krish Chavan, operating as WeRewards</p>
+        <div class="sig-line"></div>
+        <p class="sig-label">Signature</p>
+        <div style="margin-top:0.8rem;">
+          <div class="sig-line"></div>
+          <p class="sig-label">Date</p>
+        </div>
+      </div>
+      <div class="sig-party">
+        <p><strong>VENDOR</strong></p>
+        <p>Authorized Representative</p>
+        <div class="sig-line"></div>
+        <p class="sig-label">Signature</p>
+        <div style="margin-top:0.8rem;">
+          <p>Printed Name: <span class="fill-blank" style="min-width:150px;">&nbsp;</span></p>
+        </div>
+        <div style="margin-top:0.5rem;">
+          <div class="sig-line"></div>
+          <p class="sig-label">Date</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sig-section">
+    <h2>Part B — Signatures at Return</h2>
+    <p>Completed only when the Device is returned to Company. Company's signature here acknowledges receipt of the Device; it does not by itself waive any damage claim, which is assessed against the delivery baseline recorded above.</p>
+    <div class="sig-grid">
+      <div class="sig-party">
+        <p><strong>COMPANY</strong></p>
+        <p>Krish Chavan, operating as WeRewards</p>
+        <div class="sig-line"></div>
+        <p class="sig-label">Signature</p>
+        <div style="margin-top:0.8rem;">
+          <div class="sig-line"></div>
+          <p class="sig-label">Date of Return</p>
+        </div>
+      </div>
+      <div class="sig-party">
+        <p><strong>VENDOR</strong></p>
+        <p>Authorized Representative</p>
+        <div class="sig-line"></div>
+        <p class="sig-label">Signature</p>
+        <div style="margin-top:0.8rem;">
+          <p>Printed Name: <span class="fill-blank" style="min-width:150px;">&nbsp;</span></p>
+        </div>
+        <div style="margin-top:0.5rem;">
+          <div class="sig-line"></div>
+          <p class="sig-label">Date</p>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-top:1.8rem; font-size:0.8rem; color:#555;">
+      <em>Note: This Receipt supplements and does not modify the Vendor Agreement between the Parties. Where this Receipt and the Agreement conflict, the Agreement controls. This document is not a substitute for advice from a licensed Pennsylvania attorney.</em>
+    </p>
+    <div style="margin-top:1.2rem; padding:0.85rem 1.15rem; background:#fff3f3; border:1px solid #c00; font-size:0.82rem;">
+      <strong style="display:block; font-size:0.75rem; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:0.4rem;">⚠ Operator Action Required</strong>
+      <ol style="margin-left:1.2rem;">
+        <li style="margin-bottom:0.3rem;"><strong>Fill in the replacement fee</strong> above so it matches Section 4.3 of the signed Vendor Agreement. A blank here undercuts the damage claim this sheet exists to support.</li>
+        <li style="margin-bottom:0.3rem;"><strong>Take the photographs</strong> at delivery and record the count. Store them alongside the scanned Receipt — the checklist alone is weak evidence without them.</li>
+        <li><strong>Keep the original</strong> through the full loan and the return. Part B is worthless without the Part A baseline on the same sheet.</li>
+      </ol>
+    </div>
+  </div>
+
+</body>
+</html>

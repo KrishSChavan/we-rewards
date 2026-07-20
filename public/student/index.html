@@ -263,6 +263,43 @@
   <div id="points-toast" class="points-toast" hidden></div>
 
   <!-- delete-account confirmation sheet -->
+  <!-- Consent gate. Shown right after a Google account is chosen, when the
+       server reports that account has no current agreement on record — so it
+       appears once for a new account and never again. The app shell (and their
+       name, email, and avatar) stays hidden behind it until they agree.
+       Deliberately no ✕ / backdrop close: Agree or Decline only. -->
+  <div id="consent-modal" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <p class="detail-emoji">👋</p>
+      <h2 id="consent-title" class="detail-title">One quick thing</h2>
+      <p id="consent-desc" class="detail-desc">
+        Before we set up your account, please read and agree to the two documents
+        below. They open in a new tab, so you won't lose your place.
+      </p>
+
+      <label class="consent-check">
+        <input type="checkbox" id="consent-terms" />
+        <span>
+          I have read and agree to the
+          <a href="/legal/student-terms-of-service.html" target="_blank" rel="noopener">Terms of Service</a>
+          and
+          <a href="/legal/student-privacy-policy.html" target="_blank" rel="noopener">Privacy Policy</a>.
+        </span>
+      </label>
+
+      <p id="consent-error" class="auth-error" hidden></p>
+      <button id="consent-accept" class="btn-redeem" disabled>Agree &amp; create my account</button>
+      <button id="consent-decline" class="detail-textbtn" type="button">No thanks</button>
+      <p id="consent-decline-note" class="consent-fine">
+        Choosing “No thanks” signs you out and no account is created.
+      </p>
+      <p class="consent-fine">
+        WeRewards is for adults. By agreeing you confirm you are 18 or older, as
+        required by Section 2 of the Terms.
+      </p>
+    </div>
+  </div>
+
   <div id="delete-modal" class="overlay sheet" hidden>
     <div class="detail-card">
       <button id="delete-close" class="detail-close" aria-label="Close">✕</button>

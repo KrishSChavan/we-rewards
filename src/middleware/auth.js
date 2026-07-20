@@ -1,4 +1,5 @@
 import { supabaseAuth, supabaseAdmin } from '../lib/supabase.js';
+import { TERMS_VERSION } from '../lib/terms.js';
 
 /**
  * Verifies the Supabase access token from `Authorization: Bearer <jwt>`.
@@ -13,7 +14,88 @@ export async function requireUser(req, res, next) {
     if (error || !data?.user) {
       return res.status(401).json({ error: 'BAD_TOKEN', message: 'Session expired. Sign in again.' });
     }
-    req.user = { id: data.user.id, email: data.user.email };
+    // `name` mirrors what schema.sql's handle_new_user trigger used to read
+    // (raw_user_meta_data->>'full_name'); POST /api/me/accept-terms now creates
+    // the profile, so it needs the same Google display name the trigger had.
+    const meta = data.user.user_metadata ?? {};
+    req.user = {
+      id: data.user.id,
+      email: data.user.email,
+      name: meta.full_name ?? meta.name ?? null,
+    };
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Confirms the student has accepted the CURRENT Terms and Privacy Policy.
+ * Attaches req.profile.
+ *
+ * MOUNT AFTER requireUser — it reads req.user and does not re-verify the token
+ * (getUser is a network round-trip to Supabase; doing it twice per request
+ * would tax every student call).
+ *
+ * This is the real consent gate. The sign-in modal is a UI affordance and can be
+ * dismissed with devtools; this cannot. Since migration-022 dropped the
+ * auto-create trigger, a signed-in user with no profile row is someone who
+ * authenticated but never agreed — they get the same 403 as someone whose
+ * consent is stale, and the app shows them the modal either way.
+ *
+ * 403 is deliberately distinct from 401: the token is valid, so the client must
+ * NOT sign them out and retry — it must prompt for consent.
+ */
+/**
+ * The consent policy itself, as a pure function so every branch is testable
+ * without a database. Returns null when the student may proceed, or the {status,
+ * body} to reject with.
+ *
+ * @param {object|null} profile  the profiles row, or null if none exists
+ * @param {string} currentVersion  TERMS_VERSION
+ */
+export function consentRejection(profile, currentVersion = TERMS_VERSION) {
+  // No row at all = signed in via OAuth but never accepted, so no account was
+  // ever created (migration-022). Same outcome as a row with a null timestamp.
+  if (!profile || !profile.terms_accepted_at) {
+    return {
+      status: 403,
+      body: {
+        error: 'CONSENT_REQUIRED',
+        message: 'Accept the Terms and Privacy Policy to continue.',
+        termsVersion: currentVersion,
+      },
+    };
+  }
+  if (profile.terms_version !== currentVersion) {
+    return {
+      status: 403,
+      body: {
+        error: 'CONSENT_STALE',
+        message: 'Our Terms have changed. Review and accept them to continue.',
+        termsVersion: currentVersion,
+      },
+    };
+  }
+  return null;
+}
+
+export async function requireConsent(req, res, next) {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ error: 'NO_TOKEN', message: 'Sign in required.' });
+    }
+    const { data: profile, error } = await supabaseAdmin
+      .from('profiles')
+      .select('user_id, name, email, terms_accepted_at, terms_version')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    if (error) throw error;
+
+    const rejection = consentRejection(profile, TERMS_VERSION);
+    if (rejection) return res.status(rejection.status).json(rejection.body);
+
+    req.profile = profile;
     next();
   } catch (err) {
     next(err);

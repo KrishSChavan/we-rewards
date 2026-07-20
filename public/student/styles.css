@@ -519,6 +519,34 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .detail-status.ok { color: var(--success); }
 .detail-status.locked { color: var(--muted); }
 
+/* Consent gate checkboxes. Left-aligned inside the otherwise centred sheet —
+   running text with links reads badly centred. The whole row is a <label>, so
+   tapping the text toggles the box (a 16px box alone is a poor touch target). */
+.consent-check {
+  display: flex; align-items: flex-start; gap: 0.75rem;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.85rem 0.95rem;
+  border: 2.5px solid var(--edge);
+  border-radius: 0.9rem;
+  background: var(--paper);
+  text-align: left;
+  font-weight: 600; line-height: 1.45;
+  cursor: pointer;
+}
+.consent-check input[type='checkbox'] {
+  flex-shrink: 0;
+  width: 1.4rem; height: 1.4rem;
+  margin-top: 0.1rem;
+  accent-color: var(--navy);
+  cursor: pointer;
+}
+.consent-check a { color: var(--brand); font-weight: 800; text-decoration: underline; }
+.consent-fine {
+  margin-top: 0.15rem;
+  color: var(--muted); font-size: 0.85rem; font-weight: 600; line-height: 1.4;
+}
+
 .btn-redeem {
   margin-top: 0.6rem; width: 100%;
   background: var(--navy); color: #fff;

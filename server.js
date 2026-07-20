@@ -19,6 +19,7 @@ import { logError } from './src/lib/errors.js';
 import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
 import { requireJson } from './src/middleware/require-json.js';
+import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -212,6 +213,33 @@ for (const { mount, root } of shells) {
 for (const { mount, root } of shells) {
   app.use(mount, express.static(root, { index: false }));
 }
+
+// Legal documents. The consent modal links these with target="_blank", and the
+// Terms/Privacy Policy both promise the current version is available in the app,
+// so they must be reachable by URL.
+//
+// ALLOWLISTED, not a blanket static mount: legal/ also holds the vendor
+// agreements and the device receipt, which are print-and-sign documents
+// containing the operator's business address and fee figures. Those are not
+// web content. Only the documents students actually consent to are served, and
+// the list comes from TERMS_DOCUMENTS so it can't drift from what the modal links.
+const PUBLIC_LEGAL_FILES = new Set(TERMS_DOCUMENTS.map((d) => path.basename(d.path)));
+app.use(
+  '/legal',
+  (req, res, next) => {
+    const requested = req.path.replace(/^\/+/, '');
+    const file = requested.endsWith('.html') ? requested : `${requested}.html`;
+    if (!PUBLIC_LEGAL_FILES.has(file)) {
+      return res.status(404).type('txt').send('Not found');
+    }
+    next();
+  },
+  express.static(path.join(__dirname, 'legal'), {
+    index: false,
+    extensions: ['html'],   // /legal/student-terms-of-service also resolves
+    maxAge: '1h',           // cache briefly; a revision ships with a TERMS_VERSION bump
+  })
+);
 
 // Per-user API data must always be fresh — no ETag/304 revalidation, which was
 // letting the browser serve a stale cached balance.

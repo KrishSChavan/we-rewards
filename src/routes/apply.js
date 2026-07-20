@@ -72,18 +72,19 @@ router.post('/', async (req, res, next) => {
     const v = validApplication(req.body);
     if (v.error) return res.status(400).json({ error: 'BAD_APPLICATION', message: v.error });
 
-    // If this email already has ANY account (student or vendor login — every
-    // auth user gets a profiles row via handle_new_user), an application is a
-    // dead end: accept would fail at createUser. Bounce it now with a clear
-    // message instead of queueing something the operator can't approve.
-    // (% and _ are escaped so they can't act as ilike wildcards.)
-    const { data: existing, error: profErr } = await supabaseAdmin
-      .from('profiles')
-      .select('user_id')
-      .ilike('email', v.fields.email.replace(/([%_\\])/g, '\\$1'))
-      .limit(1);
+    // If this email already has ANY account (student, vendor, or admin login),
+    // an application is a dead end: accept would fail at createUser. Bounce it
+    // now with a clear message instead of queueing something the operator can't
+    // approve.
+    //
+    // Asks auth.users via RPC rather than profiles: since migration-022 dropped
+    // the auto-create trigger, a profiles row only exists for students who
+    // accepted the terms, so a profiles lookup would miss vendor and admin
+    // accounts entirely.
+    const { data: emailTaken, error: profErr } = await supabaseAdmin
+      .rpc('email_has_account', { p_email: v.fields.email });
     if (profErr) throw profErr;
-    if (existing?.length) {
+    if (emailTaken) {
       return res.status(409).json({ error: 'EMAIL_IN_USE', message: 'An account with this email already exists.' });
     }
 

@@ -12,7 +12,7 @@
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 
 // Nominatim requires a genuine identifying User-Agent (with contact info).
-const USER_AGENT = 'WeRewards/1.0 (krishschavan@gmail.com)';
+const USER_AGENT = 'WeRewards/1.0 (contactwerewards@gmail.com)';
 
 /**
  * @param {string} address free-text street address

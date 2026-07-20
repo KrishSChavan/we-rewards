@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WeRewards — Student Privacy Policy</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 15px;
+      line-height: 1.75;
+      color: #1a1a1a;
+      background: #fff;
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 3rem 2rem 5rem;
+    }
+    .doc-header { text-align: center; margin-bottom: 2.5rem; border-bottom: 2px solid #1a1a1a; padding-bottom: 1.5rem; }
+    .doc-header h1 { font-size: 1.6rem; letter-spacing: 0.04em; margin-bottom: 0.4rem; }
+    .doc-label { font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; color: #555; margin-bottom: 0.3rem; }
+    .doc-effective { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }
+    h2 { font-size: 1rem; letter-spacing: 0.06em; text-transform: uppercase; margin: 2.2rem 0 0.6rem; border-bottom: 1px solid #ccc; padding-bottom: 0.25rem; }
+    h3 { font-size: 0.95rem; font-weight: bold; margin: 1.2rem 0 0.3rem; }
+    p { margin-bottom: 0.9rem; }
+    ul, ol { margin: 0.5rem 0 1rem 1.6rem; }
+    li { margin-bottom: 0.4rem; }
+    .notice {
+      background: #f5f5f5;
+      border-left: 4px solid #1a1a1a;
+      padding: 1rem 1.2rem;
+      margin: 1.5rem 0;
+      font-size: 0.9rem;
+    }
+    .notice strong { display: block; margin-bottom: 0.3rem; font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.88rem; }
+    th { background: #1a1a1a; color: #fff; text-align: left; padding: 0.5rem 0.75rem; font-size: 0.78rem; letter-spacing: 0.05em; text-transform: uppercase; }
+    td { border: 1px solid #ccc; padding: 0.5rem 0.75rem; vertical-align: top; }
+    tr:nth-child(even) td { background: #fafafa; }
+    @media print {
+      body { padding: 1.5cm 2cm; font-size: 11pt; }
+      h2 { page-break-after: avoid; }
+      table { font-size: 9pt; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="doc-header">
+    <p class="doc-label">Legal Document — Student &amp; Vendor-Facing</p>
+    <h1>WeRewards<br>Privacy Policy</h1>
+    <p class="doc-effective">Effective Date: July 19, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: July 19, 2026</p>
+  </div>
+
+  <div class="notice">
+    <strong>Summary</strong>
+    WeRewards collects your Google account info, point transaction history, and engagement data to run the loyalty program. We do not sell your data. You can export or delete your data at any time through the app.
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>1. Who We Are</h2>
+  <p>WeRewards ("we," "us," "our") is a loyalty rewards platform operated by <strong>Krish Chavan</strong>, an individual based in Pennsylvania. WeRewards is an independent service and is not affiliated with The Pennsylvania State University.</p>
+  <p>For privacy-related questions, contact us at: <a href="mailto:contactwerewards@gmail.com">contactwerewards@gmail.com</a></p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>2. Information We Collect</h2>
+
+  <h3>2.1 Information You Provide (via Google Sign-In)</h3>
+  <p>Signing in with Google does not by itself create a WeRewards account. After you choose your Google account we ask you to accept the Terms and this Policy, and your account is created only when you do. If you decline, the sign-in is discarded and nothing about you is kept.</p>
+  <p>Once you accept, we store:</p>
+  <ul>
+    <li>Your <strong>full name</strong> (from your Google profile)</li>
+    <li>Your <strong>email address</strong></li>
+    <li>A unique <strong>user identifier</strong> assigned by our authentication provider (Supabase)</li>
+  </ul>
+  <p>Your Google <strong>profile photo URL</strong> is displayed in the app but is fetched directly from Google's servers and is not stored in our database.</p>
+
+  <h3>2.2 Transaction and Balance Data</h3>
+  <p>Each time you earn or redeem points at a vendor, we record:</p>
+  <ul>
+    <li>The vendor involved</li>
+    <li>The type of transaction (earn or redeem)</li>
+    <li>The number of points earned or redeemed</li>
+    <li>The dollar amount of the purchase (for earn transactions)</li>
+    <li>The reward redeemed (for redeem transactions)</li>
+    <li>The date and time of the transaction</li>
+  </ul>
+  <p>We also maintain your current <strong>point balance</strong> at each participating vendor.</p>
+
+  <h3>2.3 Engagement Score Data</h3>
+  <p>We compute a rolling 30-day engagement score that determines your earn multiplier tier. This score is derived from your transaction history and reflects:</p>
+  <ul>
+    <li>How many different vendors you visit (breadth)</li>
+    <li>How often you return to the same vendors (loyalty)</li>
+    <li>Your spending volume across vendors (spend)</li>
+  </ul>
+  <p>This score is stored and updated automatically.</p>
+
+  <h3>2.4 Short-Lived Codes</h3>
+  <p>We generate temporary <strong>earn codes</strong> (6-digit) and <strong>redemption codes</strong> (4-digit) for your account. Redemption codes are single-use and expire 120 seconds after you generate them. Earn codes expire 5 minutes after they are issued; while you have the app open, your existing code is refreshed rather than replaced, so the same 6 digits may stay valid for as long as you keep the screen open. Both are automatically deleted after use or expiration.</p>
+
+  <h3>2.5 Error and Diagnostic Logs</h3>
+  <p>If the app encounters an error, we may automatically record a crash report containing your user ID, the page you were on (path only — never the query string), the HTTP method and response status of the failed request, a technical error message and stack trace, your browser's user agent string, and a small amount of technical context about what the app was doing at the time. Error logs are retained for <strong>90 days</strong> and then automatically deleted.</p>
+
+  <h3>2.6 Consent Records</h3>
+  <p>When you accept the Terms and this Policy after signing in, we record that you did so: your user identifier, which version of the documents you accepted, the date and time, and — as evidence that the acceptance was genuine — your <strong>IP address</strong> and browser user agent at that moment.</p>
+  <p>This is the only place we record your IP address. We keep these records for as long as your account exists; they are deleted with it. If we revise the documents and ask you to accept again, that creates a new record rather than replacing the old one, so the history of what you agreed to and when stays intact.</p>
+
+  <h3>2.7 Information Stored on Your Device</h3>
+  <p>WeRewards does not use tracking cookies, advertising cookies, or any third-party analytics. We do store the following in your browser's local storage:</p>
+  <ul>
+    <li><strong>Your sign-in session.</strong> When you sign in with Google, our authentication provider (Supabase) stores an access token and a refresh token in your browser so you stay signed in between visits. These are what keep you logged in; clearing your browser storage signs you out.</li>
+    <li><strong>Your appearance preference.</strong> Your light/dark theme choice is saved locally so the app opens the way you left it.</li>
+    <li><strong>An offline app cache.</strong> The app registers a service worker that caches its own pages and styles so it loads quickly and works on a poor connection. This cache holds application files, not your personal data.</li>
+  </ul>
+  <p>All three are stored on your device rather than sent to us as a separate collection of data. You can clear them at any time through your browser's site-data settings.</p>
+
+  <h3>2.8 Information We Do NOT Collect</h3>
+  <ul>
+    <li>Payment card numbers or bank account information</li>
+    <li>Precise GPS location</li>
+    <li>Penn State student ID numbers or academic records</li>
+    <li>Biometric data</li>
+    <li>Contacts, photos, or files from your device</li>
+  </ul>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>3. How We Use Your Information</h2>
+  <table>
+    <thead>
+      <tr><th>Purpose</th><th>Data Used</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Create and manage your account</td><td>Name, email, user ID</td></tr>
+      <tr><td>Award and track loyalty points</td><td>User ID, transaction data, balance</td></tr>
+      <tr><td>Generate earn and redemption codes</td><td>User ID</td></tr>
+      <tr><td>Calculate your tier multiplier</td><td>Transaction history, engagement score</td></tr>
+      <tr><td>Show your activity history</td><td>Transaction data, vendor names, rewards</td></tr>
+      <tr><td>Provide data export on request</td><td>All data associated with your account</td></tr>
+      <tr><td>Detect and prevent fraud or abuse</td><td>User ID, transaction data, error logs</td></tr>
+      <tr><td>Debug and fix platform errors</td><td>Error logs, user agent, user ID</td></tr>
+      <tr><td>Operate platform analytics (admin-only)</td><td>Aggregated/anonymized transaction data</td></tr>
+    </tbody>
+  </table>
+  <p>We do not use your data for targeted advertising. We do not sell, rent, or trade your personal information to third parties for their marketing purposes.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>4. Third-Party Services</h2>
+  <p>We use the following third-party services to operate WeRewards. Each service receives only the data necessary for its function.</p>
+  <table>
+    <thead>
+      <tr><th>Service</th><th>Purpose</th><th>Data Shared</th><th>Privacy Policy</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Supabase</strong><br>(supabase.com)</td>
+        <td>Database, authentication, real-time updates</td>
+        <td>All stored user data; auth tokens</td>
+        <td>supabase.com/privacy</td>
+      </tr>
+      <tr>
+        <td><strong>Google Identity / OAuth</strong><br>(google.com)</td>
+        <td>User sign-in</td>
+        <td>Email, name, Google account ID</td>
+        <td>policies.google.com/privacy</td>
+      </tr>
+      <tr>
+        <td><strong>Google User Content</strong><br>(googleusercontent.com)</td>
+        <td>Displaying your Google profile photo</td>
+        <td>Your browser IP and user agent when the photo loads</td>
+        <td>policies.google.com/privacy</td>
+      </tr>
+      <tr>
+        <td><strong>Google Fonts</strong><br>(fonts.googleapis.com)</td>
+        <td>Typeface delivery</td>
+        <td>Your browser IP and user agent on page load</td>
+        <td>policies.google.com/privacy</td>
+      </tr>
+      <tr>
+        <td><strong>OpenStreetMap</strong><br>(openstreetmap.org, tile.openstreetmap.org)</td>
+        <td>Vendor location map display</td>
+        <td>Your browser IP on map tile load</td>
+        <td>osmfoundation.org/wiki/Privacy_Policy</td>
+      </tr>
+      <tr>
+        <td><strong>Nominatim</strong><br>(nominatim.openstreetmap.org)</td>
+        <td>Converting a vendor's street address into map coordinates</td>
+        <td>The vendor's business address only. Sent from our server, not your browser — no student data is involved</td>
+        <td>osmfoundation.org/wiki/Privacy_Policy</td>
+      </tr>
+      <tr>
+        <td><strong>Apple Maps / Google Maps</strong><br>(maps.apple.com, google.com/maps)</td>
+        <td>Turn-by-turn directions, only if you tap a vendor's address</td>
+        <td>The vendor's address and your browser IP, at the moment you tap. We do not send your location — the map provider may request it directly</td>
+        <td>apple.com/legal/privacy · policies.google.com/privacy</td>
+      </tr>
+      <tr>
+        <td><strong>jsDelivr CDN</strong><br>(cdn.jsdelivr.net)</td>
+        <td>Delivery of app libraries</td>
+        <td>Your browser IP and user agent on script load</td>
+        <td>jsdelivr.com/privacy-policy-jsdelivr-net</td>
+      </tr>
+      <tr>
+        <td><strong>Heroku</strong><br>(heroku.com)</td>
+        <td>Application server hosting</td>
+        <td>All data in transit through the app server</td>
+        <td>salesforce.com/company/privacy</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>5. Data Retention</h2>
+  <table>
+    <thead>
+      <tr><th>Data Type</th><th>Retention Period</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Profile (name, email)</td><td>Until you delete your account</td></tr>
+      <tr><td>Point balances</td><td>Until you delete your account</td></tr>
+      <tr><td>Transaction history</td><td>Retained indefinitely in anonymized form after account deletion (see Section 6)</td></tr>
+      <tr><td>Engagement score snapshots</td><td>Until you delete your account</td></tr>
+      <tr><td>Consent records (including IP)</td><td>Until you delete your account</td></tr>
+      <tr><td>Earn and redemption codes</td><td>Automatically deleted upon use or expiration (minutes)</td></tr>
+      <tr><td>Error logs</td><td>90 days, then automatically purged — including any that reference a since-deleted account (see Section 6)</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>6. Account Deletion and Data Removal</h2>
+  <p>You may delete your WeRewards account at any time through the <strong>Account tab → Delete my account</strong>. When you delete your account:</p>
+  <ul>
+    <li>Your profile (name, email, user ID) is permanently deleted.</li>
+    <li>Your point balances and engagement scores are permanently deleted.</li>
+    <li>Your active earn and redemption codes are permanently deleted.</li>
+    <li>Your consent records, including the IP address recorded at acceptance, are permanently deleted.</li>
+    <li>Your <strong>transaction history records are retained but permanently anonymized</strong> — the link between those records and your identity is severed. This is necessary to preserve the accuracy of vendors' business records (e.g., total revenue statistics) which we are contractually obligated to maintain.</li>
+  </ul>
+  <p><strong>One exception.</strong> If the app recorded a diagnostic error log for your account before you deleted it (see Section 2.5), that log keeps your user identifier until it is purged on its normal <strong>90-day</strong> schedule. These logs contain no name, email, or transaction data — only the identifier and technical debugging fields. After 90 days, no identifier associated with your account remains anywhere in our systems.</p>
+  <p>Deletion is irreversible. Once deleted, your account and points cannot be recovered.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>7. Your Rights and Choices</h2>
+  <h3>7.1 Data Export</h3>
+  <p>You can download a full copy of your WeRewards data (profile, balances, full transaction history, and engagement scores) at any time through <strong>Account tab → Download my data</strong>. The file is provided as a JSON file.</p>
+  <h3>7.2 Account Deletion</h3>
+  <p>As described in Section 6, you may delete your account at any time through the app.</p>
+  <h3>7.3 Correction</h3>
+  <p>If you believe your account information is inaccurate, contact us at <a href="mailto:contactwerewards@gmail.com">contactwerewards@gmail.com</a>.</p>
+  <h3>7.4 Opt-Out of Communications</h3>
+  <p>We do not currently send marketing emails or push notifications to students. If this changes, we will update this Policy and provide opt-out mechanisms.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>8. Security</h2>
+  <p>We implement reasonable technical and organizational measures to protect your data, including encrypted data transmission (HTTPS), server-side authentication token validation, and database access controls. No method of transmission over the internet or electronic storage is 100% secure. We cannot guarantee absolute security.</p>
+  <p>Earn codes and redemption codes are short-lived and single-use, which limits the impact of code interception.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>9. Pennsylvania Breach Notification</h2>
+  <p>In the event of a data breach that affects your personal information (as defined under Pennsylvania's Breach of Personal Information Notification Act, 73 P.S. §§ 2301–2329), we will notify you without unreasonable delay and in accordance with applicable law. If a breach affects 500 or more Pennsylvania residents, we will also notify the Pennsylvania Attorney General's Office as required.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>10. Children's Privacy</h2>
+  <p>WeRewards is not directed to individuals under the age of 18. We do not knowingly collect personal information from anyone under 18. If you believe a minor has provided us with personal information, contact us at <a href="mailto:contactwerewards@gmail.com">contactwerewards@gmail.com</a> and we will delete it promptly.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>11. Not Affiliated with Penn State</h2>
+  <p>WeRewards is not affiliated with, sponsored by, or endorsed by The Pennsylvania State University. Use of a Penn State email address as an eligibility criterion does not create any relationship between WeRewards and Penn State. Penn State does not receive your WeRewards data and has no involvement in the operation of this platform.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>12. Vendor Applicants and Vendor Contacts</h2>
+  <p>This section applies to <strong>businesses applying to join WeRewards</strong>, not to students. If you are a student, Sections 1–11 cover you and this section does not.</p>
+  <h3>12.1 What We Collect from Applicants</h3>
+  <p>When a business submits the WeRewards vendor application form, we collect: the business name, a contact person's name, a contact phone number, a contact email address, a password chosen for the future vendor terminal login, and optionally a street address, a business logo image, and a free-text message.</p>
+  <p>Passwords are stored only as a <strong>bcrypt hash</strong> — we never store or have access to the password itself.</p>
+  <h3>12.2 How We Use It</h3>
+  <p>Application information is used solely to evaluate the application, contact the applicant, and — if the application is approved — create and operate the vendor's terminal account. We do not sell vendor contact information or use it for marketing unrelated to WeRewards.</p>
+  <h3>12.3 Address Geocoding</h3>
+  <p>If a business address is provided, we send that address to <strong>Nominatim</strong>, a geocoding service run by the OpenStreetMap Foundation, to convert it into map coordinates for display in the student app. Only the business address is sent.</p>
+  <h3>12.4 Retention</h3>
+  <p>Applications are retained while under review and, if approved, for as long as the vendor account is active. Declined and withdrawn applications are retained only as long as needed for our records. A vendor's own obligations and data rights are governed by the vendor agreement signed with WeRewards.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>13. Changes to This Policy</h2>
+  <p>We may update this Privacy Policy from time to time. The current version is always available in the app and at <a href="/legal/student-privacy-policy.html">/legal/student-privacy-policy.html</a>, and the "Last Updated" date at the top reflects the latest revision.</p>
+  <p>For material changes we will prompt you to review and accept the revised Policy the next time you open the app, and record that acceptance as described in Section 2.6. For minor changes, your continued use after the revision is posted constitutes acceptance.</p>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <h2>14. Contact</h2>
+  <p>For questions, concerns, or requests regarding this Privacy Policy or your data, contact:</p>
+  <p>
+    <strong>Krish Chavan</strong><br>
+    WeRewards<br>
+    Email: <a href="mailto:contactwerewards@gmail.com">contactwerewards@gmail.com</a>
+  </p>
+
+</body>
+</html>
