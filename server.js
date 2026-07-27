@@ -16,6 +16,7 @@ import applyRoutes from './src/routes/apply.js';
 import { supabaseAuth, supabaseAdmin } from './src/lib/supabase.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
+import { logEvent } from './src/lib/events.js';
 import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
 import { requireJson } from './src/middleware/require-json.js';
@@ -131,6 +132,16 @@ const clientErrorLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED' },
 });
+// Install-funnel analytics post here (unauthenticated — pwa_launched can fire
+// before the session restores). Chattier than crash reports (several events per
+// install flow), so cap higher than clientErrorLimiter but still bounded.
+const clientEventLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED' },
+});
 // Public vendor applications (/join) — unauthenticated writes, and each one bcrypt-hashes a
 // password (CPU) and can carry a logo (~100s of KB), so cap it hard. A real
 // applicant submits once, maybe twice after a validation error.
@@ -145,6 +156,7 @@ app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
 app.use('/api/vendor/redeem-preview', redeemLimiter);
 app.use('/api/client-error', clientErrorLimiter);
+app.use('/api/client-event', clientEventLimiter);
 app.use('/api/apply', applyLimiter);
 
 // Static app shells: student PWA at / , vendor terminal at /terminal , operator
@@ -280,6 +292,43 @@ app.post('/api/client-error', async (req, res) => {
     userId,
     userAgent: req.headers['user-agent'],
     context: b.context,
+  });
+  res.status(204).end();
+});
+
+// PWA install funnel analytics: the student PWA posts each funnel stage
+// (install_eligible → install_prompt_shown → install_accepted, plus dismissals
+// and pwa_launched) here so drop-off is queryable in client_events (migration-024).
+// Same shape as /api/client-error: unauthenticated, best-effort user attribution,
+// validated + rate-limited above. An unknown event is dropped rather than 400'd
+// so a client rolled ahead of the server never spams errors into its own console.
+const CLIENT_EVENT_SOURCES = new Set(['student', 'vendor', 'admin']);
+const CLIENT_EVENTS = new Set([
+  'install_eligible', 'install_prompt_shown', 'install_prompt_dismissed',
+  'install_accepted', 'pwa_launched',
+]);
+app.post('/api/client-event', async (req, res) => {
+  const b = req.body ?? {};
+  if (!CLIENT_EVENT_SOURCES.has(b.source) || typeof b.event !== 'string') {
+    return res.status(400).json({ error: 'BAD_REQUEST' });
+  }
+  if (!CLIENT_EVENTS.has(b.event)) return res.status(204).end();  // unknown → silently ignore
+  let userId = null;
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (token) {
+    try {
+      const { data } = await supabaseAuth.auth.getUser(token);
+      userId = data?.user?.id ?? null;
+    } catch { /* anonymous event (e.g. pwa_launched pre-login) — fine */ }
+  }
+  await logEvent({
+    source: b.source,
+    event: b.event,
+    trigger: typeof b.trigger === 'string' ? b.trigger : null,
+    props: b.props,
+    userId,
+    userAgent: req.headers['user-agent'],
+    path: b.url,
   });
   res.status(204).end();
 });

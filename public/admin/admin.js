@@ -9,6 +9,7 @@ let vendors = [];       // full roster (active + inactive) for the on/off panel
 let applications = [];  // pending vendor applications (the Applications tab)
 let vapidKey = null;    // server's public VAPID key; null = push disabled
 let pushInitDone = false;
+const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now" is tapped
 
 const $ = (id) => document.getElementById(id);
 
@@ -29,6 +30,13 @@ const $ = (id) => document.getElementById(id);
   $('tab-dashboard').addEventListener('click', () => setView('dashboard'));
   $('tab-applications').addEventListener('click', () => setView('applications'));
   $('push-btn').addEventListener('click', enablePush);
+  // Popup: "Turn on alerts" runs the SAME enable flow directly on the click so the
+  // requestPermission() gesture is preserved; "Not now"/backdrop just dismiss.
+  $('push-enable').addEventListener('click', enablePush);
+  $('push-dismiss').addEventListener('click', dismissPushModal);
+  $('push-modal').addEventListener('click', (e) => {
+    if (e.target === $('push-modal')) dismissPushModal();   // backdrop only, not the card
+  });
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
 
@@ -652,18 +660,54 @@ async function initPush() {
     if (!res.ok) return;
     vapidKey = (await res.json())?.publicKey ?? null;
     if (!vapidKey) return;   // server has no VAPID keys → push disabled
+    // Only 'default' is actionable: 'granted' silently re-subscribes; 'denied'
+    // can't be re-prompted (requestPermission would no-op), so we stay quiet.
     if (Notification.permission === 'granted') await subscribePush();
-    else if (Notification.permission === 'default') $('push-btn').hidden = false;
+    else if (Notification.permission === 'default') {
+      $('push-btn').hidden = false;                       // persistent topbar fallback
+      // Louder one-time nudge — suppressed once the operator has said "Not now".
+      let dismissed = false;
+      try { dismissed = !!localStorage.getItem(PUSH_DISMISS_KEY); } catch { /* private mode */ }
+      if (!dismissed) openPushModal();
+    }
   } catch { /* push is a nice-to-have — never let it break the dashboard */ }
 }
 
+// The prominent popup and the topbar 🔔 button both call this. requestPermission()
+// must run from the user gesture, so it's the first thing awaited. Whatever the
+// outcome, hide the button and close the popup — permission is now decided, so
+// neither should linger (and initPush won't re-open the popup: pushInitDone).
 async function enablePush() {
   try {
     const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { $('push-btn').hidden = true; return; }
+    if (perm !== 'granted') { $('push-btn').hidden = true; closePushModal(); return; }
     await subscribePush();
     $('push-btn').hidden = true;
-  } catch { $('push-btn').hidden = true; }
+    closePushModal();
+  } catch { $('push-btn').hidden = true; closePushModal(); }
+}
+
+// ----- enable-notifications popup (a louder entry point to enablePush) -----
+
+function openPushModal() {
+  $('push-modal').hidden = false;
+  $('push-enable').focus();                               // move focus into the dialog
+  document.addEventListener('keydown', onPushKeydown);
+}
+
+function closePushModal() {
+  $('push-modal').hidden = true;
+  document.removeEventListener('keydown', onPushKeydown);
+}
+
+// Escape dismisses, same as "Not now".
+function onPushKeydown(e) { if (e.key === 'Escape') dismissPushModal(); }
+
+// "Not now" / backdrop / Escape: close and remember it so we never auto-nag again.
+// Permission is untouched; the topbar 🔔 button remains available forever.
+function dismissPushModal() {
+  closePushModal();
+  try { localStorage.setItem(PUSH_DISMISS_KEY, '1'); } catch { /* private mode — fine */ }
 }
 
 async function subscribePush() {

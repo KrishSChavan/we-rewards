@@ -127,3 +127,63 @@ test('a zero active-vendor count degrades gracefully (no divide-by-zero)', () =>
   assert.equal(p.breadth, 0);
   assert.ok(Number.isFinite(p.score));
 });
+
+test('txns at an admin-hidden vendor contribute nothing to visits, spend, or breadth', () => {
+  // vHidden was hidden by the admin (vendors.active = false), so it is absent
+  // from activeVendorIds — its earns must not feed any component.
+  const p = scoreProfile({
+    vendorCount: 2,
+    activeVendorIds: new Set(['v1', 'v2']),
+    txns: [
+      earn('v1', 15, '2026-07-01'),
+      earn('vHidden', 25, '2026-07-01'),
+      earn('vHidden', 25, '2026-07-02'),
+    ],
+  });
+  assert.equal(p.distinctVendors, 1, 'hidden vendor is not a distinct vendor');
+  assert.equal(p.totalVisits, 1, 'hidden-vendor days are not visits');
+  assert.equal(p.totalSpend, 15, 'hidden-vendor dollars are not credited');
+  assert.equal(p.revisitVendors, 0, 'two days at a hidden vendor is not a revisit');
+});
+
+test('filtering hidden-vendor txns matches scoring only the active-vendor txns', () => {
+  const activeTxns = [
+    earn('v1', 12, '2026-07-01'),
+    earn('v1', 8, '2026-07-02'),
+    earn('v2', 15, '2026-07-03'),
+  ];
+  const hiddenTxns = [earn('vHidden', 30, '2026-07-01'), earn('vHidden', 30, '2026-07-04')];
+  const filtered = scoreProfile({
+    vendorCount: 3,
+    activeVendorIds: new Set(['v1', 'v2', 'v3']),
+    txns: [...activeTxns, ...hiddenTxns],
+  });
+  const activeOnly = scoreProfile({ vendorCount: 3, txns: activeTxns });
+  assert.deepEqual(filtered, activeOnly, 'hidden-vendor txns must be a no-op end to end');
+});
+
+test('activeVendorIds also accepts a plain array of ids', () => {
+  const asSet = scoreProfile({
+    vendorCount: 1,
+    activeVendorIds: new Set(['v1']),
+    txns: [earn('v1', 15, '2026-07-01'), earn('vHidden', 15, '2026-07-01')],
+  });
+  const asArray = scoreProfile({
+    vendorCount: 1,
+    activeVendorIds: ['v1'],
+    txns: [earn('v1', 15, '2026-07-01'), earn('vHidden', 15, '2026-07-01')],
+  });
+  assert.deepEqual(asArray, asSet);
+  assert.equal(asArray.distinctVendors, 1);
+});
+
+test('omitting activeVendorIds preserves the legacy behavior (every txn scores)', () => {
+  const txns = [earn('v1', 15, '2026-07-01'), earn('vGone', 20, '2026-07-02')];
+  const legacy = scoreProfile({ vendorCount: 5, txns });
+  assert.equal(legacy.distinctVendors, 2, 'no filter param ⇒ all vendors count');
+  assert.equal(legacy.totalVisits, 2);
+  assert.equal(legacy.totalSpend, 35);
+  // …and passing a set that covers every vendor in the txns changes nothing.
+  const covered = scoreProfile({ vendorCount: 5, activeVendorIds: new Set(['v1', 'vGone']), txns });
+  assert.deepEqual(covered, legacy);
+});

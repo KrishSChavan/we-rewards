@@ -112,6 +112,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .auth-error { margin-top: 0.9rem; color: #a93226; font-weight: 700; }
 .fine { margin-top: 0.9rem; color: var(--muted); font-size: 0.92rem; font-weight: 500; }
 
+/* small vendor pitch under the auth copy — links out to the /join application */
+.vendor-invite { margin-top: 0.35rem; }
+.vendor-invite a { color: var(--brand); font-weight: 800; text-decoration: underline; }
+
 /* ---------- hero mock card ---------- */
 
 .hero-card { position: relative; display: flex; justify-content: center; }
@@ -171,7 +175,24 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .steps h3 { font-size: 1.35rem; font-weight: 900; margin-bottom: 0.5rem; }
 .steps p { color: var(--sky); line-height: 1.55; font-weight: 500; }
 
-.footer { padding: 2rem; text-align: center; color: var(--muted); font-size: 0.92rem; font-weight: 500; }
+.footer {
+  border-top: 1px solid var(--hairline);
+  padding: 2.5rem 2rem 2rem;
+  color: var(--muted); font-size: 0.92rem; font-weight: 500;
+}
+.footer-inner {
+  max-width: 72rem; margin: 0 auto;
+  display: flex; flex-wrap: wrap; align-items: flex-start;
+  justify-content: space-between; gap: 1.25rem 2rem;
+}
+.footer-word { font-weight: 900; letter-spacing: 0.12em; font-size: 0.95rem; color: var(--ink); }
+.footer-word em { font-style: normal; color: var(--navy); background: var(--sky); padding: 0.1em 0.35em; border-radius: 0.3em; }
+.footer-tag { margin-top: 0.55rem; max-width: 24rem; line-height: 1.45; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 0.55rem 1.25rem; }
+.footer-links a { color: var(--brand); font-weight: 700; text-decoration: none; }
+.footer-links a:hover { text-decoration: underline; }
+.footer-legal { max-width: 72rem; margin: 1.75rem auto 0; text-align: center; }
+.footer-legal a { color: var(--brand); font-weight: 700; }
 
 /* ---------- signed-in: home (vendor carousel) ---------- */
 
@@ -598,6 +619,43 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   border-radius: 50%; font-weight: 900; font-size: 0.95rem;
 }
 .install-step-list .step-ico { font-size: 1.15rem; }
+
+/* in-app browser body ("open in Safari"): same full-width column as the steps */
+.install-inapp { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 0.7rem; }
+.install-copied { text-align: center; font-weight: 800; color: var(--success); font-size: 0.95rem; }
+
+/* first-points fallback: a small dismissible inline banner on the home screen —
+   not a sheet, so the app stays fully usable. Reuses the sticker look. */
+.install-banner {
+  display: flex; align-items: center; gap: 0.6rem;
+  margin: 0 0 0.9rem;
+  padding: 0.75rem 0.85rem;
+  background: var(--card);
+  border: 3px solid var(--edge); border-radius: 1.1rem;
+  box-shadow: 0 4px 0 var(--edge);
+  opacity: 0; transform: translateY(-6px);
+  transition: opacity 260ms ease, transform 260ms ease;
+}
+.install-banner.is-open { opacity: 1; transform: translateY(0); }
+.install-banner-emoji { font-size: 1.5rem; flex-shrink: 0; }
+.install-banner-text { flex: 1; min-width: 0; font-weight: 700; font-size: 0.9rem; line-height: 1.3; }
+.install-banner-add {
+  flex-shrink: 0;
+  background: var(--navy); color: #fff;
+  font-weight: 900; font-size: 0.9rem;
+  padding: 0.5rem 0.9rem; border-radius: 0.7rem;
+}
+.install-banner-add:active { background: var(--navy-press); }
+.install-banner-close {
+  flex-shrink: 0;
+  width: 1.9rem; height: 1.9rem; border-radius: 50%;
+  font-size: 0.85rem; font-weight: 900; color: var(--muted);
+  border: 2px solid var(--edge); background: var(--paper);
+}
+
+/* dev-only reset row: same shape as .data-btn, visually muted + dashed so it
+   never reads as a real user action (it's only shown on localhost). */
+.install-devreset { opacity: 0.7; border-style: dashed; }
 
 /* =====================================================
    Signed-in app shell: sliding tabs + bottom nav

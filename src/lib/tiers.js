@@ -32,16 +32,29 @@ const clamp01 = (x) => Math.max(0, Math.min(1, x));
  * computeTierProfile so the math (and its anti-farming caps) is unit-testable
  * without a database. See test/tiers.test.js.
  *
+ * When activeVendorIds is supplied, transactions at any other vendor are
+ * dropped before scoring — visits/spend at a vendor the admin has since
+ * hidden (vendors.active = false) contribute nothing to breadth, loyalty, or
+ * spend. Omitting it preserves the historical behavior (score every txn).
+ *
  * @param {object} input
  * @param {number} input.vendorCount  count of active vendors (breadth denominator)
  * @param {Array<{vendor_id:string, dollar_amount:number|string|null, created_at:string}>} input.txns
+ * @param {Set<string>|Array<string>} [input.activeVendorIds]
+ *        ids of active vendors; txns at vendors outside this set are excluded
+ *        from the tier math entirely. Omit to score all txns (legacy behavior).
  * @param {number} [input.revisits]   lifetime revisit counter (passed through untouched)
  */
-export function scoreProfile({ vendorCount, txns, revisits = 0 }) {
+export function scoreProfile({ vendorCount, txns, activeVendorIds, revisits = 0 }) {
+  const activeSet = activeVendorIds == null
+    ? null
+    : activeVendorIds instanceof Set ? activeVendorIds : new Set(activeVendorIds);
+
   // Collapse to one visit per vendor per day (anti-farming), summing that
   // day's spend at the vendor but crediting at most SPEND_CAP_PER_VISIT of it.
   const visitDays = new Map(); // "vendorId|YYYY-MM-DD" -> dollars that day
   for (const t of txns ?? []) {
+    if (activeSet && !activeSet.has(t.vendor_id)) continue; // hidden vendor: no credit
     const key = `${t.vendor_id}|${String(t.created_at).slice(0, 10)}`;
     visitDays.set(key, (visitDays.get(key) ?? 0) + Number(t.dollar_amount ?? 0));
   }
@@ -102,12 +115,17 @@ export function scoreProfile({ vendorCount, txns, revisits = 0 }) {
  * caller that wants a durable snapshot can hand the result to
  * persistTierSnapshot() without recomputing. Fetches the inputs, then defers
  * the math to the pure scoreProfile() above.
+ *
+ * Only ACTIVE vendors count: their ids are fetched (a small list — same single
+ * round-trip as the old head-count) and passed to scoreProfile, which sizes
+ * the breadth denominator from them AND drops earn txns at admin-hidden
+ * vendors (vendors.active = false) so those feed none of the components.
  */
 export async function computeTierProfile(userId) {
   const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
-  const [{ count: vendorCount, error: vErr }, { data: txns, error: tErr }, { data: prof }] = await Promise.all([
-    supabaseAdmin.from('vendors').select('id', { count: 'exact', head: true }).eq('active', true),
+  const [{ data: vendors, error: vErr }, { data: txns, error: tErr }, { data: prof }] = await Promise.all([
+    supabaseAdmin.from('vendors').select('id').eq('active', true),
     supabaseAdmin
       .from('transactions')
       .select('vendor_id, dollar_amount, created_at')
@@ -119,7 +137,13 @@ export async function computeTierProfile(userId) {
   if (vErr) throw vErr;
   if (tErr) throw tErr;
 
-  return scoreProfile({ vendorCount: vendorCount ?? 0, txns: txns ?? [], revisits: prof?.revisits ?? 0 });
+  const activeVendorIds = new Set((vendors ?? []).map((v) => v.id));
+  return scoreProfile({
+    vendorCount: activeVendorIds.size,
+    activeVendorIds,
+    txns: txns ?? [],
+    revisits: prof?.revisits ?? 0,
+  });
 }
 
 /**

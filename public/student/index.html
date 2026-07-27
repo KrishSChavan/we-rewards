@@ -43,6 +43,7 @@
         </button>
         <p id="auth-error" class="auth-error" hidden></p>
         <p class="fine">Free for students · works right in your browser</p>
+        <p class="fine vendor-invite">Run a spot near campus? <a href="/join" target="_blank" rel="noopener">Join the WeRewards community!</a></p>
       </div>
 
       <div class="hero-card" aria-hidden="true">
@@ -82,7 +83,19 @@
     </section>
 
     <footer class="footer">
-      <p>Made in State College for Penn State students &amp; the local spots that feed them.</p>
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <span class="footer-word">We<em>Rewards</em></span>
+          <p class="footer-tag">Made in State College for Penn State students &amp; the local spots that feed them.</p>
+        </div>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="/join">Partner with us</a>
+          <a href="/legal/student-terms-of-service.html" target="_blank" rel="noopener">Terms of Service</a>
+          <a href="/legal/student-privacy-policy.html" target="_blank" rel="noopener">Privacy Policy</a>
+          <a href="mailto:contactwerewards@gmail.com">Contact</a>
+        </nav>
+      </div>
+      <p class="footer-legal">© 2026 WeRewards · Questions? <a href="mailto:contactwerewards@gmail.com">contactwerewards@gmail.com</a></p>
     </footer>
   </div>
 
@@ -122,6 +135,15 @@
             </header>
 
             <main class="home-main">
+              <!-- first-points fallback nudge: a small dismissible inline banner,
+                   not a sheet. install-prompt.js toggles .is-open. -->
+              <div id="install-banner" class="install-banner" hidden>
+                <span class="install-banner-emoji" aria-hidden="true">📲</span>
+                <span id="install-banner-text" class="install-banner-text">Add WeRewards to your home screen — your code, one tap away.</span>
+                <button id="install-banner-add" class="install-banner-add" type="button">Add</button>
+                <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
+              </div>
+
               <div class="my-code">
                 <span class="mc-label">YOUR CODE</span>
                 <span id="my-code-value" class="mc-value">••••••</span>
@@ -206,6 +228,24 @@
                   <span class="switch-knob"></span>
                 </button>
               </div>
+
+              <!-- app: permanent add-to-home-screen entry point (app.js unhides it
+                   when not installed) + a dev-only reset for the prompt state -->
+              <h2 id="account-app-title" class="account-section-title" hidden>App</h2>
+              <button id="account-install" class="data-btn" type="button" hidden>
+                <span class="data-btn-label">
+                  <span class="data-btn-name">Add to Home Screen</span>
+                  <span class="data-btn-desc">Install WeRewards so your code is one tap away</span>
+                </span>
+                <span class="data-btn-chevron" aria-hidden="true">→</span>
+              </button>
+              <button id="account-install-reset" class="data-btn install-devreset" type="button" hidden>
+                <span class="data-btn-label">
+                  <span class="data-btn-name">Reset install prompts (dev)</span>
+                  <span class="data-btn-desc">Clear cooldowns, caps, and session count</span>
+                </span>
+                <span class="data-btn-chevron" aria-hidden="true">↺</span>
+              </button>
 
               <!-- your data: export + delete -->
               <h2 class="account-section-title">Your data</h2>
@@ -315,31 +355,44 @@
     </div>
   </div>
 
-  <!-- "add to home screen" prompt: shown once per page load on a phone browser
-       (skipped when already installed / running standalone). "Yes" expands to
-       device-specific steps for iOS Safari vs Android Chrome. -->
+  <!-- "Add to home screen" bottom sheet. The trigger + eligibility layer lives in
+       install-prompt.js; this is only the surface. Title/desc are set per-trigger,
+       and one of three bodies shows: ask → steps (iOS Safari / Android) or the
+       in-app "open in Safari" screen. Chromium never opens this sheet — it fires
+       the real native install prompt instead. -->
   <div id="install-modal" class="overlay sheet" hidden>
-    <div class="detail-card">
+    <div id="install-card" class="detail-card">
       <button id="install-close" class="detail-close" aria-label="Close">✕</button>
-      <p class="detail-emoji">📲</p>
-      <h2 class="detail-title">Add WeRewards to your phone</h2>
-      <p class="detail-desc">
-        Pop it on your home screen and it opens like a real app — full screen, loads
-        faster, and your code is one tap away. No app store, no download.
+      <p id="install-emoji" class="detail-emoji">📲</p>
+      <h2 id="install-title" class="detail-title">Add WeRewards to your phone</h2>
+      <p id="install-desc" class="detail-desc">
+        Pop it on your home screen and it opens like a real app — full screen, and
+        your code is one tap away. No app store, no download.
       </p>
 
-      <!-- initial ask -->
+      <!-- initial ask (iOS Safari / Android) -->
       <div id="install-ask" class="install-ask">
         <button id="install-yes" class="btn-redeem" type="button">Yes, show me how</button>
         <button id="install-no" class="detail-textbtn" type="button">Not now</button>
       </div>
 
-      <!-- expands on "Yes": steps filled per-device by app.js -->
+      <!-- expands on "Yes": per-device steps filled by install-prompt.js -->
       <div id="install-steps" class="install-steps" hidden>
-        <button id="install-native" class="btn-redeem" type="button" hidden>Install app</button>
         <p id="install-steps-lead" class="install-steps-lead"></p>
         <ol id="install-steps-list" class="install-step-list"></ol>
         <button id="install-done" class="detail-textbtn" type="button">Got it</button>
+      </div>
+
+      <!-- in-app browser (Instagram / Snapchat / iOS Chrome…): can't install here,
+           so hand them a copy-link + open-in-Safari path instead -->
+      <div id="install-inapp" class="install-inapp" hidden>
+        <button id="install-copy" class="btn-redeem" type="button">Copy link</button>
+        <p id="install-copied" class="install-copied" hidden>Copied! Now paste it into Safari.</p>
+        <ol class="install-step-list">
+          <li><span class="step-ico" aria-hidden="true">🔗</span><span>Tap <strong>Copy link</strong> above.</span></li>
+          <li><span class="step-ico" aria-hidden="true">🧭</span><span>Open <strong>Safari</strong> and paste the link.</span></li>
+          <li><span class="step-ico" aria-hidden="true">➕</span><span>Tap <strong>Share → Add to Home Screen</strong>.</span></li>
+        </ol>
       </div>
     </div>
   </div>
@@ -384,6 +437,7 @@
           integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
           crossorigin="anonymous"></script>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/install-prompt.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

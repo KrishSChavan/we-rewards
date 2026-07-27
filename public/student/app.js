@@ -16,22 +16,14 @@ let tickRaf = 0;            // requestAnimationFrame id for the counting ticker
 let toastTimer = null;
 let activeTab = 0;          // 0 = home, 1 = history, 2 = account
 let historyLoaded = false;  // has the history tab fetched at least once?
-let deferredInstallPrompt = null; // Android/Chrome: captured beforeinstallprompt event
-let installPlatform = null;       // 'ios' | 'android' for the current visitor
 let justSignedIn = false;         // true between a Google sign-in and the consent check
 
 const $ = (id) => document.getElementById(id);
 
-// Android/Chrome fires this before showing its own install banner. Stash it so
-// our "Install app" button can trigger the native prompt on demand. (No effect
-// on iOS Safari, which has no such API — there we show manual steps instead.)
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredInstallPrompt = e;
-  const btn = $('install-native');
-  if (btn && !$('install-steps').hidden) btn.hidden = false;  // reveal it if the sheet is already open
-});
-window.addEventListener('appinstalled', () => { deferredInstallPrompt = null; closeInstallModal(); });
+// The PWA install nudge — deferred-prompt capture, platform routing, suppression
+// rules, the 5 trigger points, and its funnel analytics — lives in
+// install-prompt.js → window.InstallPrompt. This file only calls its trigger
+// methods at the right moments (redemption / points earned / app open / manual).
 
 /* ---------- client crash reporting ---------- */
 // Uncaught errors + promise rejections post to /api/client-error so they land in
@@ -54,10 +46,31 @@ function installErrorReporter() {
   window.addEventListener('unhandledrejection', (e) => send(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
 }
 
+/* ---------- install-funnel analytics ---------- */
+// Best-effort → /api/client-event. Same posture as the crash reporter: attaches
+// the auth token when we have a session, never blocks, never throws. keepalive
+// so an event fired as the page unloads (e.g. a dismissal) still sends.
+function track(event, props) {
+  (async () => {
+    let auth = {};
+    try {
+      const { data } = (await sb?.auth?.getSession?.()) ?? {};
+      if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
+    } catch { /* not signed in yet — event posts anonymously */ }
+    fetch('/api/client-event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({ source: 'student', event, trigger: props?.trigger, props, url: location.pathname }),
+      keepalive: true,
+    }).catch(() => {});
+  })();
+}
+
 /* ---------- boot ---------- */
 
 (async function boot() {
   installErrorReporter();
+  InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
   const pub = await (await fetch('/api/public-config')).json();
   // Student + vendor apps share this origin and Supabase project, so they MUST
   // use separate auth storage keys — otherwise signing into the vendor terminal
@@ -109,13 +122,11 @@ function installErrorReporter() {
   $('tier-info-close').addEventListener('click', closeTierInfo);
   // click on the backdrop (but not the card) closes the popover
   $('tier-info').addEventListener('click', (e) => { if (e.target === $('tier-info')) closeTierInfo(); });
-  // "add to home screen" prompt: Yes → per-device steps; native install on Android
-  $('install-yes').addEventListener('click', showInstallSteps);
-  $('install-no').addEventListener('click', closeInstallModal);
-  $('install-done').addEventListener('click', closeInstallModal);
-  $('install-close').addEventListener('click', closeInstallModal);
-  $('install-native').addEventListener('click', triggerNativeInstall);
-  $('install-modal').addEventListener('click', (e) => { if (e.target === $('install-modal')) closeInstallModal(); });
+  // add-to-home-screen: the permanent manual entry point (settings) + the dev
+  // reset. The sheet's own buttons are wired inside install-prompt.js.
+  $('account-install').addEventListener('click', () => InstallPrompt.openManual());
+  $('account-install-reset').addEventListener('click', () => { InstallPrompt.reset(); syncInstallRow(); });
+  window.addEventListener('appinstalled', syncInstallRow);   // drop the row the moment it's installed
   $('back-btn').addEventListener('click', backToHomeSlide);
   $('items').addEventListener('click', onItemTap);
   $('item-close').addEventListener('click', closeItemModal);
@@ -178,6 +189,7 @@ function render(session) {
     historyLoaded = false;
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
+    InstallPrompt.clearUser();  // stop keying install suppression to the signed-out user
     return;
   }
 
@@ -193,7 +205,11 @@ function render(session) {
     $('home').hidden = false;
     $('vendor').hidden = true;
     setTab(0, false);
-    maybeShowInstallPrompt();   // nudge phone-browser users to add it to their home screen
+    // App just opened for this user: key install suppression to them + count the
+    // session, then let trigger 3 (third session) fire once the shell is up.
+    InstallPrompt.setUser(session.user.id);
+    InstallPrompt.onAppReady();
+    syncInstallRow();
   }
   fillAccount(session);
   loadVendors();
@@ -202,102 +218,16 @@ function render(session) {
   connectSocket();
 }
 
-/* ---------- "add to home screen" prompt ----------
-   This is a plain phone website, not a native app — "download" here means adding
-   it to the home screen (an installed PWA). We only nudge on a phone browser that
-   isn't already running standalone, and re-ask on every load (per the design). */
-
-// iOS Safari has no install API, so we show manual share-sheet steps; Android
-// Chrome exposes beforeinstallprompt, so we can offer a one-tap native install.
-const INSTALL_STEPS = {
-  ios: {
-    lead: 'In Safari:',
-    steps: [
-      ['⬆️', 'Tap the <strong>Share</strong> button in the bar at the bottom of the screen.'],
-      ['➕', 'Scroll down and tap <strong>Add to Home Screen</strong>.'],
-      ['✅', 'Tap <strong>Add</strong> — WeRewards lands on your home screen.'],
-    ],
-  },
-  android: {
-    lead: 'In Chrome:',
-    steps: [
-      ['⋮', 'Tap the <strong>menu</strong> (three dots) in the top-right.'],
-      ['➕', 'Tap <strong>Add to Home screen</strong> (or <strong>Install app</strong>).'],
-      ['✅', 'Tap <strong>Add</strong> — WeRewards lands on your home screen.'],
-    ],
-  },
-};
-
-// Running as an installed app already? Then there's nothing to nudge.
-function isStandalone() {
-  return window.matchMedia?.('(display-mode: standalone)').matches
-    || window.navigator.standalone === true;   // iOS Safari's own flag
-}
-
-// 'ios' | 'android' | null (null = desktop/other → don't show at all).
-function detectInstallPlatform() {
-  const ua = navigator.userAgent || '';
-  if (/iPad|iPhone|iPod/.test(ua)) return 'ios';
-  // iPadOS 13+ reports a desktop UA, so fall back to touch-capable Mac = iPad.
-  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return 'ios';
-  if (/Android/.test(ua)) return 'android';
-  return null;
-}
-
-function maybeShowInstallPrompt() {
-  if (isStandalone()) return;                 // already added to the home screen
-  installPlatform = detectInstallPlatform();
-  if (!installPlatform) return;               // desktop / unsupported browser
-  setTimeout(openInstallModal, 900);          // let the app paint first, then slide up
-}
-
-function openInstallModal() {
-  if ($('app').hidden) return;                 // signed out again before the delay elapsed
-  $('install-steps').hidden = true;            // always open on the yes/no ask
-  $('install-ask').hidden = false;
-  const ov = $('install-modal');
-  ov.hidden = false;
-  void ov.offsetWidth;                        // reflow so the slide-up transition runs
-  ov.classList.add('is-open');
-}
-
-function closeInstallModal() {
-  const ov = $('install-modal');
-  if (!ov || ov.hidden || !ov.classList.contains('is-open')) return;
-  ov.classList.remove('is-open');
-  setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
-}
-
-// "Yes, show me how" → expand the sheet to the device-specific steps.
-function showInstallSteps() {
-  const cfg = INSTALL_STEPS[installPlatform] || INSTALL_STEPS.android;
-  $('install-steps-lead').textContent = cfg.lead;
-
-  const list = $('install-steps-list');
-  list.innerHTML = '';
-  cfg.steps.forEach(([ico, html]) => {
-    const li = document.createElement('li');
-    // ico + copy are fixed developer strings (no user input), so innerHTML is safe here.
-    li.innerHTML = `<span class="step-ico" aria-hidden="true">${ico}</span><span>${html}</span>`;
-    list.appendChild(li);
-  });
-
-  // Android with a captured prompt → offer the real one-tap install above the steps.
-  $('install-native').hidden = !(installPlatform === 'android' && deferredInstallPrompt);
-
-  $('install-ask').hidden = true;
-  $('install-steps').hidden = false;
-}
-
-// Fire Chrome's native install dialog (Android). Each captured event is single-use.
-async function triggerNativeInstall() {
-  const promptEvent = deferredInstallPrompt;
-  if (!promptEvent) return;
-  deferredInstallPrompt = null;
-  $('install-native').hidden = true;
-  promptEvent.prompt();
-  try { await promptEvent.userChoice; } catch { /* dismissed */ }
-  closeInstallModal();
+/* ---------- add-to-home-screen: account entry point (trigger 5) ----------
+   The prompt logic itself lives in install-prompt.js. Here we only keep the
+   permanent manual row in sync: show it whenever the app isn't installed (never
+   gated by cooldown), plus a dev-only reset for re-testing the prompts. */
+function syncInstallRow() {
+  const installed = InstallPrompt.isInstalled();
+  const isDev = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  $('account-install').hidden = installed;
+  $('account-install-reset').hidden = !isDev;
+  $('account-app-title').hidden = installed && !isDev;   // hide the header only if the section is empty
 }
 
 /* ---------- appearance: theme ---------- */
@@ -973,9 +903,17 @@ function connectSocket() {
       if (!payload?.vendorId) return;
       const next = payload.balance ?? 0;
       const v = allVendors.find((x) => x.vendorId === payload.vendorId);
+      const prev = v ? (v.balance ?? 0) : 0;
       if (v) v.balance = next;
       patchVendorCard(payload.vendorId, next);                       // live-update the home card
       if (vendor && payload.vendorId === vendor.vendorId) applyBalance(next); // and the open meter
+      // A gain here is a scan landing → install triggers 2 (near a reward
+      // threshold) and 4 (first points earned). `v` carries the vendor's rewards
+      // so the hook can decide "within 1 visit". Redemptions (a drop) are handled
+      // in applyBalance, which knows the code sheet was open.
+      if (next > prev) {
+        InstallPrompt.onPointsEarned({ vendor: v, prevBalance: prev, newBalance: next, earned: next - prev });
+      }
       loadTier();                             // an earn just landed — score may have moved
       if (historyLoaded) loadHistory();       // ...and it's a new activity row
     });
@@ -1009,6 +947,9 @@ function applyBalance(next) {
   // through — close the card (after a beat so the "Redeemed" toast registers).
   if (next < prev && !$('item-modal').hidden && !$('item-code').hidden) {
     setTimeout(closeItemModal, 1000);
+    // Trigger 1: first successful redemption. The hook waits ~1.5s so the nudge
+    // lands after the success toast + card-close animation, not during them.
+    InstallPrompt.onRedemption();
   }
 }
 

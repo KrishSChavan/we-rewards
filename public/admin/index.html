@@ -136,6 +136,23 @@
     </main>
   </div>
 
+  <!-- ===== ENABLE-NOTIFICATIONS POPUP ===== -->
+  <!-- Prominent one-time prompt, opened by initPush ONLY when push is usable and
+       permission is still 'default'. Sibling of #dash so it dims the whole
+       dashboard. The topbar 🔔 button stays as the persistent fallback. -->
+  <div id="push-modal" class="overlay" hidden>
+    <div class="push-card" role="dialog" aria-modal="true"
+         aria-labelledby="push-modal-title" aria-describedby="push-modal-desc">
+      <span class="push-bell" aria-hidden="true">🔔</span>
+      <h2 id="push-modal-title">Turn on application alerts</h2>
+      <p id="push-modal-desc">Get a push notification the moment a vendor applies from /join — even when this dashboard is closed.</p>
+      <div class="push-actions">
+        <button id="push-enable" class="btn-primary">Turn on alerts</button>
+        <button id="push-dismiss" class="btn-ghost">Not now</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
           integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
           crossorigin="anonymous"></script>

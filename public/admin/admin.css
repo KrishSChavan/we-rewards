@@ -280,6 +280,29 @@ h1, h3 { margin: 0; }
 .err-where { color: var(--muted); font-size: 0.78rem; margin: 0.2rem 0; font-family: ui-monospace, Menlo, Consolas, monospace; }
 .err-detail pre { background: #0b1220; border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem; font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 0; color: #cbd5e1; }
 
+/* ---------- enable-notifications popup ---------- */
+/* Full-screen dim + centered card, above the sticky topbar (z-index:5). Opened by
+   initPush only when push is usable and permission is 'default'; [hidden] wins. */
+.overlay {
+  position: fixed; inset: 0; z-index: 50;
+  display: grid; place-items: center; padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.55);
+}
+.push-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+  padding: 1.75rem; width: min(400px, 100%); text-align: center;
+  animation: push-pop 0.18s ease-out;
+}
+.push-bell { display: block; font-size: 2.4rem; line-height: 1; }
+.push-card h2 { margin: 0.6rem 0 0; font-size: 1.35rem; font-weight: 900; }
+.push-card #push-modal-desc { color: var(--muted); font-size: 0.9rem; margin: 0.5rem 0 0; }
+.push-actions { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1.25rem; }
+/* .btn-primary/.btn-ghost carry margin-top:1rem for the login stack; the flex gap
+   already spaces these, so drop that margin inside the stacked actions. */
+.push-actions .btn-primary, .push-actions .btn-ghost { margin-top: 0; }
+@keyframes push-pop { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .push-card { animation: none; } }
+
 @media (max-width: 640px) {
   .tiles { grid-template-columns: repeat(2, 1fr); }
   .two-col { grid-template-columns: 1fr; }
