@@ -135,7 +135,8 @@ router.post('/decline', async (req, res, next) => {
 router.get('/balances', requireConsent, async (req, res, next) => {
   try {
     const [{ data: vendors, error: vErr }, { data: balances, error: bErr }] = await Promise.all([
-      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: true }),
+      // Newest vendors first so they land at the start (left) of the home carousel.
+      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
       supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
     ]);
     if (vErr) throw vErr;
