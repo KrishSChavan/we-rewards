@@ -325,13 +325,29 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    margin. Still no INLINE padding — the carousel scrolls edge to edge and each
    child supplies its own 1.3rem gutter.
 
-   A flex column so the earn-code button can claim the leftover height with auto
-   margins (see .show-code-btn) instead of clinging to the carousel. Children are
-   flex: 0 0 auto because the default flex-shrink: 1 would squash the carousel
-   and the cards inside it the moment the content outgrew the viewport. */
-.home-main { flex: 1; padding: 0 0 1rem; display: flex; flex-direction: column; }
+   A flex column so the leftover height can be shared out as auto margins rather
+   than pooling in one gap. Three of them take a third each — below the community
+   card, and above/below the earn-code button — which is what spaces the card,
+   the spots row, and the button evenly down the screen.
+
+   Auto margins (not justify-content: space-evenly) on purpose: when the content
+   is taller than the screen, space-evenly falls back to `center` and clips the
+   top of the card somewhere no scroll can reach, whereas auto margins simply
+   resolve to 0 and the page scrolls normally.
+
+   Children are flex: 0 0 auto because the default flex-shrink: 1 would squash
+   the carousel and the cards inside it the moment the content overflowed.
+
+   Equal auto margins alone do NOT produce equal-looking gaps: the carousel
+   already carries 0.9rem of bottom padding (clearance for the vendor cards'
+   hard shadow, which it would otherwise clip), so that one gap renders 0.9rem
+   wider than the others. The fix is to give the other two the same 0.9rem of
+   fixed space — .home-main's padding-bottom and .home-sub's margin-top below —
+   so every gap is the same auto share plus the same constant. Change one of
+   these three and the row of gaps goes uneven again. */
+.home-main { flex: 1; padding: 0 0 0.9rem; display: flex; flex-direction: column; }
 .home-main > * { flex: 0 0 auto; }
-.home-sub { margin: 0 1.3rem 0.85rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
+.home-sub { margin: 0.9rem 1.3rem 0.85rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
 
 /* ---------- home: community points card ----------
    The cross-vendor wallet, and the only balance on this screen not tied to one
@@ -341,10 +357,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .community-card {
   position: relative; z-index: 2;      /* sits ON the banner, not under it */
   width: calc(100% - 2.6rem);
-  /* Sits clear of the banner rather than lapping onto it — the tier scale
+  /* Top: sits clear of the banner rather than lapping onto it — the tier scale
      ("1x 1.5x 2x") runs along the banner's bottom edge and the card crowded it.
-     .home-main carries no top padding, so this margin is the whole gap. */
-  margin: 1.65rem 1.3rem 1.75rem;
+     .home-main carries no top padding, so this margin is the whole gap.
+     Bottom: auto — one of the three shares of the leftover height (see
+     .home-main), which is what evens out the gap down to the spots row. */
+  margin: 1.65rem 1.3rem auto;
   display: flex; align-items: center; gap: 0.8rem;
   text-align: left;
   background: var(--card);
@@ -382,12 +400,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    the spots. Shrink-wrapped and centred rather than stretched edge to edge; the
    max-width keeps it inside the 1.3rem gutter the rest of the home screen uses.
 
-   margin: auto centres it BOTH ways inside .home-main's flex column: the two
-   horizontal autos do the usual shrink-wrap centring, and the vertical pair
-   split whatever height is left over between the carousel and the tab bar. On a
-   short screen (or a tall spots row) there is no leftover, the autos resolve to
-   0, and it simply follows the carousel — whose own 0.9rem bottom padding is
-   what keeps the two from touching. */
+   margin: auto works both ways inside .home-main's flex column: the horizontal
+   autos do the usual shrink-wrap centring, and the vertical pair take two of the
+   three equal shares of the leftover height (the community card's margin-bottom
+   is the third). On a short screen there is no leftover, all three resolve to 0,
+   and the button simply follows the carousel — whose own 0.9rem bottom padding
+   is what keeps the two from touching. */
 .show-code-btn {
   width: fit-content; max-width: calc(100% - 2.6rem);
   margin: auto;
