@@ -566,12 +566,19 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* no map → the body still fills the card, but content stays left-aligned at the top */
 .vendor-card.no-map .vc-body { justify-content: flex-start; }
 
-/* logo sits left of the name+points; it stretches to their combined height */
-.vc-head { display: flex; align-items: stretch; gap: 0.7rem; }
+/* logo sits left of the name+points, centred against them */
+.vc-head { display: flex; align-items: center; gap: 0.7rem; }
 .vc-title { display: flex; flex-direction: column; justify-content: center; gap: 0.35rem; min-width: 0; }
+/* The size is declared outright. This used to be `align-self: stretch` +
+   `aspect-ratio: 1/1` with no width, so the square's width was transferred from
+   the stretch-resolved row height — the one direction WebKit does not resolve.
+   The span is empty, so on iOS its main size fell back to its content (0) and
+   the logo laid out 0px wide: the image loaded fine but painted nothing.
+   5rem is what that stretch produced anyway (name 1.5rem x 1.12 + 0.35rem gap
+   + points 3rem = 80.5px). */
 .vc-logo {
-  flex: 0 0 auto; align-self: stretch;
-  aspect-ratio: 1 / 1;                /* square: width follows the stretched height */
+  flex: 0 0 auto;
+  width: 5rem; height: 5rem;
   background-size: contain; background-repeat: no-repeat; background-position: center;
   border-radius: 0.5rem;
 }
