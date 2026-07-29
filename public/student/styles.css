@@ -26,6 +26,22 @@
   --edge: #101d33;
   --brand: #12294b;
   --hairline: #e5eaf2;
+
+  /* --value = POINTS. The one warm note in an otherwise all-blue palette, and
+     the reason it exists: every surface and text token above sits between hue
+     205 and 218, so a points figure in --brand was a blue number on a blue card
+     — the most important thing on the screen, camouflaged. Gold is already the
+     app's "you're doing well" colour (the tier-2 badge and the meter's fill
+     both use #ffd76e), so points inherit a meaning the UI had already taught.
+
+     The two modes are NOT the same gold. #ffd76e clears 10:1 on the dark card
+     but only ~1.4:1 on white, so light mode drops to a dark amber. Anything
+     using this token must therefore treat it as a text colour on a card
+     background — it is not safe as a fill in both modes.
+     --tile-community tints the 🫂 wallet's tile off-blue so the balance that
+     spends anywhere reads as a different kind of money from the per-spot ones. */
+  --value: #9a6700;
+  --tile-community: #e6dcfb;
 }
 
 /* Dark theme — set data-theme="dark" on <html>. Backgrounds go dark, text goes
@@ -48,6 +64,8 @@
   --edge: #35496a;
   --brand: #8fbdf0;
   --hairline: #2a3a56;
+  --value: #ffd76e;
+  --tile-community: #d9cdf7;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -304,14 +322,25 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   position: relative; height: 0.7rem; border-radius: 1rem;
   background: rgba(255, 255, 255, 0.16); overflow: hidden;
 }
+/* A dim full-width copy of the fill, under it. The meter's gradient is the most
+   colourful thing in the app, and at zero score it used to render as an empty
+   grey slot — invisible to precisely the new users it exists to hook. The ghost
+   shows the whole runway and what filling it looks like, from the first launch. */
+.tier-track::before {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, var(--accent), #ffd76e);
+  opacity: 0.2;
+}
 .tier-fill {
+  /* positioned so it paints OVER the absolutely-positioned ghost above */
+  position: relative; z-index: 1;
   height: 100%; width: 0; border-radius: 1rem;
   background: linear-gradient(90deg, var(--accent), #ffd76e);
   transition: width 700ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 /* cutoff marks sit above the fill so the tier boundaries stay visible */
 .tier-mark {
-  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 1;
+  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 2;
   background: rgba(255, 255, 255, 0.55);
 }
 
@@ -386,14 +415,17 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   aspect-ratio: 1 / 1;                /* square: width follows the stretched height */
   display: flex; align-items: center; justify-content: center;
   font-size: 1.9rem; line-height: 1;
-  background: var(--sky); border-radius: 0.9rem;
+  /* violet, not --sky like every other tile: this wallet spends ANYWHERE, and
+     the tile is the only thing distinguishing it from a per-spot balance at a
+     glance — the layout and type are otherwise identical to a vendor card's. */
+  background: var(--tile-community); border-radius: 0.9rem;
 }
 .cc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
 .cc-label { font-weight: 900; letter-spacing: 0.1em; font-size: 0.76rem; color: var(--ink); }
 .cc-amount { display: flex; align-items: baseline; gap: 0.25rem; }
 /* deliberately smaller than the vendor cards' 3rem: this is the secondary
    balance, and it shouldn't out-shout the spot you're actually standing in */
-.cc-num { font-size: 1.85rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; }
+.cc-num { font-size: 1.85rem; font-weight: 900; line-height: 1; color: var(--value); font-variant-numeric: tabular-nums; }
 .cc-amount small { font-size: 0.85rem; font-weight: 700; color: var(--muted); }
 .cc-sub { font-size: 0.78rem; font-weight: 600; color: var(--muted); line-height: 1.25; }
 .cc-chevron { flex: 0 0 auto; color: var(--muted); display: flex; }
@@ -541,6 +573,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vendor-carousel::-webkit-scrollbar { display: none; }
 
 .vendor-card {
+  /* Per-spot identity colour. One vendor looks fine in flat navy; five look
+     like five copies of the same rectangle, and this carousel is meant to be
+     scanned. app.js hashes the vendor id to a hue and sets this — see
+     vendorHue(). Hue only, so saturation and lightness stay under the design's
+     control and no vendor can hand us an unreadable colour. */
+  --vendor-hue: 212;
   flex: 0 0 75%; max-width: 300px;   /* ~75% of the view (after padding), capped at 300px */
   scroll-snap-align: start;
   scroll-snap-stop: always;          /* grab the closest card, don't fly past it */
@@ -566,19 +604,32 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* no map → the body still fills the card, but content stays left-aligned at the top */
 .vendor-card.no-map .vc-body { justify-content: flex-start; }
 
+/* The identity stripe: a thin band of the vendor's hue across the top of the
+   card, clipped to the rounded corners by .vendor-card's overflow: hidden. Kept
+   to 5px deliberately — enough to tell two cards apart mid-scroll, not enough to
+   compete with the points figure for attention. */
+.vc-accent { flex: 0 0 5px; height: 5px; background: hsl(var(--vendor-hue) 62% 58%); }
+
 /* logo sits left of the name+points; it stretches to their combined height */
 .vc-head { display: flex; align-items: stretch; gap: 0.7rem; }
 .vc-title { display: flex; flex-direction: column; justify-content: center; gap: 0.35rem; min-width: 0; }
 .vc-logo {
   flex: 0 0 auto; align-self: stretch;
   aspect-ratio: 1 / 1;                /* square: width follows the stretched height */
+  /* tinted to match the stripe. Most vendor logos are transparent PNGs drawn in
+     one dark colour, which vanish against a dark card — the pale tile is what
+     makes them legible in dark mode, and it carries the hue for free. */
+  background-color: hsl(var(--vendor-hue) 55% 91%);
   background-size: contain; background-repeat: no-repeat; background-position: center;
+  /* background-origin is padding-box by default, so this insets the logo while
+     the tint still fills to the border — the logo gets a margin, not a crop. */
+  padding: 3px;
   border-radius: 0.5rem;
 }
 
 .vc-name { font-weight: 900; font-size: 1.5rem; line-height: 1.12; color: var(--ink); }
 .vc-points { display: flex; align-items: baseline; gap: 0.3rem; }   /* points sit below the name */
-.vc-num { font-size: 3rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; }
+.vc-num { font-size: 3rem; font-weight: 900; line-height: 1; color: var(--value); font-variant-numeric: tabular-nums; }
 .vc-points small { font-size: 1rem; font-weight: 700; color: var(--muted); }
 /* tappable address line (opens the maps app, like the map itself) */
 .vc-address {
@@ -590,9 +641,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* tappable rectangular map (bottom of the card) — a 2×2 OSM tile mosaic centred
    on the vendor, with a pin. Tapping it opens the user's maps app (see app.js). */
+/* 104px, not the 150px this started at. At 150 the map was ~45% of the card and
+   the single brightest region on the whole dark home screen, so the eye landed
+   on a street the user already knows how to find instead of on their points or
+   the earn button. Small enough now to read as a locator, not a feature. */
 .vc-map {
   position: relative; display: block;
-  flex: 0 0 150px; height: 150px;
+  flex: 0 0 104px; height: 104px;
   overflow: hidden;
   background: #e5e7eb;                /* map-grey while tiles load / at edges */
   border-top: 2px solid var(--edge);
@@ -606,6 +661,19 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .4));
   pointer-events: none;
 }
+
+/* The one place dark mode is NOT just a token swap. OSM only serves light
+   tiles, so on a dark page the map arrived at full daylight brightness and blew
+   out everything around it — no palette variable could reach it, because the
+   colour is baked into someone else's PNGs. Invert flips light→dark, the 180°
+   hue-rotate puts the greens and blues back the right way round after the
+   invert reversed them, and the last two stops keep it from glowing.
+   Scoped to .vc-tile, never .vc-map: the 📍 pin is a sibling, and inverting the
+   container would turn it cyan. */
+:root[data-theme="dark"] .vc-tile {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.75);
+}
+:root[data-theme="dark"] .vc-map { background: #223047; }   /* loading grey, darkened to match */
 
 /* big red sign-out (now lives on the Account tab) */
 .signout-big {
@@ -730,7 +798,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .ic-body { flex: 1; min-width: 0; }
 .ic-title { font-weight: 900; font-size: 1.15rem; line-height: 1.15; color: var(--ink)}
 .ic-status { font-size: 0.9rem; font-weight: 700; color: var(--success); margin-top: 0.2rem; }
-.ic-cost { font-weight: 900; color: var(--brand); white-space: nowrap; font-size: 1.05rem; }
+.ic-cost { font-weight: 900; color: var(--value); white-space: nowrap; font-size: 1.05rem; }
 
 .item-card.locked { opacity: 0.55; }
 .item-card.locked .ic-emoji { background: #e3e7ee; filter: grayscale(1); }
@@ -837,7 +905,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .detail-emoji { font-size: 3.4rem; }
 .detail-title { font-size: 1.7rem; font-weight: 900; line-height: 1.1; }
-.detail-cost { font-weight: 900; color: var(--brand); font-size: 1.15rem; }
+.detail-cost { font-weight: 900; color: var(--value); font-size: 1.15rem; }
 .detail-desc { color: var(--muted); font-weight: 500; line-height: 1.5; }
 .detail-status { font-weight: 700; font-size: 1rem; min-height: 1.3em; }
 .detail-status.ok { color: var(--success); }
@@ -1082,8 +1150,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .hr-points small { font-size: 0.62em; font-weight: 800; margin-left: 0.15em; }
 .history-row.earn .hr-points { color: var(--success); }
 .history-row.redeem .hr-points { color: var(--warn); }
-/* a community transfer: brand-coloured like the community counter it came from */
-.history-row.transfer .hr-icon { background: var(--sky); }
+/* A community transfer, tied back to the wallet it came from by the violet tile
+   — the same --tile-community that marks .cc-icon on home. The number stays
+   --brand rather than joining the gold: earn/redeem above already encode
+   direction in colour, and gold sits close enough to --warn that a third warm
+   value on the same list would blur the one distinction this row makes. */
+.history-row.transfer .hr-icon { background: var(--tile-community); }
 .history-row.transfer .hr-points { color: var(--brand); }
 
 /* ---------- account ---------- */

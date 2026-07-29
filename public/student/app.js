@@ -1223,6 +1223,29 @@ function openMaps(address) {
   if (!win) location.href = url;   // popup blocked / custom scheme → navigate directly
 }
 
+// A stable hue (0-359) for a vendor, so every spot gets its own identity colour
+// on the carousel instead of all of them rendering as the same navy rectangle.
+// Derived from the id rather than stored, which means it costs no schema and
+// never changes under a user — but it is also arbitrary, so when vendors can
+// pick a real brand colour this is the one place to swap.
+//
+// Multiplying by 31 and folding at 360 each step keeps the running value small
+// while still letting every character move the result. Vendor ids are uuids
+// (schema.sql), so that alone scatters them well.
+//
+// The final ×137 is what makes it survive ids that AREN'T uuids — a seeded demo
+// row, a slug, anything short and sequential. Without it "1", "2", "3" hash to
+// 49, 50, 51: three hues one degree apart, i.e. three identical-looking cards,
+// exactly the failure this function exists to prevent. 137 is prime (so the map
+// stays a bijection and adds no collisions) and sits by the 137.5° golden angle,
+// which is the spacing that keeps successive values maximally far apart.
+function vendorHue(vendorId) {
+  const s = String(vendorId);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return (h * 137) % 360;
+}
+
 function renderVendors() {
   const wrap = $('vendor-carousel');
   wrap.innerHTML = '';
@@ -1233,6 +1256,9 @@ function renderVendors() {
     const card = document.createElement('button');
     card.className = 'vendor-card';
     card.dataset.id = v.vendorId;
+    // Feeds the stripe and the logo tile; the stylesheet supplies the fixed
+    // saturation/lightness around it (see .vendor-card).
+    card.style.setProperty('--vendor-hue', vendorHue(v.vendorId));
     const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
     if (!map) card.classList.add('no-map');   // center name + points when there's no map
     const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
@@ -1240,8 +1266,9 @@ function renderVendors() {
     const logo = v.hasLogo
       ? `<span class="vc-logo" role="img" aria-label="${escapeHtml(v.name)} logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
       : '';
-    // Column layout: [logo | name + points], then address, then the map at the bottom.
+    // Column layout: accent stripe, [logo | name + points], address, then the map.
     card.innerHTML = `
+      <span class="vc-accent" aria-hidden="true"></span>
       <span class="vc-body">
         <span class="vc-head">
           ${logo}
