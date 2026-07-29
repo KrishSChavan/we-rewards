@@ -447,19 +447,31 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* the one-way warning IS the point of the confirm view — warm, not subtle */
 .move-final { font-size: 0.9rem; font-weight: 800; color: var(--warn); text-align: center; }
 
-/* "Show earn code" — the home screen's stand-in for the code card, parked below
-   the spots. Shrink-wrapped and centred rather than stretched edge to edge; the
-   max-width keeps it inside the 1.3rem gutter the rest of the home screen uses.
+/* ---------- home: the earn actions ----------
+   The two ways to get points, stacked below the spots.
 
-   margin: auto works both ways inside .home-main's flex column: the horizontal
-   autos do the usual shrink-wrap centring, and the vertical pair take two of the
-   four equal shares of the leftover height (the community card's two are the
-   others). On a short screen there is no leftover, all four resolve to 0, and
-   the button simply follows the carousel — whose own 0.9rem bottom padding, and
-   .home-main's matching padding-bottom, are what keep the gaps even there. */
-.show-code-btn {
+   The WRAPPER owns the auto margins, not the buttons. .home-main splits its
+   leftover height between exactly four auto margins (see there); if each button
+   kept its own pair that would become six, the shares would shrink, and the gap
+   between these two — which should be a fixed, tight 0.7rem — would breathe
+   along with the rest of the screen. One wrapper = one pair = the split stays as
+   documented, and the stack moves as a single block.
+
+   width: fit-content shrink-wraps the column to its widest child (the primary
+   button) and align-items: stretch then pulls the secondary out to match, so the
+   two read as one deliberate stack rather than two differently-sized buttons.
+   max-width keeps it inside the 1.3rem gutter the rest of the home screen uses. */
+.home-actions {
   width: fit-content; max-width: calc(100% - 2.6rem);
   margin: auto;
+  display: flex; flex-direction: column; align-items: stretch; gap: 0.7rem;
+}
+.home-actions > * { flex: 0 0 auto; }
+
+/* "Show earn code" — the home screen's stand-in for the code card. The filled
+   navy treatment marks it as the primary of the two: this is the counter flow,
+   the one that works while you are still standing there. */
+.show-code-btn {
   display: flex; align-items: center; justify-content: center; gap: 0.95rem;
   text-align: center;
   background: var(--navy); color: #fff;
@@ -482,6 +494,39 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* chevron nods upward — the sheet it opens comes up from the bottom */
 .scb-arrow { flex: 0 0 auto; color: var(--accent); display: flex; }
 .scb-arrow svg { width: 1.4rem; height: 1.4rem; display: block; }
+
+/* "Scan a receipt" — the recovery path, for when you have already walked off.
+   Same sticker language as the button above it (chunky border, hard offset
+   shadow, matching radius) but on --card instead of --navy, one step shorter,
+   and with the type dialled back a size. That is the whole secondary signal:
+   it sits in the stack as an equal-width sibling without competing for the tap.
+
+   Left-aligned, not centred like the primary: stretched to the wider button's
+   width this row has slack to spare, and .srb-text takes all of it (same trick
+   as .cc-body). That keeps the label hard against its icon and the chevron hard
+   against the right edge, rather than letting both drift toward the middle. */
+.scan-receipt-btn {
+  display: flex; align-items: center; gap: 0.8rem;
+  text-align: left;
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 0.7rem 0.9rem;
+  box-shadow: 0 4px 0 var(--edge);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.scan-receipt-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+.srb-icon {
+  flex: 0 0 auto;
+  width: 2.4rem; height: 2.4rem; border-radius: 0.7rem;
+  background: var(--sky); color: var(--navy);
+  display: flex; align-items: center; justify-content: center;
+}
+.srb-icon svg { width: 1.35rem; height: 1.35rem; display: block; }
+.srb-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.srb-title { font-size: 1rem; font-weight: 900; line-height: 1.1; }
+.srb-sub { font-size: 0.78rem; font-weight: 600; color: var(--muted); line-height: 1.25; }
+.srb-arrow { flex: 0 0 auto; color: var(--muted); display: flex; }
+.srb-arrow svg { width: 1.15rem; height: 1.15rem; display: block; }
 
 /* horizontal, scroll-snapped row of vendor cards */
 .vendor-carousel {

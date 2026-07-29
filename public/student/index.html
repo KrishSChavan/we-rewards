@@ -186,31 +186,59 @@
               <div id="vendor-carousel" class="vendor-carousel"></div>
               <p id="vendors-empty" class="empty-state" hidden>No spots yet — check back soon!</p>
 
-              <!-- The code itself now lives in a full-screen sheet (#earn-modal)
-                   so the home screen leads with the spots instead of a QR nobody
-                   is scanning yet. This button sits at the bottom of home and is
-                   the only way in. -->
-              <button id="show-code-btn" class="show-code-btn" type="button"
-                      aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
-                <span class="scb-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="3" y="3" width="7" height="7" rx="1.6" />
-                    <rect x="14" y="3" width="7" height="7" rx="1.6" />
-                    <rect x="3" y="14" width="7" height="7" rx="1.6" />
-                    <path d="M14 14h3.5v3.5H14z" />
-                    <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
-                  </svg>
-                </span>
-                <span class="scb-text">
-                  <span class="scb-title">Show earn code</span>
-                  <span class="scb-sub">Have it scanned at the counter</span>
-                </span>
-                <span class="scb-arrow" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M6 14.5 12 8.5l6 6" />
-                  </svg>
-                </span>
-              </button>
+              <!-- The two ways to earn, stacked. The wrapper — not the buttons —
+                   carries the auto margins that .home-main's four-gap split
+                   depends on, so adding a second button here doesn't hand the
+                   flex box extra shares to hand out. See .home-actions. -->
+              <div class="home-actions">
+                <!-- The code itself now lives in a full-screen sheet (#earn-modal)
+                     so the home screen leads with the spots instead of a QR nobody
+                     is scanning yet. This button sits at the bottom of home and is
+                     the only way in. -->
+                <button id="show-code-btn" class="show-code-btn" type="button"
+                        aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
+                  <span class="scb-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="3" y="3" width="7" height="7" rx="1.6" />
+                      <rect x="14" y="3" width="7" height="7" rx="1.6" />
+                      <rect x="3" y="14" width="7" height="7" rx="1.6" />
+                      <path d="M14 14h3.5v3.5H14z" />
+                      <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
+                    </svg>
+                  </span>
+                  <span class="scb-text">
+                    <span class="scb-title">Show earn code</span>
+                    <span class="scb-sub">Have it scanned at the counter</span>
+                  </span>
+                  <span class="scb-arrow" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M6 14.5 12 8.5l6 6" />
+                    </svg>
+                  </span>
+                </button>
+
+                <!-- The other way in: you already paid and walked off without
+                     showing the code, so the paper receipt becomes the proof.
+                     UI ONLY — nothing is wired up behind this yet. -->
+                <button id="scan-receipt-btn" class="scan-receipt-btn" type="button">
+                  <span class="srb-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <!-- receipt with the torn bottom edge, two lines of print -->
+                      <path d="M6 2.8h12v18.4l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z" />
+                      <path d="M9.4 8.4h5.2M9.4 12.4h5.2" />
+                    </svg>
+                  </span>
+                  <span class="srb-text">
+                    <span class="srb-title">Scan a receipt</span>
+                    <span class="srb-sub">Already paid? Snap it for points</span>
+                  </span>
+                  <span class="srb-arrow" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M9.5 6 15.5 12l-6 6" />
+                    </svg>
+                  </span>
+                </button>
+              </div>
             </main>
           </div>
 
