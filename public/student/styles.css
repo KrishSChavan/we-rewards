@@ -420,11 +420,29 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font: inherit; font-weight: 800; color: var(--brand);
   text-decoration: underline;
 }
+/* The list scrolls; the amount row and Continue below it must never be pushed
+   off the sheet by a student with a dozen spots. The cap is deliberately ~3.5
+   rows tall — the half-row peeking out under it is the "keep scrolling" cue. */
 .move-vendors {
   width: 100%; max-height: 11rem; overflow-y: auto;
   display: flex; flex-direction: column; gap: 0.5rem;
+  /* .detail-card is itself a height-capped flex column, so this list is a flex
+     item that would otherwise be shrunk to fit rather than allowed to overflow. */
+  flex: 0 0 auto;
+  /* The sheet behind this scrolls too: without containment a flick that runs
+     out of list keeps going and drags the whole card (or the page) with it. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;   /* momentum on older iOS */
+  touch-action: pan-y;                 /* the root's pan-x pan-y mustn't claim the swipe */
+  scrollbar-width: thin;               /* unlike the carousel, this one shows its bar */
+  scrollbar-color: var(--edge) transparent;
 }
+.move-vendors::-webkit-scrollbar { width: 0.4rem; }
+.move-vendors::-webkit-scrollbar-thumb { background: var(--edge); border-radius: 999px; }
 .move-vendor {
+  /* the whole point of the cap above: rows keep their natural height and the
+     list overflows, instead of every row squashing so nothing ever scrolls */
+  flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
   width: 100%; text-align: left;
   background: var(--card); border: 2.5px solid var(--edge); border-radius: 0.9rem;

@@ -306,7 +306,7 @@ function fillAccount(session) {
   const name = meta.full_name ?? meta.name ?? '';
   const avatar = meta.avatar_url ?? meta.picture ?? '';
 
-  $('account-email').textContent = email || '—';
+  $('account-email').textContent = email || '';
   $('account-name').textContent = name;
   $('account-name').hidden = !name;
   setAvatar(avatar, name || email);
@@ -350,7 +350,7 @@ async function exportMyData() {
     URL.revokeObjectURL(url);
     name.textContent = 'Downloaded ✓';
   } catch {
-    name.textContent = 'Couldn’t download — try again';
+    name.textContent = 'Couldn’t download, try again';
   } finally {
     btn.disabled = false;
     setTimeout(() => { name.textContent = label; }, 2200);
@@ -1036,7 +1036,7 @@ function renderMoveVendors() {
   wrap.innerHTML = '';
   const list = eligibleMoveVendors();
   if (!list.length) {
-    wrap.innerHTML = `<p class="move-empty">No spots can take moved points right now — check back soon.</p>`;
+    wrap.innerHTML = `<p class="move-empty">No spots can take moved points right now, check back soon.</p>`;
     return;
   }
   list.forEach((v) => {
@@ -1070,7 +1070,7 @@ function syncMoveContinue() {
   const okAmount = Number.isInteger(amount) && amount >= 1 && amount <= communityPoints;
   const status = $('move-status');
   if ($('move-amount').value !== '' && !okAmount) {
-    status.textContent = `You have ${communityPoints} pts to move — enter 1 to ${communityPoints}.`;
+    status.textContent = `You have ${communityPoints} pts to move. Enter 1 to ${communityPoints}.`;
     status.className = 'detail-status locked';
   } else {
     status.textContent = '';
@@ -1115,7 +1115,7 @@ async function submitMove() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      $('move-confirm-status').textContent = data.message || 'Couldn’t move your points — try again.';
+      $('move-confirm-status').textContent = data.message || 'Couldn’t move your points, try again.';
       $('move-confirm-status').className = 'detail-status locked';
       // Our number was stale (e.g. an undo landed while the sheet was open) —
       // re-read so the picker bound is honest on the next try.
@@ -1132,7 +1132,7 @@ async function submitMove() {
     closeMoveSheet();
     moveToast(amount, v.name);
   } catch {
-    $('move-confirm-status').textContent = 'No connection — try again.';
+    $('move-confirm-status').textContent = 'No connection, try again.';
     $('move-confirm-status').className = 'detail-status locked';
   } finally {
     moveBusy = false;
@@ -1527,17 +1527,17 @@ function onItemTap(e) {
   const btn = $('item-redeem');
 
   if (selectedItem.sample) {
-    status.textContent = 'Sample item — this spot hasn’t added it yet.';
+    status.textContent = 'Sample item, this spot hasn’t added it yet.';
     status.className = 'detail-status locked';
     btn.disabled = true;
     btn.textContent = 'Sample item';
   } else if (!affordable) {
-    status.textContent = `You have ${balance} pts — ${selectedItem.cost - balance} more to go.`;
+    status.textContent = `You have ${balance} pts, ${selectedItem.cost - balance} more to go.`;
     status.className = 'detail-status locked';
     btn.disabled = true;
     btn.textContent = 'Redeem';
   } else {
-    status.textContent = `You have ${balance} pts — you’re good! ✓`;
+    status.textContent = `You have ${balance} pts, you’re good! ✓`;
     status.className = 'detail-status ok';
     btn.disabled = false;
     btn.textContent = 'Redeem';
@@ -1587,14 +1587,14 @@ async function onRedeemTap() {
     });
     const data = await res.json();
     if (!res.ok) {
-      $('item-status').textContent = data.message || 'Couldn’t start redemption — try again.';
+      $('item-status').textContent = data.message || 'Couldn’t start redemption, try again.';
       $('item-status').className = 'detail-status locked';
       btn.disabled = false;
       return;
     }
     showRedemptionCode(data.code, data.ttlSeconds ?? 120);
   } catch {
-    $('item-status').textContent = 'No connection — try again.';
+    $('item-status').textContent = 'No connection, try again.';
     btn.disabled = false;
   }
 }

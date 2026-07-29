@@ -9,8 +9,8 @@
   <!-- in <head> so the gesture listeners are attached before the first paint a
        user could pinch on -->
   <script src="/admin/no-zoom.js"></script>
-  <title>Admin — WeRewards</title>
-  <meta name="description" content="WeRewards operator dashboard — platform analytics and error logs." />
+  <title>Admin · WeRewards</title>
+  <meta name="description" content="WeRewards operator dashboard: platform analytics and error logs." />
   <meta name="theme-color" content="#0f1826" />
   <!-- Installable PWA (scoped to /admin) so operators can add it to a phone. -->
   <link rel="manifest" href="/admin/manifest.json" />
@@ -30,7 +30,7 @@
     <div class="login-card">
       <p class="brand">WEREWARDS</p>
       <h1>Admin</h1>
-      <p class="muted">Operator dashboard — analytics &amp; error logs.</p>
+      <p class="muted">Operator dashboard: analytics &amp; error logs.</p>
       <button id="login-btn" class="btn-primary">Sign in with Google</button>
       <p id="login-error" class="field-error" hidden></p>
       <p class="login-note">Only allow-listed operator accounts can see data.</p>
@@ -102,7 +102,7 @@
           <h3>Vendors</h3>
           <span id="vendors-count" class="chart-max"></span>
         </div>
-        <p class="muted">Toggle a vendor off to cut it off completely — hidden from students and its terminal is blocked. Points and history are kept, so turning it back on restores everything. <strong>Delete</strong> wipes a vendor and its data (logo, rewards, balances, login) for good; past transactions stay but show as a generic “Vendor” — that can’t be undone.</p>
+        <p class="muted">Toggle a vendor off to cut it off completely: hidden from students and its terminal is blocked. Points and history are kept, so turning it back on restores everything. <strong>Delete</strong> wipes a vendor and its data (logo, rewards, balances, login) for good; past transactions stay but show as a generic “Vendor”, and that can’t be undone.</p>
         <p id="vendor-error" class="field-error" role="alert" hidden></p>
         <div id="vendor-list" class="vendor-list"></div>
       </div>
@@ -134,7 +134,7 @@
           <h3>Vendor applications</h3>
           <span id="apps-count" class="chart-max"></span>
         </div>
-        <p class="muted">Applications from the public page at <strong>/join</strong>, oldest first. <strong>Accept</strong> onboards the vendor on the spot — their terminal login works immediately with the password they chose. <strong>Reject</strong> permanently deletes the application and everything in it.</p>
+        <p class="muted">Applications from the public page at <strong>/join</strong>, oldest first. <strong>Accept</strong> onboards the vendor on the spot, so their terminal login works immediately with the password they chose. <strong>Reject</strong> permanently deletes the application and everything in it.</p>
         <p id="apps-error" class="field-error" role="alert" hidden></p>
         <div id="app-list" class="app-list"></div>
       </div>
@@ -151,7 +151,7 @@
          aria-labelledby="push-modal-title" aria-describedby="push-modal-desc">
       <span class="push-bell" aria-hidden="true">🔔</span>
       <h2 id="push-modal-title">Turn on application alerts</h2>
-      <p id="push-modal-desc">Get a push notification the moment a vendor applies from /join — even when this dashboard is closed.</p>
+      <p id="push-modal-desc">Get a push notification the moment a vendor applies from /join, even when this dashboard is closed.</p>
       <div class="push-actions">
         <button id="push-enable" class="btn-primary">Turn on alerts</button>
         <button id="push-dismiss" class="btn-ghost">Not now</button>

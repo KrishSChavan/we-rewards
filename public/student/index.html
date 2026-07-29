@@ -6,7 +6,7 @@
        auto-zoom when iOS focuses an input. See no-zoom.js for the browsers
        that ignore this and what covers them. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <title>WeRewards — eat local, earn free food</title>
+  <title>WeRewards · eat local, earn free food</title>
   <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
   <meta name="theme-color" content="#12294b" />
   <!-- apply the saved (or system) theme before first paint to avoid a flash
@@ -39,7 +39,7 @@
         <div class="hero-copy">
           <h1>EAT LOCAL.<br />EARN POINTS.<br /><span class="hl">EAT FREE.</span></h1>
           <p class="hero-sub">
-            Collect points every time you grab food at local spots around Penn State —
+            Collect points every time you grab food at local spots around Penn State,
             then trade them in for free stuff. No app to download, no punch card to lose.
           </p>
           <button class="google-btn" data-signin>
@@ -82,12 +82,12 @@
         <li>
           <span class="step-num">1</span>
           <h3>Show your code</h3>
-          <p>Sign in once and your personal QR code appears in the app. Show your phone at the counter when you pay — or just read out the short code under it if scanning isn't an option.</p>
+          <p>Sign in once and your personal QR code appears in the app. Show your phone at the counter when you pay, or just read out the short code under it if scanning isn't an option.</p>
         </li>
         <li>
           <span class="step-num">2</span>
           <h3>Earn points</h3>
-          <p>The shop scans your code and points land instantly. Every spot sets its own rewards — watch them stack up.</p>
+          <p>The shop scans your code and points land instantly. Every spot sets its own rewards, so watch them stack up.</p>
         </li>
         <li>
           <span class="step-num">3</span>
@@ -182,7 +182,7 @@
                    not a sheet. install-prompt.js toggles .is-open. -->
               <div id="install-banner" class="install-banner" hidden>
                 <span class="install-banner-emoji" aria-hidden="true">📲</span>
-                <span id="install-banner-text" class="install-banner-text">Add WeRewards to your home screen — your code, one tap away.</span>
+                <span id="install-banner-text" class="install-banner-text">Add WeRewards to your home screen. Your code, one tap away.</span>
                 <button id="install-banner-add" class="install-banner-add" type="button">Add</button>
                 <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
               </div>
@@ -190,7 +190,7 @@
               <p class="home-sub">YOUR SPOTS</p>
               <!-- vendor cards render here: horizontal, scroll-snapped -->
               <div id="vendor-carousel" class="vendor-carousel"></div>
-              <p id="vendors-empty" class="empty-state" hidden>No spots yet — check back soon!</p>
+              <p id="vendors-empty" class="empty-state" hidden>No spots yet, check back soon!</p>
 
               <!-- The two ways to earn, stacked. The wrapper — not the buttons —
                    carries the auto margins that .home-main's four-gap split
@@ -269,7 +269,7 @@
               <p class="app-sub">REWARDS</p>
 
               <div id="items" class="items"></div>
-              <p id="items-empty" class="empty-state" hidden>No rewards yet — check back soon!</p>
+              <p id="items-empty" class="empty-state" hidden>No rewards yet, check back soon!</p>
             </main>
           </div>
 
@@ -304,7 +304,7 @@
                 </span>
                 <span class="account-id">
                   <span id="account-name" class="account-name" hidden></span>
-                  <span id="account-email" class="account-email">—</span>
+                  <span id="account-email" class="account-email"></span>
                 </span>
               </div>
 
@@ -457,7 +457,7 @@
       <p id="install-emoji" class="detail-emoji">📲</p>
       <h2 id="install-title" class="detail-title">Add WeRewards to your phone</h2>
       <p id="install-desc" class="detail-desc">
-        Pop it on your home screen and it opens like a real app — full screen, and
+        Pop it on your home screen and it opens like a real app: full screen, and
         your code is one tap away. No app store, no download.
       </p>
 
@@ -496,11 +496,11 @@
       <h3>How your multiplier works</h3>
       <p>Your points multiplier climbs the more you use WeRewards over the last 30 days. You earn a score from 0–1000 that blends three things:</p>
       <ul>
-        <li><strong>Variety</strong> — how many different spots you visit</li>
-        <li><strong>Loyalty</strong> — how often you come back to the same spots</li>
-        <li><strong>Spend</strong> — how much you spend, with extra weight for meal-sized orders</li>
+        <li><strong>Variety</strong>: how many different spots you visit</li>
+        <li><strong>Loyalty</strong>: how often you come back to the same spots</li>
+        <li><strong>Spend</strong>: how much you spend, with extra weight for meal-sized orders</li>
       </ul>
-      <p>Keeping all three balanced climbs fastest. Reach <strong>350</strong> for <strong>1.5× points</strong>, or <strong>700</strong> for <strong>2×</strong> — the multiplier applies to everything you earn. It's a rolling 30-day window, so keep visiting to hold your tier.</p>
+      <p>Keeping all three balanced climbs fastest. Reach <strong>350</strong> for <strong>1.5× points</strong>, or <strong>700</strong> for <strong>2×</strong>. The multiplier applies to everything you earn. It's a rolling 30-day window, so keep visiting to hold your tier.</p>
     </div>
   </div>
 
@@ -514,10 +514,10 @@
       <p>Every time you earn at a WeRewards spot, <strong>10%</strong> of those points drop into your community balance too.</p>
       <ul>
         <li>Earn <strong>150 pts</strong> at a spot → <strong>15 community points</strong></li>
-        <li>They're <strong>on top</strong> of your normal points — your spot balance isn't touched</li>
+        <li>They're <strong>on top</strong> of your normal points, so your spot balance isn't touched</li>
         <li>They spend at <strong>any</strong> spot, not just the one that gave them to you</li>
       </ul>
-      <p>To spend them, tap the card once you have some: pick a spot, and they become that spot's points. Heads up — <strong>a move can't be undone</strong>.</p>
+      <p>To spend them, tap the card once you have some: pick a spot, and they become that spot's points. Heads up: <strong>a move can't be undone</strong>.</p>
     </div>
   </div>
 
@@ -534,7 +534,7 @@
 
       <!-- view 1: destination + amount -->
       <div id="move-pick" class="move-view">
-        <p class="detail-desc">Pick a spot and your community points become <em>that spot's</em> points — redeem them there like any others.
+        <p class="detail-desc">Pick a spot and your community points become <em>that spot's</em> points, and you redeem them there like any others.
           <button id="move-whatis" class="move-whatis" type="button">What are community points?</button></p>
         <div id="move-vendors" class="move-vendors" role="radiogroup" aria-label="Move to which spot?"></div>
         <div class="move-amount-row">
@@ -565,8 +565,8 @@
     <div class="detail-card">
       <button id="item-close" class="detail-close" aria-label="Close">✕</button>
       <p id="item-emoji" class="detail-emoji">🎁</p>
-      <h2 id="item-title" class="detail-title">—</h2>
-      <p id="item-cost" class="detail-cost">— pts</p>
+      <h2 id="item-title" class="detail-title"></h2>
+      <p id="item-cost" class="detail-cost"></p>
       <p id="item-desc" class="detail-desc"></p>
       <p id="item-status" class="detail-status"></p>
       <button id="item-redeem" class="btn-redeem">Redeem</button>
@@ -574,7 +574,7 @@
         <!-- QR is the primary visual: the terminal scans WRW:R:<code>.
              Digits + countdown stay beneath as the read-out-loud fallback. -->
         <div class="qr-card">
-          <canvas id="item-code-qr" class="qr-canvas" role="img" aria-label="Your redemption code as a QR code — have it scanned at the counter"></canvas>
+          <canvas id="item-code-qr" class="qr-canvas" role="img" aria-label="Your redemption code as a QR code, have it scanned at the counter"></canvas>
         </div>
         <div class="item-code-row">
           <span id="item-code-value" class="item-code-value">••••</span>
@@ -604,7 +604,7 @@
              Hidden until the first code arrives; the digits beneath stay
              the read-out-loud fallback (selectable text, not an image). -->
         <div id="my-code-qr-card" class="qr-card qr-card-xl" hidden>
-          <canvas id="my-code-qr" class="qr-canvas" role="img" aria-label="Your earn code as a QR code — have it scanned at the counter"></canvas>
+          <canvas id="my-code-qr" class="qr-canvas" role="img" aria-label="Your earn code as a QR code, have it scanned at the counter"></canvas>
         </div>
         <span id="my-code-value" class="mc-value earn-value">••••••</span>
         <span class="mc-sub">Scan at the counter or, read out this code</span>

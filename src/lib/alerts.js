@@ -37,7 +37,7 @@ export function recordServerError() {
       errorTimes = []; // reset so the same burst doesn't re-alert next error
       notifyAdmins({
         title: 'WeRewards: server errors spiking',
-        body: `${count}+ server errors in the last few minutes — check the admin error log.`,
+        body: `${count}+ server errors in the last few minutes. Check the admin error log.`,
         url: '/admin/',
       }).catch(() => {});
     }

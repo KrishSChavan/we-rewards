@@ -157,7 +157,7 @@ export async function requireVendor(req, res, next) {
         if (!chosen) {
           return res.status(400).json({
             error: 'VENDOR_AMBIGUOUS',
-            message: 'This account manages multiple vendors — specify which one.',
+            message: 'This account manages multiple vendors, specify which one.',
           });
         }
       }

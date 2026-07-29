@@ -1,7 +1,7 @@
 {
   "name": "WeRewards Admin",
   "short_name": "WR Admin",
-  "description": "Operator dashboard — platform analytics and error logs.",
+  "description": "Operator dashboard: platform analytics and error logs.",
   "start_url": "/admin/",
   "scope": "/admin/",
   "display": "standalone",

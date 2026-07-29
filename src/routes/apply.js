@@ -49,7 +49,7 @@ function validApplication(body) {
   if (address.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
   if (message.length > MESSAGE_MAX) return { error: `Message must be ${MESSAGE_MAX} characters or fewer.` };
   if (logo !== null && (logo.length > LOGO_MAX_CHARS || !LOGO_DATA_URL.test(logo))) {
-    return { error: 'Logo image looks invalid — try re-picking it.' };
+    return { error: 'Logo image looks invalid, try re-picking it.' };
   }
 
   return {
@@ -93,7 +93,7 @@ router.post('/', async (req, res, next) => {
       .insert({ ...v.fields, password_hash: await bcrypt.hash(v.password, 10) });
     if (error) {
       if (error.code === '23505') {
-        return res.status(409).json({ error: 'DUPLICATE_APPLICATION', message: 'An application with this email is already pending — hang tight!' });
+        return res.status(409).json({ error: 'DUPLICATE_APPLICATION', message: 'An application with this email is already pending, hang tight!' });
       }
       throw error;
     }
@@ -102,7 +102,7 @@ router.post('/', async (req, res, next) => {
     // is saved either way, and push latency shouldn't delay the applicant's 201.
     notifyAdmins({
       title: 'New vendor application',
-      body: `${v.fields.business_name} — ${v.fields.contact_name}`,
+      body: `${v.fields.business_name} · ${v.fields.contact_name}`,
       url: '/admin/',
     }).catch(() => {});
 

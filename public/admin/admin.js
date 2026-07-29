@@ -311,7 +311,7 @@ function renderVendors() {
     input.className = 'vendor-addr-input';
     input.type = 'text';
     input.maxLength = 300;
-    input.placeholder = 'Street address (optional) — shown as a map';
+    input.placeholder = 'Street address (optional), shown as a map';
     input.value = v.address || '';
     const save = document.createElement('button');
     save.className = 'vendor-addr-save';
@@ -377,7 +377,7 @@ async function toggleVendor(v, toggle, row) {
   // the vendor from students), so confirm that direction. Turning back on is
   // harmless, so it's one tap. Nothing is destroyed either way.
   if (turningOff && !confirm(
-    `Turn OFF “${v.name}”?\n\nIts terminal will stop working and it disappears from the student app immediately. Points and history are kept — you can turn it back on anytime.`
+    `Turn OFF “${v.name}”?\n\nIts terminal will stop working and it disappears from the student app immediately. Points and history are kept, so you can turn it back on anytime.`
   )) return;
 
   $('vendor-error').hidden = true;
@@ -408,8 +408,8 @@ async function toggleVendor(v, toggle, row) {
 async function deleteVendor(v, btn, row) {
   if (!confirm(
     `Permanently DELETE “${v.name}”?\n\n` +
-    `This removes the vendor and all its data — logo, rewards, point balances, ` +
-    `and its login account — and CANNOT be undone. Past transactions are kept ` +
+    `This removes the vendor and all its data (logo, rewards, point balances, ` +
+    `and its login account) and CANNOT be undone. Past transactions are kept ` +
     `but show as “Vendor” in student history.\n\n` +
     `To just take it offline instead, use the ON/OFF switch.`
   )) return;
@@ -585,7 +585,7 @@ function removeApplicationRow(a, row) {
 // when applying), the vendor row, and the staff link, then deletes the application.
 async function acceptApplication(a, row, accept, reject, err) {
   if (!confirm(
-    `Accept “${a.business_name}”?\n\nThis creates the vendor immediately — they can sign in to the terminal right away with the email and password from their application.`
+    `Accept “${a.business_name}”?\n\nThis creates the vendor immediately, so they can sign in to the terminal right away with the email and password from their application.`
   )) return;
 
   err.hidden = true;
@@ -595,7 +595,7 @@ async function acceptApplication(a, row, accept, reject, err) {
     const res = await authFetch(`/api/admin/applications/${a.id}/accept`, { method: 'POST' });
     if (res.status === 403) return denyAccess();
     if (!res.ok) {
-      let msg = 'Accept failed — try again.';
+      let msg = 'Accept failed, try again.';
       try { msg = (await res.json())?.message || msg; } catch { /* keep generic */ }
       // 404 = another admin (or a double-click) already handled it — reload the list.
       if (res.status === 404) { removeApplicationRow(a, row); return; }
@@ -610,7 +610,7 @@ async function acceptApplication(a, row, accept, reject, err) {
     loadVendors();
     loadOverview();
   } catch {
-    err.textContent = 'No connection — try again.';
+    err.textContent = 'No connection, try again.';
     err.hidden = false;
     accept.disabled = false;
     reject.disabled = false;
@@ -620,7 +620,7 @@ async function acceptApplication(a, row, accept, reject, err) {
 // Reject = permanent delete of the application (nothing else was ever created).
 async function rejectApplication(a, row, accept, reject, err) {
   if (!confirm(
-    `Reject the application from “${a.business_name}”?\n\nThis permanently deletes it — including their contact info and chosen password. They can always apply again.`
+    `Reject the application from “${a.business_name}”?\n\nThis permanently deletes it, including their contact info and chosen password. They can always apply again.`
   )) return;
 
   err.hidden = true;
@@ -630,7 +630,7 @@ async function rejectApplication(a, row, accept, reject, err) {
     const res = await authFetch(`/api/admin/applications/${a.id}`, { method: 'DELETE' });
     if (res.status === 403) return denyAccess();
     if (!res.ok && res.status !== 404) {
-      err.textContent = 'Reject failed — try again.';
+      err.textContent = 'Reject failed, try again.';
       err.hidden = false;
       accept.disabled = false;
       reject.disabled = false;
@@ -638,7 +638,7 @@ async function rejectApplication(a, row, accept, reject, err) {
     }
     removeApplicationRow(a, row);
   } catch {
-    err.textContent = 'No connection — try again.';
+    err.textContent = 'No connection, try again.';
     err.hidden = false;
     accept.disabled = false;
     reject.disabled = false;
@@ -776,7 +776,7 @@ function renderErrors(items) {
         <button class="err-del" type="button" title="Delete this error" aria-label="Delete this error">×</button>
       </summary>
       <div class="err-detail">
-        <p class="err-where">${escapeHtml(where || '—')}${e.status ? ` · ${e.status}` : ''}</p>
+        <p class="err-where">${escapeHtml(where || 'unknown')}${e.status ? ` · ${e.status}` : ''}</p>
         ${details ? `<pre>${escapeHtml(details)}</pre>` : ''}
       </div>`;
     row.querySelector('.err-del').addEventListener('click', (ev) => deleteError(e.id, row, ev));

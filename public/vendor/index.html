@@ -9,8 +9,8 @@
   <!-- in <head> so the gesture listeners are attached before the first paint a
        user could pinch on -->
   <script src="/terminal/no-zoom.js"></script>
-  <title>Terminal — WeRewards</title>
-  <meta name="description" content="WeRewards vendor terminal — award points, redeem rewards, and manage items." />
+  <title>Terminal · WeRewards</title>
+  <meta name="description" content="WeRewards vendor terminal: award points, redeem rewards, and manage items." />
   <meta name="theme-color" content="#12294b" />
   <!-- Installable PWA (scoped to /terminal) so a vendor can add it to a device. -->
   <link rel="manifest" href="/terminal/manifest.json" />
@@ -45,7 +45,7 @@
   <!-- ===== APP SHELL ===== -->
   <div id="shell" hidden>
     <header id="topbar">
-      <span id="vendor-name" class="vendor-name">—</span>
+      <span id="vendor-name" class="vendor-name"></span>
       <nav class="tabs" aria-label="Mode">
         <button id="tab-award" class="tab is-active">AWARD</button>
         <button id="tab-redeem" class="tab tab-redeem">REDEEM</button>
@@ -110,7 +110,7 @@
         <div class="customer-head pad-head">
           <div>
             <p class="eyebrow">CUSTOMER</p>
-            <h2 id="customer-name">—</h2>
+            <h2 id="customer-name"></h2>
           </div>
           <div class="head-chips">
             <div id="customer-tier" class="tier-chip">1x</div>
@@ -149,7 +149,7 @@
       <section id="screen-pin" class="screen pin-screen" hidden>
         <h2 class="scan-title">STAFF PIN</h2>
         <div class="pin-dots" id="pin-dots"><i></i><i></i><i></i><i></i></div>
-        <p id="pin-error" class="field-error" hidden>Incorrect PIN — try again.</p>
+        <p id="pin-error" class="field-error" hidden>Incorrect PIN, try again.</p>
         <div class="keypad keypad-pin" id="pin-keypad">
           <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
           <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
@@ -209,7 +209,7 @@
         <div class="customer-head">
           <div>
             <p class="eyebrow eyebrow-redeem">REDEEM FOR</p>
-            <h2 id="redeem-name">—</h2>
+            <h2 id="redeem-name"></h2>
           </div>
           <div class="balance-chip">
             <span id="redeem-balance">0</span>
@@ -218,12 +218,12 @@
         </div>
         <div class="confirm-box">
           <p class="confirm-emoji" id="redeem-emoji">🎁</p>
-          <p class="confirm-item" id="redeem-item">—</p>
-          <p class="confirm-cost" id="redeem-cost">—</p>
+          <p class="confirm-item" id="redeem-item"></p>
+          <p class="confirm-cost" id="redeem-cost"></p>
         </div>
         <div class="pad-actions confirm-actions">
           <button id="redeem-cancel" class="btn-ghost">Cancel</button>
-          <button id="redeem-confirm" class="btn-confirm">Confirm — deduct points</button>
+          <button id="redeem-confirm" class="btn-confirm">Confirm and deduct points</button>
         </div>
       </section>
 
@@ -278,7 +278,7 @@
 
           <div class="stats-card">
             <h3>Recent activity</h3>
-            <p class="manage-note">Made a mistake? Undo an award or redemption — it writes a correction, never deletes.</p>
+            <p class="manage-note">Made a mistake? Undo an award or redemption. It writes a correction, never deletes.</p>
             <div id="recent-list" class="recent-list"></div>
           </div>
         </div>
@@ -296,7 +296,7 @@
             <label class="settings-field">Points per $1 spent
               <input id="set-ratio" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" />
             </label>
-            <p class="manage-note">Customers earn <strong id="set-ratio-eg">—</strong> for a $10 purchase (before their tier multiplier).</p>
+            <p class="manage-note">Customers earn <strong id="set-ratio-eg"></strong> for a $10 purchase (before their tier multiplier).</p>
           </div>
 
           <div class="stats-card" data-card="exact">
@@ -323,7 +323,7 @@
             <label class="settings-field">Street address
               <input id="set-address" type="text" autocomplete="off" maxlength="300" placeholder="123 College Ave, State College, PA" />
             </label>
-            <p class="manage-note">Shown as a tappable map on your customers' cards — tapping it opens directions in their maps app. Leave blank to hide the map.</p>
+            <p class="manage-note">Shown as a tappable map on your customers' cards, and tapping it opens directions in their maps app. Leave blank to hide the map.</p>
           </div>
 
           <div class="stats-card" data-card="logo">
@@ -339,7 +339,7 @@
             </div>
             <p id="set-logo-error" class="field-error" hidden></p>
             <p id="set-logo-warn" class="field-warn" hidden></p>
-            <p class="manage-note">Shown next to your name on customers' cards. Square images look best — we shrink it to a small icon.</p>
+            <p class="manage-note">Shown next to your name on customers' cards. Square images look best, since we shrink it to a small icon.</p>
           </div>
 
           <div class="stats-card" data-card="pin">
@@ -347,14 +347,14 @@
             <label class="settings-field">New 4-digit PIN
               <input id="set-pin" type="text" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="leave blank to keep current" />
             </label>
-            <p class="manage-note">Changing the PIN signs out every terminal — everyone re-enters the new PIN next time.</p>
+            <p class="manage-note">Changing the PIN signs out every terminal, so everyone re-enters the new PIN next time.</p>
           </div>
 
           <!-- Login password. Independent of the batched "Save settings" below —
                its own button calls Supabase auth directly (no server route). -->
           <div class="stats-card">
             <h3>Login password</h3>
-            <p class="manage-note">Change the password for this terminal's email login. You'll stay signed in on this device — use the new password next time you sign in.</p>
+            <p class="manage-note">Change the password for this terminal's email login. You'll stay signed in on this device, so use the new password next time you sign in.</p>
             <label class="settings-field">New password
               <input id="set-pw-new" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="at least 8 characters" />
             </label>
@@ -368,7 +368,7 @@
           </div>
 
           <p id="settings-error" class="field-error" hidden></p>
-          <p id="settings-dirty" class="settings-dirty" role="status" hidden>● Unsaved changes — save before leaving this tab.</p>
+          <p id="settings-dirty" class="settings-dirty" role="status" hidden>● Unsaved changes, save before leaving this tab.</p>
           <div class="pad-actions settings-actions">
             <button id="settings-reset" class="btn-ghost" type="button">Reset</button>
             <button id="settings-save" class="btn-primary" type="button">Save settings</button>

@@ -103,7 +103,7 @@ const generalLimiter = rateLimit({
   max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'RATE_LIMITED', message: 'Too many requests — try again shortly.' },
+  message: { error: 'RATE_LIMITED', message: 'Too many requests, try again shortly.' },
 });
 // The staff PIN is a 4-digit secret (10k combos) → the real brute-force target.
 // Low legitimate volume (once per shift), so cap hard.
@@ -112,7 +112,7 @@ const pinLimiter = rateLimit({
   max: 15,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'RATE_LIMITED', message: 'Too many PIN attempts — wait a few minutes.' },
+  message: { error: 'RATE_LIMITED', message: 'Too many PIN attempts, wait a few minutes.' },
 });
 // 4-digit redeem codes are also enumerable; cap moderately (well above a busy
 // vendor's real redemption rate, well below what makes enumeration practical).
@@ -121,7 +121,7 @@ const redeemLimiter = rateLimit({
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'RATE_LIMITED', message: 'Too many attempts — wait a minute and try again.' },
+  message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
 });
 // Client crash reports post here (unauthenticated — errors happen pre-login too),
 // so cap the write rate hard to keep it from being used to spam the log table.
@@ -150,7 +150,7 @@ const applyLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'RATE_LIMITED', message: 'Too many applications from this connection — try again later.' },
+  message: { error: 'RATE_LIMITED', message: 'Too many applications from this connection, try again later.' },
 });
 // Community-point transfers move real value (community-points.md step 6), so
 // they get their own cap like the other money-adjacent endpoints. Per-IP on a
@@ -161,7 +161,7 @@ const transferLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'RATE_LIMITED', message: 'Too many moves — wait a minute and try again.' },
+  message: { error: 'RATE_LIMITED', message: 'Too many moves, wait a minute and try again.' },
 });
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
@@ -379,15 +379,15 @@ app.use((err, req, res, _next) => {
     REWARD_NOT_FOUND: [404, 'Reward not found or inactive.'],
     VENDOR_UNAVAILABLE: [404, 'This spot is no longer available.'],
     CODE_INVALID: [401, 'That code is expired or invalid. Ask the customer to refresh their code.'],
-    CODE_SPACE_EXHAUSTED: [503, 'Too many active codes right now — try again in a moment.'],
+    CODE_SPACE_EXHAUSTED: [503, 'Too many active codes right now, try again in a moment.'],
     TX_NOT_FOUND: [404, 'That transaction was not found for this vendor.'],
     ALREADY_REVERSED: [409, 'That transaction was already undone.'],
-    CANNOT_REVERSE_REVERSAL: [400, 'That entry is itself an undo — nothing to reverse.'],
-    CANNOT_REVERSE_TRANSFER: [400, 'Moved-in community points are the student’s move to make — it can’t be undone here.'],
-    REVERSAL_EXPIRED: [403, 'Too late to undo — undo is only available for one minute after a transaction.'],
+    CANNOT_REVERSE_REVERSAL: [400, 'That entry is itself an undo, so there is nothing to reverse.'],
+    CANNOT_REVERSE_TRANSFER: [400, 'Moved-in community points are the student’s move to make, so it can’t be undone here.'],
+    REVERSAL_EXPIRED: [403, 'Too late to undo. Undo is only available for one minute after a transaction.'],
     AMOUNT_INVALID: [400, 'Enter a valid number of points to move.'],
     VENDOR_INELIGIBLE: [409, 'This spot isn’t accepting moved-in points right now.'],
-    VENDOR_CAP_REACHED: [409, 'This spot has hit its limit for moved-in points this month — try another spot.'],
+    VENDOR_CAP_REACHED: [409, 'This spot has hit its limit for moved-in points this month, try another spot.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {

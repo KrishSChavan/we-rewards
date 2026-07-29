@@ -300,7 +300,7 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       if (userErr.code === 'email_exists' || userErr.status === 422) {
         return res.status(409).json({
           error: 'EMAIL_EXISTS',
-          message: 'An account with this email already exists — reject this application or resolve it manually.',
+          message: 'An account with this email already exists. Reject this application or resolve it manually.',
         });
       }
       throw userErr;

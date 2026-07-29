@@ -382,12 +382,12 @@ function cameraErrorMessage(err) {
     return 'Camera access is blocked. Allow it in the browser’s site settings, or enter codes manually.';
   }
   if (name === 'NotFoundError' || name === 'OverconstrainedError') {
-    return 'No camera found on this device — enter codes manually.';
+    return 'No camera found on this device. Enter codes manually.';
   }
   if (name === 'NotReadableError') {
-    return 'Another app is using the camera — close it, or enter codes manually.';
+    return 'Another app is using the camera. Close it, or enter codes manually.';
   }
-  return 'Couldn’t start the camera — enter codes manually.';
+  return 'Couldn’t start the camera. Enter codes manually.';
 }
 
 /** One camera + decoder pipeline bound to a <video>. start() is safe to call
@@ -450,10 +450,10 @@ function createScanner({ videoId, flipId, onPayload, onFail }) {
     if (running) return;
     const my = ++session;
     if (!window.isSecureContext) {
-      return onFail('The camera needs a secure (https) connection — enter codes manually.');
+      return onFail('The camera needs a secure (https) connection. Enter codes manually.');
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      return onFail('This browser can’t use the camera — enter codes manually.');
+      return onFail('This browser can’t use the camera. Enter codes manually.');
     }
     let s;
     try {
@@ -474,7 +474,7 @@ function createScanner({ videoId, flipId, onPayload, onFail }) {
     if (session !== my) { s.getTracks().forEach((t) => t.stop()); return; }
     if (!ready) {
       stop();
-      return onFail('The camera started but sent no picture — enter codes manually.');
+      return onFail('The camera started but sent no picture. Enter codes manually.');
     }
     running = true;
     paused = false;
@@ -702,8 +702,8 @@ function showScanBanner(key, kind) {
   const ui = scanUi[key];
   ui.scanner.setPaused(true);
   $(ui.bannerText).textContent = kind === 'redeem'
-    ? 'That’s a redemption code — use the Redeem screen'
-    : 'That’s a customer earn code — use the Award screen';
+    ? 'That’s a redemption code, use the Redeem screen'
+    : 'That’s a customer earn code, use the Award screen';
   $(ui.bannerGo).textContent = kind === 'redeem' ? 'Open Redeem' : 'Open Award';
   $(ui.banner).hidden = false;
   clearTimeout(ui.bannerTimer);
@@ -959,7 +959,7 @@ async function onPinKey(e) {
       // (too many wrong PINs), otherwise the plain "incorrect PIN" hint.
       $('pin-error').textContent = data.error === 'PIN_LOCKED'
         ? (data.message || 'Too many incorrect PINs. Wait a few minutes and try again.')
-        : 'Incorrect PIN — try again.';
+        : 'Incorrect PIN, try again.';
       $('pin-error').hidden = false;
     }
   }
@@ -1051,7 +1051,7 @@ function renderRewardList() {
   const list = $('reward-list');
   list.innerHTML = '';
   if (!rewards.length) {
-    list.innerHTML = `<p class="reward-list-empty">No items yet — add your first one.</p>`;
+    list.innerHTML = `<p class="reward-list-empty">No items yet, add your first one.</p>`;
     return;
   }
   rewards.forEach((r) => {
@@ -1622,7 +1622,7 @@ async function onLogoPick(e) {
   e.target.value = '';                   // let the same file be re-picked later
   if (!file) return;
   if (file.size > LOGO_MAX_FILE) {
-    showLogoError('That image is too large — pick one under 8 MB.');
+    showLogoError('That image is too large. Pick one under 8 MB.');
     return;
   }
   try {
@@ -1638,7 +1638,7 @@ async function onLogoPick(e) {
       $('set-logo-warn').hidden = false;
     }
   } catch {
-    showLogoError('Couldn’t read that image. Try a PNG or JPG — HEIC and PDF files aren’t supported.');
+    showLogoError('Couldn’t read that image. Try a PNG or JPG, since HEIC and PDF files aren’t supported.');
   }
 }
 
@@ -1699,7 +1699,7 @@ function toggleSwitch(el) {
 
 function updateRatioExample() {
   const r = Number($('set-ratio').value);
-  $('set-ratio-eg').textContent = Number.isFinite(r) && r > 0 ? `${Math.floor(10 * r)} pts` : '—';
+  $('set-ratio-eg').textContent = Number.isFinite(r) && r > 0 ? `${Math.floor(10 * r)} pts` : '';
 }
 
 /* tier-button editor: a list of {label, min, max} rows */
@@ -1781,7 +1781,7 @@ async function saveSettings(afterTarget) {
       // re-asks for the new PIN before any further sensitive action.
       pinUnlocked = false;
       pinToken = null;
-      flood('success', 'SETTINGS SAVED', 'New PIN set — re-enter it to continue.', () => switchMode('award'));
+      flood('success', 'SETTINGS SAVED', 'New PIN set. Re-enter it to continue.', () => switchMode('award'));
     } else if (afterTarget) {
       // "Save & leave" — head to the tab the vendor was trying to reach.
       flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => proceedSwitchMode(afterTarget));
@@ -1789,7 +1789,7 @@ async function saveSettings(afterTarget) {
       flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => renderSettings(loadedSettings));
     }
   } catch {
-    $('settings-error').textContent = 'No connection — try again.';
+    $('settings-error').textContent = 'No connection, try again.';
     $('settings-error').hidden = false;
   } finally {
     busy = false;
@@ -1814,12 +1814,12 @@ async function updatePassword() {
   $('set-pw-save').disabled = true;
   try {
     const { error } = await sb.auth.updateUser({ password: pw });
-    if (error) { pwMsg(error.message || 'Couldn’t update the password — try again.', false); return; }
+    if (error) { pwMsg(error.message || 'Couldn’t update the password, try again.', false); return; }
     $('set-pw-new').value = '';
     $('set-pw-confirm').value = '';
     pwMsg('Password updated. Use it next time you sign in.', true);
   } catch {
-    pwMsg('No connection — try again.', false);
+    pwMsg('No connection, try again.', false);
   } finally {
     busy = false;
     $('set-pw-save').disabled = false;

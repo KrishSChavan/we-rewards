@@ -26,7 +26,7 @@ async function onLogoPick(e) {
   e.target.value = '';                   // let the same file be re-picked later
   if (!file) return;
   if (file.size > LOGO_MAX_FILE) {
-    showLogoError('That image is too large — pick one under 8 MB.');
+    showLogoError('That image is too large. Pick one under 8 MB.');
     return;
   }
   try {
@@ -34,7 +34,7 @@ async function onLogoPick(e) {
     logoValue = dataUrl;
     setLogoPreview(logoValue);
   } catch {
-    showLogoError('Couldn’t read that image. Try a PNG or JPG — HEIC and PDF files aren’t supported.');
+    showLogoError('Couldn’t read that image. Try a PNG or JPG, since HEIC and PDF files aren’t supported.');
   }
 }
 
@@ -128,14 +128,14 @@ async function submit(e) {
       return;
     }
 
-    let msg = 'Something went wrong — please try again.';
+    let msg = 'Something went wrong, please try again.';
     try {
       const body = await res.json();
       if (body?.message) msg = body.message;
     } catch { /* non-JSON error body — keep the generic message */ }
     showFormError(msg);
   } catch {
-    showFormError('No connection — check your internet and try again.');
+    showFormError('No connection, check your internet and try again.');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Submit application';

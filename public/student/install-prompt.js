@@ -212,13 +212,13 @@
     var reward = (payload && payload.reward) ? payload.reward : 'a free reward';
     switch (name) {
       case 'redemption':
-        return { title: 'Nice work — that’s yours', desc: 'Add WeRewards to your home screen so it’s one tap next time.' };
+        return { title: 'Nice work, that’s yours', desc: 'Add WeRewards to your home screen so it’s one tap next time.' };
       case 'threshold':
         return { title: 'You’re 1 visit away', desc: 'You’re 1 visit from ' + reward + '. Keep WeRewards on your home screen so you don’t lose track.' };
       case 'thirdSession':
-        return { title: 'Welcome back', desc: 'Add WeRewards to your home screen — your code and points, one tap away.' };
+        return { title: 'Welcome back', desc: 'Add WeRewards to your home screen. Your code and points, one tap away.' };
       default:
-        return { title: 'Add WeRewards to your phone', desc: 'Pop it on your home screen and it opens like a real app — full screen, and your code is one tap away.' };
+        return { title: 'Add WeRewards to your phone', desc: 'Pop it on your home screen and it opens like a real app: full screen, and your code is one tap away.' };
     }
   }
 
@@ -243,12 +243,12 @@
   var IOS_STEPS = [
     ['⬆️', 'Tap the <strong>Share</strong> button in the bar at the bottom of the screen.'],
     ['➕', 'Scroll down and tap <strong>Add to Home Screen</strong>.'],
-    ['✅', 'Tap <strong>Add</strong> — WeRewards lands on your home screen.'],
+    ['✅', 'Tap <strong>Add</strong> and WeRewards lands on your home screen.'],
   ];
   var ANDROID_STEPS = [
     ['⋮', 'Tap the <strong>menu</strong> (three dots) in the top-right.'],
     ['➕', 'Tap <strong>Add to Home screen</strong> (or <strong>Install app</strong>).'],
-    ['✅', 'Tap <strong>Add</strong> — WeRewards lands on your home screen.'],
+    ['✅', 'Tap <strong>Add</strong> and WeRewards lands on your home screen.'],
   ];
 
   function els() {

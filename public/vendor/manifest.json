@@ -1,7 +1,7 @@
 {
   "name": "WeRewards Terminal",
   "short_name": "WR Terminal",
-  "description": "Vendor point-of-sale — award points, redeem rewards, and manage items.",
+  "description": "Vendor point-of-sale: award points, redeem rewards, and manage items.",
   "start_url": "/terminal/",
   "scope": "/terminal/",
   "display": "standalone",
