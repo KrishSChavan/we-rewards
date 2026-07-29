@@ -258,17 +258,20 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .tier-info-btn:active { background: rgba(255, 255, 255, 0.2); }
 
-/* info popover: transparent full-screen backdrop catches outside clicks */
-.tier-info-overlay {
+/* ---------- shared info popover (tier meter + community points) ----------
+   Small explainer card that fades in over a dimmed full-screen backdrop; the
+   backdrop is what catches outside clicks. Used by #tier-info and
+   #community-info — app.js drives both through openInfo()/closeInfo(). */
+.info-overlay {
   position: fixed; inset: 0; z-index: 50;
   display: flex; align-items: flex-start; justify-content: center;
   padding: calc(4.5rem + env(safe-area-inset-top)) 1.1rem 1.1rem;
   background: rgba(10, 20, 40, 0.35);
   opacity: 0; transition: opacity 150ms ease;
 }
-.tier-info-overlay.is-open { opacity: 1; }
+.info-overlay.is-open { opacity: 1; }
 
-.tier-info-card {
+.info-card {
   position: relative;
   width: min(23rem, 100%);
   background: var(--card); color: var(--ink);
@@ -278,24 +281,24 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   transform: translateY(-8px) scale(0.97);
   transition: transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.tier-info-overlay.is-open .tier-info-card { transform: translateY(0) scale(1); }
+.info-overlay.is-open .info-card { transform: translateY(0) scale(1); }
 
-.tier-info-card h3 { font-size: 1.15rem; font-weight: 900; margin: 0.1rem 0 0.6rem; padding-right: 1.6rem; }
-.tier-info-card p { font-size: 0.9rem; line-height: 1.5; font-weight: 500; color: var(--ink); margin-bottom: 0.7rem; }
-.tier-info-card p:last-child { margin-bottom: 0; }
-.tier-info-card ul { list-style: none; margin: 0 0 0.7rem; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
-.tier-info-card li { font-size: 0.9rem; line-height: 1.4; font-weight: 500; padding-left: 1rem; position: relative; }
-.tier-info-card li::before { content: "•"; position: absolute; left: 0.1rem; color: var(--brand); font-weight: 900; }
-.tier-info-card strong { color: var(--brand); font-weight: 900; }
+.info-card h3 { font-size: 1.15rem; font-weight: 900; margin: 0.1rem 0 0.6rem; padding-right: 1.6rem; }
+.info-card p { font-size: 0.9rem; line-height: 1.5; font-weight: 500; color: var(--ink); margin-bottom: 0.7rem; }
+.info-card p:last-child { margin-bottom: 0; }
+.info-card ul { list-style: none; margin: 0 0 0.7rem; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.info-card li { font-size: 0.9rem; line-height: 1.4; font-weight: 500; padding-left: 1rem; position: relative; }
+.info-card li::before { content: "•"; position: absolute; left: 0.1rem; color: var(--brand); font-weight: 900; }
+.info-card strong { color: var(--brand); font-weight: 900; }
 
-.tier-info-close {
+.info-close {
   position: absolute; top: 0.6rem; right: 0.6rem;
   width: 1.8rem; height: 1.8rem; border-radius: 50%;
   background: var(--paper); color: var(--muted);
   font-size: 0.85rem; font-weight: 900; line-height: 1;
   display: flex; align-items: center; justify-content: center;
 }
-.tier-info-close:active { background: var(--sky); color: var(--navy); }
+.info-close:active { background: var(--sky); color: var(--navy); }
 
 .tier-track {
   position: relative; height: 0.7rem; border-radius: 1rem;
@@ -318,15 +321,76 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .tier-scale span { text-align: center; }
 
-.home-main { flex: 1; padding: 1.7rem 0 1rem; }
-.home-sub { margin: 0 1.3rem 1rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
+/* No top padding: the community card immediately below brings its own top
+   margin. Still no INLINE padding — the carousel scrolls edge to edge and each
+   child supplies its own 1.3rem gutter.
 
-/* "Show earn code" — the home screen's stand-in for the code card. Shrink-wrapped
-   and centred rather than stretched edge to edge; the max-width keeps it inside
-   the 1.3rem gutter the rest of the home screen uses. */
+   A flex column so the earn-code button can claim the leftover height with auto
+   margins (see .show-code-btn) instead of clinging to the carousel. Children are
+   flex: 0 0 auto because the default flex-shrink: 1 would squash the carousel
+   and the cards inside it the moment the content outgrew the viewport. */
+.home-main { flex: 1; padding: 0 0 1rem; display: flex; flex-direction: column; }
+.home-main > * { flex: 0 0 auto; }
+.home-sub { margin: 0 1.3rem 0.85rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
+
+/* ---------- home: community points card ----------
+   The cross-vendor wallet, and the only balance on this screen not tied to one
+   spot. Same sticker language as every other tappable card here (chunky border,
+   hard offset shadow); the accent tile and the brand-coloured number are what
+   mark it out as the odd one. */
+.community-card {
+  position: relative; z-index: 2;      /* sits ON the banner, not under it */
+  width: calc(100% - 2.6rem);
+  /* Sits clear of the banner rather than lapping onto it — the tier scale
+     ("1x 1.5x 2x") runs along the banner's bottom edge and the card crowded it.
+     .home-main carries no top padding, so this margin is the whole gap. */
+  margin: 1.65rem 1.3rem 1.75rem;
+  display: flex; align-items: center; gap: 0.8rem;
+  text-align: left;
+  background: var(--card);
+  border: 3px solid var(--edge); border-radius: 1.2rem;
+  box-shadow: 0 5px 0 var(--edge);
+  padding: 0.75rem 0.95rem;
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.community-card:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--edge); }
+
+/* Label, number, and strapline stack — the same order the vendor cards below
+   use (name over big number), so the two read as the same kind of object. It
+   also buys the text the full width of the card: a single row with the number
+   off to one side leaves ~100px for the copy on a 360px phone, which is not
+   enough for "COMMUNITY POINTS" to sit on one line. */
+.cc-icon {
+  flex: 0 0 auto; align-self: stretch;
+  aspect-ratio: 1 / 1;                /* square: width follows the stretched height */
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.9rem; line-height: 1;
+  background: var(--sky); border-radius: 0.9rem;
+}
+.cc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.cc-label { font-weight: 900; letter-spacing: 0.1em; font-size: 0.76rem; color: var(--ink); }
+.cc-amount { display: flex; align-items: baseline; gap: 0.25rem; }
+/* deliberately smaller than the vendor cards' 3rem: this is the secondary
+   balance, and it shouldn't out-shout the spot you're actually standing in */
+.cc-num { font-size: 1.85rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; }
+.cc-amount small { font-size: 0.85rem; font-weight: 700; color: var(--muted); }
+.cc-sub { font-size: 0.78rem; font-weight: 600; color: var(--muted); line-height: 1.25; }
+.cc-chevron { flex: 0 0 auto; color: var(--muted); display: flex; }
+.cc-chevron svg { width: 1.15rem; height: 1.15rem; display: block; }
+
+/* "Show earn code" — the home screen's stand-in for the code card, parked below
+   the spots. Shrink-wrapped and centred rather than stretched edge to edge; the
+   max-width keeps it inside the 1.3rem gutter the rest of the home screen uses.
+
+   margin: auto centres it BOTH ways inside .home-main's flex column: the two
+   horizontal autos do the usual shrink-wrap centring, and the vertical pair
+   split whatever height is left over between the carousel and the tab bar. On a
+   short screen (or a tall spots row) there is no leftover, the autos resolve to
+   0, and it simply follows the carousel — whose own 0.9rem bottom padding is
+   what keeps the two from touching. */
 .show-code-btn {
   width: fit-content; max-width: calc(100% - 2.6rem);
-  margin: 0 auto 2.1rem;
+  margin: auto;
   display: flex; align-items: center; justify-content: center; gap: 0.95rem;
   text-align: center;
   background: var(--navy); color: #fff;
@@ -356,7 +420,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   overflow-x: auto;
   scroll-snap-type: x mandatory;   /* snap the nearest card into view */
   -webkit-overflow-scrolling: touch;
-  padding: 0.4rem 1.3rem 1.1rem;   /* inline padding = the parent's padding */
+  padding: 0.4rem 1.3rem 0.9rem;   /* inline padding = the parent's padding */
   scroll-padding-left: 1.3rem;     /* align a snapped card to that same edge */
   scrollbar-width: none;
 }
@@ -755,7 +819,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    not a sheet, so the app stays fully usable. Reuses the sticker look. */
 .install-banner {
   display: flex; align-items: center; gap: 0.6rem;
-  margin: 0 0 0.9rem;
+  /* .home-main has no inline padding (the carousel needs to bleed), so the
+     banner brings the same 1.3rem gutter the rest of the screen uses. */
+  margin: 0 1.3rem 0.9rem;
   padding: 0.75rem 0.85rem;
   background: var(--card);
   border: 3px solid var(--edge); border-radius: 1.1rem;

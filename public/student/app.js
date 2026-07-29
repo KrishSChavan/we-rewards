@@ -12,7 +12,9 @@ let selectedItem = null;
 let socket = null;          // socket.io connection for live balance pushes
 let currentToken = null;    // latest Supabase access token (socket auth)
 let balanceReady = false;   // first balance shown yet? (skip the ticker on load)
-let tickRaf = 0;            // requestAnimationFrame id for the counting ticker
+let communityPoints = 0;    // cross-vendor wallet (see community-points.md)
+let communityReady = false; // first community count shown yet? (same reason)
+const tickRaf = new WeakMap(); // per-element requestAnimationFrame id for the counting ticker
 let toastTimer = null;
 let activeTab = 0;          // 0 = home, 1 = history, 2 = account
 let historyLoaded = false;  // has the history tab fetched at least once?
@@ -119,10 +121,11 @@ function track(event, props) {
     setTheme(next);
   });
   $('vendor-carousel').addEventListener('click', onVendorTap);
-  $('tier-info-btn').addEventListener('click', openTierInfo);
-  $('tier-info-close').addEventListener('click', closeTierInfo);
-  // click on the backdrop (but not the card) closes the popover
-  $('tier-info').addEventListener('click', (e) => { if (e.target === $('tier-info')) closeTierInfo(); });
+  // Info popovers: the tier (i) and the community card share one open/close
+  // path. Each closes via its ✕, a click on the backdrop (but not the card),
+  // or Esc (wired at the bottom of boot alongside the earn sheet).
+  wireInfo('tier-info', 'tier-info-btn');
+  wireInfo('community-info', 'community-card');
   // add-to-home-screen: the permanent manual entry point (settings) + the dev
   // reset. The sheet's own buttons are wired inside install-prompt.js.
   $('account-install').addEventListener('click', () => InstallPrompt.openManual());
@@ -143,7 +146,12 @@ function track(event, props) {
   $('earn-grab').addEventListener('pointermove', onEarnDragMove);
   $('earn-grab').addEventListener('pointerup', onEarnDragEnd);
   $('earn-grab').addEventListener('pointercancel', onEarnDragEnd);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeEarnSheet(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    closeEarnSheet();
+    closeInfo('tier-info', 'tier-info-btn');
+    closeInfo('community-info', 'community-card');
+  });
 
   sb.auth.onAuthStateChange((event, session) => {
     // SIGNED_IN fires when supabase-js consumes the OAuth redirect — i.e. they
@@ -196,12 +204,18 @@ function render(session) {
     stopMyCode();
     disconnectSocket();
     balanceReady = false;   // re-login should show the balance instantly, no ticker
+    communityPoints = 0;
+    communityReady = false; // same: the next sign-in paints its count, no ticker
+    $('community-balance').textContent = '0';
     allVendors = [];
     vendor = null;
     historyLoaded = false;
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
+    // the popovers live at body level too — same reason
+    closeInfo('tier-info', 'tier-info-btn');
+    closeInfo('community-info', 'community-card');
     InstallPrompt.clearUser();  // stop keying install suppression to the signed-out user
     return;
   }
@@ -227,6 +241,7 @@ function render(session) {
   fillAccount(session);
   loadVendors();
   loadTier();
+  loadCommunity();
   startMyCode();
   connectSocket();
 }
@@ -863,19 +878,71 @@ function renderTier(t) {
   bar.hidden = false;
 }
 
-// Fade the "how it works" popover in/out (mirrors the item sheet pattern).
-function openTierInfo() {
-  const ov = $('tier-info');
+/* ---------- shared info popovers (tier meter + community points) ----------
+   A small explainer card fading in over a dimmed backdrop. `id` is the overlay,
+   `triggerId` the button that opened it (kept in sync via aria-expanded), and
+   the ✕ inside is `<id>-close` by convention. */
+
+function wireInfo(id, triggerId) {
+  $(triggerId).addEventListener('click', () => openInfo(id, triggerId));
+  $(`${id}-close`).addEventListener('click', () => closeInfo(id, triggerId));
+  // the backdrop closes it; a click on the card itself must not
+  $(id).addEventListener('click', (e) => { if (e.target === $(id)) closeInfo(id, triggerId); });
+}
+
+function openInfo(id, triggerId) {
+  const ov = $(id);
   ov.hidden = false;
   void ov.offsetWidth;          // reflow so the fade-in transition runs
   ov.classList.add('is-open');
+  $(triggerId).setAttribute('aria-expanded', 'true');
+  $(`${id}-close`).focus({ preventScroll: true });
 }
 
-function closeTierInfo() {
-  const ov = $('tier-info');
+function closeInfo(id, triggerId) {
+  const ov = $(id);
   if (ov.hidden) return;
+  const card = $(`${id}-card`);
   ov.classList.remove('is-open');
+  $(triggerId).setAttribute('aria-expanded', 'false');
+  // Only pull focus back if it's still inside the popover, so a close triggered
+  // from elsewhere (sign-out, Esc while focus has moved on) doesn't yank it.
+  if (card?.contains(document.activeElement)) $(triggerId).focus({ preventScroll: true });
   setTimeout(() => { ov.hidden = true; }, 160);   // wait out the fade
+}
+
+/* ---------- home: community points (the cross-vendor wallet) ----------
+   10% of everything earned at a spot is also minted into this pool, and the
+   pool spends at ANY spot rather than the one that issued it. The mint and
+   redeem paths aren't built yet — community-points.md has the full plan — so
+   the counter reads 0, which is the truth: nothing has been minted.
+
+   loadCommunity() is the single seam the backend plugs into. When
+   GET /api/me/community ships (step 4 of that doc) only this function body
+   changes; the rendering, the ticker, and the socket path below already work. */
+
+async function loadCommunity() {
+  // TODO(community-points.md step 4): swap for the live balance —
+  //   const res = await authFetch('/api/me/community');
+  //   if (res.ok) setCommunityPoints((await res.json()).balance ?? 0);
+  setCommunityPoints(communityPoints);
+}
+
+// Paint the counter. After the first paint a change counts up (or down) the same
+// way the vendor meter does, so points landing over the socket are actually seen
+// rather than silently swapped in.
+function setCommunityPoints(next) {
+  const prev = communityPoints;
+  communityPoints = next;
+
+  const el = $('community-balance');
+  if (!communityReady) {          // first paint: just show it, no ticker
+    communityReady = true;
+    el.textContent = next;
+    return;
+  }
+  if (next === prev) return;
+  tickTo(el, prev, next);
 }
 
 /* ---------- home: vendor carousel ---------- */
@@ -1097,10 +1164,15 @@ function connectSocket() {
         InstallPrompt.onPointsEarned({ vendor: v, prevBalance: prev, newBalance: next, earned: next - prev });
       }
       loadTier();                             // an earn just landed — score may have moved
+      // The 10% community mint rides along on the same push (community-points.md
+      // step 3), so honour it the moment the field appears; until then fall back
+      // to a re-read. Neither does anything visible before the mint path exists.
+      if (payload.community != null) setCommunityPoints(payload.community);
+      else loadCommunity();
       if (historyLoaded) loadHistory();       // ...and it's a new activity row
     });
     // Catch up on (re)connect in case an update landed while we were offline.
-    socket.on('connect', () => { loadVendors(); loadTier(); });
+    socket.on('connect', () => { loadVendors(); loadTier(); loadCommunity(); });
   }
   if (!socket.connected) socket.connect();
 }
@@ -1122,7 +1194,7 @@ function applyBalance(next) {
     $('pb-balance').textContent = next;
     return;
   }
-  tickTo(prev, next);
+  tickTo($('pb-balance'), prev, next);
   notifyPoints(next - prev);
 
   // A drop while the sheet is showing a code means this redemption just went
@@ -1135,10 +1207,11 @@ function applyBalance(next) {
   }
 }
 
-// Count the meter from one value to another (eased, capped at 1s).
-function tickTo(from, to) {
-  const el = $('pb-balance');
-  cancelAnimationFrame(tickRaf);
+// Count an element from one value to another (eased, capped at 1s). The frame id
+// is keyed per element so the vendor meter and the community counter — which can
+// move on the same push — don't cancel each other's animation.
+function tickTo(el, from, to) {
+  cancelAnimationFrame(tickRaf.get(el) ?? 0);
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
     el.textContent = to;
     return;
@@ -1149,10 +1222,10 @@ function tickTo(from, to) {
     const p = Math.min(1, (now - start) / dur);
     const eased = 1 - Math.pow(1 - p, 3);
     el.textContent = Math.round(from + (to - from) * eased);
-    if (p < 1) tickRaf = requestAnimationFrame(step);
+    if (p < 1) tickRaf.set(el, requestAnimationFrame(step));
     else el.textContent = to;
   };
-  tickRaf = requestAnimationFrame(step);
+  tickRaf.set(el, requestAnimationFrame(step));
 }
 
 // Pop a pill + bump/flash the meter: green for points added, amber for redeemed.

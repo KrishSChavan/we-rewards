@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v22';   // v22: landing first screen stops short of the viewport so the page reads as scrollable
+const CACHE = 'werewards-v23';   // v23: community points counter on the home screen
 const SHELL = ['/', '/theme-init.js', '/styles.css', '/app.js', '/qrcode.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

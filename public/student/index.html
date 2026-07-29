@@ -129,7 +129,9 @@
                   <span id="tier-badge" class="tier-badge">1x points</span>
                   <span class="tier-top-right">
                     <span id="tier-hint" class="tier-hint"></span>
-                    <button id="tier-info-btn" class="tier-info-btn" type="button" aria-label="How the tier score works">i</button>
+                    <button id="tier-info-btn" class="tier-info-btn" type="button"
+                            aria-label="How the tier score works"
+                            aria-haspopup="dialog" aria-expanded="false" aria-controls="tier-info">i</button>
                   </span>
                 </div>
                 <div class="tier-track">
@@ -144,6 +146,31 @@
             </header>
 
             <main class="home-main">
+              <!-- Community points — the one balance on this screen that isn't
+                   tied to a single spot: 10% of everything earned anywhere lands
+                   here and spends anywhere. Deliberately first, and pulled up
+                   over the banner's curve, so the navy header and this card read
+                   as one block rather than two stacked bars.
+                   Earning + redeeming are still to build (see community-points.md);
+                   until the mint path exists the counter honestly reads 0, and the
+                   tap opens the explainer rather than a dead screen. -->
+              <button id="community-card" class="community-card" type="button"
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="community-info">
+                <span class="cc-icon" aria-hidden="true">🫂</span>
+                <span class="cc-body">
+                  <span class="cc-label">COMMUNITY POINTS</span>
+                  <span class="cc-amount">
+                    <span id="community-balance" class="cc-num">0</span><small>pts</small>
+                  </span>
+                  <span class="cc-sub">10% back · spend at any spot</span>
+                </span>
+                <span class="cc-chevron" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9.5 6 15.5 12l-6 6" />
+                  </svg>
+                </span>
+              </button>
+
               <!-- first-points fallback nudge: a small dismissible inline banner,
                    not a sheet. install-prompt.js toggles .is-open. -->
               <div id="install-banner" class="install-banner" hidden>
@@ -153,9 +180,15 @@
                 <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
               </div>
 
+              <p class="home-sub">YOUR SPOTS</p>
+              <!-- vendor cards render here: horizontal, scroll-snapped -->
+              <div id="vendor-carousel" class="vendor-carousel"></div>
+              <p id="vendors-empty" class="empty-state" hidden>No spots yet — check back soon!</p>
+
               <!-- The code itself now lives in a full-screen sheet (#earn-modal)
                    so the home screen leads with the spots instead of a QR nobody
-                   is scanning yet. This button is the only way in. -->
+                   is scanning yet. This button sits at the bottom of home and is
+                   the only way in. -->
               <button id="show-code-btn" class="show-code-btn" type="button"
                       aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
                 <span class="scb-icon" aria-hidden="true">
@@ -177,11 +210,6 @@
                   </svg>
                 </span>
               </button>
-
-              <p class="home-sub">YOUR SPOTS</p>
-              <!-- vendor cards render here: horizontal, scroll-snapped -->
-              <div id="vendor-carousel" class="vendor-carousel"></div>
-              <p id="vendors-empty" class="empty-state" hidden>No spots yet — check back soon!</p>
             </main>
           </div>
 
@@ -425,10 +453,11 @@
     </div>
   </div>
 
-  <!-- tier info popover: fades in on the (i), closes via ✕ or outside click -->
-  <div id="tier-info" class="tier-info-overlay" hidden>
-    <div id="tier-info-card" class="tier-info-card" role="dialog" aria-label="How the tier score works">
-      <button id="tier-info-close" class="tier-info-close" type="button" aria-label="Close">✕</button>
+  <!-- tier info popover: fades in on the (i), closes via ✕, Esc, or outside click.
+       Shares the .info-* popover look with #community-info below. -->
+  <div id="tier-info" class="info-overlay" hidden>
+    <div id="tier-info-card" class="info-card" role="dialog" aria-label="How the tier score works">
+      <button id="tier-info-close" class="info-close" type="button" aria-label="Close">✕</button>
       <h3>How your multiplier works</h3>
       <p>Your points multiplier climbs the more you use WeRewards over the last 30 days. You earn a score from 0–1000 that blends three things:</p>
       <ul>
@@ -437,6 +466,23 @@
         <li><strong>Spend</strong> — how much you spend, with extra weight for meal-sized orders</li>
       </ul>
       <p>Keeping all three balanced climbs fastest. Reach <strong>350</strong> for <strong>1.5× points</strong>, or <strong>700</strong> for <strong>2×</strong> — the multiplier applies to everything you earn. It's a rolling 30-day window, so keep visiting to hold your tier.</p>
+    </div>
+  </div>
+
+  <!-- community points explainer: same popover as the tier (i) above. It's a
+       brand-new kind of balance, so tapping the card has to say what it is
+       before it can say what to do with it. -->
+  <div id="community-info" class="info-overlay" hidden>
+    <div id="community-info-card" class="info-card" role="dialog" aria-label="How community points work">
+      <button id="community-info-close" class="info-close" type="button" aria-label="Close">✕</button>
+      <h3>Community points</h3>
+      <p>Every time you earn at a WeRewards spot, <strong>10%</strong> of those points drop into your community balance too.</p>
+      <ul>
+        <li>Earn <strong>150 pts</strong> at a spot → <strong>15 community points</strong></li>
+        <li>They're <strong>on top</strong> of your normal points — your spot balance isn't touched</li>
+        <li>They spend at <strong>any</strong> spot, not just the one that gave them to you</li>
+      </ul>
+      <p>Spending them is coming soon — they stack up in the meantime, so keep eating local.</p>
     </div>
   </div>
 
