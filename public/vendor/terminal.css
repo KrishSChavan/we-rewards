@@ -24,6 +24,15 @@
 
 html, body { height: 100%; }
 
+/* No zoom (see no-zoom.js for the full story). `pan-x pan-y` keeps scrolling
+   but drops pinch- and double-tap-to-zoom — the latter matters on the keypad,
+   where two quick taps on the same digit must enter "11", not zoom. */
+html {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   font-family: "Archivo", system-ui, -apple-system, sans-serif;
   background: var(--paper);

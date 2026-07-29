@@ -52,6 +52,17 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
+/* No zoom (see no-zoom.js for the full story). `pan-x pan-y` keeps every kind
+   of scrolling — including the horizontal tab track — but drops pinch- and
+   double-tap-to-zoom. text-size-adjust stops iOS inflating body text when the
+   phone is turned landscape. Elements needing stricter handling (the transfer
+   sheet's drag handle) set their own touch-action further down. */
+html {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   font-family: "Archivo", system-ui, -apple-system, sans-serif;
   background: var(--paper);

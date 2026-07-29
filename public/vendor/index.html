@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- user-scalable=no + maximum-scale=1: no pinch/double-tap zoom, and no
+       auto-zoom when iOS focuses an input. See no-zoom.js for the browsers
+       that ignore this and what covers them. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <!-- in <head> so the gesture listeners are attached before the first paint a
+       user could pinch on -->
+  <script src="/terminal/no-zoom.js"></script>
   <title>Terminal — WeRewards</title>
   <meta name="description" content="WeRewards vendor terminal — award points, redeem rewards, and manage items." />
   <meta name="theme-color" content="#12294b" />

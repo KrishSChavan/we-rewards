@@ -2,13 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- user-scalable=no + maximum-scale=1: no pinch/double-tap zoom, and no
+       auto-zoom when iOS focuses an input. See no-zoom.js for the browsers
+       that ignore this and what covers them. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>WeRewards — eat local, earn free food</title>
   <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
   <meta name="theme-color" content="#12294b" />
   <!-- apply the saved (or system) theme before first paint to avoid a flash
        (external so the page CSP can forbid inline scripts) -->
   <script src="/theme-init.js"></script>
+  <!-- in <head> so the gesture listeners are attached before the first paint a
+       user could pinch on -->
+  <script src="/no-zoom.js"></script>
   <link rel="manifest" href="/manifest.json" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />

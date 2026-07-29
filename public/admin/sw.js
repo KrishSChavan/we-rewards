@@ -7,10 +7,10 @@
    scoped to this app's own 'werewards-admin-' prefix — deleting every other
    cache here would wipe the student PWA's cache (and vice-versa). */
 
-// v3: added the enable-notifications popup (new index.html/admin.css/admin.js shell).
-const CACHE = 'werewards-admin-v3';
+// v4: zoom disabled app-wide (no-zoom.js).
+const CACHE = 'werewards-admin-v4';
 const SHELL = [
-  '/admin/', '/admin/admin.css', '/admin/admin.js', '/admin/manifest.json',
+  '/admin/', '/admin/admin.css', '/admin/admin.js', '/admin/no-zoom.js', '/admin/manifest.json',
   '/admin/icons/icon-192.png', '/admin/icons/icon-512.png',
 ];
 

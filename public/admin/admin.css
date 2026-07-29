@@ -13,6 +13,14 @@
 }
 
 * { box-sizing: border-box; }
+/* No zoom (see no-zoom.js for the full story). `pan-x pan-y` keeps scrolling —
+   including the wide tables' horizontal scroll — but drops pinch- and
+   double-tap-to-zoom. */
+html {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 /* The `hidden` attribute is the single source of truth for which panel is on
    screen. Author rules like `.login { display: grid }` would otherwise beat the
    UA `[hidden] { display: none }` and leave a "hidden" panel visible, stacking
