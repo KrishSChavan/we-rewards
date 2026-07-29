@@ -97,6 +97,9 @@ const screens = [
   $('set-exact').addEventListener('click', () => { toggleSwitch($('set-exact')); refreshSettingsDirty(); });
   $('set-logo-input').addEventListener('change', onLogoPick);
   $('set-logo-remove').addEventListener('click', removeLogo);
+  $('signout-btn').addEventListener('click', openSignOutConfirm);
+  $('signout-cancel').addEventListener('click', closeSignOutConfirm);
+  $('signout-go').addEventListener('click', signOut);
   // Any keystroke inside Settings re-checks whether there's something unsaved.
   $('screen-settings').addEventListener('input', refreshSettingsDirty);
   $('guard-save').addEventListener('click', guardSaveAndLeave);
@@ -171,6 +174,7 @@ async function enterApp() {
   }
   config = await res.json();
   $('vendor-name').textContent = config.name;
+  $('signout-vendor').textContent = config.name;   // Settings → Sign out card
   $('shell').hidden = false;
   $('screen-login').hidden = true;
   refreshRewards();
@@ -1832,4 +1836,95 @@ function pwMsg(text, ok) {
   el.textContent = text;
   el.className = ok ? 'field-success' : 'field-error';
   el.hidden = false;
+}
+
+/* ---- sign out ----
+   Ends the Supabase session for this device and tears the shell back down to the
+   sign-in card. It lives on Settings, which is behind the staff PIN, and always
+   confirms first — an accidental sign-out mid-rush means hunting for credentials
+   before the next customer can be served. */
+
+function openSignOutConfirm() {
+  $('signout-msg').hidden = true;
+  // Sign-out isn't a tab switch, so it never reaches the unsaved-changes guard in
+  // switchMode(). Warn here instead, since signing out drops those edits.
+  $('signout-confirm-note').textContent = isSettingsDirty()
+    ? 'You have unsaved settings changes — signing out discards them. Staff will need the email and password to sign back in.'
+    : 'Staff will need the email and password to sign back in on this device.';
+  $('signout-confirm').hidden = false;
+}
+
+function closeSignOutConfirm() {
+  $('signout-confirm').hidden = true;
+}
+
+async function signOut() {
+  if (busy) return;
+  busy = true;
+  $('signout-go').disabled = true;
+  let signedOut = false;
+  try {
+    const { error } = await sb.auth.signOut();
+    signedOut = !error;
+  } catch { /* offline — handled below */ }
+  busy = false;
+  $('signout-go').disabled = false;
+  closeSignOutConfirm();
+
+  // A failed sign-out leaves the session in storage, so the terminal would still
+  // be signed in after a refresh. Say so rather than showing a login screen that
+  // doesn't mean what it looks like.
+  if (!signedOut) {
+    $('signout-msg').textContent = 'Couldn’t sign out. Check the connection and try again.';
+    $('signout-msg').hidden = false;
+    return;
+  }
+  resetToLogin();
+}
+
+// Forget everything about the signed-out vendor and show the sign-in card, so
+// the next sign-in on this shared terminal starts clean.
+function resetToLogin() {
+  config = null;
+  rewards = [];
+  loadedSettings = null;
+  settingsBaseline = null;   // form's gone — nothing left to guard (incl. beforeunload)
+  pendingMode = null;
+  logoValue = null;
+  logoChanged = false;
+  // Drop the PIN session: whoever signs in next re-enters the staff PIN.
+  pinUnlocked = false;
+  pinToken = null;
+  pinValue = '';
+  pinTarget = null;
+  pinAction = null;
+  // Clear anything left over from the last transaction.
+  currentEarnCode = null;
+  currentMultiplier = 1;
+  pendingRedeemCode = null;
+  pendingAward = null;
+  padValue = '';
+  lastActivity = null;
+  undoLastArmed = false;
+  clearTimeout(undoLastTimer);
+  clearTimeout(undoExpiryTimer);
+  renderUndoLast();
+  refreshSettingsDirty();   // clears the tab dot, Save ring and per-card highlights
+  mode = 'award';
+  setTabs('award');
+
+  // Don't leave the previous vendor's PIN / password keystrokes sitting in the
+  // hidden form fields; renderSettings() re-clears them on the next sign-in too.
+  $('set-pin').value = '';
+  $('set-pw-new').value = '';
+  $('set-pw-confirm').value = '';
+  $('set-pw-msg').hidden = true;
+  $('settings-error').hidden = true;
+  $('signout-msg').hidden = true;
+
+  $('login-email').value = '';
+  $('login-password').value = '';
+  $('login-error').hidden = true;
+  $('shell').hidden = true;
+  show('screen-login');   // also stops the QR cameras, via syncScanners()
 }

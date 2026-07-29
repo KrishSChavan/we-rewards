@@ -367,6 +367,19 @@
             </div>
           </div>
 
+          <!-- Sign out of this device. Like the password card, it's independent of
+               the batched "Save settings" — it ends the Supabase session directly.
+               Living on Settings puts it behind the staff PIN, so a customer (or a
+               mis-tap mid-rush) can't sign the terminal out. -->
+          <div class="stats-card">
+            <h3>Sign out</h3>
+            <p class="manage-note">Signs this terminal out of <strong id="signout-vendor"></strong>. Staff will need the email and password to sign back in, so keep them handy.</p>
+            <p id="signout-msg" class="field-error" hidden></p>
+            <div class="pad-actions">
+              <button id="signout-btn" class="btn-danger btn-compact" type="button">Sign out</button>
+            </div>
+          </div>
+
           <p id="settings-error" class="field-error" hidden></p>
           <p id="settings-dirty" class="settings-dirty" role="status" hidden>● Unsaved changes, save before leaving this tab.</p>
           <div class="pad-actions settings-actions">
@@ -422,6 +435,21 @@
         <button id="guard-save" class="btn-primary" type="button">Save &amp; leave</button>
       </div>
       <button id="guard-stay" class="guard-stay" type="button">Keep editing</button>
+    </div>
+  </div>
+
+  <!-- ===== SIGN-OUT CONFIRM ===== -->
+  <!-- Signing out is disruptive on a shared counter terminal (credentials needed
+       to get back in), so it always asks first. The note doubles as the
+       unsaved-settings warning, since sign-out bypasses the tab leave-guard. -->
+  <div id="signout-confirm" class="overlay" hidden>
+    <div class="form-card">
+      <h2>Sign out?</h2>
+      <p id="signout-confirm-note" class="manage-note"></p>
+      <div class="pad-actions guard-actions">
+        <button id="signout-cancel" class="btn-ghost" type="button">Cancel</button>
+        <button id="signout-go" class="btn-danger btn-compact" type="button">Sign out</button>
+      </div>
     </div>
   </div>
 

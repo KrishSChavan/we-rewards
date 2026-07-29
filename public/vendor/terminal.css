@@ -119,6 +119,16 @@ button { font-family: inherit; border: none; cursor: pointer; }
   padding: 1.1rem 1.5rem; text-decoration: underline;
 }
 
+/* destructive action (sign out) — primary's shape in error red, so it never
+   reads as "the button you press to continue" at a glance */
+.btn-danger {
+  background: var(--error); color: #fff;
+  font-size: 1.5rem; font-weight: 900; letter-spacing: 0.03em;
+  padding: 1.2rem 2rem; border-radius: 0.8rem;
+}
+.btn-danger:active { filter: brightness(0.85); }
+.btn-danger:disabled { opacity: 0.35; }
+
 .field-error { color: var(--error); font-weight: 700; font-size: 1.05rem; }
 .field-success { color: var(--success); font-weight: 700; font-size: 1.05rem; }
 
