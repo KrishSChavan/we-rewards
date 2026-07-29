@@ -20,46 +20,55 @@
 
   <!-- ================= LANDING + AUTH ================= -->
   <div id="landing" hidden>
-    <header class="nav">
-      <span class="wordmark">We<em>Rewards</em></span>
-      <button class="nav-signin" data-signin>Sign in</button>
-    </header>
+    <!-- Nav + hero are grouped so the CSS can size them together as one
+         "first screen" that stops just short of the viewport, leaving a
+         sliver of the navy band below visible as the scroll cue. -->
+    <div class="landing-top">
+      <header class="nav">
+        <span class="wordmark">We<em>Rewards</em></span>
+        <button class="nav-signin" data-signin>Sign in</button>
+      </header>
 
-    <main class="hero">
-      <div class="hero-copy">
-        <h1>EAT LOCAL.<br />EARN POINTS.<br /><span class="hl">EAT FREE.</span></h1>
-        <p class="hero-sub">
-          Collect points every time you grab food at local spots around Penn State —
-          then trade them in for free stuff. No app to download, no punch card to lose.
-        </p>
-        <button class="google-btn" data-signin>
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-            <path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.66-.22-2.45H12v4.64h6.45a5.52 5.52 0 0 1-2.39 3.62v3h3.86c2.26-2.08 3.58-5.15 3.58-8.81z"/>
-            <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.86-3c-1.07.72-2.44 1.15-4.08 1.15-3.13 0-5.79-2.12-6.74-4.96H1.27v3.1A12 12 0 0 0 12 24z"/>
-            <path fill="#FBBC05" d="M5.26 14.28A7.2 7.2 0 0 1 4.88 12c0-.79.14-1.56.38-2.28v-3.1H1.27a12 12 0 0 0 0 10.76l3.99-3.1z"/>
-            <path fill="#EA4335" d="M12 4.76c1.76 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 12 12 0 0 0 1.27 6.62l3.99 3.1C6.21 6.88 8.87 4.76 12 4.76z"/>
-          </svg>
-          Continue with Google
-        </button>
-        <p id="auth-error" class="auth-error" hidden></p>
-        <p class="fine">Free for students · works right in your browser</p>
-        <p class="fine vendor-invite">Run a spot near campus? <a href="/join" target="_blank" rel="noopener">Join the WeRewards community!</a></p>
-      </div>
-
-      <div class="hero-card" aria-hidden="true">
-        <div class="mock-card">
-          <p class="mock-vendor">YOUR FAVORITE SPOT</p>
-          <p class="mock-points">165<small>pts</small></p>
-          <div class="mock-code">
-            <span class="mock-code-label">YOUR CODE</span>
-            <span class="mock-code-value">742916</span>
-          </div>
-          <p class="mock-hint">35 pts to a free drink</p>
+      <main class="hero">
+        <div class="hero-copy">
+          <h1>EAT LOCAL.<br />EARN POINTS.<br /><span class="hl">EAT FREE.</span></h1>
+          <p class="hero-sub">
+            Collect points every time you grab food at local spots around Penn State —
+            then trade them in for free stuff. No app to download, no punch card to lose.
+          </p>
+          <button class="google-btn" data-signin>
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+              <path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.66-.22-2.45H12v4.64h6.45a5.52 5.52 0 0 1-2.39 3.62v3h3.86c2.26-2.08 3.58-5.15 3.58-8.81z"/>
+              <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.86-3c-1.07.72-2.44 1.15-4.08 1.15-3.13 0-5.79-2.12-6.74-4.96H1.27v3.1A12 12 0 0 0 12 24z"/>
+              <path fill="#FBBC05" d="M5.26 14.28A7.2 7.2 0 0 1 4.88 12c0-.79.14-1.56.38-2.28v-3.1H1.27a12 12 0 0 0 0 10.76l3.99-3.1z"/>
+              <path fill="#EA4335" d="M12 4.76c1.76 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 12 12 0 0 0 1.27 6.62l3.99 3.1C6.21 6.88 8.87 4.76 12 4.76z"/>
+            </svg>
+            Continue with Google
+          </button>
+          <p id="auth-error" class="auth-error" hidden></p>
+          <p class="fine">Free for students · works right in your browser</p>
+          <p class="fine vendor-invite">Run a spot near campus? <a href="/join" target="_blank" rel="noopener">Join the WeRewards community!</a></p>
         </div>
-        <div class="chip chip-1">+75 pts</div>
-        <div class="chip chip-2">Free drink ✓</div>
-      </div>
-    </main>
+
+        <div class="hero-card" aria-hidden="true">
+          <div class="mock-card">
+            <p class="mock-vendor">YOUR FAVORITE SPOT</p>
+            <p class="mock-points">165<small>pts</small></p>
+            <!-- Preview of the real home screen, so the pitch matches the product:
+                 a QR the counter scans. app.js (drawMockQr) paints it at boot with
+                 the same encoder the app uses; it's decorative, and the block drops
+                 out entirely if the encoder isn't available. -->
+            <div id="mock-code" class="mock-code">
+              <span class="mock-code-label">YOUR CODE</span>
+              <canvas id="mock-code-qr" class="mock-code-qr"></canvas>
+            </div>
+            <p class="mock-hint">35 pts to a free drink</p>
+          </div>
+          <div class="chip chip-1">+75 pts</div>
+          <div class="chip chip-2">Free drink ✓</div>
+        </div>
+      </main>
+    </div>
 
     <section class="how">
       <h2>HOW IT WORKS</h2>
@@ -67,17 +76,17 @@
         <li>
           <span class="step-num">1</span>
           <h3>Show your code</h3>
-          <p>Sign in once and a short code appears in the app. Read it out (or show your phone) at the counter when you pay.</p>
+          <p>Sign in once and your personal QR code appears in the app. Show your phone at the counter when you pay — or just read out the short code under it if scanning isn't an option.</p>
         </li>
         <li>
           <span class="step-num">2</span>
           <h3>Earn points</h3>
-          <p>The shop enters your code and points land instantly. Every spot sets its own rewards — watch them stack up.</p>
+          <p>The shop scans your code and points land instantly. Every spot sets its own rewards — watch them stack up.</p>
         </li>
         <li>
           <span class="step-num">3</span>
           <h3>Eat free</h3>
-          <p>Got enough points? Just show your code and say what you're redeeming. That's the whole thing.</p>
+          <p>Got enough points? Show the QR code that pops up and say what you're redeeming. That's the whole thing.</p>
         </li>
       </ol>
     </section>
@@ -144,12 +153,31 @@
                 <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
               </div>
 
-              <div class="my-code">
-                <span class="mc-label">YOUR CODE</span>
-                <span id="my-code-value" class="mc-value">••••••</span>
-                <span class="mc-sub">Give this at the counter to earn points</span>
-              </div>
-              <br><br>
+              <!-- The code itself now lives in a full-screen sheet (#earn-modal)
+                   so the home screen leads with the spots instead of a QR nobody
+                   is scanning yet. This button is the only way in. -->
+              <button id="show-code-btn" class="show-code-btn" type="button"
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
+                <span class="scb-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="7" height="7" rx="1.6" />
+                    <rect x="14" y="3" width="7" height="7" rx="1.6" />
+                    <rect x="3" y="14" width="7" height="7" rx="1.6" />
+                    <path d="M14 14h3.5v3.5H14z" />
+                    <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
+                  </svg>
+                </span>
+                <span class="scb-text">
+                  <span class="scb-title">Show earn code</span>
+                  <span class="scb-sub">Have it scanned at the counter</span>
+                </span>
+                <span class="scb-arrow" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 14.5 12 8.5l6 6" />
+                  </svg>
+                </span>
+              </button>
+
               <p class="home-sub">YOUR SPOTS</p>
               <!-- vendor cards render here: horizontal, scroll-snapped -->
               <div id="vendor-carousel" class="vendor-carousel"></div>
@@ -423,8 +451,43 @@
       <p id="item-status" class="detail-status"></p>
       <button id="item-redeem" class="btn-redeem">Redeem</button>
       <div id="item-code" class="item-code" hidden>
-        <span id="item-code-value" class="item-code-value">••••</span>
-        <span id="item-code-timer" class="item-code-timer"></span>
+        <!-- QR is the primary visual: the terminal scans WRW:R:<code>.
+             Digits + countdown stay beneath as the read-out-loud fallback. -->
+        <div class="qr-card">
+          <canvas id="item-code-qr" class="qr-canvas" role="img" aria-label="Your redemption code as a QR code — have it scanned at the counter"></canvas>
+        </div>
+        <div class="item-code-row">
+          <span id="item-code-value" class="item-code-value">••••</span>
+          <span id="item-code-timer" class="item-code-timer"></span>
+        </div>
+        <span class="qr-fallback">or read out this code if scanning fails</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- earn code: full-screen sheet ----------
+       Home only shows a button; the QR + digits live in here. It slides up over
+       everything (bottom nav included) and closes three ways: the ✕, Esc, or a
+       drag on the grab pill past the halfway mark. Anything short of halfway
+       springs back to the top. -->
+  <div id="earn-modal" class="overlay earn-sheet" hidden>
+    <div id="earn-card" class="earn-card" role="dialog" aria-modal="true" aria-labelledby="earn-heading">
+      <!-- grab strip: the pill is the drag handle, the ✕ is the tap target -->
+      <div id="earn-grab" class="earn-grab">
+        <span class="earn-pill" aria-hidden="true"></span>
+        <button id="earn-close" class="earn-close" type="button" aria-label="Close">✕</button>
+      </div>
+
+      <div class="earn-body">
+        <h2 id="earn-heading" class="mc-label earn-heading">YOUR CODE</h2>
+        <!-- QR is the primary visual: the terminal scans WRW:E:<code>.
+             Hidden until the first code arrives; the digits beneath stay
+             the read-out-loud fallback (selectable text, not an image). -->
+        <div id="my-code-qr-card" class="qr-card qr-card-xl" hidden>
+          <canvas id="my-code-qr" class="qr-canvas" role="img" aria-label="Your earn code as a QR code — have it scanned at the counter"></canvas>
+        </div>
+        <span id="my-code-value" class="mc-value earn-value">••••••</span>
+        <span class="mc-sub">Scan at the counter or, read out this code</span>
       </div>
     </div>
   </div>
@@ -437,6 +500,9 @@
           integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
           crossorigin="anonymous"></script>
   <script src="/socket.io/socket.io.js"></script>
+  <!-- self-hosted QR encoder (qrcode-generator UMD build, global `qrcode`);
+       same-origin, so no SRI needed — must load before app.js -->
+  <script src="/qrcode.js"></script>
   <script src="/install-prompt.js"></script>
   <script src="/app.js"></script>
 </body>

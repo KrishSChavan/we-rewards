@@ -86,6 +86,26 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   max-width: 72rem; margin: 0 auto;
 }
 
+/* First screen (nav + hero) stops a little short of the viewport so a sliver of
+   the navy "how it works" band always shows below the fold — on a laptop that
+   peek is the only cue the page scrolls at all. Phones already overflow on their
+   own (the hero stacks), so this is scoped to the two-column layout, and it's a
+   min-height: if the copy ever outgrows the box the section just gets taller
+   rather than clipping. Padding and the headline get vh caps so the content
+   still fits inside the shortened box on 768p-class laptops. */
+@media (min-width: 761px) {
+  .landing-top {
+    display: flex; flex-direction: column;
+    min-height: 88vh;
+    min-height: 88svh;
+  }
+  .landing-top .hero {
+    flex: 1;
+    padding-block: clamp(1.5rem, 4.5vh, 5rem);
+  }
+  .landing-top .hero-copy h1 { font-size: clamp(2.6rem, min(7vw, 9vh), 4.6rem); }
+}
+
 .hero-copy h1 {
   font-size: clamp(2.6rem, 7vw, 4.6rem);
   font-weight: 900; line-height: 0.98; letter-spacing: -0.01em;
@@ -132,14 +152,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .mock-code {
   margin: 1rem 0 0.8rem;
-  display: flex; flex-direction: column; align-items: center; gap: 0.35rem;
+  display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
   background: #fff; padding: 0.8rem 0.7rem; border-radius: 0.7rem;
 }
 .mock-code-label { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.18em; color: #7a8aa3; }
-.mock-code-value {
-  font-size: 2rem; font-weight: 900; letter-spacing: 0.32em; color: #101d33;
-  text-indent: 0.32em;   /* balance the trailing letter-spacing so it reads centered */
-}
+/* drawQr() sets the canvas's own width/height in px (crisp 1:1 device pixels),
+   so nothing here may size it — same white-background rule as the in-app QR. */
+.mock-code-qr { display: block; }
 
 .mock-hint { font-size: 0.9rem; font-weight: 700; color: var(--sky); }
 
@@ -300,10 +319,36 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .tier-scale span { text-align: center; }
 
 .home-main { flex: 1; padding: 1.7rem 0 1rem; }
-/* home-main has no horizontal padding (so the carousel is full-bleed), so inset
-   the code card to match the 1.3rem gutter used by .home-sub. */
-.home-main .my-code { width: auto; margin: 0 1.3rem; }
 .home-sub { margin: 0 1.3rem 1rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
+
+/* "Show earn code" — the home screen's stand-in for the code card. Shrink-wrapped
+   and centred rather than stretched edge to edge; the max-width keeps it inside
+   the 1.3rem gutter the rest of the home screen uses. */
+.show-code-btn {
+  width: fit-content; max-width: calc(100% - 2.6rem);
+  margin: 0 auto 2.1rem;
+  display: flex; align-items: center; justify-content: center; gap: 0.95rem;
+  text-align: center;
+  background: var(--navy); color: #fff;
+  border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 1.05rem 1.2rem;
+  box-shadow: 0 4px 0 var(--edge);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.show-code-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+.show-code-btn .scb-icon {
+  flex: 0 0 auto;
+  width: 3rem; height: 3rem; border-radius: 0.8rem;
+  background: rgba(255, 255, 255, 0.13); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.show-code-btn .scb-icon svg { width: 1.7rem; height: 1.7rem; display: block; }
+.scb-text { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 0.15rem; }
+.scb-title { font-size: 1.15rem; font-weight: 900; line-height: 1.1; }
+.scb-sub { font-size: 0.85rem; font-weight: 600; color: var(--sky); }
+/* chevron nods upward — the sheet it opens comes up from the bottom */
+.scb-arrow { flex: 0 0 auto; color: var(--accent); display: flex; }
+.scb-arrow svg { width: 1.4rem; height: 1.4rem; display: block; }
 
 /* horizontal, scroll-snapped row of vendor cards */
 .vendor-carousel {
@@ -460,14 +505,28 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .mc-label { font-size: 0.8rem; font-weight: 900; letter-spacing: 0.16em; color: var(--muted); }
 .mc-value {
-  /* Sized so all 6 characters fit on one line without clipping, even on a
-     narrow phone (the previous size overflowed and cut off the last char). */
-  font-size: clamp(2rem, 11.5vw, 3.4rem); font-weight: 900; line-height: 1.05;
-  letter-spacing: 0.08em; text-indent: 0.08em;   /* keep glyphs visually centered */
+  /* The QR above is the primary visual now; the digits are the read-out-loud
+     fallback, so they sit smaller beneath it (still selectable text). */
+  font-size: 1.6rem; font-weight: 900; line-height: 1.05;
+  letter-spacing: 0.18em; text-indent: 0.18em;   /* keep glyphs visually centered */
   white-space: nowrap; max-width: 100%;
   color: var(--brand); font-variant-numeric: tabular-nums;
 }
 .mc-sub { font-size: 0.92rem; font-weight: 500; color: var(--muted); }
+
+/* ---------- QR codes (earn + redeem) ---------- */
+
+/* White rounded card behind the QR in BOTH themes — scanners need dark modules
+   on white, so this deliberately ignores the theme variables (a dark-mode or
+   low-contrast QR is a real scan failure). The canvas draws its own ≥4-module
+   quiet zone; the card's padding just adds breathing room. */
+.qr-card {
+  background: #fff; border: 2px solid var(--hairline); border-radius: 0.9rem;
+  padding: 0.4rem; margin: 0.35rem 0 0.15rem;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.qr-canvas { display: block; }
+.qr-fallback { font-size: 0.8rem; font-weight: 700; color: var(--muted); }
 
 .app-sub { margin: 1.6rem 0 0.8rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
 .empty-state { color: var(--muted); font-weight: 500; padding: 1.5rem 0; }
@@ -532,6 +591,72 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font-size: 1.1rem; font-weight: 900;
   color: var(--ink);
 }
+/* ---------- earn-code sheet (drag-to-dismiss) ----------
+   Same slide-up mechanics as .detail-card, but sized to its content rather than
+   to a min/max band, and draggable: how far up the screen it comes is simply how
+   big the QR is. Tap the dimmed strip above it to dismiss. */
+
+.earn-card {
+  position: relative; width: 100%;
+  /* Height follows the content — how far up the screen it reaches is just how
+     tall the QR and the code under it are. The cap is only a backstop for short
+     viewports; past it .earn-body scrolls. */
+  max-height: 92vh; max-height: 92dvh;
+  background: var(--card);
+  border-top: 3px solid var(--edge);
+  border-radius: 1.5rem 1.5rem 0 0;
+  display: flex; flex-direction: column; align-items: center;
+  overflow: hidden;
+  transform: translateY(100%);
+  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+.earn-sheet.is-open .earn-card { transform: translateY(0); }
+/* while a finger is down the sheet tracks it 1:1 — no easing in the way. app.js
+   drops this class before the release animation so the snap-back/close eases. */
+.earn-card.is-dragging { transition: none; }
+@media (prefers-reduced-motion: reduce) { .earn-card { transition: none; } }
+
+/* Grab strip along the top: the pill is the drag handle (touch-action: none, so
+   the browser doesn't claim the vertical swipe for scrolling or pull-to-refresh)
+   and the ✕ sits over it as a plain tap target. */
+.earn-grab {
+  position: relative; flex: 0 0 auto; width: 100%;
+  height: 3.6rem; padding-top: 0.85rem;   /* no safe-area inset: the sheet never reaches the notch */
+  display: flex; align-items: flex-start; justify-content: center;
+  touch-action: none;
+  cursor: grab;
+}
+.earn-grab:active { cursor: grabbing; }
+/* --muted, not --edge: the border colour goes nearly invisible against the dark
+   card, and a grab handle nobody can see is a grab handle nobody uses. */
+.earn-pill {
+  width: 3.4rem; height: 0.35rem; border-radius: 999px;
+  background: var(--muted); opacity: 0.55;
+}
+.earn-close {
+  position: absolute; right: 0.9rem; top: 0.55rem;
+  width: 2.6rem; height: 2.6rem; border-radius: 50%;
+  border: 2.5px solid var(--edge); background: var(--paper);
+  font-size: 1.1rem; font-weight: 900; color: var(--ink);
+  display: flex; align-items: center; justify-content: center;
+  touch-action: manipulation;   /* a tap, never a drag */
+}
+
+/* Sizes to its content (default flex: 0 1 auto) so the card does too. min-height
+   0 lets it shrink — and then scroll — only if the card hits its max-height. */
+.earn-body {
+  min-height: 0; width: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 0.4rem; text-align: center;
+  padding: 0 1.5rem calc(2rem + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+}
+.earn-heading { font-size: 0.9rem; margin-bottom: 0.35rem; }
+/* the QR has the whole screen here, so the digits beneath can breathe too */
+.qr-card-xl { padding: 0.7rem; border-radius: 1.2rem; margin: 0; }
+.earn-value { font-size: 2.4rem; margin-top: 0.75rem; }
+
 .detail-emoji { font-size: 3.4rem; }
 .detail-title { font-size: 1.7rem; font-weight: 900; line-height: 1.1; }
 .detail-cost { font-weight: 900; color: var(--brand); font-size: 1.15rem; }
@@ -580,11 +705,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* Redemption code shown in place of the Redeem button: code + timer, side by side. */
 .item-code {
   margin-top: 0.6rem; width: 100%;
-  display: flex; align-items: center; justify-content: center; gap: 0.9rem; flex-wrap: wrap;
+  display: flex; flex-direction: column; align-items: center; gap: 0.45rem;
 }
+.item-code-row { display: flex; align-items: center; justify-content: center; gap: 0.9rem; flex-wrap: wrap; }
 .item-code-value {
-  font-size: clamp(2.2rem, 12vw, 3.2rem); font-weight: 900;
-  letter-spacing: 0.12em; text-indent: 0.12em;
+  /* smaller now that the QR above is the primary visual (digits = fallback) */
+  font-size: 1.8rem; font-weight: 900;
+  letter-spacing: 0.14em; text-indent: 0.14em;
   color: var(--brand); font-variant-numeric: tabular-nums;
 }
 .item-code-timer {

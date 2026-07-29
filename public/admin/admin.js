@@ -81,6 +81,7 @@ async function signOut() {
 // non-approved account is bounced back to the login screen by denyAccess().
 function render(session) {
   if (!session) {
+    closePushModal();   // a sign-out (even from another tab) must not leave the popup over the login card
     $('dash').hidden = true;
     $('login').hidden = false;
     return;

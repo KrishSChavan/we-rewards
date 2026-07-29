@@ -70,6 +70,7 @@ function track(event, props) {
 
 (async function boot() {
   installErrorReporter();
+  drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
   InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
   const pub = await (await fetch('/api/public-config')).json();
   // Student + vendor apps share this origin and Supabase project, so they MUST
@@ -132,6 +133,17 @@ function track(event, props) {
   $('item-close').addEventListener('click', closeItemModal);
   $('item-redeem').addEventListener('click', onRedeemTap);
   $('item-modal').addEventListener('click', (e) => { if (e.target === $('item-modal')) closeItemModal(); });
+  // earn code: the home button opens the full-screen sheet; ✕ / drag / Esc close it
+  $('show-code-btn').addEventListener('click', openEarnSheet);
+  $('earn-close').addEventListener('click', closeEarnSheet);
+  // the sheet no longer fills the screen, so the dimmed strip above it is a
+  // tap-to-dismiss target like every other overlay here
+  $('earn-modal').addEventListener('click', (e) => { if (e.target === $('earn-modal')) closeEarnSheet(); });
+  $('earn-grab').addEventListener('pointerdown', onEarnDragStart);
+  $('earn-grab').addEventListener('pointermove', onEarnDragMove);
+  $('earn-grab').addEventListener('pointerup', onEarnDragEnd);
+  $('earn-grab').addEventListener('pointercancel', onEarnDragEnd);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeEarnSheet(); });
 
   sb.auth.onAuthStateChange((event, session) => {
     // SIGNED_IN fires when supabase-js consumes the OAuth redirect — i.e. they
@@ -189,6 +201,7 @@ function render(session) {
     historyLoaded = false;
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
+    dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
     InstallPrompt.clearUser();  // stop keying install suppression to the signed-out user
     return;
   }
@@ -618,6 +631,62 @@ async function authFetch(path, opts = {}) {
   });
 }
 
+/* ---------- QR codes (earn + redeem) ---------- */
+
+// Payloads are a shared contract with the vendor terminal:
+//   earn → WRW:E:<6 digits>      redeem → WRW:R:<4 digits>
+// Uppercase keeps the QR in alphanumeric mode (a version-1 symbol with big,
+// fast-scanning modules). The numeric code itself is exactly what the server
+// mints — the QR is pure transport, and reading the digits out loud at the
+// counter still works as the fallback.
+function drawQr(canvas, payload, targetCss) {
+  const qr = qrcode(0, 'M');               // 0 = smallest version that fits
+  qr.addData(payload, 'Alphanumeric');     // default is Byte — force alnum
+  qr.make();
+
+  // Crispness: an integer number of device pixels per module (including a
+  // 4-module quiet zone on all sides), and a canvas whose CSS size maps 1:1
+  // onto those device pixels — no fractional scaling, so edges never blur.
+  const quiet = 4;
+  const count = qr.getModuleCount();
+  const units = count + quiet * 2;
+  const dpr = window.devicePixelRatio || 1;
+  const scale = Math.max(2, Math.round((targetCss * dpr) / units));
+  const px = units * scale;
+
+  canvas.width = px;
+  canvas.height = px;
+  canvas.style.width = `${px / dpr}px`;
+  canvas.style.height = `${px / dpr}px`;
+
+  // Always dark-on-white, hard-coded on purpose: the QR must NOT follow the
+  // app theme (no CSS vars here) — an inverted or low-contrast QR is a known
+  // real-world scan failure.
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, px, px);
+  ctx.fillStyle = '#000000';
+  for (let r = 0; r < count; r += 1) {
+    for (let c = 0; c < count; c += 1) {
+      if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+    }
+  }
+}
+
+/* ---------- landing: the QR in the hero mock card ---------- */
+
+// Decorative only — the hero card is aria-hidden, and this is a sample earn
+// payload, not a live code (nothing mints one for a signed-out visitor). It
+// exists so the landing shows what the home screen actually looks like now
+// that the QR, not the digits, is the thing students hold up at the counter.
+function drawMockQr() {
+  try {
+    drawQr($('mock-code-qr'), 'WRW:E:742916', 130);
+  } catch {
+    $('mock-code').hidden = true;   // no encoder → drop the block rather than leave an empty white box
+  }
+}
+
 /* ---------- home earn code (shown right on the home screen) ---------- */
 
 function startMyCode() {
@@ -635,10 +704,123 @@ async function refreshMyCode() {
     const res = await authFetch('/api/me/earn-code', { method: 'POST' });
     if (!res.ok) throw new Error();
     const { code } = await res.json();
-    $('my-code-value').textContent = code;
+    $('my-code-value').textContent = code;   // digits first: the QR is transport, they're the fallback
+    // The sheet grows to fit the QR, so this is what decides how far up the
+    // screen it reaches: width minus the body's gutters, height minus the grab
+    // strip and the digits below. Capped at 300 so it doesn't balloon on a
+    // tablet, floored at 180 so a cramped landscape phone still gets a scannable
+    // symbol (there the sheet hits its max-height and the body scrolls).
+    const room = Math.min(window.innerWidth - 90, window.innerHeight - 300);
+    drawQr($('my-code-qr'), `WRW:E:${code}`, Math.max(180, Math.min(300, room)));
+    $('my-code-qr-card').hidden = false;     // stays hidden until the first successful render
   } catch {
-    // keep the last code visible on a transient failure rather than blanking it
+    // keep the last code + QR visible on a transient failure rather than blanking them
   }
+}
+
+/* ---------- home → the full-screen earn code sheet ---------- */
+
+// "Halfway" is measured against the sheet's own height, which it re-reads at
+// every grab — the sheet is content-sized, so that height moves. Released past
+// 50% it carries on down and closes, anything less springs back to the top. One
+// pointer-event path covers touch, pen, and mouse.
+let earnDrag = null;
+
+function openEarnSheet() {
+  const ov = $('earn-modal');
+  if (ov.classList.contains('is-open')) return;
+  // Note the guard is on is-open, not on hidden: hidden stays false through the
+  // 400ms close animation, and reopening inside that window has to catch the
+  // sheet on its way down rather than being swallowed.
+  const card = $('earn-card');
+  earnDrag = null;
+  card.classList.remove('is-dragging');
+  card.style.transform = '';        // clear anything a previous drag left behind
+  ov.hidden = false;
+  void ov.offsetWidth;              // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('show-code-btn').setAttribute('aria-expanded', 'true');
+  refreshMyCode();                  // freshest code, and a QR sized to this viewport
+  $('earn-close').focus({ preventScroll: true });
+}
+
+function closeEarnSheet() {
+  const ov = $('earn-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;  // already closing/closed
+  const card = $('earn-card');
+  earnDrag = null;
+  card.classList.remove('is-dragging');
+  card.style.transform = '';         // hand the slide-down back to the CSS transition
+  ov.classList.remove('is-open');
+  const btn = $('show-code-btn');
+  btn.setAttribute('aria-expanded', 'false');
+  // Only pull focus back if it's still inside the sheet — otherwise a close
+  // triggered by something else (sign-out, Esc from elsewhere) would yank it.
+  if (card.contains(document.activeElement)) btn.focus({ preventScroll: true });
+  setTimeout(() => {
+    if (!ov.classList.contains('is-open')) ov.hidden = true;   // unless it reopened mid-slide
+  }, 400);
+}
+
+// Hard reset, no animation — for sign-out, where the app shell disappears out
+// from under the sheet and sliding it down over the landing page looks broken.
+function dropEarnSheet() {
+  const ov = $('earn-modal');
+  const card = $('earn-card');
+  earnDrag = null;
+  card.classList.remove('is-dragging');
+  card.style.transform = '';
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('show-code-btn').setAttribute('aria-expanded', 'false');
+}
+
+// How far down the sheet is sitting *right now* — mid-transition included, which
+// is why this reads the composited matrix rather than any value we stored.
+function sheetOffset(card) {
+  const t = getComputedStyle(card).transform;
+  if (!t || t === 'none') return 0;
+  try { return new DOMMatrixReadOnly(t).m42; } catch { return 0; }
+}
+
+function onEarnDragStart(e) {
+  if (earnDrag) return;                                 // one finger owns the sheet
+  if (!$('earn-modal').classList.contains('is-open')) return;   // not on one that's leaving
+  if (e.target.closest('#earn-close')) return;          // the ✕ is a tap, not a handle
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const card = $('earn-card');
+  // Grabbing the pill mid-animation (the slide-up, or a snap-back still in
+  // flight) must not teleport the sheet: pin it to where it visually is, and
+  // only then cut the easing, so the finger picks it up exactly where it was.
+  const base = sheetOffset(card);
+  card.style.transform = `translateY(${base}px)`;
+  card.classList.add('is-dragging');
+  earnDrag = {
+    id: e.pointerId,
+    y0: e.clientY,
+    base,
+    dy: base,
+    height: card.getBoundingClientRect().height || window.innerHeight,
+  };
+  e.currentTarget.setPointerCapture(e.pointerId);   // keep the moves coming past the strip
+}
+
+function onEarnDragMove(e) {
+  if (!earnDrag || e.pointerId !== earnDrag.id) return;
+  // downward only — dragging up would tear the sheet off the top of the screen
+  earnDrag.dy = Math.max(0, earnDrag.base + (e.clientY - earnDrag.y0));
+  $('earn-card').style.transform = `translateY(${earnDrag.dy}px)`;
+}
+
+function onEarnDragEnd(e) {
+  if (!earnDrag || e.pointerId !== earnDrag.id) return;
+  const { dy, height } = earnDrag;
+  earnDrag = null;
+  const card = $('earn-card');
+  card.classList.remove('is-dragging');   // easing back on for either outcome…
+  void card.offsetWidth;                  // …with the dragged offset as its start point
+  if (dy >= height / 2) closeEarnSheet(); // past halfway → let it carry on down
+  else card.style.transform = '';         // short of it → snap cleanly back to the top
 }
 
 /* ---------- home: tier bar (30-day score → earn multiplier) ---------- */
@@ -1134,12 +1316,15 @@ async function onRedeemTap() {
   }
 }
 
-/* Replace the Redeem button, in place, with the live code + a countdown. */
+/* Replace the Redeem button, in place, with the live QR + code + a countdown. */
 function showRedemptionCode(code, seconds) {
   $('item-redeem').hidden = true;
-  $('item-status').textContent = 'Show this code at the counter';
+  $('item-status').textContent = 'Show this at the counter';
   $('item-status').className = 'detail-status ok';
   $('item-code-value').textContent = code;
+  try {
+    drawQr($('item-code-qr'), `WRW:R:${code}`, 190);
+  } catch { /* QR failed to render — the digits below still work */ }
   $('item-code').hidden = false;
 
   clearInterval(redeemCountdown);

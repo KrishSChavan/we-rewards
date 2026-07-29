@@ -51,9 +51,30 @@
 
     <main id="main">
 
-      <!-- ===== AWARD: ENTER CODE ===== -->
+      <!-- ===== AWARD: SCAN QR / ENTER CODE ===== -->
       <section id="screen-scan" class="screen scan-screen" hidden>
         <h2 class="scan-title">ENTER CUSTOMER<br />CODE</h2>
+
+        <!-- Camera-first: scan the QR from the customer's WeRewards app.
+             The keypad below stays as the manual fallback. -->
+        <div id="earn-scan-area" class="qr-area">
+          <div id="earn-qr-frame" class="qr-frame">
+            <video id="earn-qr-video" class="qr-video" autoplay muted playsinline></video>
+            <div class="qr-target" aria-hidden="true"></div>
+            <button id="earn-qr-flip" class="qr-flip" type="button" hidden aria-label="Switch camera">↻</button>
+          </div>
+          <p id="earn-qr-status" class="qr-status">Point the camera at the QR code in the customer’s WeRewards app.</p>
+          <div id="earn-qr-banner" class="qr-banner" role="status" hidden>
+            <span id="earn-qr-banner-text" class="qr-banner-text"></span>
+            <button id="earn-qr-banner-go" class="qr-banner-go" type="button"></button>
+            <button id="earn-qr-banner-close" class="qr-banner-close" type="button" aria-label="Dismiss">✕</button>
+          </div>
+          <button id="earn-manual-btn" class="btn-ghost" type="button">Enter code manually</button>
+        </div>
+
+        <!-- Typed-code fallback (also shown automatically if the camera fails). -->
+        <div id="earn-manual-area" class="manual-area" hidden>
+        <p id="earn-camera-msg" class="field-error qr-camera-msg" hidden></p>
         <div class="code-pad-layout">
           <div class="code-pad-left">
             <form id="earn-code-form" class="code-entry">
@@ -71,6 +92,9 @@
             <button type="button" data-k="clear" class="key-dim">Clear</button><button type="button" data-k="0">0</button><button type="button" data-k="back" class="key-dim">⌫</button>
           </div>
         </div>
+        <button id="earn-scan-btn" class="btn-ghost" type="button">Scan QR code instead</button>
+        </div>
+
         <p id="last-activity" class="last-activity"></p>
         <button id="undo-last-award" class="undo-last" type="button" hidden>Undo last</button>
       </section>
@@ -128,9 +152,29 @@
         </div>
       </section>
 
-      <!-- ===== REDEEM: ENTER CODE ===== -->
+      <!-- ===== REDEEM: SCAN QR / ENTER CODE ===== -->
       <section id="screen-redeem-scan" class="screen scan-screen scan-redeem" hidden>
         <h2 class="scan-title">ENTER REDEEM<br />CODE</h2>
+
+        <!-- Camera-first: scan the redemption QR from the customer's app. -->
+        <div id="redeem-scan-area" class="qr-area">
+          <div id="redeem-qr-frame" class="qr-frame">
+            <video id="redeem-qr-video" class="qr-video" autoplay muted playsinline></video>
+            <div class="qr-target" aria-hidden="true"></div>
+            <button id="redeem-qr-flip" class="qr-flip" type="button" hidden aria-label="Switch camera">↻</button>
+          </div>
+          <p id="redeem-qr-status" class="qr-status">Point the camera at the customer’s redemption QR code.</p>
+          <div id="redeem-qr-banner" class="qr-banner" role="status" hidden>
+            <span id="redeem-qr-banner-text" class="qr-banner-text"></span>
+            <button id="redeem-qr-banner-go" class="qr-banner-go" type="button"></button>
+            <button id="redeem-qr-banner-close" class="qr-banner-close" type="button" aria-label="Dismiss">✕</button>
+          </div>
+          <button id="redeem-manual-btn" class="btn-ghost" type="button">Enter code manually</button>
+        </div>
+
+        <!-- Typed-code fallback (also shown automatically if the camera fails). -->
+        <div id="redeem-manual-area" class="manual-area" hidden>
+        <p id="redeem-camera-msg" class="field-error qr-camera-msg" hidden></p>
         <div class="code-pad-layout">
           <div class="code-pad-left">
             <form id="redeem-code-form" class="code-entry">
@@ -148,6 +192,9 @@
             <button type="button" data-k="clear" class="key-dim">Clear</button><button type="button" data-k="0">0</button><button type="button" data-k="back" class="key-dim">⌫</button>
           </div>
         </div>
+        <button id="redeem-scan-btn" class="btn-ghost" type="button">Scan QR code instead</button>
+        </div>
+
         <button id="undo-last-redeem" class="undo-last" type="button" hidden>Undo last</button>
       </section>
 
@@ -393,6 +440,9 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
           integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
           crossorigin="anonymous"></script>
+  <!-- QR decode fallback (UMD, exposes window.jsQR) — served same-origin so the
+       'self' script-src covers it. Must load before terminal.js. -->
+  <script src="/terminal/jsQR.js"></script>
   <script src="/terminal/terminal.js"></script>
 </body>
 </html>

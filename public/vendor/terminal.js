@@ -1,6 +1,6 @@
 /* WeRewards — vendor terminal client
-   Tabs:  AWARD  → type customer's 6-digit code → name + balance + $ keypad → award
-          REDEEM → PIN → type 4-digit redeem code → confirm (name + points + item) → deduct
+   Tabs:  AWARD  → scan customer's QR (or type their 6-digit code) → name + balance + $ keypad → award
+          REDEEM → PIN → scan redemption QR (or type the 4-digit code) → confirm (name + points + item) → deduct
           ITEMS  → PIN → manage rewards (add / edit / on-off)
 */
 
@@ -126,6 +126,7 @@ const screens = [
   $('redeem-code-input').addEventListener('input', (e) => { e.target.value = normalizeRedeem(e.target.value); });
   $('earn-keypad').addEventListener('click', (e) => onCodeKey(e, 'earn-code-input', normalizeEarn));
   $('redeem-keypad').addEventListener('click', (e) => onCodeKey(e, 'redeem-code-input', normalizeRedeem));
+  setupQrScanning();
 
   const { data } = await sb.auth.getSession();
   if (data?.session) await enterApp();
@@ -217,6 +218,7 @@ function show(id) {
   // If the vendor walks away mid-transaction, fall back to the scan screen
   if (id === 'screen-pad') idleTimeout = setTimeout(() => enterScan(), 60_000);
   if (id === 'screen-redeem-confirm') idleTimeout = setTimeout(() => enterRedeemScan(), 60_000);
+  syncScanners();   // camera runs only while its scan screen is the visible one
 }
 
 function setTabs(active) {
@@ -236,7 +238,19 @@ function enterModeScreen(m) {
 }
 
 function switchMode(next) {
-  if (mode === next) return;
+  if (mode === next) {
+    // Normally a no-op, with one exception: the "Undo last" PIN detour shows
+    // the PIN pad without changing `mode`, so the active tab (and the pad's
+    // Cancel key, which routes here) must still offer a way off it. Award is
+    // un-gated, so bailing back to its scan screen is always safe; PIN-gated
+    // tabs stay on the pad so the gate can't be skipped by re-tapping the tab.
+    if (next === 'award' && !$('screen-pin').hidden) {
+      pinValue = '';
+      pinAction = null;
+      enterScan();
+    }
+    return;
+  }
 
   // Leaving Settings with unsaved edits: hold the navigation and ask first, so a
   // vendor can't lose changes by tapping another tab. The guard's buttons decide
@@ -305,6 +319,438 @@ function onCodeKey(e, inputId, normalize) {
   input.value = normalize(v);
   // Deliberately don't focus the input: the value is set directly, and focusing
   // would re-surface the device's native keyboard over the on-screen pad.
+}
+
+/* ---------- QR camera scanner ----------
+   The camera is the primary input on both scan screens; the keypads stay as the
+   typed fallback. QR payloads are pure transport for the same codes the server
+   already mints:
+     WRW:E:123456 → customer earn code     WRW:R:1234 → redemption code
+   (bare 6/4-digit payloads are accepted defensively). Decoding is deliberately
+   belt-and-braces: the native BarcodeDetector is used where it advertises
+   qr_code support, but a jsQR canvas loop joins in if the detector produces
+   nothing within a few seconds — some builds exist yet silently never match,
+   which is what killed the previous camera scanner here. Where BarcodeDetector
+   is missing entirely (iPad Safari) jsQR runs from the start. */
+
+const CAMERA_KEY = 'wrw-terminal-camera';  // preferred camera deviceId (localStorage)
+const SCAN_DEBOUNCE_MS = 3000;    // ignore re-reads of the same payload inside this window
+                                  // (counted in camera-on time — start() re-arms it)
+const SCAN_BANNER_MS = 4000;      // wrong-screen banner auto-dismiss
+const JSQR_INTERVAL_MS = 120;     // ~8 decode attempts/sec keeps an iPad responsive
+const JSQR_MAX_DIM = 640;         // downscale frames before jsQR for speed
+const DETECTOR_GRACE_MS = 3000;   // BarcodeDetector gets this long before jsQR joins in
+
+// Per-screen scanner UI state. `manual` = the vendor chose (or a camera failure
+// forced) the keypad; it sticks for the session so a typing-first vendor isn't
+// bounced back to the camera after every transaction.
+const scanUi = {
+  earn: {
+    expect: 'earn',
+    scanArea: 'earn-scan-area', manualArea: 'earn-manual-area',
+    frame: 'earn-qr-frame', status: 'earn-qr-status', cameraMsg: 'earn-camera-msg',
+    banner: 'earn-qr-banner', bannerText: 'earn-qr-banner-text', bannerGo: 'earn-qr-banner-go',
+    defaultStatus: 'Point the camera at the QR code in the customer’s WeRewards app.',
+    manual: false, cameraMsgText: null, scanner: null, bannerTimer: null, statusTimer: null,
+  },
+  redeem: {
+    expect: 'redeem',
+    scanArea: 'redeem-scan-area', manualArea: 'redeem-manual-area',
+    frame: 'redeem-qr-frame', status: 'redeem-qr-status', cameraMsg: 'redeem-camera-msg',
+    banner: 'redeem-qr-banner', bannerText: 'redeem-qr-banner-text', bannerGo: 'redeem-qr-banner-go',
+    defaultStatus: 'Point the camera at the customer’s redemption QR code.',
+    manual: false, cameraMsgText: null, scanner: null, bannerTimer: null, statusTimer: null,
+  },
+};
+
+// WRW:E:<6 digits> / WRW:R:<4 digits> per the shared student-app contract; bare
+// digit runs are tolerated in case a QR was generated without the prefix.
+function parseQrPayload(raw) {
+  const s = String(raw ?? '').trim();
+  let m = /^WRW:E:(\d{6})$/i.exec(s);
+  if (m) return { kind: 'earn', code: m[1] };
+  m = /^WRW:R:(\d{4})$/i.exec(s);
+  if (m) return { kind: 'redeem', code: m[1] };
+  if (/^\d{6}$/.test(s)) return { kind: 'earn', code: s };
+  if (/^\d{4}$/.test(s)) return { kind: 'redeem', code: s };
+  return null;
+}
+
+function cameraErrorMessage(err) {
+  const name = err?.name || '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return 'Camera access is blocked. Allow it in the browser’s site settings, or enter codes manually.';
+  }
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+    return 'No camera found on this device — enter codes manually.';
+  }
+  if (name === 'NotReadableError') {
+    return 'Another app is using the camera — close it, or enter codes manually.';
+  }
+  return 'Couldn’t start the camera — enter codes manually.';
+}
+
+/** One camera + decoder pipeline bound to a <video>. start() is safe to call
+ *  repeatedly (no-op while running); stop() always releases every track. */
+function createScanner({ videoId, flipId, onPayload, onFail }) {
+  const video = $(videoId);
+  const flipBtn = $(flipId);
+  let stream = null;
+  let running = false;
+  let paused = false;        // wrong-screen banner up → sightings are ignored
+  let session = 0;           // bumped by stop(); stale async work checks it and bails
+  let rafId = 0;
+  let detectorTimer = null;  // interval driving BarcodeDetector.detect
+  let jsqrTimer = null;      // delayed jsQR kick-off while the detector gets its chance
+  let jsqrOn = false;
+  let canvas = null;
+  let ctx2d = null;
+  let lastAttempt = 0;
+  let devices = [];
+  let lastPayload = null;    // decode debounce — survives stop/start on purpose,
+  let lastPayloadAt = 0;     // so a re-shown QR isn't instantly resubmitted
+
+  function readStoredCamera() {
+    try { return localStorage.getItem(CAMERA_KEY); } catch { return null; }
+  }
+
+  async function openStream() {
+    const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
+    const saved = readStoredCamera();
+    if (saved) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: false, video: { ...base, deviceId: { exact: saved } },
+        });
+      } catch { /* remembered camera unplugged — fall through to the default pick */ }
+    }
+    return navigator.mediaDevices.getUserMedia({
+      audio: false, video: { ...base, facingMode: { ideal: 'environment' } },
+    });
+  }
+
+  // Resolve true only once the video is actually delivering frames —
+  // loadedmetadata alone can fire while videoWidth is still 0, and decoding
+  // before real frames arrive was one cause of the old scanner's blindness.
+  function waitForFrames(my) {
+    return new Promise((resolve) => {
+      const t0 = Date.now();
+      const check = () => {
+        if (session !== my) return resolve(false);
+        if (video.readyState >= 2 && video.videoWidth > 0) return resolve(true);
+        if (Date.now() - t0 > 8000) return resolve(false);
+        setTimeout(check, 50);
+      };
+      video.addEventListener('loadedmetadata', check, { once: true });
+      check();
+    });
+  }
+
+  async function start() {
+    if (running) return;
+    const my = ++session;
+    if (!window.isSecureContext) {
+      return onFail('The camera needs a secure (https) connection — enter codes manually.');
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return onFail('This browser can’t use the camera — enter codes manually.');
+    }
+    let s;
+    try {
+      s = await openStream();
+    } catch (err) {
+      if (session === my) onFail(cameraErrorMessage(err));
+      return;
+    }
+    if (session !== my) { s.getTracks().forEach((t) => t.stop()); return; }
+    stream = s;
+    video.srcObject = stream;
+    try { await video.play(); } catch { /* autoplay+muted+playsinline: frames still arrive */ }
+    const ready = await waitForFrames(my);
+    // Cancelled during warm-up (stop(), or a newer start() that bumped the
+    // session): release this stream's tracks explicitly — a newer start() may
+    // already have overwritten `stream`, which would orphan this one and leave
+    // the camera engaged (light on) with no way to release it.
+    if (session !== my) { s.getTracks().forEach((t) => t.stop()); return; }
+    if (!ready) {
+      stop();
+      return onFail('The camera started but sent no picture — enter codes manually.');
+    }
+    running = true;
+    paused = false;
+    // The camera was off in between (result flood, tab away), so we couldn't see
+    // whether the last QR ever left the frame — restart its debounce window from
+    // now. Otherwise a code still held up across a >SCAN_DEBOUNCE_MS gap would
+    // be treated as new and instantly re-submitted: a double award on the earn
+    // side, or a spurious "CAN'T REDEEM" right after a successful redemption.
+    if (lastPayload) lastPayloadAt = Date.now();
+    refreshDeviceList();   // async, best-effort — reveals the flip button when >1 camera
+    startDecoders(my);
+  }
+
+  function stop() {
+    session++;             // cancels any in-flight start() and decoder callbacks
+    running = false;
+    paused = false;
+    jsqrOn = false;
+    cancelAnimationFrame(rafId);
+    clearInterval(detectorTimer);
+    clearTimeout(jsqrTimer);
+    if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+    video.srcObject = null;
+  }
+
+  async function startDecoders(my) {
+    let detector = null;
+    if ('BarcodeDetector' in window) {
+      try {
+        const formats = await window.BarcodeDetector.getSupportedFormats();
+        if (formats.includes('qr_code')) detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+      } catch { detector = null; }
+    }
+    if (session !== my) return;
+    if (!detector) return startJsqr(my);
+
+    let produced = false;   // has the native detector returned ANY match yet?
+    let detBusy = false;    // don't stack detect() calls if one runs long
+    detectorTimer = setInterval(async () => {
+      if (detBusy || session !== my) return;
+      detBusy = true;
+      try {
+        const codes = await detector.detect(video);
+        if (session === my && codes?.length) {
+          produced = true;
+          if (codes[0].rawValue != null) handlePayload(String(codes[0].rawValue));
+        }
+      } catch { /* some builds throw forever — the jsQR fallback below covers it */
+      } finally { detBusy = false; }
+    }, 130);
+    // The historical failure mode: BarcodeDetector exists but never matches.
+    // If it hasn't produced anything shortly after startup, run jsQR alongside
+    // it — whichever decoder hits first wins.
+    jsqrTimer = setTimeout(() => { if (session === my && !produced) startJsqr(my); }, DETECTOR_GRACE_MS);
+  }
+
+  function startJsqr(my) {
+    if (session !== my || jsqrOn) return;
+    jsqrOn = true;
+    lastAttempt = 0;
+    rafId = requestAnimationFrame(jsqrTick);
+  }
+
+  // rAF loop throttled by timestamp: decode ~8×/sec, not every frame.
+  function jsqrTick(ts) {
+    if (!running || !jsqrOn) return;
+    rafId = requestAnimationFrame(jsqrTick);
+    if (ts - lastAttempt < JSQR_INTERVAL_MS || !video.videoWidth) return;
+    lastAttempt = ts;
+    const scale = Math.min(1, JSQR_MAX_DIM / Math.max(video.videoWidth, video.videoHeight));
+    const w = Math.max(1, Math.round(video.videoWidth * scale));
+    const h = Math.max(1, Math.round(video.videoHeight * scale));
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      ctx2d = canvas.getContext('2d', { willReadFrequently: true });
+    }
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    let img;
+    try {
+      ctx2d.drawImage(video, 0, 0, w, h);
+      img = ctx2d.getImageData(0, 0, w, h);
+    } catch { return; }   // a mid-teardown stream can throw on draw/read
+    // attemptBoth also reads light-on-dark (inverted) codes — dark-mode phones.
+    const hit = typeof jsQR === 'function' ? jsQR(img.data, w, h, { inversionAttempts: 'attemptBoth' }) : null;
+    if (hit?.data) handlePayload(String(hit.data));
+  }
+
+  function handlePayload(raw) {
+    if (!running || paused) return;
+    // Another request is mid-flight (e.g. an undo fired from this screen): drop
+    // the sighting BEFORE the debounce bookkeeping. Recording it here would let
+    // every later sighting refresh the debounce window, so a QR first seen while
+    // busy would never submit while it stayed in view — this way it goes through
+    // on the first sighting after the request settles.
+    if (busy) return;
+    const now = Date.now();
+    if (raw === lastPayload && now - lastPayloadAt < SCAN_DEBOUNCE_MS) {
+      lastPayloadAt = now;   // still in view — keep holding the debounce window open
+      return;
+    }
+    lastPayload = raw;
+    lastPayloadAt = now;
+    onPayload(raw);
+  }
+
+  async function refreshDeviceList() {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      devices = all.filter((d) => d.kind === 'videoinput' && d.deviceId);
+    } catch { devices = []; }
+    flipBtn.hidden = devices.length < 2;
+  }
+
+  // Cycle to the next camera and remember it for future sessions.
+  async function flip() {
+    await refreshDeviceList();
+    if (devices.length < 2) return;
+    const cur = stream?.getVideoTracks?.()[0]?.getSettings?.()?.deviceId;
+    const i = devices.findIndex((d) => d.deviceId === cur);
+    const next = devices[(i + 1) % devices.length];
+    try { localStorage.setItem(CAMERA_KEY, next.deviceId); } catch { /* private mode */ }
+    stop();
+    start();
+  }
+
+  return {
+    start, stop, flip,
+    setPaused(v) { paused = v; },
+    isRunning: () => running,
+  };
+}
+
+function setupQrScanning() {
+  scanUi.earn.scanner = createScanner({
+    videoId: 'earn-qr-video', flipId: 'earn-qr-flip',
+    onPayload: (raw) => onScanPayload('earn', raw),
+    onFail: onCameraFail,
+  });
+  scanUi.redeem.scanner = createScanner({
+    videoId: 'redeem-qr-video', flipId: 'redeem-qr-flip',
+    onPayload: (raw) => onScanPayload('redeem', raw),
+    onFail: onCameraFail,
+  });
+
+  $('earn-qr-flip').addEventListener('click', () => scanUi.earn.scanner.flip());
+  $('redeem-qr-flip').addEventListener('click', () => scanUi.redeem.scanner.flip());
+  $('earn-manual-btn').addEventListener('click', () => setManualMode('earn', true));
+  $('redeem-manual-btn').addEventListener('click', () => setManualMode('redeem', true));
+  $('earn-scan-btn').addEventListener('click', () => setManualMode('earn', false));
+  $('redeem-scan-btn').addEventListener('click', () => setManualMode('redeem', false));
+  // Wrong-screen banner jumps go through switchMode like a tab tap would, so
+  // the Redeem PIN gate still applies.
+  $('earn-qr-banner-go').addEventListener('click', () => { hideScanBanner('earn'); switchMode('redeem'); });
+  $('redeem-qr-banner-go').addEventListener('click', () => { hideScanBanner('redeem'); switchMode('award'); });
+  $('earn-qr-banner-close').addEventListener('click', () => hideScanBanner('earn'));
+  $('redeem-qr-banner-close').addEventListener('click', () => hideScanBanner('redeem'));
+
+  // Kiosk hygiene: never leave the camera running while the tab is backgrounded.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { scanUi.earn.scanner.stop(); scanUi.redeem.scanner.stop(); }
+    else syncScanners();
+  });
+}
+
+function activeScanKey() {
+  if (!$('screen-scan').hidden) return 'earn';
+  if (!$('screen-redeem-scan').hidden) return 'redeem';
+  return null;
+}
+
+// Reconcile both scan screens with reality: camera on only for the visible scan
+// screen in scanner mode; keypad shown when the vendor (or a camera failure)
+// picked manual entry. Runs on every screen change + visibility change.
+function syncScanners() {
+  if (!scanUi.earn.scanner) return;   // boot hasn't wired the scanners yet
+  const active = activeScanKey();
+  ['earn', 'redeem'].forEach((key) => {
+    const ui = scanUi[key];
+    $(ui.scanArea).hidden = ui.manual;
+    $(ui.manualArea).hidden = !ui.manual;
+    const msgEl = $(ui.cameraMsg);
+    msgEl.textContent = ui.cameraMsgText || '';
+    msgEl.hidden = !ui.cameraMsgText;
+    if (active === key && !ui.manual && !document.hidden) {
+      if (!ui.scanner.isRunning()) {
+        $(ui.frame).classList.remove('is-hit');
+        $(ui.status).textContent = ui.defaultStatus;
+        $(ui.status).classList.remove('is-error');
+      }
+      ui.scanner.start();
+    } else {
+      ui.scanner.stop();
+    }
+    if (active !== key) hideScanBanner(key);
+  });
+}
+
+// A decoded QR payload from one of the scan screens.
+function onScanPayload(key, raw) {
+  const ui = scanUi[key];
+  const parsed = parseQrPayload(raw);
+  if (!parsed) return flashScanStatus(key, 'Not a WeRewards code');
+  if (parsed.kind !== ui.expect) return showScanBanner(key, parsed.kind);
+
+  // (Sightings during a mid-flight request never reach here — the scanner's
+  // handlePayload drops them before its debounce bookkeeping.)
+
+  // Right code for this screen: stop + flash, then feed the exact same submit
+  // path the keypad uses so preview/confirm behavior is identical.
+  ui.scanner.stop();
+  $(ui.frame).classList.add('is-hit');
+  if (key === 'earn') {
+    $('earn-code-input').value = parsed.code;
+    submitEarnCode();
+  } else {
+    $('redeem-code-input').value = parsed.code;
+    submitRedeemCode();
+  }
+}
+
+// Right QR, wrong screen: pause decoding, tell the vendor where it belongs, and
+// offer a one-tap jump to the other tab.
+function showScanBanner(key, kind) {
+  const ui = scanUi[key];
+  ui.scanner.setPaused(true);
+  $(ui.bannerText).textContent = kind === 'redeem'
+    ? 'That’s a redemption code — use the Redeem screen'
+    : 'That’s a customer earn code — use the Award screen';
+  $(ui.bannerGo).textContent = kind === 'redeem' ? 'Open Redeem' : 'Open Award';
+  $(ui.banner).hidden = false;
+  clearTimeout(ui.bannerTimer);
+  ui.bannerTimer = setTimeout(() => hideScanBanner(key), SCAN_BANNER_MS);
+}
+
+function hideScanBanner(key) {
+  const ui = scanUi[key];
+  clearTimeout(ui.bannerTimer);
+  ui.bannerTimer = null;
+  $(ui.banner).hidden = true;
+  ui.scanner?.setPaused(false);   // resume decoding
+}
+
+// Transient "that QR isn't ours" note under the viewfinder; scanning continues.
+// Repeat sightings of the same payload are already throttled by the scanner's
+// debounce, so this doesn't flicker while a foreign QR sits in view.
+function flashScanStatus(key, msg) {
+  const ui = scanUi[key];
+  const el = $(ui.status);
+  el.textContent = msg;
+  el.classList.add('is-error');
+  clearTimeout(ui.statusTimer);
+  ui.statusTimer = setTimeout(() => {
+    el.textContent = ui.defaultStatus;
+    el.classList.remove('is-error');
+  }, 2500);
+}
+
+// Toggle a scan screen between camera and keypad. The choice sticks for the
+// session; "Scan QR code instead" doubles as the retry after a camera error.
+function setManualMode(key, manual) {
+  const ui = scanUi[key];
+  ui.manual = manual;
+  if (!manual) ui.cameraMsgText = null;   // retrying clears the stale error note
+  hideScanBanner(key);
+  syncScanners();
+}
+
+// getUserMedia failed (denied / missing / in use / insecure): reveal the keypad
+// on BOTH scan screens — it's one physical camera — with a note saying why.
+function onCameraFail(msg) {
+  scanUi.earn.manual = true;
+  scanUi.redeem.manual = true;
+  scanUi.earn.cameraMsgText = msg;
+  scanUi.redeem.cameraMsgText = msg;
+  syncScanners();
 }
 
 /* ---------- AWARD flow: scan → name + balance + $ keypad ---------- */
@@ -496,8 +942,18 @@ async function onPinKey(e) {
     if (res.ok) {
       pinUnlocked = true;       // stays unlocked until the page is refreshed
       pinToken = data.token ?? null; // server session token for gated requests
-      if (pinAction) { const fn = pinAction; pinAction = null; fn(); } // deferred action (e.g. undo)
-      else enterModeScreen(pinTarget);
+      if (pinAction) {
+        // Deferred action (e.g. undo from a scan screen): the detour never
+        // changed `mode`, so land back on that mode's screen first — otherwise
+        // the action's result flood would close over a stranded, empty PIN pad.
+        const fn = pinAction;
+        pinAction = null;
+        if (mode === 'award') enterScan();
+        else enterModeScreen(mode);
+        fn();
+      } else {
+        enterModeScreen(pinTarget);
+      }
     } else {
       // Show the lockout message when the vendor is temporarily locked out
       // (too many wrong PINs), otherwise the plain "incorrect PIN" hint.

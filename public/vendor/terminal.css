@@ -121,7 +121,8 @@ button { font-family: inherit; border: none; cursor: pointer; }
 }
 .scan-redeem .scan-title { color: var(--redeem); }
 
-/* Customer / redemption code entry (replaces the camera scanner) */
+/* Customer / redemption code entry — the typed fallback behind the QR camera
+   scanner (revealed by "Enter code manually" or when the camera fails). */
 .code-entry {
   width: min(26rem, 86vw);
   display: flex; flex-direction: column; gap: 1rem; align-items: stretch;
@@ -160,6 +161,83 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .code-pad-left .code-hint,
 .code-pad-left .last-activity { margin: 0; }
 /* .code-keypad reuses the shared .keypad grid; nothing extra needed here. */
+
+/* ---------- QR camera scanner (primary input on both scan screens) ---------- */
+
+.qr-area {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 1rem;
+}
+.qr-area[hidden] { display: none; }
+
+/* Wraps the typed-code fallback so it shows/hides as one unit while keeping the
+   original keypad markup (and its JS) untouched. */
+.manual-area {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 1.25rem;
+}
+.manual-area[hidden] { display: none; }
+
+.qr-frame {
+  position: relative; width: min(26rem, 86vw); aspect-ratio: 4 / 3;
+  border: 3px solid var(--ink); border-radius: 1.2rem; overflow: hidden;
+  background: #0b1220;   /* dark while the camera warms up */
+}
+.scan-redeem .qr-frame { border-color: var(--redeem); }
+.qr-video { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* centered targeting square; the huge box-shadow dims everything outside it */
+.qr-target {
+  position: absolute; inset: 0; margin: auto;
+  width: min(62%, 14rem); aspect-ratio: 1 / 1;
+  border: 3px solid rgba(255, 255, 255, 0.92); border-radius: 1rem;
+  box-shadow: 0 0 0 200vmax rgba(16, 29, 51, 0.35);
+  pointer-events: none;
+}
+
+/* brief confirmation flash on a successful read */
+.qr-frame.is-hit { border-color: var(--success); box-shadow: 0 0 0 4px var(--success); }
+.qr-frame.is-hit .qr-target { border-color: var(--success); }
+
+/* cycle-through-cameras button, floating in the viewfinder corner */
+.qr-flip {
+  position: absolute; right: 0.6rem; bottom: 0.6rem; z-index: 2;
+  width: 3.2rem; height: 3.2rem; border-radius: 50%;
+  border: 2.5px solid #fff; background: rgba(16, 29, 51, 0.55); color: #fff;
+  font-size: 1.5rem; font-weight: 900; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.qr-flip[hidden] { display: none; }
+.qr-flip:active { background: rgba(16, 29, 51, 0.8); }
+
+.qr-status { color: var(--muted); font-weight: 500; font-size: 1.05rem; text-align: center; min-height: 1.4em; }
+.qr-status.is-error { color: var(--error); font-weight: 700; }
+
+/* "right QR, wrong screen" banner with a jump button to the other tab */
+.qr-banner {
+  width: min(26rem, 86vw);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.7rem;
+  background: var(--card); border: 3px solid var(--ink); border-radius: 0.9rem;
+  padding: 0.8rem 1rem; font-weight: 700;
+}
+.qr-banner[hidden] { display: none; }
+.qr-banner-text { flex: 1 1 12rem; }
+.qr-banner-go {
+  flex: none; color: #fff; font-weight: 900; font-size: 1rem;
+  padding: 0.7rem 1rem; border-radius: 0.6rem;
+  background: var(--redeem);            /* AWARD screen's banner points to REDEEM */
+}
+.scan-redeem .qr-banner-go { background: var(--navy); }   /* and vice-versa */
+.qr-banner-go:active { filter: brightness(0.85); }
+.qr-banner-close {
+  flex: none; width: 2.6rem; height: 2.6rem; border-radius: 0.5rem;
+  border: 2.5px solid var(--sky-line); background: var(--paper); color: var(--muted);
+  font-weight: 900; font-size: 1rem;
+}
+.qr-banner-close:active { background: var(--sky); }
+
+/* camera-failure note above the fallback keypad */
+.qr-camera-msg { width: min(30rem, 90vw); text-align: center; }
 
 /* ---------- customer + tiers ---------- */
 
