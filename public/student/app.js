@@ -121,11 +121,25 @@ function track(event, props) {
     setTheme(next);
   });
   $('vendor-carousel').addEventListener('click', onVendorTap);
-  // Info popovers: the tier (i) and the community card share one open/close
-  // path. Each closes via its ✕, a click on the backdrop (but not the card),
-  // or Esc (wired at the bottom of boot alongside the earn sheet).
+  // Info popovers: the tier (i) opens on its button; the community explainer
+  // closes like every popover but no longer opens on the card itself — with a
+  // balance the card opens the Move-points sheet instead (community-points.md
+  // step 5), and only an empty wallet gets the explainer, because a new user's
+  // first tap should say what this is, not show an empty picker.
   wireInfo('tier-info', 'tier-info-btn');
-  wireInfo('community-info', 'community-card');
+  $('community-card').addEventListener('click', onCommunityCardTap);
+  $('community-info-close').addEventListener('click', () => closeInfo('community-info', 'community-card'));
+  $('community-info').addEventListener('click', (e) => { if (e.target === $('community-info')) closeInfo('community-info', 'community-card'); });
+  // move-points sheet: picker + amount, then a one-way confirm
+  $('move-close').addEventListener('click', closeMoveSheet);
+  $('move-modal').addEventListener('click', (e) => { if (e.target === $('move-modal')) closeMoveSheet(); });
+  $('move-whatis').addEventListener('click', () => { closeMoveSheet(); openInfo('community-info', 'community-card'); });
+  $('move-vendors').addEventListener('click', onMoveVendorTap);
+  $('move-amount').addEventListener('input', syncMoveContinue);
+  $('move-max').addEventListener('click', () => { $('move-amount').value = communityPoints; syncMoveContinue(); });
+  $('move-continue').addEventListener('click', showMoveConfirm);
+  $('move-back').addEventListener('click', showMovePick);
+  $('move-confirm').addEventListener('click', submitMove);
   // add-to-home-screen: the permanent manual entry point (settings) + the dev
   // reset. The sheet's own buttons are wired inside install-prompt.js.
   $('account-install').addEventListener('click', () => InstallPrompt.openManual());
@@ -149,6 +163,7 @@ function track(event, props) {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     closeEarnSheet();
+    closeMoveSheet();
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
   });
@@ -213,6 +228,7 @@ function render(session) {
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
+    dropMoveSheet();            // same
     // the popovers live at body level too — same reason
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
@@ -594,6 +610,10 @@ function renderHistory(items) {
 
 function historyRow(tx) {
   const earn = tx.type === 'earn';
+  // A community transfer (migration-027): the student moved pool points INTO
+  // this vendor's balance. Without its own branch it would fall into the
+  // redeem arm and render as "Redeemed a reward · −80", which is backwards.
+  const transfer = tx.type === 'community_transfer';
   // Falls back to a generic label when the vendor is gone: a deleted vendor
   // (admin dashboard) leaves anonymized transactions with vendor_id → null, so
   // the joined vendors row is missing (migration-017).
@@ -601,21 +621,29 @@ function historyRow(tx) {
   const reward = tx.rewards?.title;
   const time = new Date(tx.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-  // earn → "Earned at X" + "$Y spent"; redeem → "Redeemed <reward>" + "at X"
-  const title = earn
-    ? `Earned at ${vendorName}`
-    : (reward ? `Redeemed ${reward}` : 'Redeemed a reward');
-  const sub = earn
-    ? (tx.dollar_amount != null ? `$${Number(tx.dollar_amount).toFixed(2)} spent · ${time}` : time)
-    : `at ${vendorName} · ${time}`;
+  // earn → "Earned at X" + "$Y spent"; redeem → "Redeemed <reward>" + "at X";
+  // transfer → "Moved to X" + where they came from
+  const title = transfer
+    ? `Moved to ${vendorName}`
+    : earn
+      ? `Earned at ${vendorName}`
+      : (reward ? `Redeemed ${reward}` : 'Redeemed a reward');
+  // Earn rows also surface the 10% that rode along ("+150 pts · +15 community");
+  // a compensating row's negative community_points stays out of the sub.
+  const mint = earn && (tx.community_points ?? 0) > 0 ? `+${tx.community_points} community` : null;
+  const sub = transfer
+    ? `from your community points · ${time}`
+    : earn
+      ? [tx.dollar_amount != null ? `$${Number(tx.dollar_amount).toFixed(2)} spent` : null, mint, time].filter(Boolean).join(' · ')
+      : `at ${vendorName} · ${time}`;
 
-  // points are stored positive for earn, negative for redeem
-  const pts = earn ? `+${tx.points}` : `−${Math.abs(tx.points)}`;
+  // points are stored positive for earn + transfer, negative for redeem
+  const pts = earn || transfer ? `+${tx.points}` : `−${Math.abs(tx.points)}`;
 
   const row = document.createElement('div');
-  row.className = `history-row ${earn ? 'earn' : 'redeem'}`;
+  row.className = `history-row ${transfer ? 'transfer' : earn ? 'earn' : 'redeem'}`;
   row.innerHTML = `
-    <span class="hr-icon">${earn ? '✨' : '🎁'}</span>
+    <span class="hr-icon">${transfer ? '🫂' : earn ? '✨' : '🎁'}</span>
     <span class="hr-body">
       <span class="hr-title">${escapeHtml(title)}</span>
       <span class="hr-sub">${escapeHtml(sub)}</span>
@@ -912,20 +940,23 @@ function closeInfo(id, triggerId) {
 }
 
 /* ---------- home: community points (the cross-vendor wallet) ----------
-   10% of everything earned at a spot is also minted into this pool, and the
-   pool spends at ANY spot rather than the one that issued it. The mint and
-   redeem paths aren't built yet — community-points.md has the full plan — so
-   the counter reads 0, which is the truth: nothing has been minted.
+   10% of everything earned at a spot is also minted into this pool
+   (migration-026), and the pool isn't tied to the spot that issued it. Spending
+   it means MOVING it into one vendor's balance (migration-027) — the move sheet
+   below — after which the existing redeem flow takes over.
 
-   loadCommunity() is the single seam the backend plugs into. When
-   GET /api/me/community ships (step 4 of that doc) only this function body
-   changes; the rendering, the ticker, and the socket path below already work. */
+   loadCommunity() is the single seam: the socket push carries the new balance
+   on an award or a move, and this refetches whenever it doesn't (an undo, a
+   reconnect). */
 
 async function loadCommunity() {
-  // TODO(community-points.md step 4): swap for the live balance —
-  //   const res = await authFetch('/api/me/community');
-  //   if (res.ok) setCommunityPoints((await res.json()).balance ?? 0);
-  setCommunityPoints(communityPoints);
+  try {
+    const res = await authFetch('/api/me/community');
+    if (!res.ok) throw new Error();
+    setCommunityPoints((await res.json()).balance ?? 0);
+  } catch {
+    // keep the last painted count on a transient failure, like loadTier() does
+  }
 }
 
 // Paint the counter. After the first paint a change counts up (or down) the same
@@ -943,6 +974,185 @@ function setCommunityPoints(next) {
   }
   if (next === prev) return;
   tickTo(el, prev, next);
+}
+
+/* ---------- home: move community points (the transfer sheet) ----------
+   Step 5 of community-points.md. One-way by design: a reversible move is a
+   free-item exploit (move in, redeem, move back — item AND points), so the
+   confirm view names the destination and amount and says plainly it's final.
+   The picker and the amount bound are advisory — the RPC re-checks vendor
+   eligibility, the monthly inbound cap, and balance >= amount server-side. */
+
+let moveVendorId = null;    // destination picked in the sheet
+let moveRequestId = null;   // idempotency token, minted once per confirmed intent
+let moveBusy = false;       // one in-flight move at a time
+
+function onCommunityCardTap() {
+  if (communityPoints > 0) openMoveSheet();
+  else openInfo('community-info', 'community-card');
+}
+
+function openMoveSheet() {
+  moveVendorId = null;
+  moveRequestId = null;
+  renderMoveVendors();
+  $('move-amount').value = communityPoints;   // default: move the full balance
+  $('move-amount').max = String(communityPoints);
+  showMovePick();
+  syncMoveContinue();
+  const ov = $('move-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;              // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('community-card').setAttribute('aria-expanded', 'true');
+}
+
+function closeMoveSheet() {
+  const ov = $('move-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  $('community-card').setAttribute('aria-expanded', 'false');
+  setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
+}
+
+// Hard reset, no animation — for sign-out, same reason as dropEarnSheet().
+function dropMoveSheet() {
+  const ov = $('move-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('community-card').setAttribute('aria-expanded', 'false');
+}
+
+// Every active vendor that takes inbound transfers, the student's existing
+// spots first (that's where moved points are most likely headed), keeping the
+// /balances order inside each group.
+function eligibleMoveVendors() {
+  const list = allVendors.filter((v) => v.acceptsCommunity !== false);
+  return [...list.filter((v) => (v.balance ?? 0) > 0), ...list.filter((v) => (v.balance ?? 0) <= 0)];
+}
+
+function renderMoveVendors() {
+  const wrap = $('move-vendors');
+  wrap.innerHTML = '';
+  const list = eligibleMoveVendors();
+  if (!list.length) {
+    wrap.innerHTML = `<p class="move-empty">No spots can take moved points right now — check back soon.</p>`;
+    return;
+  }
+  list.forEach((v) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'move-vendor';
+    btn.dataset.id = v.vendorId;
+    btn.setAttribute('role', 'radio');
+    btn.setAttribute('aria-checked', 'false');
+    btn.innerHTML = `
+      <span class="mv-name">${escapeHtml(v.name)}</span>
+      <span class="mv-balance">${v.balance ?? 0} pts there now</span>`;
+    wrap.appendChild(btn);
+  });
+}
+
+function onMoveVendorTap(e) {
+  const btn = e.target.closest('.move-vendor');
+  if (!btn) return;
+  moveVendorId = btn.dataset.id;
+  $('move-vendors').querySelectorAll('.move-vendor').forEach((b) => {
+    const on = b === btn;
+    b.classList.toggle('is-selected', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+  syncMoveContinue();
+}
+
+function syncMoveContinue() {
+  const amount = Number($('move-amount').value);
+  const okAmount = Number.isInteger(amount) && amount >= 1 && amount <= communityPoints;
+  const status = $('move-status');
+  if ($('move-amount').value !== '' && !okAmount) {
+    status.textContent = `You have ${communityPoints} pts to move — enter 1 to ${communityPoints}.`;
+    status.className = 'detail-status locked';
+  } else {
+    status.textContent = '';
+    status.className = 'detail-status';
+  }
+  $('move-continue').disabled = !(okAmount && moveVendorId);
+}
+
+function showMovePick() {
+  $('move-pick').hidden = false;
+  $('move-confirm-view').hidden = true;
+  $('move-confirm-status').textContent = '';
+  $('move-confirm-status').className = 'detail-status';
+}
+
+function showMoveConfirm() {
+  const amount = Number($('move-amount').value);
+  const v = allVendors.find((x) => x.vendorId === moveVendorId);
+  if (!v || !Number.isInteger(amount) || amount < 1 || amount > communityPoints) return;
+  // One intent, one token: minted here so a network retry of THIS confirm can't
+  // move the points twice, and re-minted if they go Back and change anything.
+  moveRequestId = crypto.randomUUID?.() ?? `mv-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  $('move-summary').innerHTML =
+    `Move <strong>${amount} pts</strong> to <strong>${escapeHtml(v.name)}</strong>? ` +
+    `They'll show up in your ${escapeHtml(v.name)} balance right away.`;
+  $('move-pick').hidden = true;
+  $('move-confirm-view').hidden = false;
+}
+
+async function submitMove() {
+  if (moveBusy) return;
+  const amount = Number($('move-amount').value);
+  const v = allVendors.find((x) => x.vendorId === moveVendorId);
+  if (!v || !Number.isInteger(amount) || amount < 1) { showMovePick(); return; }
+  moveBusy = true;
+  const btn = $('move-confirm');
+  btn.disabled = true;
+  try {
+    const res = await authFetch('/api/me/community-transfer', {
+      method: 'POST',
+      body: JSON.stringify({ vendorId: moveVendorId, amount, requestId: moveRequestId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      $('move-confirm-status').textContent = data.message || 'Couldn’t move your points — try again.';
+      $('move-confirm-status').className = 'detail-status locked';
+      // Our number was stale (e.g. an undo landed while the sheet was open) —
+      // re-read so the picker bound is honest on the next try.
+      if (data.error === 'INSUFFICIENT_POINTS') loadCommunity();
+      return;
+    }
+    // Success: both numbers move. The socket push carries the same pair, so
+    // these direct updates just beat it by a beat (and no-op when it lands).
+    setCommunityPoints(data.newCommunity ?? 0);
+    v.balance = data.newBalance ?? v.balance;
+    patchVendorCard(v.vendorId, v.balance);
+    if (vendor && vendor.vendorId === v.vendorId) applyBalance(v.balance);
+    if (historyLoaded) loadHistory();
+    closeMoveSheet();
+    moveToast(amount, v.name);
+  } catch {
+    $('move-confirm-status').textContent = 'No connection — try again.';
+    $('move-confirm-status').className = 'detail-status locked';
+  } finally {
+    moveBusy = false;
+    btn.disabled = false;
+  }
+}
+
+// Same pill the earn/redeem pushes use, so a move reads as the same kind of event.
+function moveToast(amount, name) {
+  const toast = $('points-toast');
+  toast.className = 'points-toast gain';
+  toast.textContent = `🫂  Moved ${amount} pts to ${name}`;
+  toast.hidden = false;
+  void toast.offsetWidth;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => { toast.hidden = true; }, 300);
+  }, 2200);
 }
 
 /* ---------- home: vendor carousel ---------- */

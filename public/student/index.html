@@ -151,11 +151,12 @@
                    here and spends anywhere. Deliberately first, and pulled up
                    over the banner's curve, so the navy header and this card read
                    as one block rather than two stacked bars.
-                   Earning + redeeming are still to build (see community-points.md);
-                   until the mint path exists the counter honestly reads 0, and the
-                   tap opens the explainer rather than a dead screen. -->
+                   Tapping it opens the Move-points sheet (#move-modal) when
+                   there's a balance to move, and the explainer when there isn't
+                   — a new user's first tap should say what this is, not show an
+                   empty picker. -->
               <button id="community-card" class="community-card" type="button"
-                      aria-haspopup="dialog" aria-expanded="false" aria-controls="community-info">
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="move-modal">
                 <span class="cc-icon" aria-hidden="true">🫂</span>
                 <span class="cc-body">
                   <span class="cc-label">COMMUNITY POINTS</span>
@@ -482,7 +483,46 @@
         <li>They're <strong>on top</strong> of your normal points — your spot balance isn't touched</li>
         <li>They spend at <strong>any</strong> spot, not just the one that gave them to you</li>
       </ul>
-      <p>Spending them is coming soon — they stack up in the meantime, so keep eating local.</p>
+      <p>To spend them, tap the card once you have some: pick a spot, and they become that spot's points. Heads up — <strong>a move can't be undone</strong>.</p>
+    </div>
+  </div>
+
+  <!-- Move community points sheet (community-points.md step 5). Two views in
+       one card: pick a destination + amount, then a confirm that names both and
+       says plainly the move is one-way. Community points are never spent
+       directly — they BECOME the chosen spot's points, and every existing
+       redeem path takes it from there. -->
+  <div id="move-modal" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <button id="move-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="detail-emoji">🫂</p>
+      <h2 class="detail-title">Move community points</h2>
+
+      <!-- view 1: destination + amount -->
+      <div id="move-pick" class="move-view">
+        <p class="detail-desc">Pick a spot and your community points become <em>that spot's</em> points — redeem them there like any others.
+          <button id="move-whatis" class="move-whatis" type="button">What are community points?</button></p>
+        <div id="move-vendors" class="move-vendors" role="radiogroup" aria-label="Move to which spot?"></div>
+        <div class="move-amount-row">
+          <label class="move-amount-label" for="move-amount">Points to move</label>
+          <div class="move-amount-wrap">
+            <input id="move-amount" class="move-amount" type="number" inputmode="numeric" min="1" step="1" />
+            <button id="move-max" class="move-max" type="button">Max</button>
+          </div>
+        </div>
+        <p id="move-status" class="detail-status"></p>
+        <button id="move-continue" class="btn-redeem" disabled>Continue</button>
+      </div>
+
+      <!-- view 2: the confirm. Names the destination and the amount, and says
+           the move is final — that sentence is the whole reason this view exists. -->
+      <div id="move-confirm-view" class="move-view" hidden>
+        <p id="move-summary" class="detail-desc"></p>
+        <p class="move-final">⚠️ This can't be undone. Moved points stay at that spot.</p>
+        <p id="move-confirm-status" class="detail-status"></p>
+        <button id="move-confirm" class="btn-redeem">Move my points</button>
+        <button id="move-back" class="detail-textbtn" type="button">Back</button>
+      </div>
     </div>
   </div>
 

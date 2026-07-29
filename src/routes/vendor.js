@@ -151,7 +151,12 @@ router.post('/award', async (req, res, next) => {
     if (error) throw error;
 
     const newBalance = data?.[0]?.new_balance;
-    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
+    // award_points also mints 10% into the student's cross-vendor pool
+    // (migration-026). One event carries both numbers: the student app reads
+    // payload.community when it's there and refetches when it isn't
+    // (public/student/app.js), so no new room or event type is needed.
+    const newCommunity = data?.[0]?.new_community;
+    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance, community: newCommunity }); // live push
     // Snapshot the score for analytics — off the critical path, non-fatal.
     persistTierSnapshot(userId, tierProfile).catch(() => {});
 

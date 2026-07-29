@@ -1209,15 +1209,21 @@ async function refreshLastActivity() {
     } else {
       const who = last.profiles?.name ?? 'Customer';
       const isReversal = last.reverses != null;        // this row is itself an undo
+      // An inbound community transfer (migration-027) is the STUDENT's move, not
+      // this vendor's transaction — undoing it here would evaporate their points
+      // (the server refuses too: CANNOT_REVERSE_TRANSFER). Shown, but never undoable.
+      const isTransfer = last.type === 'community_transfer';
       const createdAt = new Date(last.created_at).getTime();
       const withinWindow = Date.now() - createdAt < UNDO_WINDOW_MS;
-      const undoable = !isReversal && last.reversed_by == null && withinWindow;
+      const undoable = !isReversal && !isTransfer && last.reversed_by == null && withinWindow;
       lastActivity = { id: last.id, type: last.type, undoable, createdAt };
       $('last-activity').textContent = isReversal
         ? `Last: undo · ${who}`
-        : last.type === 'earn'
-          ? `Last: ${who} +${last.points} pts`
-          : `Last: ${who} redeemed ${last.rewards?.title ?? 'a reward'}`;
+        : isTransfer
+          ? `Last: ${who} moved in +${last.points} community pts`
+          : last.type === 'earn'
+            ? `Last: ${who} +${last.points} pts`
+            : `Last: ${who} redeemed ${last.rewards?.title ?? 'a reward'}`;
     }
     undoLastArmed = false;
     scheduleUndoExpiry();
@@ -1339,6 +1345,11 @@ function renderRecent() {
   wrap.innerHTML = '';
   recentItems.forEach((tx) => {
     const earn = tx.type === 'earn';
+    // Inbound community transfer (migration-027): the student moved their own
+    // cross-vendor points into this shop. The vendor should SEE it — it explains
+    // a balance they didn't award — but labeled honestly, and never undoable
+    // (that would evaporate the student's points; the server refuses too).
+    const transfer = tx.type === 'community_transfer';
     const who = tx.profiles?.name ?? 'Customer';
     const isReversal = tx.reverses != null;         // this row is itself an undo
     const alreadyVoided = tx.reversed_by != null;   // this row was already undone
@@ -1346,9 +1357,11 @@ function renderRecent() {
 
     // Signed points: earns are +, redeems and corrections carry their own sign.
     const pts = tx.points > 0 ? `+${tx.points}` : `${tx.points}`;
-    const what = earn
-      ? (isReversal ? `Correction · ${who}` : `Award · ${who}`)
-      : (isReversal ? `Refund · ${who}` : `Redeem · ${who}${tx.rewards?.title ? ` · ${tx.rewards.title}` : ''}`);
+    const what = transfer
+      ? `Community points in · ${who}`
+      : earn
+        ? (isReversal ? `Correction · ${who}` : `Award · ${who}`)
+        : (isReversal ? `Refund · ${who}` : `Redeem · ${who}${tx.rewards?.title ? ` · ${tx.rewards.title}` : ''}`);
 
     const row = document.createElement('div');
     row.className = `recent-row${alreadyVoided ? ' is-voided' : ''}`;
@@ -1358,20 +1371,21 @@ function renderRecent() {
     info.innerHTML = `<span class="recent-what">${escapeHtml(what)}</span><span class="recent-meta">${escapeHtml(pts)} pts · ${escapeHtml(time)}</span>`;
     row.appendChild(info);
 
-    // Undoable = a real award/redeem, not voided, not itself a correction, and
-    // still inside the 1-minute window (the server enforces the window too).
+    // Undoable = a real award/redeem, not voided, not itself a correction, not
+    // an inbound transfer, and still inside the 1-minute window (the server
+    // enforces the window — and the transfer rule — too).
     const inWindow = Date.now() - new Date(tx.created_at).getTime() < UNDO_WINDOW_MS;
-    if (!isReversal && !alreadyVoided && inWindow) {
+    if (!isReversal && !alreadyVoided && !transfer && inWindow) {
       const btn = document.createElement('button');
       btn.className = 'recent-undo';
       btn.textContent = undoArmedId === tx.id ? 'Tap again to undo' : 'Undo';
       if (undoArmedId === tx.id) btn.classList.add('is-armed');
       btn.addEventListener('click', () => onUndoTap(tx.id));
       row.appendChild(btn);
-    } else if (isReversal || alreadyVoided) {
+    } else if (isReversal || alreadyVoided || transfer) {
       const tag = document.createElement('span');
       tag.className = 'recent-tag';
-      tag.textContent = alreadyVoided ? 'Undone' : (earn ? 'Correction' : 'Refund');
+      tag.textContent = alreadyVoided ? 'Undone' : transfer ? 'Moved in' : (earn ? 'Correction' : 'Refund');
       row.appendChild(tag);
     }
     // else: a real award/redeem past the 1-minute window — just history, no undo.
@@ -1449,6 +1463,9 @@ function fillSummary(id, b) {
     ['Redemptions', num(b.redemptions)],
     ['Customers', num(b.customers)],
   ];
+  // Only when it's happened — most vendors never see a transfer, and a
+  // permanent 0 row would just beg the question the onboarding already answers.
+  if (b.movedInPoints > 0) rows.push(['Community pts in', num(b.movedInPoints)]);
   if (b.returningCustomers != null) rows.push(['Returning', num(b.returningCustomers)]);
   $(id).innerHTML = rows
     .map(([k, v]) => `<li><span>${k}</span><strong>${v}</strong></li>`)

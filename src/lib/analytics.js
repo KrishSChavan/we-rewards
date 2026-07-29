@@ -25,7 +25,7 @@ export const dayKey = (ms) => {
  */
 export function rollupVendorAnalytics(txns, t0) {
   const t7 = t0 - 6 * DAY;
-  const blank = () => ({ earnPoints: 0, redeemPoints: 0, awards: 0, redemptions: 0, revenue: 0, customers: new Set() });
+  const blank = () => ({ earnPoints: 0, redeemPoints: 0, awards: 0, redemptions: 0, revenue: 0, movedIn: 0, movedInPoints: 0, customers: new Set() });
   const today = blank(), last7 = blank(), last30 = blank();
   const custDays = new Map();     // user_id -> Set(dayKey) (returning-customer calc)
   const dayAgg = new Map();       // dayKey  -> { revenue, awards, earnPoints }
@@ -34,10 +34,19 @@ export function rollupVendorAnalytics(txns, t0) {
   for (const tx of txns ?? []) {
     const ms = new Date(tx.created_at).getTime();
     const earn = tx.type === 'earn';
+    // Inbound community transfers (migration-027) carry POSITIVE points but are
+    // neither awards nor redemptions. Without this branch a +80 transfer falls
+    // into the redeem arm, where `redeemPoints += -pts` subtracts 80 and the
+    // ±1 count step DECREMENTS redemptions — quietly erasing real ones.
+    // Tallied separately: "community points moved in" is information the vendor
+    // wants, but it isn't a visit (customers/returning stay purchase-only) and
+    // it isn't revenue.
+    const transfer = tx.type === 'community_transfer';
     const pts = Number(tx.points) || 0;
     const rev = earn ? Number(tx.dollar_amount) || 0 : 0;
 
     const add = (b) => {
+      if (transfer) { b.movedIn += 1; b.movedInPoints += pts; return; }
       if (earn) { b.earnPoints += pts; b.awards += pts >= 0 ? 1 : -1; b.revenue += rev; }
       else { b.redeemPoints += -pts; b.redemptions += pts <= 0 ? 1 : -1; }
       if (tx.user_id) b.customers.add(tx.user_id);
@@ -45,6 +54,8 @@ export function rollupVendorAnalytics(txns, t0) {
     add(last30);
     if (ms >= t7) add(last7);
     if (ms >= t0) add(today);
+
+    if (transfer) continue;   // not a purchase-day, not a reward — nothing below applies
 
     const k = dayKey(ms);
     // Returning-customer calc counts real award-days only (a voided award
@@ -69,6 +80,8 @@ export function rollupVendorAnalytics(txns, t0) {
     awards: b.awards,
     redemptions: b.redemptions,
     revenue: Number(b.revenue.toFixed(2)),
+    movedIn: b.movedIn,
+    movedInPoints: b.movedInPoints,
     customers: b.customers.size,
   });
 
@@ -103,7 +116,7 @@ export function rollupVendorAnalytics(txns, t0) {
  */
 export function rollupPlatformOverview(txns, t0) {
   const t7 = t0 - 6 * DAY;
-  const blank = () => ({ awards: 0, redemptions: 0, pointsAwarded: 0, pointsRedeemed: 0, revenue: 0, students: new Set() });
+  const blank = () => ({ awards: 0, redemptions: 0, pointsAwarded: 0, pointsRedeemed: 0, revenue: 0, transfers: 0, pointsMoved: 0, students: new Set() });
   const today = blank(), last7 = blank(), last30 = blank();
   const vendorAgg = new Map(); // vendor_id -> { name, revenue, awards }
   const dayAgg = new Map();    // dayKey -> { revenue, awards, redemptions }
@@ -111,10 +124,16 @@ export function rollupPlatformOverview(txns, t0) {
   for (const tx of txns ?? []) {
     const ms = new Date(tx.created_at).getTime();
     const earn = tx.type === 'earn';
+    // Community transfers are the SAME points the mint already counted, moving
+    // — not new activity. Fold them into awards/redemptions and the platform
+    // double-counts (and the redeem arm would run redemptions backwards, as in
+    // the vendor rollup). Counted on their own so the operator can see volume.
+    const transfer = tx.type === 'community_transfer';
     const pts = Number(tx.points) || 0;
     const rev = earn ? Number(tx.dollar_amount) || 0 : 0;
 
     const add = (b) => {
+      if (transfer) { b.transfers += 1; b.pointsMoved += pts; return; }
       if (earn) { b.awards += pts >= 0 ? 1 : -1; b.pointsAwarded += pts; b.revenue += rev; }
       else { b.redemptions += pts <= 0 ? 1 : -1; b.pointsRedeemed += -pts; }
       if (tx.user_id) b.students.add(tx.user_id);
@@ -122,6 +141,8 @@ export function rollupPlatformOverview(txns, t0) {
     add(last30);
     if (ms >= t7) add(last7);
     if (ms >= t0) add(today);
+
+    if (transfer) continue;   // keep the daily series + top-vendors purchase-only
 
     if (earn) {
       const va = vendorAgg.get(tx.vendor_id) ?? { name: tx.vendors?.name ?? 'Vendor', revenue: 0, awards: 0 };
@@ -141,6 +162,8 @@ export function rollupPlatformOverview(txns, t0) {
     pointsAwarded: b.pointsAwarded,
     pointsRedeemed: b.pointsRedeemed,
     revenue: Number(b.revenue.toFixed(2)),
+    transfers: b.transfers,
+    pointsMoved: b.pointsMoved,
     activeStudents: b.students.size,
   });
 

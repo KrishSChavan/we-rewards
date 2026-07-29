@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile } from '../lib/tiers.js';
 import { requireUser, requireConsent } from '../middleware/auth.js';
+import { emitBalance } from '../lib/realtime.js';
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
 
@@ -134,7 +135,7 @@ router.post('/decline', async (req, res, next) => {
 router.get('/balances', requireConsent, async (req, res, next) => {
   try {
     const [{ data: vendors, error: vErr }, { data: balances, error: bErr }] = await Promise.all([
-      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: true }),
+      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: true }),
       supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
     ]);
     if (vErr) throw vErr;
@@ -151,6 +152,9 @@ router.get('/balances', requireConsent, async (req, res, next) => {
         longitude: v.longitude ?? null,
         hasLogo: Boolean(v.has_logo),
         balance: balanceMap[v.id] ?? 0,
+        // Feeds the Move-points picker (community-points.md step 5). Advisory
+        // only — the transfer RPC re-checks eligibility server-side.
+        acceptsCommunity: Boolean(v.accepts_community_points),
         rewards: (v.rewards ?? []).filter((r) => r.active),
       }))
     );
@@ -233,13 +237,80 @@ router.get('/tier', requireConsent, async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/me/community — the cross-vendor pool (community-points.md step 4).
+ * Not keyed to a vendor: one row per student, minted at 10% of every earn.
+ * A student who has never earned has no row, which is a 0 balance, not an error.
+ */
+router.get('/community', requireConsent, async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('community_balances')
+      .select('balance, lifetime_earned')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    if (error) throw error;
+    res.json({ balance: data?.balance ?? 0, lifetimeEarned: data?.lifetime_earned ?? 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/community-transfer  { vendorId, amount, requestId? }
+ * Move community points into one vendor's balance — one-way, final
+ * (community-points.md step 5). The amount is the student's choice; whether
+ * they have it, and whether the vendor is eligible / under its monthly inbound
+ * cap, is decided inside the atomic transfer_community_points RPC. `requestId`
+ * is the same client-generated idempotency token /api/vendor/award uses, so a
+ * network retry of a confirmed move can't move the points twice.
+ */
+router.post('/community-transfer', requireConsent, async (req, res, next) => {
+  try {
+    const { vendorId, amount, requestId } = req.body ?? {};
+    if (!isUuid(vendorId)) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'vendorId required.' });
+    }
+    const amt = Number(amount);
+    // Whole points only, bounded well above any real balance (the RPC's
+    // balance >= amount guard is the true ceiling — this just keeps a junk
+    // value from reaching an integer column as a cast error).
+    if (!Number.isInteger(amt) || amt < 1 || amt > 1_000_000) {
+      return res.status(400).json({ error: 'AMOUNT_INVALID', message: 'Enter a valid number of points to move.' });
+    }
+    const clientToken = (typeof requestId === 'string' && /^[\w-]{8,64}$/.test(requestId))
+      ? requestId
+      : null;
+
+    const { data, error } = await supabaseAdmin.rpc('transfer_community_points', {
+      p_user_id: req.user.id,
+      p_vendor_id: vendorId,
+      p_amount: amt,
+      p_client_token: clientToken,
+    });
+    if (error) throw error;
+
+    const newCommunity = data?.[0]?.new_community ?? 0;
+    const newBalance = data?.[0]?.new_vendor_balance ?? 0;
+    // Same event the award path pushes, so every open tab's vendor card and
+    // community counter move together (public/student/app.js reads both fields).
+    emitBalance(req.user.id, { vendorId, balance: newBalance, community: newCommunity });
+
+    res.json({ newCommunity, newBalance });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** GET /api/me/history — the student's transactions over the last 30 days */
 router.get('/history', requireConsent, async (req, res, next) => {
   try {
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const { data, error } = await supabaseAdmin
       .from('transactions')
-      .select('id, vendor_id, type, points, dollar_amount, created_at, vendors(name), rewards(title)')
+      // community_points rides on the earn's own row, so the History tab can
+      // show "+150 pts · +15 community" without a second query.
+      .select('id, vendor_id, type, points, dollar_amount, community_points, created_at, vendors(name), rewards(title)')
       .eq('user_id', req.user.id)
       .gte('created_at', since)
       .order('created_at', { ascending: false })
@@ -260,17 +331,19 @@ router.get('/history', requireConsent, async (req, res, next) => {
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, transactions, scores] = await Promise.all([
+    const [profile, balances, community, transactions, scores] = await Promise.all([
       supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
+      // The community pool is a balance we hold, so the export promises it too.
+      supabaseAdmin.from('community_balances').select('balance, lifetime_earned, updated_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin
         .from('transactions')
-        .select('id, vendor_id, type, points, dollar_amount, reward_id, created_at, vendors(name), rewards(title)')
+        .select('id, vendor_id, type, points, dollar_amount, community_points, reward_id, created_at, vendors(name), rewards(title)')
         .eq('user_id', uid)
         .order('created_at', { ascending: false }),
       supabaseAdmin.from('user_scores').select('*').eq('user_id', uid).maybeSingle(),
     ]);
-    for (const r of [profile, balances, transactions, scores]) if (r.error) throw r.error;
+    for (const r of [profile, balances, community, transactions, scores]) if (r.error) throw r.error;
 
     res.setHeader('Content-Disposition', 'attachment; filename="werewards-data.json"');
     res.json({
@@ -278,6 +351,7 @@ router.get('/export', async (req, res, next) => {
       account: { id: uid, email: req.user.email },
       profile: profile.data,
       balances: balances.data ?? [],
+      community: community.data ?? { balance: 0, lifetime_earned: 0 },
       transactions: transactions.data ?? [],
       scores: scores.data,
     });

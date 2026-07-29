@@ -71,6 +71,27 @@ describe('rollupVendorAnalytics', () => {
     assert.equal(r.daily[13].date, dayKey(t0), 'last bucket is today');
     assert.equal(r.daily[0].date, dayKey(t0 - 13 * DAY), 'first bucket is 13 days ago');
   });
+
+  // The community-points.md step-5 audit made concrete: before migration-027 a
+  // +80 transfer fell into the redeem arm, where redeemPoints dropped by 80 and
+  // redemptions DECREMENTED — quietly erasing a real redemption.
+  test('an inbound community transfer never pollutes awards/redemptions/customers', () => {
+    const t0 = startOfToday();
+    const r = rollupVendorAnalytics([
+      { type: 'redeem', points: -50, created_at: iso(t0 + HOUR), user_id: 'u1', rewards: { title: 'Free drink' } },
+      { type: 'community_transfer', points: 80, created_at: iso(t0 + 2 * HOUR), user_id: 'u2' },
+    ], t0);
+
+    assert.equal(r.today.redemptions, 1, 'the transfer must not decrement the real redemption');
+    assert.equal(r.today.redeemPoints, 50, 'the transfer must not subtract from redeemed points');
+    assert.equal(r.today.awards, 0, 'a transfer is not an award either');
+    assert.equal(r.today.revenue, 0);
+    assert.equal(r.today.customers, 1, 'a transfer is not a visit — only the redeemer counts');
+    assert.equal(r.today.movedIn, 1, 'but it IS surfaced on its own');
+    assert.equal(r.today.movedInPoints, 80);
+    assert.equal(r.last30.movedInPoints, 80);
+    assert.deepEqual(r.topRewards, [{ title: 'Free drink', count: 1 }], 'and stays out of topRewards');
+  });
 });
 
 describe('rollupPlatformOverview', () => {
@@ -104,5 +125,24 @@ describe('rollupPlatformOverview', () => {
     const r = rollupPlatformOverview([], t0);
     assert.equal(r.daily.length, 14);
     assert.equal(r.daily[13].date, dayKey(t0));
+  });
+
+  // Platform totals must not double-count a transfer: the mint already counted
+  // these points once, and the move is the same points changing pockets.
+  test('a community transfer is counted on its own, not as an award or redemption', () => {
+    const t0 = startOfToday();
+    const r = rollupPlatformOverview([
+      { type: 'earn', points: 100, dollar_amount: 10, created_at: iso(t0 + HOUR), user_id: 'u1', vendor_id: 'v1', vendors: { name: 'A' } },
+      { type: 'community_transfer', points: 40, created_at: iso(t0 + 2 * HOUR), user_id: 'u1', vendor_id: 'v2', vendors: { name: 'B' } },
+    ], t0);
+
+    assert.equal(r.today.awards, 1, 'only the earn is an award');
+    assert.equal(r.today.redemptions, 0, 'the transfer must not run redemptions backwards');
+    assert.equal(r.today.pointsAwarded, 100);
+    assert.equal(r.today.pointsRedeemed, 0);
+    assert.equal(r.today.transfers, 1);
+    assert.equal(r.today.pointsMoved, 40);
+    assert.equal(r.topVendors.length, 1, 'B earned nothing — a transfer is not revenue');
+    assert.equal(r.topVendors[0].name, 'A');
   });
 });

@@ -9,7 +9,7 @@
 // keep operating under a consent record that points at text they never saw.
 // Only bump for material changes — every bump interrupts every user.
 
-export const TERMS_VERSION = '2026-07-19';
+export const TERMS_VERSION = '2026-07-29';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

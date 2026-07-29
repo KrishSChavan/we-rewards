@@ -152,9 +152,21 @@ const applyLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many applications from this connection — try again later.' },
 });
+// Community-point transfers move real value (community-points.md step 6), so
+// they get their own cap like the other money-adjacent endpoints. Per-IP on a
+// NAT'd campus network, so generous vs. one student's real usage (a handful of
+// moves), tight vs. a script hammering the RPC.
+const transferLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many moves — wait a minute and try again.' },
+});
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
 app.use('/api/vendor/redeem-preview', redeemLimiter);
+app.use('/api/me/community-transfer', transferLimiter);
 app.use('/api/client-error', clientErrorLimiter);
 app.use('/api/client-event', clientEventLimiter);
 app.use('/api/apply', applyLimiter);
@@ -371,7 +383,11 @@ app.use((err, req, res, _next) => {
     TX_NOT_FOUND: [404, 'That transaction was not found for this vendor.'],
     ALREADY_REVERSED: [409, 'That transaction was already undone.'],
     CANNOT_REVERSE_REVERSAL: [400, 'That entry is itself an undo — nothing to reverse.'],
+    CANNOT_REVERSE_TRANSFER: [400, 'Moved-in community points are the student’s move to make — it can’t be undone here.'],
     REVERSAL_EXPIRED: [403, 'Too late to undo — undo is only available for one minute after a transaction.'],
+    AMOUNT_INVALID: [400, 'Enter a valid number of points to move.'],
+    VENDOR_INELIGIBLE: [409, 'This spot isn’t accepting moved-in points right now.'],
+    VENDOR_CAP_REACHED: [409, 'This spot has hit its limit for moved-in points this month — try another spot.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {
