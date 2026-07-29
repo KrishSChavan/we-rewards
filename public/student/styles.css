@@ -321,31 +321,34 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .tier-scale span { text-align: center; }
 
-/* No top padding: the community card immediately below brings its own top
-   margin. Still no INLINE padding — the carousel scrolls edge to edge and each
-   child supplies its own 1.3rem gutter.
+/* No INLINE padding — the carousel scrolls edge to edge and each child supplies
+   its own 1.3rem gutter.
 
-   A flex column so the leftover height can be shared out as auto margins rather
-   than pooling in one gap. Three of them take a third each — below the community
-   card, and above/below the earn-code button — which is what spaces the card,
-   the spots row, and the button evenly down the screen.
+   A flex column, so the four gaps down the home screen — banner→card,
+   card→spots, spots→button, button→tab bar — can each be built the SAME way:
 
-   Auto margins (not justify-content: space-evenly) on purpose: when the content
-   is taller than the screen, space-evenly falls back to `center` and clips the
-   top of the card somewhere no scroll can reach, whereas auto margins simply
-   resolve to 0 and the page scrolls normally.
+       gap  =  one equal share of the leftover height  +  0.9rem
+
+   The auto half comes from four auto margins (top and bottom of the community
+   card, top and bottom of the earn-code button); flexbox splits free space
+   equally between them, so all four gaps grow and shrink together.
+
+   The 0.9rem half is not decoration, it is what keeps them equal when there is
+   no free space left to share. The carousel already carries 0.9rem of bottom
+   padding — clearance for the vendor cards' hard shadow, which it would
+   otherwise clip — so unless the other three gaps carry the same constant, that
+   one renders wider. Hence padding here (top AND bottom) and .home-sub's
+   margin-top below. THESE FOUR 0.9rem VALUES MOVE TOGETHER; change one alone
+   and the gaps go uneven the moment the screen is too short to have slack.
+
+   Auto margins rather than justify-content: space-evenly, because when content
+   is taller than the screen space-evenly falls back to `center` and pushes the
+   top of the card above the scroll container's start edge, where no scroll can
+   reach it. Auto margins just resolve to 0.
 
    Children are flex: 0 0 auto because the default flex-shrink: 1 would squash
-   the carousel and the cards inside it the moment the content overflowed.
-
-   Equal auto margins alone do NOT produce equal-looking gaps: the carousel
-   already carries 0.9rem of bottom padding (clearance for the vendor cards'
-   hard shadow, which it would otherwise clip), so that one gap renders 0.9rem
-   wider than the others. The fix is to give the other two the same 0.9rem of
-   fixed space — .home-main's padding-bottom and .home-sub's margin-top below —
-   so every gap is the same auto share plus the same constant. Change one of
-   these three and the row of gaps goes uneven again. */
-.home-main { flex: 1; padding: 0 0 0.9rem; display: flex; flex-direction: column; }
+   the carousel and the cards inside it the moment the content overflowed. */
+.home-main { flex: 1; padding: 0.9rem 0; display: flex; flex-direction: column; }
 .home-main > * { flex: 0 0 auto; }
 .home-sub { margin: 0.9rem 1.3rem 0.85rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
 
@@ -357,12 +360,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .community-card {
   position: relative; z-index: 2;      /* sits ON the banner, not under it */
   width: calc(100% - 2.6rem);
-  /* Top: sits clear of the banner rather than lapping onto it — the tier scale
-     ("1x 1.5x 2x") runs along the banner's bottom edge and the card crowded it.
-     .home-main carries no top padding, so this margin is the whole gap.
-     Bottom: auto — one of the three shares of the leftover height (see
-     .home-main), which is what evens out the gap down to the spots row. */
-  margin: 1.65rem 1.3rem auto;
+  /* Vertical margins are auto: two of the four equal shares of the leftover
+     height (see .home-main). Both sides have to be auto, not just the bottom —
+     a fixed top margin stays put when the autos collapse on a short screen, and
+     the card then visibly sits nearer the spots row than the banner. The 0.9rem
+     that keeps it clear of the banner's tier scale is .home-main's padding-top. */
+  margin: auto 1.3rem;
   display: flex; align-items: center; gap: 0.8rem;
   text-align: left;
   background: var(--card);
@@ -402,10 +405,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
    margin: auto works both ways inside .home-main's flex column: the horizontal
    autos do the usual shrink-wrap centring, and the vertical pair take two of the
-   three equal shares of the leftover height (the community card's margin-bottom
-   is the third). On a short screen there is no leftover, all three resolve to 0,
-   and the button simply follows the carousel — whose own 0.9rem bottom padding
-   is what keeps the two from touching. */
+   four equal shares of the leftover height (the community card's two are the
+   others). On a short screen there is no leftover, all four resolve to 0, and
+   the button simply follows the carousel — whose own 0.9rem bottom padding, and
+   .home-main's matching padding-bottom, are what keep the gaps even there. */
 .show-code-btn {
   width: fit-content; max-width: calc(100% - 2.6rem);
   margin: auto;
