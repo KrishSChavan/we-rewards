@@ -481,7 +481,7 @@ app.use((err, req, res, _next) => {
     VENDOR_CAP_REACHED: [409, 'This spot has hit its limit for moved-in points this month, try another spot.'],
     // Punch cards (migration-028)
     PUNCH_DISABLED: [403, 'Punch cards aren’t available at this spot right now.'],
-    ALREADY_PUNCHED: [409, 'You already punched in here tonight — come back tomorrow!'],
+    ALREADY_PUNCHED: [409, 'You already punched in here tonight, come back tomorrow!'],
     PUNCH_INVALID: [401, 'That punch code has expired. Scan the live code at the counter.'],
     HOLD_INVALID: [401, 'That punch link has expired. Scan the code at the counter again.'],
     HOLD_LIMIT: [503, 'Punch-ins are busy right now, try again in a moment.'],

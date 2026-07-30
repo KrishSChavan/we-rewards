@@ -2027,7 +2027,7 @@ function securePendingPunchHold() {
         writePendingPunch({ holdId: data.holdId, expiresAt: Date.now() + (data.expiresIn ?? 600) * 1000 });
       } else if (res.status === 401 || res.status === 403) {
         clearPendingPunch();
-        punchToast(data.message || 'That punch code expired — scan the live code at the counter.', false);
+        punchToast(data.message || 'That punch code expired. Scan the live code at the counter.', false);
       }
       // other statuses (rate limit, 5xx): keep the token and let the claim retry
     } catch { /* offline — keep the token, the claim will retry */ }
@@ -2058,7 +2058,7 @@ async function claimPendingPunch() {
     if (!current) return;
     if (current.holdId && current.expiresAt && Date.now() > current.expiresAt) {
       clearPendingPunch();
-      punchToast('That punch link expired — scan the code at the counter again.', false);
+      punchToast('That punch link expired. Scan the code at the counter again.', false);
       return;
     }
     const body = current.holdId ? { holdId: current.holdId } : { token: current.token };
@@ -2117,7 +2117,7 @@ function renderPunchUi() {
   $('punch-progress').textContent = `${shown} / ${target}`;
   $('punch-reward-label').textContent = p.reward ? `Full card = ${p.reward}` : '';
   $('punch-scan-sub').textContent = hasReady
-    ? 'Card full — tap your punch card above'
+    ? 'Card full, tap your punch card above'
     : 'Scan the code at the counter';
 
   renderPunchDots($('punch-grid'), target, shown);
@@ -2204,14 +2204,14 @@ function openPunchModal() {
     $('punch-modal-title').textContent = 'Card full! 🎉';
     $('punch-modal-desc').textContent =
       `Your reward: ${p.reward || 'ask at the counter'}.` +
-      (p.readyCards > 1 ? ` You have ${p.readyCards} full cards — redeem them one at a time.` : '') +
+      (p.readyCards > 1 ? ` You have ${p.readyCards} full cards. Redeem them one at a time.` : '') +
       ' Tap Redeem and show the code at the counter.';
     $('punch-redeem-btn').hidden = false;
     $('punch-redeem-btn').disabled = false;
   } else {
     $('punch-modal-title').textContent = 'Punch card';
     $('punch-modal-desc').textContent =
-      `${Math.min(p.punches ?? 0, target)} of ${target} punches. Scan the punch-in code at the counter — one punch a night — and a full card earns ${p.reward || 'a reward'}.`;
+      `${Math.min(p.punches ?? 0, target)} of ${target} punches. Scan the punch-in code at the counter (one punch a night) and a full card earns ${p.reward || 'a reward'}.`;
     $('punch-redeem-btn').hidden = true;
   }
 
@@ -2487,7 +2487,7 @@ function onPunchScanPayload(raw) {
   punchScanLastPayloadAt = now;
 
   const token = punchTokenFromPayload(raw);
-  if (!token) return setPunchScanStatus('That’s not a punch-in code — look for it on the counter screen.', true);
+  if (!token) return setPunchScanStatus('That’s not a punch-in code. Look for it on the counter screen.', true);
   submitPunch(token);
 }
 
@@ -2523,7 +2523,7 @@ async function submitPunch(token) {
     closePunchScanSheet();
     onPunchClaimed(data);
   } catch {
-    setPunchScanStatus('No connection — check the internet and try again.', true);
+    setPunchScanStatus('No connection. Check the internet and try again.', true);
     punchScanRetryTimer = setTimeout(retryPunchScan, 2200);
   } finally {
     punchScanBusy = false;

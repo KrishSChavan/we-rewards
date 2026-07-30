@@ -723,7 +723,7 @@ function onScanPayload(key, raw) {
   // The rotating punch-in code pointed back at the terminal's own camera:
   // harmless, so just say what it is and keep scanning.
   if (parsed.kind === 'punch-url') {
-    return flashScanStatus(key, 'That’s the punch-in code — customers scan it with their phones');
+    return flashScanStatus(key, 'That’s the punch-in code: customers scan it with their phones');
   }
   // A punch-card redemption code belongs on the Redeem screen; there it takes
   // its own preview path (separate table from reward codes).
@@ -2153,7 +2153,7 @@ function openSignOutConfirm() {
   // Sign-out isn't a tab switch, so it never reaches the unsaved-changes guard in
   // switchMode(). Warn here instead, since signing out drops those edits.
   $('signout-confirm-note').textContent = isSettingsDirty()
-    ? 'You have unsaved settings changes — signing out discards them. Staff will need the email and password to sign back in.'
+    ? 'You have unsaved settings changes. Signing out discards them. Staff will need the email and password to sign back in.'
     : 'Staff will need the email and password to sign back in on this device.';
   $('signout-confirm').hidden = false;
 }
