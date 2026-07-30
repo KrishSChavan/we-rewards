@@ -1288,6 +1288,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .punch-ready { font-weight: 900; color: var(--success); font-size: 1rem; }
 
+/* --- the progress / redeem sheet --- */
+
+/* Short content: an emoji, a line of copy, and — only once a card is full —
+   the Redeem button and the code it mints. The 42vh floor the other sheets
+   share would hold a band of bare card open under all that, so this one sizes
+   to what's in it. Only the floor goes: .detail-card's 88vh cap and its
+   overflow still catch the tall state, once the QR is on screen. */
+#punch-modal .detail-card { min-height: 0; }
+
 /* --- the bottom-hugging "Punch in" button --- */
 
 /* Same sticker language as the home screen's primary button. margin-top:auto
