@@ -1060,6 +1060,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   padding-bottom: env(safe-area-inset-bottom);
   z-index: 30;
 }
+/* installed PWA gets the full home-indicator inset, which reads as too much
+   air under the bar; trim it down without losing the safe-area clearance */
+@media (display-mode: standalone) {
+  .tabbar {
+    padding-bottom: max(0.4rem, calc(env(safe-area-inset-bottom) - 0.6rem));
+  }
+}
 .tab-btn {
   position: relative;
   flex: 1;
