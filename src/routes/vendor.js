@@ -4,7 +4,8 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireVendor, requirePin } from '../middleware/auth.js';
-import { emitBalance } from '../lib/realtime.js';
+import { emitBalance, emitPunch } from '../lib/realtime.js';
+import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WINDOW_SECONDS } from '../lib/punch.js';
 import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupVendorAnalytics } from '../lib/analytics.js';
@@ -71,6 +72,35 @@ router.get('/config', (req, res) => {
     allowExactEntry: v.allow_exact_entry,
     tiers: v.tiers ?? [],
     hasPin: Boolean(v.pin_hash),
+    punchEnabled: Boolean(v.punch_enabled),
+    punchTarget: v.punch_target ?? 10,
+    punchReward: v.punch_reward ?? '',
+  });
+});
+
+/**
+ * GET /api/vendor/punch-token
+ * The rotating punch-in code for the PUNCH tab. Mints a fresh HMAC-signed URL
+ * for the current 30-second slot; the terminal re-asks when expiresIn runs
+ * out. Not PIN-gated: displaying the code IS the feature (it can only give
+ * students punches), same trust level as the un-gated award screen.
+ */
+router.get('/punch-token', (req, res) => {
+  const v = req.vendor;
+  if (!v.punch_enabled) {
+    return res.status(403).json({ error: 'PUNCH_DISABLED', message: 'Turn on punch cards in Settings first.' });
+  }
+  const windowIndex = currentWindow();
+  const token = mintPunchToken(v.id, windowIndex);
+  // Prefer an explicit APP_ORIGIN (prod behind proxies/CDN); otherwise trust
+  // the request's own origin — correct in dev and single-host deploys.
+  const origin = process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+  res.json({
+    url: punchUrl(origin, token),
+    windowSeconds: PUNCH_WINDOW_SECONDS,
+    expiresIn: secondsLeftInWindow(),
+    target: v.punch_target ?? 10,
+    reward: v.punch_reward ?? '',
   });
 });
 
@@ -228,6 +258,73 @@ router.post('/redeem', requirePin, async (req, res, next) => {
     emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
 
     res.json({ rewardTitle: data[0].reward_title, newBalance });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Resolve a live 4-digit PUNCH redeem code for THIS vendor, or throw CODE_INVALID. */
+async function resolvePunchCode(code, vendorId) {
+  const c = String(code ?? '').trim();
+  if (!/^\d{4}$/.test(c)) throw new Error('CODE_INVALID');
+  const { data } = await supabaseAdmin
+    .from('punch_redeem_codes')
+    .select('user_id, card_id')
+    .eq('code', c)
+    .eq('vendor_id', vendorId)
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle();
+  if (!data) throw new Error('CODE_INVALID');
+  return data;
+}
+
+/**
+ * POST /api/vendor/punch-redeem-preview  { code }
+ * Look up a live punch-card redemption code WITHOUT consuming it — the
+ * terminal shows "is this the user?" and only /punch-redeem retires the card.
+ * PIN-gated like reward redemption: it hands out product.
+ */
+router.post('/punch-redeem-preview', requirePin, async (req, res, next) => {
+  try {
+    const { user_id: userId, card_id: cardId } = await resolvePunchCode(req.body?.code, req.vendor.id);
+    const [{ data: profile }, { data: card }] = await Promise.all([
+      supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle(),
+      supabaseAdmin.from('punch_cards').select('target').eq('id', cardId).maybeSingle(),
+    ]);
+    res.json({
+      name: profile?.name ?? 'Customer',
+      reward: req.vendor.punch_reward ?? 'Free reward',
+      target: card?.target ?? req.vendor.punch_target ?? 10,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/vendor/punch-redeem  { code }
+ * Final step after the vendor confirms. redeem_punch_card consumes the code
+ * and retires the card in ONE transaction — a double-submit finds no code the
+ * second time, exactly like redeem_by_code.
+ */
+router.post('/punch-redeem', requirePin, async (req, res, next) => {
+  try {
+    const code = String(req.body?.code ?? '').trim();
+    if (!/^\d{4}$/.test(code)) throw new Error('CODE_INVALID');
+
+    const { data, error } = await supabaseAdmin.rpc('redeem_punch_card', {
+      p_code: code,
+      p_vendor_id: req.vendor.id,
+    });
+    if (error) throw error;
+    if (!data?.length) throw new Error('CODE_INVALID');
+
+    const { reward_text: reward, customer_id: userId } = data[0];
+    // Live push so the student's open card flips to "redeemed" on the spot.
+    emitPunch(userId, { vendorId: req.vendor.id, redeemed: true, reward });
+
+    const { data: profile } = await supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle();
+    res.json({ reward, customerName: profile?.name ?? 'Customer' });
   } catch (err) {
     next(err);
   }
@@ -533,6 +630,24 @@ function validSettings(body) {
     pin = String(body.pin);
   }
 
+  // Punch cards (migration-028): the vendor's own on/off switch + card shape.
+  if (body?.punchEnabled != null) {
+    if (typeof body.punchEnabled !== 'boolean') return { error: 'Punch cards must be on or off.' };
+    updates.punch_enabled = body.punchEnabled;
+  }
+  if (body?.punchTarget != null) {
+    const t = Number(body.punchTarget);
+    if (!Number.isInteger(t) || t < 2 || t > 50) {
+      return { error: 'Punches for a full card must be a whole number from 2 to 50.' };
+    }
+    updates.punch_target = t;
+  }
+  if (body?.punchReward != null) {
+    const r = String(body.punchReward).trim();
+    if (!r || r.length > 80) return { error: 'Describe the punch-card reward in up to 80 characters.' };
+    updates.punch_reward = r;
+  }
+
   if (!Object.keys(updates).length && pin == null) return { error: 'Nothing to update.' };
   return { updates, pin };
 }
@@ -544,6 +659,9 @@ const settingsView = (v) => ({
   hasPin: Boolean(v.pin_hash),
   address: v.address ?? '',
   logo: v.logo ?? null,
+  punchEnabled: Boolean(v.punch_enabled),
+  punchTarget: v.punch_target ?? 10,
+  punchReward: v.punch_reward ?? '',
 });
 
 /** GET /api/vendor/settings — current economics + config for the Settings tab. */

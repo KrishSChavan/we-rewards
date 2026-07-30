@@ -49,6 +49,8 @@
       <nav class="tabs" aria-label="Mode">
         <button id="tab-award" class="tab is-active">AWARD</button>
         <button id="tab-redeem" class="tab tab-redeem">REDEEM</button>
+        <!-- hidden until the vendor turns punch cards on in Settings -->
+        <button id="tab-punch" class="tab tab-punch" hidden>PUNCH</button>
         <button id="tab-manage" class="tab tab-manage">ITEMS</button>
         <button id="tab-stats" class="tab tab-stats">STATS</button>
         <button id="tab-settings" class="tab tab-settings">SETTINGS</button>
@@ -227,6 +229,33 @@
         </div>
       </section>
 
+      <!-- ===== PUNCH: ROTATING PUNCH-IN CODE ===== -->
+      <!-- Customers scan this to punch in — with the WeRewards app's scanner or
+           a plain phone camera (the QR is a URL that deep-links into the app).
+           The code is server-signed and rotates every 30 seconds, so a photo of
+           it dies almost immediately. Fullscreen mode turns the terminal into a
+           counter-top sign. -->
+      <section id="screen-punch" class="screen punch-screen" hidden>
+        <div id="punch-stage" class="punch-stage">
+          <h2 class="scan-title punch-title">SCAN TO<br />PUNCH IN</h2>
+          <p id="punch-reward-line" class="punch-reward-line"></p>
+          <div class="punch-qr-wrap">
+            <div class="qr-card-terminal">
+              <canvas id="punch-qr" class="punch-qr" role="img" aria-label="Rotating punch-in QR code"></canvas>
+            </div>
+            <div id="punch-qr-cover" class="punch-qr-cover" hidden>
+              <p id="punch-qr-cover-text">Reconnecting…</p>
+            </div>
+          </div>
+          <div class="punch-timer" aria-hidden="true"><div id="punch-timer-fill" class="punch-timer-fill"></div></div>
+          <p class="punch-hint">Scan with your phone camera or the WeRewards app · one punch per night</p>
+          <div class="punch-actions">
+            <button id="punch-fullscreen" class="btn-ghost" type="button">Fullscreen</button>
+          </div>
+          <button id="punch-exit-fs" class="punch-exit-fs" type="button" hidden>✕ Exit fullscreen</button>
+        </div>
+      </section>
+
       <!-- ===== ITEMS: MANAGE REWARDS ===== -->
       <section id="screen-manage" class="screen manage-screen" hidden>
         <div class="manage-head">
@@ -340,6 +369,27 @@
             <p id="set-logo-error" class="field-error" hidden></p>
             <p id="set-logo-warn" class="field-warn" hidden></p>
             <p class="manage-note">Shown next to your name on customers' cards. Square images look best, since we shrink it to a small icon.</p>
+          </div>
+
+          <div class="stats-card" data-card="punch">
+            <div class="setting-row">
+              <span class="setting-label">
+                <span class="setting-name">Punch card</span>
+                <span class="setting-desc">Show a rotating punch-in code on the PUNCH tab. Customers scan it once a night; a full card earns your reward.</span>
+              </span>
+              <button id="set-punch" class="switch" type="button" role="switch" aria-checked="false" aria-label="Punch card">
+                <span class="switch-knob"></span>
+              </button>
+            </div>
+            <div id="punch-fields">
+              <label class="settings-field">Punches for a full card
+                <input id="set-punch-target" type="number" inputmode="numeric" min="2" max="50" step="1" />
+              </label>
+              <label class="settings-field">Reward for a full card
+                <input id="set-punch-reward" type="text" autocomplete="off" maxlength="80" placeholder="Free cover charge" />
+              </label>
+              <p class="manage-note">Changing the card size only affects new cards, anyone mid-card finishes the card they started.</p>
+            </div>
           </div>
 
           <div class="stats-card" data-card="pin">
@@ -477,6 +527,9 @@
   <!-- QR decode fallback (UMD, exposes window.jsQR) — served same-origin so the
        'self' script-src covers it. Must load before terminal.js. -->
   <script src="/terminal/jsQR.js"></script>
+  <!-- QR encoder (qrcode-generator UMD, global `qrcode`) for the rotating
+       punch-in code — same build the student app uses. Before terminal.js. -->
+  <script src="/terminal/qrcode.js"></script>
   <script src="/terminal/terminal.js"></script>
 </body>
 </html>

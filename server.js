@@ -21,6 +21,9 @@ import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
+import {
+  verifyPunchToken, mintPunchBinding, PUNCH_BINDING_COOKIE, PUNCH_HOLD_TTL_SECONDS,
+} from './src/lib/punch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -116,9 +119,12 @@ const pinLimiter = rateLimit({
 });
 // 4-digit redeem codes are also enumerable; cap moderately (well above a busy
 // vendor's real redemption rate, well below what makes enumeration practical).
+// One limiter instance = one shared counter across every path it's mounted on
+// (preview + confirm, rewards + punch cards), so the ceiling is sized for all
+// four together: ~240 code lookups per terminal IP per 15 minutes.
 const redeemLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 120,
+  max: 240,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
@@ -163,10 +169,46 @@ const transferLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many moves, wait a minute and try again.' },
 });
+// Punch claims are authenticated but cheap to spam (each one costs an RPC);
+// generous per-IP because a busy bar's wifi can NAT a whole line of students
+// through one address, tight enough to keep a script from hammering the RPC.
+// (Token forgery isn't the concern — the HMAC is unguessable — this is DoS
+// hygiene, like the general limiter.)
+const punchLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
+});
+// The camera-scan handoff is UNauthenticated (the whole point is the student
+// isn't signed in yet), so it gets its own bound. Each accepted hold writes a
+// row; the per-vendor cap in create_punch_hold is the second fence.
+const punchHoldLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
+});
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
-app.use('/api/vendor/redeem-preview', redeemLimiter);
+// Every path that resolves a 4-digit code, not just the preview. app.use()
+// matches on whole path segments, so '/api/vendor/redeem-preview' alone left
+// '/api/vendor/redeem' and both punch-card paths covered by nothing but the
+// 1000/15min general cap — enough to sweep 10% of the 4-digit space inside a
+// live code's 120-second life.
+app.use([
+  '/api/vendor/redeem-preview',
+  '/api/vendor/redeem',
+  '/api/vendor/punch-redeem-preview',
+  '/api/vendor/punch-redeem',
+], redeemLimiter);
 app.use('/api/me/community-transfer', transferLimiter);
+// Same segment-matching trap: '/api/me/punch' does NOT cover
+// '/api/me/punch-redeem-code'.
+app.use(['/api/me/punch', '/api/me/punch-redeem-code'], punchLimiter);
+app.use('/api/punch/hold', punchHoldLimiter);
 app.use('/api/client-error', clientErrorLimiter);
 app.use('/api/client-event', clientEventLimiter);
 app.use('/api/apply', applyLimiter);
@@ -347,6 +389,55 @@ app.post('/api/client-event', async (req, res) => {
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// Punch-card camera-scan handoff (migration-028). A phone-camera scan of the
+// terminal's rotating QR lands here signed OUT, and the token dies in ~90s —
+// far less time than Google OAuth + the consent modal take. So the page swaps
+// the still-live token for a single-use, 10-minute hold FIRST, then sends the
+// student through sign-in, and claims the hold via POST /api/me/punch after.
+//
+// Unauthenticated on purpose (there is no session yet), which makes the two
+// fences below load-bearing:
+//   • the returned holdId is useless on its own — the matching nonce goes back
+//     ONLY as an httpOnly cookie, and punch_in requires both. A holdId copied
+//     out of this response and sent to a friend can't be spent in their
+//     browser, so one scan can't be turned into shareable punches.
+//   • create_punch_hold caps holds per 30-second slot and evicts (rather than
+//     refuses) at the per-vendor ceiling, so a flood can neither inflate one
+//     token into hundreds of credentials nor lock genuine scanners out.
+app.post('/api/punch/hold', async (req, res, next) => {
+  try {
+    const parsed = verifyPunchToken(req.body?.token);
+    if (!parsed) {
+      return res.status(401).json({
+        error: 'PUNCH_INVALID',
+        message: 'That punch code has expired. Scan the live code at the counter.',
+      });
+    }
+    const binding = mintPunchBinding();
+    const { data, error } = await supabaseAdmin.rpc('create_punch_hold', {
+      p_vendor_id: parsed.vendorId,
+      p_token_window: parsed.windowIndex,
+      p_ttl_seconds: PUNCH_HOLD_TTL_SECONDS,
+      p_binding_hash: binding.hash,
+    });
+    if (error) throw error;
+    // SameSite=Lax survives the top-level Google OAuth redirect back to us, and
+    // the claim itself is a same-origin fetch, so the cookie rides along with
+    // no client-side handling. httpOnly means page JS can never read or replant
+    // it — that is what binds the hold to this browser.
+    res.cookie(PUNCH_BINDING_COOKIE, binding.nonce, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: PUNCH_HOLD_TTL_SECONDS * 1000,
+      path: '/',
+    });
+    res.json({ holdId: data, expiresIn: PUNCH_HOLD_TTL_SECONDS });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Public vendor logo. Served as real image bytes (decoded from the base64
 // data-URL stored on the vendor) so the student card can use a plain <img>/
 // background that the browser caches — keeping the polled /balances payload
@@ -388,6 +479,14 @@ app.use((err, req, res, _next) => {
     AMOUNT_INVALID: [400, 'Enter a valid number of points to move.'],
     VENDOR_INELIGIBLE: [409, 'This spot isn’t accepting moved-in points right now.'],
     VENDOR_CAP_REACHED: [409, 'This spot has hit its limit for moved-in points this month, try another spot.'],
+    // Punch cards (migration-028)
+    PUNCH_DISABLED: [403, 'Punch cards aren’t available at this spot right now.'],
+    ALREADY_PUNCHED: [409, 'You already punched in here tonight — come back tomorrow!'],
+    PUNCH_INVALID: [401, 'That punch code has expired. Scan the live code at the counter.'],
+    HOLD_INVALID: [401, 'That punch link has expired. Scan the code at the counter again.'],
+    HOLD_LIMIT: [503, 'Punch-ins are busy right now, try again in a moment.'],
+    PUNCH_CARD_NOT_READY: [409, 'This punch card isn’t full yet.'],
+    PUNCH_CARD_RACE: [503, 'Try that punch again in a second.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {

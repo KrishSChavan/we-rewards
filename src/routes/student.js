@@ -2,9 +2,10 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile } from '../lib/tiers.js';
 import { requireUser, requireConsent } from '../middleware/auth.js';
-import { emitBalance } from '../lib/realtime.js';
+import { emitBalance, emitPunch } from '../lib/realtime.js';
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
+import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 
 const router = Router();
 
@@ -134,31 +135,151 @@ router.post('/decline', async (req, res, next) => {
  */
 router.get('/balances', requireConsent, async (req, res, next) => {
   try {
-    const [{ data: vendors, error: vErr }, { data: balances, error: bErr }] = await Promise.all([
+    const [{ data: vendors, error: vErr }, { data: balances, error: bErr }, { data: cards, error: cErr }] = await Promise.all([
       // Newest vendors first so they land at the start (left) of the home carousel.
-      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
+      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, punch_target, punch_reward, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
       supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
+      // Punch-card state (migration-028): the open card's progress + any full
+      // cards waiting to be redeemed. Redeemed cards are history, not payload.
+      supabaseAdmin.from('punch_cards').select('vendor_id, punches, target, completed_at').eq('user_id', req.user.id).is('redeemed_at', null),
     ]);
     if (vErr) throw vErr;
     if (bErr) throw bErr;
+    if (cErr) throw cErr;
 
     const balanceMap = Object.fromEntries((balances ?? []).map((b) => [b.vendor_id, b.balance]));
+    const punchMap = {};
+    for (const c of cards ?? []) {
+      const p = (punchMap[c.vendor_id] ??= { punches: 0, cardTarget: null, readyCards: 0 });
+      if (c.completed_at) p.readyCards += 1;
+      else { p.punches = c.punches; p.cardTarget = c.target; }
+    }
     res.json(
-      (vendors ?? []).map((v) => ({
-        vendorId: v.id,
-        name: v.name,
-        slug: v.slug,
-        address: v.address ?? null,
-        latitude: v.latitude ?? null,
-        longitude: v.longitude ?? null,
-        hasLogo: Boolean(v.has_logo),
-        balance: balanceMap[v.id] ?? 0,
-        // Feeds the Move-points picker (community-points.md step 5). Advisory
-        // only — the transfer RPC re-checks eligibility server-side.
-        acceptsCommunity: Boolean(v.accepts_community_points),
-        rewards: (v.rewards ?? []).filter((r) => r.active),
-      }))
+      (vendors ?? []).map((v) => {
+        const p = punchMap[v.id];
+        return {
+          vendorId: v.id,
+          name: v.name,
+          slug: v.slug,
+          address: v.address ?? null,
+          latitude: v.latitude ?? null,
+          longitude: v.longitude ?? null,
+          hasLogo: Boolean(v.has_logo),
+          balance: balanceMap[v.id] ?? 0,
+          // Feeds the Move-points picker (community-points.md step 5). Advisory
+          // only — the transfer RPC re-checks eligibility server-side.
+          acceptsCommunity: Boolean(v.accepts_community_points),
+          rewards: (v.rewards ?? []).filter((r) => r.active),
+          // Punch cards: enabled drives the vendor page's punch UI; progress
+          // reflects the open card (target snapshotted at its creation).
+          punch: {
+            enabled: Boolean(v.punch_enabled),
+            target: v.punch_target ?? 10,
+            reward: v.punch_reward ?? '',
+            punches: p?.punches ?? 0,
+            cardTarget: p?.cardTarget ?? (v.punch_target ?? 10),
+            readyCards: p?.readyCards ?? 0,
+          },
+        };
+      })
     );
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/punch  { token }  or  { holdId }
+ * Claim a punch. `token` is the rotating QR payload scanned in-app (verified
+ * here: HMAC + freshness); `holdId` is the camera-scan handoff minted by
+ * POST /api/punch/hold before sign-in, which only counts alongside the
+ * httpOnly binding cookie from that same browser.
+ *
+ * ONE RPC call does everything: consuming the hold, deriving the business
+ * night from the scanned slot, and applying the once-per-night + card-lifecycle
+ * rules — all in a single transaction, so a transient failure rolls the hold's
+ * consumption back instead of stranding a student who just signed in.
+ * Identity always comes from the verified session, never the request body.
+ */
+router.post('/punch', requireConsent, async (req, res, next) => {
+  try {
+    const { token, holdId } = req.body ?? {};
+    const args = {
+      p_user_id: req.user.id,
+      p_vendor_id: null,
+      p_token_window: null,
+      p_hold_id: null,
+      p_binding_hash: null,
+      p_timezone: punchTimezone(),
+    };
+
+    if (holdId != null) {
+      if (!isUuid(String(holdId))) throw new Error('HOLD_INVALID');
+      args.p_hold_id = holdId;
+      // The vendor and the slot come out of the hold row itself, so a caller
+      // can't pair someone else's holdId with a vendor of their choosing.
+      args.p_binding_hash = punchBindingHash(req);
+    } else {
+      const parsed = verifyPunchToken(token);
+      if (!parsed) throw new Error('PUNCH_INVALID');
+      args.p_vendor_id = parsed.vendorId;
+      args.p_token_window = parsed.windowIndex;
+    }
+
+    const { data, error } = await supabaseAdmin.rpc('punch_in', args);
+    if (error) throw error;
+    if (!data?.length) throw new Error('PUNCH_INVALID');
+
+    const row = data[0];
+    const vendorId = row.vendor_id;
+    // The hold is spent; the cookie has nothing left to authorize.
+    if (args.p_hold_id) res.clearCookie(PUNCH_BINDING_COOKIE, { path: '/' });
+
+    const payload = {
+      vendorId,
+      punches: row.new_punches,
+      target: row.card_target,
+      completed: row.card_completed,
+      readyCards: row.ready_cards,
+      reward: row.reward_text,
+    };
+    // Other devices this student has open re-sync their stamp grid. No
+    // `redeemed` flag: that one is the vendor's redemption push, which toasts.
+    emitPunch(req.user.id, payload);
+
+    const { data: vendorRow } = await supabaseAdmin.from('vendors').select('name').eq('id', vendorId).maybeSingle();
+    res.json({ ...payload, vendorName: vendorRow?.name ?? 'this spot' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/punch-redeem-code  { vendorId }
+ * Mint the 4-digit counter code for a FULL punch card (oldest completed card
+ * first). Mirrors /redeem-code: short TTL, one live punch code per student per
+ * vendor, atomic single-use consumption on the vendor side.
+ */
+router.post('/punch-redeem-code', requireConsent, async (req, res, next) => {
+  try {
+    const { vendorId } = req.body ?? {};
+    if (!isUuid(vendorId)) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'vendorId required.' });
+    }
+
+    const { data: vendorRow } = await supabaseAdmin
+      .from('vendors').select('active, punch_enabled, punch_reward').eq('id', vendorId).maybeSingle();
+    if (!vendorRow?.active) throw new Error('VENDOR_UNAVAILABLE');
+    // A completed card is honored even if the vendor has since toggled the
+    // feature off — the student earned it while it was on.
+
+    const { data, error } = await supabaseAdmin.rpc('create_punch_redeem_code', {
+      p_user_id: req.user.id,
+      p_vendor_id: vendorId,
+      p_ttl_seconds: 120,
+    });
+    if (error) throw error;
+    res.json({ code: data, ttlSeconds: 120, reward: vendorRow.punch_reward ?? 'Free reward' });
   } catch (err) {
     next(err);
   }

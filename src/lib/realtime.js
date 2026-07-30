@@ -11,3 +11,8 @@ export function setIo(instance) {
 export function emitBalance(userId, payload) {
   if (io && userId) io.to(`user:${userId}`).emit('balance', payload);
 }
+
+/** Push a punch-card update (a punch landed / a full card was redeemed). */
+export function emitPunch(userId, payload) {
+  if (io && userId) io.to(`user:${userId}`).emit('punch', payload);
+}

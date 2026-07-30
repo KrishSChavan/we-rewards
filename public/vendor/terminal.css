@@ -273,6 +273,9 @@ button { font-family: inherit; border: none; cursor: pointer; }
   background: var(--sky); border: 3px solid var(--sky-line); border-radius: 1rem;
   padding: 0.7rem 1.4rem; display: flex; align-items: baseline; gap: 0.45rem;
 }
+/* hidden on the redeem-confirm screen when the code is a punch card (nothing
+   is deducted) — the display:flex above would otherwise defeat [hidden] */
+.balance-chip[hidden] { display: none; }
 .balance-chip span:first-child { font-size: 2.2rem; font-weight: 900; }
 .chip-label { font-weight: 700; color: var(--navy); }
 
@@ -717,3 +720,78 @@ button { font-family: inherit; border: none; cursor: pointer; }
 
 .reward-emoji { font-size: 1.7rem; margin-right: 0.6rem; }
 .confirm-emoji { font-size: clamp(3rem, 8vw, 4.5rem); line-height: 1; }
+
+/* ---------- punch tab (rotating punch-in code) ---------- */
+
+.tab-punch.is-active { background: var(--success); border-color: var(--success); }
+
+.punch-screen { justify-content: safe center; }
+
+.punch-stage {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 0.9rem; text-align: center;
+  width: 100%;
+}
+
+.punch-title { margin-bottom: 0.1rem; }
+
+.punch-reward-line {
+  font-size: clamp(1.15rem, 2.6vw, 1.6rem); font-weight: 900;
+  color: var(--success); letter-spacing: 0.02em;
+  min-height: 1.4em;   /* reserve the line so the QR doesn't jump when it fills */
+}
+
+/* The QR sits on its own white card so it scans against any screen theme. */
+.punch-qr-wrap { position: relative; display: inline-block; }
+.qr-card-terminal {
+  background: #fff; border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 0.9rem; line-height: 0;
+}
+.punch-qr { display: block; }
+
+/* "Reconnecting…" cover: the stale code must not look scannable. */
+.punch-qr-cover {
+  position: absolute; inset: 0; border-radius: 1rem;
+  background: rgba(238, 241, 246, 0.94);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 1.15rem; color: var(--muted);
+  padding: 1rem; text-align: center;
+}
+.punch-qr-cover[hidden] { display: none; }
+
+/* 30-second countdown: a bar draining left, refilled on every new code. */
+.punch-timer {
+  width: min(20rem, 70vw); height: 0.55rem;
+  border-radius: 999px; background: var(--sky);
+  border: 2px solid var(--sky-line); overflow: hidden;
+}
+.punch-timer-fill {
+  height: 100%; width: 100%; border-radius: 999px;
+  background: var(--success);
+  transition: width 0.25s linear;
+}
+
+.punch-hint { color: var(--muted); font-weight: 700; font-size: 1rem; max-width: 34rem; }
+
+.punch-actions { display: flex; gap: 0.6rem; }
+
+/* Exit button for kiosk mode — floats over the fullscreen stage. */
+.punch-exit-fs {
+  position: absolute; top: 0.9rem; right: 0.9rem;
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--ink); border-radius: 0.6rem;
+  font-size: 1rem; font-weight: 900; padding: 0.6rem 0.9rem;
+}
+
+/* Kiosk fullscreen: the stage takes the whole viewport (works even where the
+   Fullscreen API doesn't, e.g. iPhone Safari). */
+body.punch-fs .punch-stage {
+  position: fixed; inset: 0; z-index: 60;
+  background: var(--paper);
+  justify-content: center; padding: 2rem;
+}
+body.punch-fs .punch-stage .punch-actions { display: none; }
+
+/* Settings: dim the card-shape fields while the feature is off. */
+#punch-fields { display: flex; flex-direction: column; gap: 0.9rem; margin-top: 0.9rem; }
+#punch-fields.is-off { opacity: 0.45; }

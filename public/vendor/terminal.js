@@ -12,6 +12,7 @@ let pinTarget = null;      // where the PIN gate leads on success
 let currentEarnCode = null;    // customer's 6-digit earn code on the award pad
 let currentMultiplier = 1;     // scanned customer's tier multiplier (1x/1.5x/2x)
 let pendingRedeemCode = null;  // 4-digit redeem code awaiting vendor confirmation
+let pendingRedeemKind = 'reward'; // 'reward' (redeem_codes) | 'punch' (punch_redeem_codes)
 let padValue = '';         // exact-amount entry string
 let pinValue = '';
 let pinUnlocked = false;   // set once the PIN is entered correctly; lives in
@@ -67,7 +68,7 @@ function installErrorReporter() {
 const screens = [
   'screen-login', 'screen-scan', 'screen-pad',
   'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
-  'screen-settings',
+  'screen-settings', 'screen-punch',
 ];
 
 /* ---------- boot ---------- */
@@ -85,9 +86,17 @@ const screens = [
   $('login-password').addEventListener('keydown', (e) => e.key === 'Enter' && signIn());
   $('tab-award').addEventListener('click', () => switchMode('award'));
   $('tab-redeem').addEventListener('click', () => switchMode('redeem'));
+  $('tab-punch').addEventListener('click', () => switchMode('punch'));
   $('tab-manage').addEventListener('click', () => switchMode('manage'));
   $('tab-stats').addEventListener('click', () => switchMode('stats'));
   $('tab-settings').addEventListener('click', () => switchMode('settings'));
+  $('punch-fullscreen').addEventListener('click', enterPunchFullscreen);
+  $('punch-exit-fs').addEventListener('click', exitPunchFullscreen);
+  // System fullscreen exited some other way (Esc, swipe): drop the CSS kiosk too.
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && document.body.classList.contains('punch-fs')) exitPunchFullscreen();
+  });
+  $('set-punch').addEventListener('click', () => { toggleSwitch($('set-punch')); syncPunchFields(); refreshSettingsDirty(); });
   $('stats-refresh').addEventListener('click', () => loadAnalytics());
   $('settings-save').addEventListener('click', () => saveSettings());
   $('settings-reset').addEventListener('click', () => renderSettings(loadedSettings));
@@ -177,6 +186,7 @@ async function enterApp() {
   $('signout-vendor').textContent = config.name;   // Settings → Sign out card
   $('shell').hidden = false;
   $('screen-login').hidden = true;
+  syncPunchTab();
   refreshRewards();
   refreshLastActivity();
   enterScan();
@@ -206,8 +216,13 @@ function handlePinRequired(res, data) {
     pinUnlocked = false;
     pinToken = null;
     pinValue = '';
-    // gated fetches only fire from redeem/manage/stats, so `mode` is the target
-    pinTarget = mode === 'award' ? 'redeem' : mode;
+    // The response can arrive after the vendor has already moved to an UN-gated
+    // tab (AWARD, PUNCH) — a slow gated request from the tab they left. Drop the
+    // gate but stay put: replacing a live punch-in display with a PIN pad nobody
+    // asked for would strand the counter, and the next gated tab re-prompts
+    // anyway now that pinUnlocked is false.
+    if (mode === 'award' || mode === 'punch') return true;
+    pinTarget = mode;
     renderPinDots();
     $('pin-error').hidden = true;
     show('screen-pin');
@@ -223,21 +238,27 @@ function show(id) {
   if (id === 'screen-pad') idleTimeout = setTimeout(() => enterScan(), 60_000);
   if (id === 'screen-redeem-confirm') idleTimeout = setTimeout(() => enterRedeemScan(), 60_000);
   syncScanners();   // camera runs only while its scan screen is the visible one
+  syncPunch();      // rotating code refreshes only while the PUNCH screen shows
 }
 
 function setTabs(active) {
   $('tab-award').classList.toggle('is-active', active === 'award');
   $('tab-redeem').classList.toggle('is-active', active === 'redeem');
+  $('tab-punch').classList.toggle('is-active', active === 'punch');
   $('tab-manage').classList.toggle('is-active', active === 'manage');
   $('tab-stats').classList.toggle('is-active', active === 'stats');
   $('tab-settings').classList.toggle('is-active', active === 'settings');
 }
 
-// Land on the screen for a PIN-gated mode once it's unlocked.
+// Land on the screen for a mode once the PIN gate (if any) is cleared. PUNCH
+// is un-gated, but a PIN prompt can still land while it's the active tab — a
+// slow gated request from a previous tab answering 401 mid-shift — so it needs
+// a branch here or the terminal returns to REDEEM with the PUNCH tab lit.
 function enterModeScreen(m) {
   if (m === 'manage') enterManage();
   else if (m === 'stats') enterStats();
   else if (m === 'settings') enterSettings();
+  else if (m === 'punch') enterPunch();
   else enterRedeemScan();
 }
 
@@ -277,6 +298,15 @@ function proceedSwitchMode(next) {
     mode = 'award';
     setTabs('award');
     enterScan();
+    return;
+  }
+
+  // PUNCH is display-only (the rotating code can only give customers punches),
+  // so like AWARD it sits outside the PIN gate.
+  if (next === 'punch') {
+    mode = 'punch';
+    setTabs('punch');
+    enterPunch();
     return;
   }
 
@@ -367,14 +397,20 @@ const scanUi = {
   },
 };
 
-// WRW:E:<6 digits> / WRW:R:<4 digits> per the shared student-app contract; bare
-// digit runs are tolerated in case a QR was generated without the prefix.
+// WRW:E:<6 digits> / WRW:R:<4 digits> / WRW:P:<4 digits> per the shared
+// student-app contract; bare digit runs are tolerated in case a QR was
+// generated without the prefix. A URL carrying ?punch= is this terminal's own
+// rotating punch-in code reflected back at the camera — named so the scanner
+// can explain it instead of calling it foreign.
 function parseQrPayload(raw) {
   const s = String(raw ?? '').trim();
   let m = /^WRW:E:(\d{6})$/i.exec(s);
   if (m) return { kind: 'earn', code: m[1] };
   m = /^WRW:R:(\d{4})$/i.exec(s);
   if (m) return { kind: 'redeem', code: m[1] };
+  m = /^WRW:P:(\d{4})$/i.exec(s);
+  if (m) return { kind: 'punch', code: m[1] };
+  if (/[?&]punch=/.test(s)) return { kind: 'punch-url' };
   if (/^\d{6}$/.test(s)) return { kind: 'earn', code: s };
   if (/^\d{4}$/.test(s)) return { kind: 'redeem', code: s };
   return null;
@@ -638,9 +674,11 @@ function setupQrScanning() {
   $('redeem-qr-banner-close').addEventListener('click', () => hideScanBanner('redeem'));
 
   // Kiosk hygiene: never leave the camera running while the tab is backgrounded.
+  // Same for the punch loop — no point refreshing a code nobody can see (and a
+  // backgrounded timer would fall behind anyway; syncPunch restarts it cleanly).
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { scanUi.earn.scanner.stop(); scanUi.redeem.scanner.stop(); }
-    else syncScanners();
+    if (document.hidden) { scanUi.earn.scanner.stop(); scanUi.redeem.scanner.stop(); stopPunchLoop(); }
+    else { syncScanners(); syncPunch(); }
   });
 }
 
@@ -682,6 +720,20 @@ function onScanPayload(key, raw) {
   const ui = scanUi[key];
   const parsed = parseQrPayload(raw);
   if (!parsed) return flashScanStatus(key, 'Not a WeRewards code');
+  // The rotating punch-in code pointed back at the terminal's own camera:
+  // harmless, so just say what it is and keep scanning.
+  if (parsed.kind === 'punch-url') {
+    return flashScanStatus(key, 'That’s the punch-in code — customers scan it with their phones');
+  }
+  // A punch-card redemption code belongs on the Redeem screen; there it takes
+  // its own preview path (separate table from reward codes).
+  if (parsed.kind === 'punch') {
+    if (key !== 'redeem') return showScanBanner(key, 'punch');
+    ui.scanner.stop();
+    $(ui.frame).classList.add('is-hit');
+    submitPunchRedeemCode(parsed.code);
+    return;
+  }
   if (parsed.kind !== ui.expect) return showScanBanner(key, parsed.kind);
 
   // (Sightings during a mid-flight request never reach here — the scanner's
@@ -707,8 +759,10 @@ function showScanBanner(key, kind) {
   ui.scanner.setPaused(true);
   $(ui.bannerText).textContent = kind === 'redeem'
     ? 'That’s a redemption code, use the Redeem screen'
-    : 'That’s a customer earn code, use the Award screen';
-  $(ui.bannerGo).textContent = kind === 'redeem' ? 'Open Redeem' : 'Open Award';
+    : kind === 'punch'
+      ? 'That’s a punch-card reward, use the Redeem screen'
+      : 'That’s a customer earn code, use the Award screen';
+  $(ui.bannerGo).textContent = kind === 'redeem' || kind === 'punch' ? 'Open Redeem' : 'Open Award';
   $(ui.banner).hidden = false;
   clearTimeout(ui.bannerTimer);
   ui.bannerTimer = setTimeout(() => hideScanBanner(key), SCAN_BANNER_MS);
@@ -971,6 +1025,7 @@ async function onPinKey(e) {
 
 function enterRedeemScan() {
   pendingRedeemCode = null;
+  pendingRedeemKind = 'reward';
   show('screen-redeem-scan');
   const input = $('redeem-code-input');
   input.value = '';
@@ -993,17 +1048,73 @@ async function submitRedeemCode() {
     });
     const data = await res.json();
     if (handlePinRequired(res, data)) return;
+    // Typed codes don't say which kind they are (a scanned QR does): not a
+    // reward code -> maybe a punch-card code, which lives in its own table.
+    if (!res.ok && data.error === 'CODE_INVALID') {
+      const pres = await authFetch('/api/vendor/punch-redeem-preview', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      });
+      const pdata = await pres.json().catch(() => ({}));
+      if (handlePinRequired(pres, pdata)) return;
+      if (pres.ok) return showPunchRedeemConfirm(code, pdata);
+    }
     if (!res.ok) {
       return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
     }
-    pendingRedeemCode = code;
-    $('redeem-name').textContent = data.name;
-    $('redeem-balance').textContent = data.balance;
-    $('redeem-emoji').textContent = data.emoji || '🎁';
-    $('redeem-item').textContent = data.rewardTitle;
-    $('redeem-cost').textContent = `${data.cost} pts will be deducted`;
-    $('redeem-confirm').disabled = false;
-    show('screen-redeem-confirm');
+    showRewardRedeemConfirm(code, data);
+  } catch {
+    flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
+  } finally {
+    busy = false;
+  }
+}
+
+// The confirm screen serves both code kinds; a punch redemption hides the
+// points chip (nothing is deducted) and re-words the button.
+function showRewardRedeemConfirm(code, data) {
+  pendingRedeemCode = code;
+  pendingRedeemKind = 'reward';
+  $('redeem-name').textContent = data.name;
+  $('redeem-balance').textContent = data.balance;
+  document.querySelector('#screen-redeem-confirm .balance-chip').hidden = false;
+  $('redeem-emoji').textContent = data.emoji || '🎁';
+  $('redeem-item').textContent = data.rewardTitle;
+  $('redeem-cost').textContent = `${data.cost} pts will be deducted`;
+  $('redeem-confirm').textContent = 'Confirm and deduct points';
+  $('redeem-confirm').disabled = false;
+  show('screen-redeem-confirm');
+}
+
+function showPunchRedeemConfirm(code, data) {
+  pendingRedeemCode = code;
+  pendingRedeemKind = 'punch';
+  $('redeem-name').textContent = data.name;
+  document.querySelector('#screen-redeem-confirm .balance-chip').hidden = true;
+  $('redeem-emoji').textContent = '🎟️';
+  $('redeem-item').textContent = data.reward || 'Punch-card reward';
+  $('redeem-cost').textContent = `Full punch card (${data.target} punches) will be marked used`;
+  $('redeem-confirm').textContent = 'Confirm and mark card used';
+  $('redeem-confirm').disabled = false;
+  show('screen-redeem-confirm');
+}
+
+/** Preview a punch-card redemption code (a scanned WRW:P: QR names its own
+ *  kind, so no typed-code fallback dance is needed here). */
+async function submitPunchRedeemCode(code) {
+  if (busy) return;
+  busy = true;
+  try {
+    const res = await authFetch('/api/vendor/punch-redeem-preview', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json();
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) {
+      return flood('error', 'CAN’T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
+    }
+    showPunchRedeemConfirm(code, data);
   } catch {
     flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
   } finally {
@@ -1013,10 +1124,11 @@ async function submitRedeemCode() {
 
 async function confirmRedeem() {
   if (busy || !pendingRedeemCode) return;
+  const isPunch = pendingRedeemKind === 'punch';
   busy = true;
   $('redeem-confirm').disabled = true;
   try {
-    const res = await authFetch('/api/vendor/redeem', {
+    const res = await authFetch(isPunch ? '/api/vendor/punch-redeem' : '/api/vendor/redeem', {
       method: 'POST',
       body: JSON.stringify({ code: pendingRedeemCode }),
     });
@@ -1025,16 +1137,185 @@ async function confirmRedeem() {
     if (!res.ok) {
       return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
     }
-    flood('success', `GIVE: ${data.rewardTitle}`, `Points deducted · balance now ${data.newBalance}`, () => {
-      refreshLastActivity();
-      enterRedeemScan();
-    }, 3500);
+    if (isPunch) {
+      flood('success', `GIVE: ${data.reward}`, `${data.customerName} · full punch card redeemed`, () => {
+        enterRedeemScan();
+      }, 3500);
+    } else {
+      flood('success', `GIVE: ${data.rewardTitle}`, `Points deducted · balance now ${data.newBalance}`, () => {
+        refreshLastActivity();
+        enterRedeemScan();
+      }, 3500);
+    }
   } catch {
     flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
   } finally {
     busy = false;
     pendingRedeemCode = null;
+    pendingRedeemKind = 'reward';
   }
+}
+
+/* ---------- PUNCH (rotating punch-in code) ----------
+   The PUNCH tab shows a QR of a server-signed URL that changes every 30
+   seconds (see src/lib/punch.js). Students scan it with the app's scanner or a
+   plain phone camera — the URL deep-links into the student app, which claims
+   the punch. The terminal only ever DISPLAYS codes here; nothing on this
+   screen mutates anything, which is why the tab sits outside the PIN gate. */
+
+/** Paint `payload` as a crisp QR (Byte mode — it's a URL, so the alphanumeric
+ *  alphabet doesn't cover it). Same integer-pixel discipline as the student
+ *  app's drawQr: whole device pixels per module, hard-coded dark-on-white. */
+function drawPunchQr(canvas, payload, targetCss) {
+  const qr = qrcode(0, 'M');           // 0 = smallest version that fits
+  qr.addData(payload);                 // default Byte mode handles URLs
+  qr.make();
+
+  const quiet = 4;
+  const count = qr.getModuleCount();
+  const units = count + quiet * 2;
+  const dpr = window.devicePixelRatio || 1;
+  const scale = Math.max(2, Math.round((targetCss * dpr) / units));
+  const px = units * scale;
+
+  canvas.width = px;
+  canvas.height = px;
+  canvas.style.width = `${px / dpr}px`;
+  canvas.style.height = `${px / dpr}px`;
+
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, px, px);
+  ctx.fillStyle = '#000000';
+  for (let r = 0; r < count; r += 1) {
+    for (let c = 0; c < count; c += 1) {
+      if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+    }
+  }
+}
+
+let punchLoopTimer = null;   // 250ms tick: countdown bar + refresh-on-expiry
+let punchExpiresAt = 0;      // when the displayed code's 30s slot ends (ms epoch)
+let punchWindowMs = 30_000;
+let punchFetching = false;
+let punchHasQr = false;      // something is drawn (Reconnecting… vs Can't load)
+
+function enterPunch() {
+  show('screen-punch');      // show() runs syncPunch()
+}
+
+// Show/hide the PUNCH tab per the vendor's setting, and never leave the mode
+// pointing at a tab that just disappeared.
+function syncPunchTab() {
+  const on = Boolean(config?.punchEnabled);
+  $('tab-punch').hidden = !on;
+  if (!on && mode === 'punch') proceedSwitchMode('award');
+}
+
+// The rotating code refreshes only while its screen is actually visible —
+// called from show() and the visibilitychange handler, like syncScanners().
+function syncPunch() {
+  const visible = !$('screen-punch').hidden && !document.hidden && Boolean(config?.punchEnabled);
+  if (visible) startPunchLoop();
+  else stopPunchLoop();
+}
+
+function startPunchLoop() {
+  if (punchLoopTimer) return;
+  punchExpiresAt = 0;                       // force an immediate fetch
+  punchLoopTimer = setInterval(punchTick, 250);
+  punchTick();
+}
+
+function stopPunchLoop() {
+  clearInterval(punchLoopTimer);
+  punchLoopTimer = null;
+}
+
+function punchTick() {
+  const left = punchExpiresAt - Date.now();
+  if (left <= 0) { fetchPunchToken(); return; }
+  const frac = Math.max(0, Math.min(1, left / punchWindowMs));
+  $('punch-timer-fill').style.width = `${frac * 100}%`;
+}
+
+async function fetchPunchToken() {
+  if (punchFetching) return;
+  punchFetching = true;
+  try {
+    const res = await authFetch('/api/vendor/punch-token');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // Turned off (this terminal's Settings, another terminal, or the
+      // operator) since the tab was opened: put the tab away and move on.
+      if (data.error === 'PUNCH_DISABLED' && config) {
+        config.punchEnabled = false;
+        stopPunchLoop();
+        // Leave kiosk mode first: the stage is about to be hidden, and on
+        // platforms with the real Fullscreen API a hidden fullscreen element
+        // leaves the terminal showing a blank top layer that looks dead.
+        if (document.body.classList.contains('punch-fs')) exitPunchFullscreen();
+        syncPunchTab();
+        return;
+      }
+      throw new Error('punch token fetch failed');
+    }
+    drawPunchQr($('punch-qr'), data.url, punchQrSize());
+    punchHasQr = true;
+    $('punch-qr-cover').hidden = true;
+    punchWindowMs = (data.windowSeconds ?? 30) * 1000;
+    punchExpiresAt = Date.now() + Math.max(1, data.expiresIn ?? 30) * 1000;
+    $('punch-reward-line').textContent = data.reward
+      ? `${data.target} punches = ${data.reward}`
+      : `${data.target} punches fills the card`;
+  } catch {
+    // The shown code is stale (or absent): cover it so nobody scans a dead
+    // code, and retry shortly. Recovers by itself when the connection does.
+    $('punch-qr-cover').hidden = false;
+    $('punch-qr-cover-text').textContent = punchHasQr
+      ? 'Reconnecting…'
+      : 'Can’t load the code. Check the connection.';
+    $('punch-timer-fill').style.width = '0%';
+    punchExpiresAt = Date.now() + 2000;
+  } finally {
+    punchFetching = false;
+  }
+}
+
+// How big to draw the QR: as much of the screen as fits after the copy above
+// and below it, bounded so tablets don't balloon and phones stay scannable.
+//
+// Measure the height-CONSTRAINED box, never .punch-stage in normal layout —
+// the stage is content-sized, and the canvas is part of that content, so
+// measuring it would feed each size into the next and the QR would creep
+// bigger every 30 seconds (and stay fullscreen-sized after exiting kiosk).
+function punchQrSize() {
+  const box = document.body.classList.contains('punch-fs')
+    ? $('punch-stage')     // kiosk: fixed inset:0, so it IS the viewport
+    : $('screen-punch');   // normal: flex:1 of #main, independent of the canvas
+  const w = box.clientWidth || window.innerWidth;
+  const h = box.clientHeight || window.innerHeight;
+  return Math.max(200, Math.min(560, Math.min(w - 64, h - 300)));
+}
+
+/* Fullscreen: CSS kiosk mode (fixed, fills the viewport) plus the real
+   Fullscreen API where the platform has it (iPhone Safari doesn't, for
+   non-video elements — the CSS layer is the one that always works). */
+function enterPunchFullscreen() {
+  document.body.classList.add('punch-fs');
+  $('punch-exit-fs').hidden = false;
+  const stage = $('punch-stage');
+  try { stage.requestFullscreen?.()?.catch?.(() => {}); } catch { /* unsupported */ }
+  punchExpiresAt = 0;   // redraw at the new size on the next tick
+}
+
+function exitPunchFullscreen() {
+  document.body.classList.remove('punch-fs');
+  $('punch-exit-fs').hidden = true;
+  if (document.fullscreenElement) {
+    try { document.exitFullscreen?.()?.catch?.(() => {}); } catch { /* already out */ }
+  }
+  punchExpiresAt = 0;   // redraw at the normal size
 }
 
 /* ---------- ITEMS (manage rewards) ---------- */
@@ -1522,7 +1803,18 @@ function settingsSnapshot() {
     address: $('set-address').value.trim(),
     pin: $('set-pin').value.trim(),
     logo: logoValue,
+    punch: {
+      enabled: switchOn($('set-punch')),
+      target: $('set-punch-target').value.trim(),
+      reward: $('set-punch-reward').value.trim(),
+    },
   };
+}
+
+// The card-shape fields only matter while the feature is on; dim them (still
+// editable) when it's off so the card reads as one switch with details.
+function syncPunchFields() {
+  $('punch-fields').classList.toggle('is-off', !switchOn($('set-punch')));
 }
 
 // Deep-equal by value for a single card's slice of the snapshot.
@@ -1591,6 +1883,10 @@ function renderSettings(s) {
   if (!s) return;
   $('set-ratio').value = s.pointsPerDollar ?? '';
   setSwitch($('set-exact'), s.allowExactEntry !== false);
+  setSwitch($('set-punch'), s.punchEnabled === true);
+  $('set-punch-target').value = s.punchTarget ?? 10;
+  $('set-punch-reward').value = s.punchReward ?? '';
+  syncPunchFields();
   $('set-address').value = s.address ?? '';
   logoValue = s.logo ?? null;
   logoChanged = false;
@@ -1751,7 +2047,14 @@ async function saveSettings(afterTarget) {
     allowExactEntry: switchOn($('set-exact')),
     tiers: collectTiers(),
     address: $('set-address').value.trim(),
+    punchEnabled: switchOn($('set-punch')),
   };
+  // Card shape only rides along when filled in — an untouched blank keeps the
+  // stored value instead of tripping validation.
+  const punchTarget = $('set-punch-target').value.trim();
+  if (punchTarget !== '') body.punchTarget = Number(punchTarget);
+  const punchReward = $('set-punch-reward').value.trim();
+  if (punchReward !== '') body.punchReward = punchReward;
   if (logoChanged) body.logo = logoValue;   // null clears it; a data-URL sets it
   const pin = $('set-pin').value.trim();
   if (pin) body.pin = pin;
@@ -1779,6 +2082,7 @@ async function saveSettings(afterTarget) {
     // new ratio / exact-entry / PIN state immediately.
     const cfg = await authFetch('/api/vendor/config');
     if (cfg.ok) config = await cfg.json();
+    syncPunchTab();   // the PUNCH tab appears/disappears with the toggle
 
     if (data.pinChanged) {
       // The server dropped every session (incl. ours). Re-gate so the terminal
@@ -1902,8 +2206,15 @@ function resetToLogin() {
   currentEarnCode = null;
   currentMultiplier = 1;
   pendingRedeemCode = null;
+  pendingRedeemKind = 'reward';
   pendingAward = null;
   padValue = '';
+  // Punch tab: stop the rotating code and put the tab away until the next
+  // vendor's config says otherwise.
+  stopPunchLoop();
+  if (document.body.classList.contains('punch-fs')) exitPunchFullscreen();
+  punchHasQr = false;
+  $('tab-punch').hidden = true;
   lastActivity = null;
   undoLastArmed = false;
   clearTimeout(undoLastTimer);

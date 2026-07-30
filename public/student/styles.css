@@ -656,7 +656,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* ---------- signed-in: vendor (earn code + rewards + redeem) ---------- */
 
-#vendor { min-height: 100%; }
+/* Flex column so the punch-in button can hug the page bottom via
+   margin-top:auto (the #account/#home pattern) — position:fixed is off-limits
+   inside the transformed .tab-track. */
+#vendor { min-height: 100%; display: flex; flex-direction: column; }
+#vendor .app-main { flex: 0 0 auto; }
 
 .points-bar {
   position: sticky; top: 0; z-index: 10;
@@ -1212,3 +1216,136 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   .hero-card { margin-top: 1.5rem; }
   .steps { grid-template-columns: 1fr; }
 }
+
+/* ==================== punch cards (migration-028) ==================== */
+
+/* Landing note: a camera-scanned punch is waiting through sign-in. */
+.pending-punch-note {
+  margin: 0.9rem 0 0.2rem;
+  padding: 0.8rem 1rem;
+  border: 2.5px solid var(--edge); border-radius: 0.9rem;
+  background: var(--card);
+  font-weight: 700; font-size: 0.95rem;
+}
+
+/* --- the punch-card block on the vendor page --- */
+
+.punch-card {
+  width: 100%; text-align: left;
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 1rem 1.2rem;
+  display: flex; flex-direction: column; gap: 0.75rem;
+  box-shadow: 0 4px 0 var(--edge);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.punch-card:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+
+.punch-card-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 0.8rem;
+}
+.punch-progress { font-weight: 900; font-size: 1.3rem; color: var(--brand); white-space: nowrap; }
+.punch-reward-label {
+  font-weight: 700; font-size: 0.9rem; color: var(--muted);
+  text-align: right; min-width: 0;
+}
+
+/* Stamp grid: one circle per required punch, ticked as they land. */
+.punch-grid { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.punch-dot {
+  width: 1.9rem; height: 1.9rem; border-radius: 50%;
+  border: 2.5px dashed var(--edge);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.95rem; font-weight: 900; color: #fff;
+  background: transparent;
+}
+.punch-dot.is-filled {
+  border-style: solid; border-color: var(--success);
+  background: var(--success);
+}
+
+.punch-ready { font-weight: 900; color: var(--success); font-size: 1rem; }
+
+/* --- the bottom-hugging "Punch in" button --- */
+
+/* Same sticker language as the home screen's primary button. margin-top:auto
+   hugs the page bottom when content is short; position:sticky keeps it in
+   reach while the rewards list scrolls. */
+.punch-scan-btn {
+  position: sticky;
+  bottom: calc(0.9rem + env(safe-area-inset-bottom, 0px));
+  z-index: 5;
+  margin: auto 1.3rem 0.9rem;
+  margin-top: auto;
+  display: flex; align-items: center; justify-content: center; gap: 0.95rem;
+  text-align: center;
+  background: var(--navy); color: #fff;
+  border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 1.05rem 1.2rem;
+  box-shadow: 0 4px 0 var(--edge);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.punch-scan-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+.punch-scan-btn .psb-icon {
+  flex: 0 0 auto;
+  width: 3rem; height: 3rem; border-radius: 0.8rem;
+  background: rgba(255, 255, 255, 0.13); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.punch-scan-btn .psb-icon svg { width: 1.7rem; height: 1.7rem; display: block; }
+.psb-text { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 0.15rem; }
+.psb-title { font-size: 1.15rem; font-weight: 900; line-height: 1.1; }
+.psb-sub { font-size: 0.85rem; font-weight: 600; color: var(--sky); }
+.psb-arrow { flex: 0 0 auto; color: var(--accent); display: flex; }
+.psb-arrow svg { width: 1.4rem; height: 1.4rem; display: block; }
+
+/* --- the full-screen punch-in scanner sheet --- */
+
+/* Slides up like every sheet, but fills the viewport: the camera needs room. */
+.punch-scan-card {
+  position: relative; width: 100%;
+  height: 100vh; height: 100dvh;
+  background: var(--card);
+  display: flex; flex-direction: column;
+  transform: translateY(100%);
+  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.punch-scan-sheet.is-open .punch-scan-card { transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) { .punch-scan-card { transition: none; } }
+
+.punch-scan-head {
+  position: relative; flex: 0 0 auto;
+  padding: calc(1.1rem + env(safe-area-inset-top, 0px)) 1.3rem 0.9rem;
+  text-align: center;
+}
+.punch-scan-title { font-weight: 900; letter-spacing: 0.16em; font-size: 0.9rem; color: var(--muted); }
+.punch-scan-sub { font-weight: 900; font-size: 1.3rem; margin-top: 0.15rem; }
+.punch-scan-close {
+  position: absolute; right: 0.9rem; top: calc(0.9rem + env(safe-area-inset-top, 0px));
+  width: 2.6rem; height: 2.6rem; border-radius: 50%;
+  border: 2.5px solid var(--edge); background: var(--paper);
+  font-size: 1.1rem; font-weight: 900; color: var(--ink);
+  display: flex; align-items: center; justify-content: center;
+}
+
+.punch-scan-frame {
+  position: relative; flex: 1; min-height: 0;
+  margin: 0 1.3rem; border-radius: 1.2rem; overflow: hidden;
+  background: #0b1626;
+}
+.punch-scan-video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.punch-scan-target {
+  position: absolute; left: 50%; top: 50%;
+  width: min(62vw, 17rem); height: min(62vw, 17rem);
+  transform: translate(-50%, -50%);
+  border: 3px solid rgba(255, 255, 255, 0.9); border-radius: 1.2rem;
+  box-shadow: 0 0 0 200vmax rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+
+.punch-scan-status {
+  flex: 0 0 auto;
+  padding: 1rem 1.5rem calc(1.4rem + env(safe-area-inset-bottom, 0px));
+  text-align: center; font-weight: 700; color: var(--muted);
+  min-height: 3.4rem;
+}
+.punch-scan-status.is-error { color: var(--warn); }

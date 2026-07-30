@@ -1,8 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v26';   // v26: zoom disabled app-wide (no-zoom.js)
-const SHELL = ['/', '/theme-init.js', '/no-zoom.js', '/styles.css', '/app.js', '/qrcode.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+const CACHE = 'werewards-v28';   // v28: punch cards + offline precache actually matching
+const SHELL = ['/', '/theme-init.js', '/no-zoom.js', '/styles.css', '/app.js', '/qrcode.js', '/jsQR.js', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -36,6 +36,15 @@ self.addEventListener('fetch', (e) => {
         caches.open(CACHE).then((c) => c.put(e.request, copy));
         return res;
       })
-      .catch(() => caches.match(e.request).then((hit) => hit || caches.match('/')))
+      // ignoreSearch matters: server.js stamps every local .js/.css reference
+      // with ?v=<content-hash>, and Cache.match compares full URLs — so without
+      // it the precached bare paths above can NEVER satisfy a page request and
+      // a first-visit-then-offline load finds nothing.
+      // The '/' fallback is for navigations only: answering a missing script or
+      // stylesheet with the HTML document gives the browser HTML bytes to parse
+      // as JavaScript, which is worse than a clean failure.
+      .catch(() => caches.match(e.request, { ignoreSearch: true }).then((hit) => (
+        hit || (e.request.mode === 'navigate' ? caches.match('/') : Response.error())
+      )))
   );
 });

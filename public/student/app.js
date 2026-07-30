@@ -72,6 +72,7 @@ function track(event, props) {
 
 (async function boot() {
   installErrorReporter();
+  capturePunchLink();              // stash a camera-scanned ?punch= link BEFORE anything can navigate it away
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
   InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
   const pub = await (await fetch('/api/public-config')).json();
@@ -82,6 +83,12 @@ function track(event, props) {
   sb = window.supabase.createClient(pub.supabaseUrl, pub.supabaseAnonKey, {
     auth: { storageKey: 'psu-student-auth' },
   });
+
+  // A camera-scanned punch link dies in ~90s, but sign-in takes minutes — swap
+  // the token for a 10-minute hold right away (no auth needed), then claim it
+  // once the session is ready. Fire-and-forget; claiming retries the pieces.
+  syncPendingPunchNote();
+  void securePendingPunchHold();
 
   document.querySelectorAll('[data-signin]').forEach((b) => b.addEventListener('click', signInWithGoogle));
   $('account-signout').addEventListener('click', async () => {
@@ -150,6 +157,20 @@ function track(event, props) {
   $('item-close').addEventListener('click', closeItemModal);
   $('item-redeem').addEventListener('click', onRedeemTap);
   $('item-modal').addEventListener('click', (e) => { if (e.target === $('item-modal')) closeItemModal(); });
+  // punch card: the vendor-page block opens the progress/redeem sheet; the
+  // bottom button opens the full-screen scanner
+  $('punch-card-btn').addEventListener('click', openPunchModal);
+  $('punch-close').addEventListener('click', closePunchModal);
+  $('punch-modal').addEventListener('click', (e) => { if (e.target === $('punch-modal')) closePunchModal(); });
+  $('punch-redeem-btn').addEventListener('click', onPunchRedeemTap);
+  $('punch-scan-btn').addEventListener('click', openPunchScanSheet);
+  $('punch-scan-close').addEventListener('click', closePunchScanSheet);
+  $('punch-scan-modal').addEventListener('click', (e) => { if (e.target === $('punch-scan-modal')) closePunchScanSheet(); });
+  // never leave the punch camera running while the tab is backgrounded
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopPunchScanner();
+    else if ($('punch-scan-modal').classList.contains('is-open')) startPunchScanner();
+  });
   // earn code: the home button opens the full-screen sheet; ✕ / drag / Esc close it
   $('show-code-btn').addEventListener('click', openEarnSheet);
   $('earn-close').addEventListener('click', closeEarnSheet);
@@ -164,6 +185,8 @@ function track(event, props) {
     if (e.key !== 'Escape') return;
     closeEarnSheet();
     closeMoveSheet();
+    closePunchScanSheet();
+    closePunchModal();
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
   });
@@ -229,6 +252,9 @@ function render(session) {
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
     dropMoveSheet();            // same
+    dropPunchScanSheet();       // same (and it holds the camera)
+    dropPunchModal();           // same
+    syncPendingPunchNote();     // landing may need the "punch spotted" note
     // the popovers live at body level too — same reason
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
@@ -260,6 +286,7 @@ function render(session) {
   loadCommunity();
   startMyCode();
   connectSocket();
+  void claimPendingPunch();   // a camera-scanned punch waiting through sign-in lands now
 }
 
 /* ---------- add-to-home-screen: account entry point (trigger 5) ----------
@@ -1168,7 +1195,7 @@ async function loadVendors() {
 
     if (vendor && !$('vendor').hidden) {
       const v = allVendors.find((x) => x.vendorId === vendor.vendorId);
-      if (v) { vendor = v; renderItems(); applyBalance(v.balance ?? 0); }
+      if (v) { vendor = v; renderItems(); renderPunchUi(); applyBalance(v.balance ?? 0); }
     }
   } catch {
     $('vendors-empty').textContent = 'Couldn’t load your spots. Check your connection and try again.';
@@ -1287,6 +1314,7 @@ function openVendor(vendorId) {
   balanceReady = false;                       // paint the number instantly, no ticker
   $('pb-vendor').textContent = v.name.toUpperCase();
   renderItems();
+  renderPunchUi();
   applyBalance(v.balance ?? 0);
   slidePanes($('vendor'), $('home'), 1);      // vendor screen in from the right, home out left
 }
@@ -1380,6 +1408,17 @@ function connectSocket() {
       if (payload.community != null) setCommunityPoints(payload.community);
       else loadCommunity();
       if (historyLoaded) loadHistory();       // ...and it's a new activity row
+    });
+    // Punch-card pushes (migration-028): the terminal just redeemed a full
+    // card (or a punch landed from another device). loadVendors() re-syncs the
+    // counts and re-renders the open vendor page's punch block.
+    socket.on('punch', (payload) => {
+      if (!payload?.vendorId) return;
+      if (payload.redeemed) {
+        punchToast(`🎉 Punch card redeemed${payload.reward ? ` · ${payload.reward}` : ''}`);
+        if (!$('punch-modal').hidden) closePunchModal();
+      }
+      loadVendors();
     });
     // Catch up on (re)connect in case an update landed while we were offline.
     socket.on('connect', () => { loadVendors(); loadTier(); loadCommunity(); });
@@ -1629,4 +1668,547 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
+}
+
+/* ==================== punch cards (migration-028) ====================
+   The vendor's terminal shows a rotating, server-signed QR (a URL carrying
+   ?punch=<token>). Scanning it in here — or with the phone camera, which
+   lands on this origin and stashes the token through sign-in — earns one
+   punch per vendor per night. A full card becomes a 4-digit WRW:P: code the
+   counter scans, mirroring the reward redemption flow. */
+
+/* ---------- pending punch: camera-scan → sign-in handoff ---------- */
+
+const PENDING_PUNCH_KEY = 'wrw-pending-punch';
+
+function readPendingPunch() {
+  try {
+    const raw = sessionStorage.getItem(PENDING_PUNCH_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function writePendingPunch(v) {
+  try { sessionStorage.setItem(PENDING_PUNCH_KEY, JSON.stringify(v)); } catch { /* private mode */ }
+}
+function clearPendingPunch() {
+  try { sessionStorage.removeItem(PENDING_PUNCH_KEY); } catch { /* private mode */ }
+  syncPendingPunchNote();
+}
+
+// Runs before anything else at boot: pull ?punch= out of the URL (so a reload
+// can't double-claim and the OAuth redirect keeps a clean origin URL) and
+// stash it for the claim after sign-in. sessionStorage survives the Google
+// round-trip in this tab, and — unlike localStorage — dies with it, so a
+// stale token never ambushes a later visit.
+function capturePunchLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const token = params.get('punch');
+    if (!token) return;
+    params.delete('punch');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+    writePendingPunch({ token, at: Date.now() });
+  } catch { /* malformed URL — nothing to capture */ }
+}
+
+// Landing-page nudge: "sign in and the punch lands".
+function syncPendingPunchNote() {
+  const el = $('pending-punch-note');
+  if (el) el.hidden = !readPendingPunch();
+}
+
+// Swap the short-lived token for a 10-minute single-use hold, pre-auth. On a
+// definitive "expired" answer, say so now — before the student bothers to
+// sign in. On network failure keep the raw token; claim retries the swap.
+//
+// One swap at a time, and never write back into a stash that changed while we
+// were in flight: boot fires this and claimPendingPunch can too, so a slow
+// first response could otherwise resurrect a stash the claim already cleared —
+// and the orphan would surface hours later as a phantom "already punched"
+// toast in an idle session.
+let punchHoldSwap = null;
+
+function securePendingPunchHold() {
+  if (punchHoldSwap) return punchHoldSwap;
+  punchHoldSwap = (async () => {
+    const pending = readPendingPunch();
+    if (!pending?.token || pending.holdId) return;
+    try {
+      const res = await fetch('/api/punch/hold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: pending.token }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const current = readPendingPunch();
+      // Claimed, cleared, or replaced while we waited — this answer is stale.
+      if (!current?.token || current.holdId || current.token !== pending.token) return;
+      if (res.ok && data.holdId) {
+        writePendingPunch({ holdId: data.holdId, expiresAt: Date.now() + (data.expiresIn ?? 600) * 1000 });
+      } else if (res.status === 401 || res.status === 403) {
+        clearPendingPunch();
+        punchToast(data.message || 'That punch code expired — scan the live code at the counter.', false);
+      }
+      // other statuses (rate limit, 5xx): keep the token and let the claim retry
+    } catch { /* offline — keep the token, the claim will retry */ }
+  })().finally(() => {
+    punchHoldSwap = null;
+    syncPendingPunchNote();
+  });
+  return punchHoldSwap;
+}
+
+let punchClaiming = false;
+
+// Called whenever the app becomes ready (signed in + consented). Claims the
+// stashed hold/token, then defers to loadVendors() for the authoritative
+// counts. Network failures keep the stash so the next render retries.
+async function claimPendingPunch() {
+  if (punchClaiming) return;
+  const pending = readPendingPunch();
+  if (!pending) return;
+  punchClaiming = true;
+  try {
+    if (!pending.holdId && pending.token) {
+      // The pre-auth swap never landed (offline at boot?) — try once more now;
+      // if the token is somehow still fresh a direct claim below also works.
+      await securePendingPunchHold();
+    }
+    const current = readPendingPunch();
+    if (!current) return;
+    if (current.holdId && current.expiresAt && Date.now() > current.expiresAt) {
+      clearPendingPunch();
+      punchToast('That punch link expired — scan the code at the counter again.', false);
+      return;
+    }
+    const body = current.holdId ? { holdId: current.holdId } : { token: current.token };
+    const res = await authFetch('/api/me/punch', { method: 'POST', body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 403 && (data.error === 'CONSENT_REQUIRED' || data.error === 'CONSENT_STALE')) {
+      return;   // keep the stash — the consent flow re-renders and we retry
+    }
+    if (res.status === 429 || res.status >= 500) {
+      return;   // transient server-side trouble — keep the stash, retry on the next render
+    }
+    clearPendingPunch();   // definitive answer either way: never claim twice
+    if (!res.ok) {
+      punchToast(data.message || 'Couldn’t claim that punch.', false);
+      return;
+    }
+    onPunchClaimed(data);
+  } catch {
+    // network hiccup — keep the stash; the next render() retries
+  } finally {
+    punchClaiming = false;
+  }
+}
+
+/* ---------- punch state on the vendor page ---------- */
+
+// A punch just landed (scanner or claimed link): patch the local state for
+// instant feedback, toast, and let loadVendors() confirm.
+function onPunchClaimed(data) {
+  const v = allVendors.find((x) => x.vendorId === data.vendorId);
+  if (v?.punch) {
+    v.punch.punches = data.completed ? 0 : data.punches;
+    v.punch.readyCards = data.readyCards ?? v.punch.readyCards;
+    if (!data.completed) v.punch.cardTarget = data.target;
+  }
+  if (vendor && vendor.vendorId === data.vendorId) renderPunchUi();
+  punchToast(data.completed
+    ? `🎟️ Card full at ${data.vendorName}! Tap your punch card to redeem.`
+    : `🎟️ Punched in at ${data.vendorName} · ${data.punches}/${data.target}`);
+  loadVendors();
+}
+
+// Render the punch block + bottom scan button for the OPEN vendor page.
+// The block also shows when the feature is off but a full card is still owed
+// (the student earned it while it was on); the scan button follows the toggle.
+function renderPunchUi() {
+  const p = vendor?.punch;
+  const enabled = Boolean(p?.enabled);
+  const hasReady = (p?.readyCards ?? 0) > 0;
+  $('punch-block').hidden = !(enabled || hasReady);
+  $('punch-scan-btn').hidden = !enabled;
+  if (!enabled && !hasReady) return;
+
+  const target = p.cardTarget || p.target || 10;
+  const shown = Math.min(p.punches ?? 0, target);
+  $('punch-progress').textContent = `${shown} / ${target}`;
+  $('punch-reward-label').textContent = p.reward ? `Full card = ${p.reward}` : '';
+  $('punch-scan-sub').textContent = hasReady
+    ? 'Card full — tap your punch card above'
+    : 'Scan the code at the counter';
+
+  const grid = $('punch-grid');
+  grid.innerHTML = '';
+  for (let i = 0; i < target; i += 1) {
+    const dot = document.createElement('span');
+    dot.className = `punch-dot${i < shown ? ' is-filled' : ''}`;
+    dot.textContent = i < shown ? '✓' : '';
+    grid.appendChild(dot);
+  }
+  $('punch-ready').hidden = !hasReady;
+}
+
+/* ---------- punch modal: progress / redeem a full card ---------- */
+
+let punchCodeCountdown = null;
+
+function openPunchModal() {
+  const p = vendor?.punch;
+  if (!p) return;
+  clearInterval(punchCodeCountdown);
+  punchCodeCountdown = null;
+  $('punch-code').hidden = true;
+  $('punch-modal-status').textContent = '';
+  $('punch-modal-status').className = 'detail-status';
+
+  const hasReady = (p.readyCards ?? 0) > 0;
+  const target = p.cardTarget || p.target || 10;
+  if (hasReady) {
+    $('punch-modal-title').textContent = 'Card full! 🎉';
+    $('punch-modal-desc').textContent =
+      `Your reward: ${p.reward || 'ask at the counter'}.` +
+      (p.readyCards > 1 ? ` You have ${p.readyCards} full cards — redeem them one at a time.` : '') +
+      ' Tap Redeem and show the code at the counter.';
+    $('punch-redeem-btn').hidden = false;
+    $('punch-redeem-btn').disabled = false;
+  } else {
+    $('punch-modal-title').textContent = 'Punch card';
+    $('punch-modal-desc').textContent =
+      `${Math.min(p.punches ?? 0, target)} of ${target} punches. Scan the punch-in code at the counter — one punch a night — and a full card earns ${p.reward || 'a reward'}.`;
+    $('punch-redeem-btn').hidden = true;
+  }
+
+  const ov = $('punch-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('punch-card-btn').setAttribute('aria-expanded', 'true');
+}
+
+function closePunchModal() {
+  const ov = $('punch-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  clearInterval(punchCodeCountdown);
+  punchCodeCountdown = null;
+  $('punch-card-btn').setAttribute('aria-expanded', 'false');
+  setTimeout(() => {
+    if (ov.classList.contains('is-open')) return;   // reopened mid-slide
+    ov.hidden = true;
+    $('punch-code').hidden = true;
+    $('punch-redeem-btn').disabled = false;
+  }, 360);
+}
+
+// Hard reset, no animation — for sign-out (same reason as dropEarnSheet).
+function dropPunchModal() {
+  const ov = $('punch-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  clearInterval(punchCodeCountdown);
+  punchCodeCountdown = null;
+  $('punch-card-btn').setAttribute('aria-expanded', 'false');
+}
+
+async function onPunchRedeemTap() {
+  if (!vendor) return;
+  const btn = $('punch-redeem-btn');
+  btn.disabled = true;
+  try {
+    const res = await authFetch('/api/me/punch-redeem-code', {
+      method: 'POST',
+      body: JSON.stringify({ vendorId: vendor.vendorId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      $('punch-modal-status').textContent = data.message || 'Couldn’t start the redemption, try again.';
+      $('punch-modal-status').className = 'detail-status locked';
+      btn.disabled = false;
+      return;
+    }
+    showPunchRedeemCode(data.code, data.ttlSeconds ?? 120);
+  } catch {
+    $('punch-modal-status').textContent = 'No connection, try again.';
+    $('punch-modal-status').className = 'detail-status locked';
+    btn.disabled = false;
+  }
+}
+
+/* Replace the Redeem button, in place, with the live QR + code + countdown. */
+function showPunchRedeemCode(code, seconds) {
+  $('punch-redeem-btn').hidden = true;
+  $('punch-modal-status').textContent = 'Show this at the counter';
+  $('punch-modal-status').className = 'detail-status ok';
+  $('punch-code-value').textContent = code;
+  try {
+    drawQr($('punch-code-qr'), `WRW:P:${code}`, 190);
+  } catch { /* QR failed to render — the digits below still work */ }
+  $('punch-code').hidden = false;
+
+  clearInterval(punchCodeCountdown);
+  let left = seconds;
+  const tick = () => {
+    if (left > 0) {
+      $('punch-code-timer').textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+    } else {
+      $('punch-code-timer').textContent = 'Expired';
+      clearInterval(punchCodeCountdown);
+    }
+    left -= 1;
+  };
+  tick();
+  punchCodeCountdown = setInterval(tick, 1000);
+}
+
+/* ---------- the full-screen punch-in scanner ---------- */
+
+const PUNCH_SCAN_DEFAULT = 'Point your camera at the punch-in code on the counter screen.';
+const PUNCH_JSQR_INTERVAL_MS = 120;   // ~8 decode attempts/sec
+const PUNCH_JSQR_MAX_DIM = 640;       // downscale frames before jsQR for speed
+const PUNCH_DETECTOR_GRACE_MS = 3000; // BarcodeDetector's head start before jsQR joins
+
+let punchScanSession = 0;   // bumped by stop(); stale async work checks it and bails
+let punchScanStream = null;
+let punchScanRunning = false;
+let punchScanBusy = false;  // a claim is mid-flight — ignore sightings
+let punchScanRaf = 0;
+let punchScanDetectorTimer = null;
+let punchScanJsqrTimer = null;
+let punchScanRetryTimer = null;
+let punchScanCanvas = null;
+let punchScanCtx = null;
+let punchScanLastAttempt = 0;
+let punchScanLastPayload = null;
+let punchScanLastPayloadAt = 0;
+
+function setPunchScanStatus(msg, isError) {
+  const el = $('punch-scan-status');
+  el.textContent = msg;
+  el.classList.toggle('is-error', Boolean(isError));
+}
+
+// The rotating QR carries a URL (?punch=<token>); accept a bare token too.
+function punchTokenFromPayload(raw) {
+  const s = String(raw ?? '').trim();
+  try {
+    const u = new URL(s);
+    const t = u.searchParams.get('punch');
+    if (t) return t;
+  } catch { /* not a URL */ }
+  if (/^[0-9a-f-]{36}\.\d{1,12}\.[0-9a-f]{16}$/i.test(s)) return s;
+  return null;
+}
+
+function openPunchScanSheet() {
+  if (!vendor?.punch?.enabled) return;
+  $('punch-scan-vendor').textContent = vendor.name;
+  setPunchScanStatus(PUNCH_SCAN_DEFAULT, false);
+  const ov = $('punch-scan-modal');
+  if (ov.classList.contains('is-open')) return;
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('punch-scan-btn').setAttribute('aria-expanded', 'true');
+  startPunchScanner();
+  $('punch-scan-close').focus({ preventScroll: true });
+}
+
+function closePunchScanSheet() {
+  const ov = $('punch-scan-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  stopPunchScanner();
+  clearTimeout(punchScanRetryTimer);
+  ov.classList.remove('is-open');
+  $('punch-scan-btn').setAttribute('aria-expanded', 'false');
+  setTimeout(() => {
+    if (!ov.classList.contains('is-open')) ov.hidden = true;
+  }, 400);
+}
+
+// Hard reset, no animation — for sign-out (it also releases the camera).
+function dropPunchScanSheet() {
+  stopPunchScanner();
+  clearTimeout(punchScanRetryTimer);
+  const ov = $('punch-scan-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('punch-scan-btn').setAttribute('aria-expanded', 'false');
+}
+
+async function startPunchScanner() {
+  if (punchScanRunning) return;
+  const my = ++punchScanSession;
+  const video = $('punch-scan-video');
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    return setPunchScanStatus('This browser can’t use the camera here. Scan the code with your phone camera instead.', true);
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } },
+    });
+  } catch (err) {
+    if (punchScanSession !== my) return;
+    const name = err?.name || '';
+    return setPunchScanStatus(
+      name === 'NotAllowedError' || name === 'SecurityError'
+        ? 'Camera access is blocked. Allow it in your browser settings, or scan the code with your phone camera.'
+        : 'Couldn’t start the camera. Scan the code with your phone camera instead.',
+      true
+    );
+  }
+  if (punchScanSession !== my) { stream.getTracks().forEach((t) => t.stop()); return; }
+  punchScanStream = stream;
+  video.srcObject = stream;
+  try { await video.play(); } catch { /* autoplay+muted+playsinline: frames still arrive */ }
+  if (punchScanSession !== my) { stream.getTracks().forEach((t) => t.stop()); return; }
+  punchScanRunning = true;
+  startPunchDecoders(my, video);
+}
+
+function stopPunchScanner() {
+  punchScanSession += 1;
+  punchScanRunning = false;
+  cancelAnimationFrame(punchScanRaf);
+  clearInterval(punchScanDetectorTimer);
+  clearTimeout(punchScanJsqrTimer);
+  // Also the "look again in 2s" timer: without this, backgrounding the app
+  // during a retry wait would let that timer re-open the camera on a hidden
+  // page — permission is already granted, so the indicator light would come on
+  // with nothing on screen. submitPunch stops the scanner BEFORE scheduling a
+  // retry, so a just-scheduled retry is never cancelled here.
+  clearTimeout(punchScanRetryTimer);
+  if (punchScanStream) { punchScanStream.getTracks().forEach((t) => t.stop()); punchScanStream = null; }
+  $('punch-scan-video').srcObject = null;
+}
+
+// Belt-and-braces decoding, same rationale as the terminal: BarcodeDetector
+// where it works, jsQR joining after a grace period (or from the start).
+async function startPunchDecoders(my, video) {
+  let detector = null;
+  if ('BarcodeDetector' in window) {
+    try {
+      const formats = await window.BarcodeDetector.getSupportedFormats();
+      if (formats.includes('qr_code')) detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+    } catch { detector = null; }
+  }
+  if (punchScanSession !== my) return;
+  const startJsqr = () => {
+    if (punchScanSession !== my) return;
+    punchScanLastAttempt = 0;
+    const tick = (ts) => {
+      if (punchScanSession !== my || !punchScanRunning) return;
+      punchScanRaf = requestAnimationFrame(tick);
+      if (ts - punchScanLastAttempt < PUNCH_JSQR_INTERVAL_MS || !video.videoWidth) return;
+      punchScanLastAttempt = ts;
+      const scale = Math.min(1, PUNCH_JSQR_MAX_DIM / Math.max(video.videoWidth, video.videoHeight));
+      const w = Math.max(1, Math.round(video.videoWidth * scale));
+      const h = Math.max(1, Math.round(video.videoHeight * scale));
+      if (!punchScanCanvas) {
+        punchScanCanvas = document.createElement('canvas');
+        punchScanCtx = punchScanCanvas.getContext('2d', { willReadFrequently: true });
+      }
+      if (punchScanCanvas.width !== w) punchScanCanvas.width = w;
+      if (punchScanCanvas.height !== h) punchScanCanvas.height = h;
+      let img;
+      try {
+        punchScanCtx.drawImage(video, 0, 0, w, h);
+        img = punchScanCtx.getImageData(0, 0, w, h);
+      } catch { return; }
+      const hit = typeof jsQR === 'function' ? jsQR(img.data, w, h, { inversionAttempts: 'attemptBoth' }) : null;
+      if (hit?.data) onPunchScanPayload(String(hit.data));
+    };
+    punchScanRaf = requestAnimationFrame(tick);
+  };
+  if (!detector) return startJsqr();
+  let produced = false;
+  let detBusy = false;
+  punchScanDetectorTimer = setInterval(async () => {
+    if (detBusy || punchScanSession !== my) return;
+    detBusy = true;
+    try {
+      const codes = await detector.detect(video);
+      if (punchScanSession === my && codes?.length) {
+        produced = true;
+        if (codes[0].rawValue != null) onPunchScanPayload(String(codes[0].rawValue));
+      }
+    } catch { /* jsQR below covers builds that throw forever */
+    } finally { detBusy = false; }
+  }, 130);
+  punchScanJsqrTimer = setTimeout(() => { if (punchScanSession === my && !produced) startJsqr(); }, PUNCH_DETECTOR_GRACE_MS);
+}
+
+function onPunchScanPayload(raw) {
+  if (!punchScanRunning || punchScanBusy) return;
+  const now = Date.now();
+  if (raw === punchScanLastPayload && now - punchScanLastPayloadAt < 3000) {
+    punchScanLastPayloadAt = now;   // still in view — hold the debounce open
+    return;
+  }
+  punchScanLastPayload = raw;
+  punchScanLastPayloadAt = now;
+
+  const token = punchTokenFromPayload(raw);
+  if (!token) return setPunchScanStatus('That’s not a punch-in code — look for it on the counter screen.', true);
+  submitPunch(token);
+}
+
+// Back to looking, after a failure the student can retry through. Bails while
+// the page is hidden — the visibilitychange handler restarts the scanner when
+// they come back, so nothing is lost and the camera never wakes off-screen.
+function retryPunchScan() {
+  if (document.hidden) return;
+  if (!$('punch-scan-modal').classList.contains('is-open')) return;
+  setPunchScanStatus(PUNCH_SCAN_DEFAULT, false);
+  startPunchScanner();
+}
+
+async function submitPunch(token) {
+  if (punchScanBusy) return;
+  punchScanBusy = true;
+  stopPunchScanner();
+  setPunchScanStatus('Punching in…', false);
+  try {
+    const res = await authFetch('/api/me/punch', { method: 'POST', body: JSON.stringify({ token }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setPunchScanStatus(data.message || 'Couldn’t punch in, try again.', true);
+      if (data.error === 'ALREADY_PUNCHED' || data.error === 'PUNCH_DISABLED') {
+        // Re-scanning won't change the answer tonight — close after a beat.
+        punchScanRetryTimer = setTimeout(closePunchScanSheet, 2600);
+      } else {
+        // Stale slot / hiccup: keep the sheet up and look again.
+        punchScanRetryTimer = setTimeout(retryPunchScan, 2200);
+      }
+      return;
+    }
+    closePunchScanSheet();
+    onPunchClaimed(data);
+  } catch {
+    setPunchScanStatus('No connection — check the internet and try again.', true);
+    punchScanRetryTimer = setTimeout(retryPunchScan, 2200);
+  } finally {
+    punchScanBusy = false;
+  }
+}
+
+/* ---------- shared punch toast (reuses the points pill) ---------- */
+
+function punchToast(msg, gain = true) {
+  const toast = $('points-toast');
+  toast.className = `points-toast ${gain ? 'gain' : 'lose'}`;
+  toast.textContent = msg;
+  toast.hidden = false;
+  void toast.offsetWidth;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => { toast.hidden = true; }, 300);
+  }, 2600);
 }

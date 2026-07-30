@@ -8,10 +8,11 @@
    scoped to this app's own 'werewards-terminal-' prefix — deleting every other
    cache here would wipe the student and admin PWA caches (and vice-versa). */
 
-// v4: zoom disabled app-wide (no-zoom.js).
-const CACHE = 'werewards-terminal-v4';
+// v6: punch tab (rotating punch-in QR) + qrcode.js encoder; offline precache
+// now actually matches the ?v= versioned asset URLs.
+const CACHE = 'werewards-terminal-v6';
 const SHELL = [
-  '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js',
+  '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',
   '/terminal/icons/icon-192.png', '/terminal/icons/icon-512.png',
 ];
@@ -44,6 +45,12 @@ self.addEventListener('fetch', (e) => {
         caches.open(CACHE).then((c) => c.put(e.request, copy));
         return res;
       })
-      .catch(() => caches.match(e.request).then((hit) => hit || caches.match('/terminal/')))
+      // ignoreSearch: server.js stamps local .js/.css refs with ?v=<hash>, and
+      // Cache.match compares full URLs — without it the precached bare paths
+      // never match a real request. The shell fallback is navigation-only, so a
+      // missing subresource fails cleanly instead of being handed HTML bytes.
+      .catch(() => caches.match(e.request, { ignoreSearch: true }).then((hit) => (
+        hit || (e.request.mode === 'navigate' ? caches.match('/terminal/') : Response.error())
+      )))
   );
 });
