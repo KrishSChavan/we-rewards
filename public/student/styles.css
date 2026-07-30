@@ -1265,10 +1265,17 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   text-align: right; min-width: 0;
 }
 
-/* Stamp grid: one circle per required punch, ticked as they land. */
-.punch-grid { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+/* Stamp grid: one circle per required punch, ticked as they land. The rows are
+   built in JS (renderPunchDots) and stacked here rather than left to flex-wrap
+   — wrapping fills each line to the card's edge, which breaks a 10-stamp card
+   8 + 2. Every row centres, so an odd count sits as a short row tucked under
+   the long one. */
+.punch-grid { display: flex; flex-direction: column; gap: 0.45rem; }
+.punch-row { display: flex; align-items: center; justify-content: center; gap: 0.45rem; }
 .punch-dot {
-  width: 1.9rem; height: 1.9rem; border-radius: 50%;
+  /* Fixed size, but a row that outruns a narrow card shrinks its stamps rather
+     than spilling past the edge; aspect-ratio keeps them circles as it does. */
+  flex: 0 1 1.9rem; aspect-ratio: 1; border-radius: 50%;
   border: 2.5px dashed var(--edge);
   display: flex; align-items: center; justify-content: center;
   font-size: 0.95rem; font-weight: 900; color: #fff;

@@ -168,6 +168,7 @@ function track(event, props) {
   $('punch-scan-btn').addEventListener('click', openPunchScanSheet);
   $('punch-scan-close').addEventListener('click', closePunchScanSheet);
   $('punch-scan-modal').addEventListener('click', (e) => { if (e.target === $('punch-scan-modal')) closePunchScanSheet(); });
+  window.addEventListener('resize', onPunchResize);   // stamp rows are sized against the card's width
   // never leave the punch camera running while the tab is backgrounded
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopPunchScanner();
@@ -1570,9 +1571,13 @@ function openVendor(vendorId) {
   balanceReady = false;                       // paint the number instantly, no ticker
   $('pb-vendor').textContent = v.name.toUpperCase();
   renderItems();
-  renderPunchUi();
   applyBalance(v.balance ?? 0);
   slidePanes($('vendor'), $('home'), 1);      // vendor screen in from the right, home out left
+  // After the slide, not before: it un-hides the pane, and the stamp rows are
+  // measured against a card that has no width while #vendor is still hidden.
+  // Nothing has painted between the two calls, so the block still arrives with
+  // the screen rather than a frame late.
+  renderPunchUi();
 }
 
 function backToHome() {
@@ -2115,15 +2120,69 @@ function renderPunchUi() {
     ? 'Card full — tap your punch card above'
     : 'Scan the code at the counter';
 
-  const grid = $('punch-grid');
-  grid.innerHTML = '';
-  for (let i = 0; i < target; i += 1) {
-    const dot = document.createElement('span');
-    dot.className = `punch-dot${i < shown ? ' is-filled' : ''}`;
-    dot.textContent = i < shown ? '✓' : '';
-    grid.appendChild(dot);
-  }
+  renderPunchDots($('punch-grid'), target, shown);
   $('punch-ready').hidden = !hasReady;
+}
+
+// Stamps per row when the card can't be measured — a phone's worth, and the
+// resize hook lays them out again the moment it can.
+const PUNCH_ROW_FALLBACK = 8;
+let punchGridWidth = 0;              // width the rows were last laid out against
+
+// Lay the stamps out in even rows rather than letting them wrap. Flex-wrap
+// fills each line to the card's edge, so a 10-stamp card breaks 8 + 2 and
+// reads like a mistake. Work out how many fit on a line, spread the stamps
+// over that many rows as evenly as they'll go — 10 becomes 5 + 5 — and when
+// the count won't divide, the leftovers ride on the top rows so the bottom
+// row is one short, centred under the rest by .punch-row.
+function renderPunchDots(grid, total, filled) {
+  // Measure a real stamp instead of hard-coding its size here, where it would
+  // quietly drift out of step with the stylesheet. Inside a row, not loose in
+  // the grid: the grid stacks rows in a column, so a bare stamp would stretch
+  // to its full width. Both reads come back zero while the vendor pane is
+  // still hidden — that's what the fallback is for.
+  grid.innerHTML = '';
+  const probe = document.createElement('span');
+  probe.className = 'punch-row';
+  grid.appendChild(probe);
+  const dotWidth = probe.appendChild(punchDot(false)).getBoundingClientRect().width;
+  const gap = parseFloat(getComputedStyle(probe).columnGap) || 0;
+  punchGridWidth = grid.getBoundingClientRect().width;
+  grid.innerHTML = '';
+
+  const perRow = dotWidth > 0 && punchGridWidth > 0
+    ? Math.max(1, Math.floor((punchGridWidth + gap) / (dotWidth + gap)))
+    : PUNCH_ROW_FALLBACK;
+
+  const rows = Math.ceil(total / perRow);
+  const each = Math.floor(total / rows);      // every row carries at least this many...
+  const spare = total % rows;                 // ...and the first `spare` rows carry one more
+
+  for (let r = 0, n = 0; r < rows; r += 1) {
+    const row = document.createElement('span');
+    row.className = 'punch-row';
+    for (let i = 0; i < each + (r < spare ? 1 : 0); i += 1, n += 1) {
+      row.appendChild(punchDot(n < filled));
+    }
+    grid.appendChild(row);
+  }
+}
+
+function punchDot(isFilled) {
+  const dot = document.createElement('span');
+  dot.className = `punch-dot${isFilled ? ' is-filled' : ''}`;
+  dot.textContent = isFilled ? '✓' : '';
+  return dot;
+}
+
+// The rows are measured against the card, so a rotation (or a dragged desktop
+// window) needs them laid out again. Guarded on the width actually changing:
+// a collapsing URL bar or a soft keyboard fires resize too, and re-rendering
+// mid-scroll would cost a reflow for nothing.
+function onPunchResize() {
+  if (!vendor || $('punch-block').hidden) return;
+  if ($('punch-grid').getBoundingClientRect().width === punchGridWidth) return;
+  renderPunchUi();
 }
 
 /* ---------- punch modal: progress / redeem a full card ---------- */
