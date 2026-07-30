@@ -660,12 +660,6 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* ---------- signed-in: vendor (earn code + rewards + redeem) ---------- */
 
-/* Flex column so the punch-in button can hug the page bottom via
-   margin-top:auto (the #account/#home pattern) — position:fixed is off-limits
-   inside the transformed .tab-track. */
-#vendor { min-height: 100%; display: flex; flex-direction: column; }
-#vendor .app-main { flex: 0 0 auto; }
-
 .points-bar {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; gap: 0.9rem;
@@ -798,7 +792,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--card);
   border-top: 3px solid var(--edge);
   border-radius: 1.5rem 1.5rem 0 0;
-  padding: 2.2rem 1.5rem calc(1.7rem + env(safe-area-inset-bottom, 0px));
+  padding: 2.2rem 1.5rem calc(2rem + env(safe-area-inset-bottom, 0px));
   display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
   text-align: center;
   min-height: 42vh; max-height: 88vh; overflow-y: auto;
@@ -1297,17 +1291,23 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    overflow still catch the tall state, once the QR is on screen. */
 #punch-modal .detail-card { min-height: 0; }
 
-/* --- the bottom-hugging "Punch in" button --- */
+/* The status line only ever has text after a redeem attempt, but .detail-status
+   reserves 1.3em for it up front — which, plus the flex gap above it, hangs a
+   band of nothing under the description on the (usual) progress state. Collapse
+   it while it's empty: display:none drops the gap with it, so the sheet ends on
+   the last line of copy with just the card's bottom padding beneath. Nothing to
+   shift here either — the status appears alongside the QR, which resizes the
+   sheet anyway. */
+#punch-modal .detail-status:empty { display: none; }
 
-/* Same sticker language as the home screen's primary button. margin-top:auto
-   hugs the page bottom when content is short; position:sticky keeps it in
-   reach while the rewards list scrolls. */
+/* --- the "Punch in" button --- */
+
+/* Same sticker language as the home screen's primary button. Sits in the flow
+   right under the punch card it feeds; .app-main's padding gives it its side
+   insets, and the REWARDS label below brings its own 1.6rem of air. */
 .punch-scan-btn {
-  position: sticky;
-  bottom: calc(0.9rem + env(safe-area-inset-bottom, 0px));
-  z-index: 5;
-  margin: auto 1.3rem 0.9rem;
-  margin-top: auto;
+  width: 100%;
+  margin-top: 0.9rem;
   display: flex; align-items: center; justify-content: center; gap: 0.95rem;
   text-align: center;
   background: var(--navy); color: #fff;
