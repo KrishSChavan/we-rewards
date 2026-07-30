@@ -566,6 +566,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   padding: 0.4rem 1.3rem 0.9rem;   /* inline padding = the parent's padding */
   scroll-padding-left: 1.3rem;     /* align a snapped card to that same edge */
   scrollbar-width: none;
+  /* Once the row runs out, the tab swipe takes the rest of the flick (app.js →
+     scrollerInWay), so the leftover must not chain outwards and bounce the whole
+     document — .move-vendors does the same for the vertical case. */
+  overscroll-behavior-x: contain;
 }
 .vendor-carousel::-webkit-scrollbar { display: none; }
 
@@ -1024,6 +1028,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
 }
+/* While a finger is on the track it follows 1:1 — no easing in the way. app.js
+   drops this class just before the release so the snap eases *out of* the
+   dragged position instead of jumping, the same hand-off .earn-card.is-dragging
+   does for the code sheet. */
+.tab-track.is-dragging { transition: none; }
 @media (prefers-reduced-motion: reduce) { .tab-track { transition: none; } }
 
 /* each page is exactly one viewport wide and scrolls on its own */

@@ -18,6 +18,7 @@ const tickRaf = new WeakMap(); // per-element requestAnimationFrame id for the c
 let toastTimer = null;
 let activeTab = 0;          // 0 = home, 1 = history, 2 = account
 let historyLoaded = false;  // has the history tab fetched at least once?
+let paneSlide = null;       // the in-flight #home <-> #vendor slide, so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
 
 const $ = (id) => document.getElementById(id);
@@ -121,6 +122,7 @@ function track(event, props) {
     }
     setTab(tab);
   });
+  wireTabSwipe();   // …and the same three tabs by dragging the track itself
   // appearance: dark-mode toggle (the <head> script already applied the theme)
   applyTheme(currentTheme());
   $('dark-toggle').addEventListener('click', () => {
@@ -236,8 +238,10 @@ function render(session) {
   $('app').hidden = !ready;
 
   if (!session) {
+    endPaneSlide(false);        // a drill-in still mid-slide would re-hide #home behind us
     $('home').hidden = false;   // reset the Home tab's sub-view for the next sign-in
     $('vendor').hidden = true;
+    dropSwipe();                // a finger still down would keep writing --tab over the reset
     setTab(0, false);
     stopMyCode();
     disconnectSocket();
@@ -248,6 +252,7 @@ function render(session) {
     allVendors = [];
     vendor = null;
     historyLoaded = false;
+    dropHistory();              // …and unpaint the rows, or the next student reads them
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
@@ -591,6 +596,247 @@ function setTab(i, animate = true) {
   if (i === 1) loadHistory();   // refresh activity whenever the History tab opens
 }
 
+/* ---------- bottom nav: swipe between tabs ----------
+   The track already slides on a CSS transition when you tap the bar; this is the
+   same slide with a finger on it. Touch events rather than pointer events on
+   purpose: the only thing that stops the browser scrolling once we take a
+   gesture is preventDefault() on a non-passive touchmove, and *whether* to take
+   it can't be said in CSS — it depends on which way the finger went and on
+   whether the carousel under it still has room to scroll that way. No mouse
+   path either; the bottom bar is already the pointer + keyboard route. */
+
+const SWIPE_SLOP = 10;      // px of travel before the axis is called (the browsers' own tap slop)
+const SWIPE_RATIO = 1.2;    // |dx| must beat |dy| by this much — a ~40° cone, forgiving of a thumb's arc
+const SWIPE_COMMIT = 0.35;  // drag this share of a page and letting go changes tab
+const SWIPE_FLING = 0.4;    // px/ms at release: a short flick counts for as much as a long drag
+const SWIPE_IDLE_MS = 90;   // parked longer than this before lifting? not a flick, whatever it was doing before
+const SWIPE_RESIST = 0.3;   // past the first/last tab the track still moves, at this fraction
+let swipe = null;           // the gesture in flight, or null
+
+function wireTabSwipe() {
+  const track = $('tab-track');
+  // Bound on the track, not on document: every sheet and popover lives at body
+  // level (see the OVERLAYS block in index.html), so a touch on an open one
+  // can't reach these listeners at all — that guard comes for free.
+  track.addEventListener('touchstart', onSwipeStart, { passive: true });
+  track.addEventListener('touchmove', onSwipeMove, { passive: false });   // must be non-passive to preventDefault
+  // …but the release goes on window. Touch events keep firing at whatever node
+  // took the touchstart, so if that node is torn out mid-gesture — a socket push
+  // lands while a finger is on a history row, renderHistory() wipes the list —
+  // it's detached, and a track-level touchend never arrives. The track would sit
+  // parked mid-slide until the next tap. Both are passive, so this costs nothing.
+  window.addEventListener('touchend', onSwipeEnd, { passive: true });
+  window.addEventListener('touchcancel', onSwipeEnd, { passive: true });
+  window.addEventListener('resize', onSwipeResize);
+}
+
+// One page wide. The track's own box is what a % translate resolves against, so
+// it's the right denominator for both halves of the maths — and reading it live
+// means the first gesture after a rotation is already scaled to the new width.
+function tabWidth() {
+  return $('tab-track').clientWidth || window.innerWidth;
+}
+
+// Where the track is sitting *right now*, in tabs — mid-transition included,
+// which is why this reads the composited matrix rather than trusting activeTab.
+// Same reasoning (and the same guard) as sheetOffset() under the earn sheet.
+function trackPos() {
+  const t = getComputedStyle($('tab-track')).transform;
+  if (!t || t === 'none') return activeTab;
+  try { return -new DOMMatrixReadOnly(t).m41 / tabWidth(); } catch { return activeTab; }
+}
+
+// Paint only — deliberately not setTab(). A drag that snapped back hasn't
+// changed tab, and setTab re-fires loadHistory() every time it lands on 1, so
+// routing snap-backs through it would refetch the list on every thumb wiggle.
+function paintTab(pos) {
+  $('tab-track').style.setProperty('--tab', pos);
+}
+
+// Past either end there's nothing to slide to, so the track still gives — just
+// far less — and springs back on release. A hard clamp reads as broken.
+function paintSwipe(pos, last) {
+  let out = pos;
+  if (out < 0) out *= SWIPE_RESIST;
+  else if (out > last) out = last + (out - last) * SWIPE_RESIST;
+  paintTab(out);
+}
+
+// Easing back on with the dragged offset as its start point — the same
+// remove-class-then-reflow hand-off onEarnDragEnd does for the sheet.
+function releaseTrack() {
+  const track = $('tab-track');
+  track.classList.remove('is-dragging');
+  void track.offsetWidth;
+}
+
+// Give the gesture back without changing tab: the track eases home from
+// wherever the finger left it.
+function abortSwipe() {
+  if (!swipe) return;
+  const wasOurs = swipe.axis === 'x';
+  swipe = null;
+  if (!wasOurs) return;
+  releaseTrack();
+  paintTab(activeTab);
+}
+
+// Hard reset, no animation — for sign-out, where the shell disappears out from
+// under the track while a finger already down keeps firing moves at it. Same
+// posture as dropEarnSheet(); the setTab(0, false) right after does the paint.
+function dropSwipe() {
+  swipe = null;
+  $('tab-track').classList.remove('is-dragging');
+}
+
+// Does anything under the finger still want this horizontal drag? Only the
+// vendor carousel can (it's the one overflow-x in the stylesheet), and only
+// while it hasn't already hit the end it's being dragged toward — otherwise the
+// last card would swallow every swipe off Home. The walk stops at the .tab-page
+// because nothing above it pans sideways: .tab-viewport is overflow: hidden.
+function scrollerInWay(target, dx) {
+  let el = target && target.nodeType === 1 ? target : null;   // touches land on <path> inside the card SVGs
+  while (el) {
+    // First, before any overflow test: a .tab-page only authors overflow-y, and
+    // a lone overflow-y makes overflow-x compute to `auto` rather than visible.
+    if (el.classList.contains('tab-page')) return false;
+    // 2px of slop rather than an exact compare — scrollWidth/clientWidth are
+    // rounded to integers while scrollLeft is fractional, and scroll-snap parks
+    // the carousel on layout-derived fractions.
+    const max = el.scrollWidth - el.clientWidth;
+    if (max > 2 && /^(auto|scroll|overlay)$/.test(getComputedStyle(el).overflowX)) {
+      if (dx < 0 ? el.scrollLeft < max - 2 : el.scrollLeft > 2) return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
+
+function onSwipeStart(e) {
+  if (swipe) abortSwipe();                      // a stale gesture whose touchend never landed
+  if (e.touches.length !== 1) return;           // a second finger is a pinch or a two-finger scroll, never a tab change
+  if ($('app').hidden) return;                  // landing page / consent gate
+  // Structurally these can't reach us — every overlay is a body-level sibling of
+  // #app — but it's one selector and it survives someone nesting a future sheet.
+  // Keyed on [hidden], not .is-open: is-open comes off a few hundred ms before
+  // the element actually stops hit-testing.
+  if (document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')) return;
+  if ($('tab-home').classList.contains('home-sliding')) return;   // the home ↔ vendor slide owns the axis
+  const t = e.touches[0];
+  const base = trackPos();
+  swipe = {
+    id: t.identifier,
+    target: t.target,
+    x0: t.clientX, y0: t.clientY,
+    x: t.clientX, xPrev: t.clientX, tPrev: e.timeStamp,
+    v: null,                        // px/ms, smoothed; null until there's a sample
+    axis: null,                     // null = undecided, 'x' = ours, 'off' = the page's
+    base,                           // grabbing mid-animation picks the track up where it visually is…
+    from: Math.round(base),         // …and commits relative to the tab it was nearest
+    pos: base,
+    width: tabWidth(),
+    last: $('tab-track').children.length - 1,
+  };
+}
+
+function onSwipeMove(e) {
+  if (!swipe || swipe.axis === 'off') return;
+  if (e.touches.length !== 1) { abortSwipe(); return; }
+  const t = e.touches[0];
+  if (t.identifier !== swipe.id) return;
+  const dx = t.clientX - swipe.x0;
+  const dy = t.clientY - swipe.y0;
+
+  if (swipe.axis === null) {
+    // Undecided: prevent nothing, return. Staying out of the way here is what
+    // keeps an ordinary vertical scroll on the browser's fast path.
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_SLOP) return;
+    // Called once and never revisited — re-testing every move is what makes a
+    // track judder when a thumb arcs through a scroll.
+    if (Math.abs(dx) < Math.abs(dy) * SWIPE_RATIO) { swipe.axis = 'off'; return; }
+    // A momentum scroll still running under the finger makes moves
+    // uncancelable; taking the gesture then slides the track *and* the page.
+    if (!e.cancelable) { swipe.axis = 'off'; return; }
+    if (scrollerInWay(swipe.target, dx)) { swipe.axis = 'off'; return; }
+    swipe.axis = 'x';
+    $('tab-track').classList.add('is-dragging');   // cut the easing; the finger is the animation now
+  }
+
+  if (e.cancelable) e.preventDefault();
+
+  const dt = e.timeStamp - swipe.tPrev;
+  if (dt > 0) {
+    const v = (t.clientX - swipe.xPrev) / dt;
+    swipe.v = swipe.v === null ? v : swipe.v * 0.4 + v * 0.6;   // one jittery sample shouldn't read as a fling
+    swipe.xPrev = t.clientX;
+    swipe.tPrev = e.timeStamp;
+  }
+  swipe.x = t.clientX;
+
+  // One tab per gesture, the way a paged scroller works: however far the drag
+  // runs it can't fly past History straight into Account.
+  swipe.pos = Math.min(swipe.from + 1, Math.max(swipe.from - 1, swipe.base - dx / swipe.width));
+  paintSwipe(swipe.pos, swipe.last);
+}
+
+function onSwipeEnd(e) {
+  if (!swipe) return;
+  const s = swipe;
+  swipe = null;
+  if (s.axis !== 'x') return;   // the page took this one; nothing of ours to settle
+
+  releaseTrack();
+
+  // A finger that parked before lifting isn't flicking, however fast it was
+  // moving a moment earlier. A cancel (a call landing, the app backgrounding)
+  // has no release velocity at all, so it settles on distance alone — which
+  // means a cancel at 80% still commits and one at 5% still goes back.
+  const idle = e.timeStamp - s.tPrev;
+  const v = (e.type === 'touchcancel' || idle > SWIPE_IDLE_MS) ? 0 : (s.v ?? 0);
+  const dx = s.x - s.x0;
+
+  let target;
+  if (Math.abs(v) >= SWIPE_FLING) {
+    // Commit the way the flick went, but never past where the gesture started:
+    // a hard flick back the way you came is a cancel, not a jump.
+    target = v < 0 ? Math.max(s.from, Math.ceil(s.pos)) : Math.min(s.from, Math.floor(s.pos));
+  } else if (Math.abs(dx) >= s.width * SWIPE_COMMIT) {
+    target = s.from + (dx < 0 ? 1 : -1);
+  } else {
+    target = s.from;
+  }
+  target = Math.max(0, Math.min(s.last, target));   // the ends don't wrap
+
+  // setTab only on a real arrival — it's what calls loadHistory(), and a drag
+  // that snapped back onto Activity must not refetch the list.
+  if (target === activeTab) paintTab(activeTab);
+  else setTab(target);
+
+  // The browser can still fire a click on whatever was under the finger when it
+  // went down — onVendorTap would drill into a vendor, or open the Maps app.
+  if (Math.abs(dx) > SWIPE_SLOP) eatNextClick();
+}
+
+function onSwipeResize() {
+  // A rotation changes the width the drag was scaled against, so its numbers are
+  // now wrong. A soft keyboard or a collapsing URL bar only moves the height —
+  // those must not kill a live gesture.
+  if (!swipe || tabWidth() === swipe.width) return;
+  abortSwipe();
+}
+
+// Capture phase on the track, so it lands ahead of every delegated handler
+// inside it (#vendor-carousel, #items, #community-card, #back-btn, the Account
+// rows). Self-removing, because a swipe that produced no click at all must not
+// then eat a real tap.
+function eatNextClick() {
+  const track = $('tab-track');
+  let timer = 0;
+  const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); clearTimeout(timer); };
+  track.addEventListener('click', eat, { capture: true, once: true });
+  timer = setTimeout(() => track.removeEventListener('click', eat, true), 400);
+}
+
 /* ---------- history tab (last 30 days) ---------- */
 
 async function loadHistory() {
@@ -633,6 +879,16 @@ function renderHistory(items) {
     }
     list.appendChild(historyRow(tx));
   });
+}
+
+// Back to the first-load state. historyLoaded = false alone only stops the
+// background refreshes — it doesn't unpaint anything, so without this a
+// sign-out leaves one student's rows on screen for whoever signs in next on the
+// same device, right up until their own fetch returns.
+function dropHistory() {
+  $('history-list').innerHTML = '';
+  $('history-loading').hidden = false;
+  $('history-empty').hidden = true;
 }
 
 function historyRow(tx) {
@@ -1322,10 +1578,33 @@ function openVendor(vendorId) {
 function backToHome() {
   vendor = null;
   balanceReady = false;
+  // A drill-in slide may still be in flight — tap a card, tab away, then tap
+  // Home inside the 360ms. Its pending settle would hide #home, the very pane
+  // we're about to show, leaving tab 0 blank until a reload. End it first, and
+  // let the two hidden flags below decide what shows rather than that settle.
+  endPaneSlide(false);
   $('vendor').hidden = true;
   $('home').hidden = false;
   loadVendors();                              // refresh card balances on the way back
   $('tab-home').scrollTop = 0;
+}
+
+// End the in-flight pane slide: transition listeners off, classes and inline
+// transforms cleared. `hideOutgoing` is false only for an interrupting
+// navigation, which sets both panes' hidden flags itself a moment later.
+// Split out of slidePanes so a slide can be cut short — see backToHome.
+function endPaneSlide(hideOutgoing = true) {
+  if (!paneSlide) return;
+  const { incoming, outgoing, settle, timer } = paneSlide;
+  paneSlide = null;                               // first, so a re-entrant call is a no-op
+  clearTimeout(timer);
+  incoming.removeEventListener('transitionend', settle);
+  const page = $('tab-home');
+  page.classList.remove('home-sliding', 'home-sliding-run');
+  incoming.style.transform = '';
+  outgoing.style.transform = '';
+  if (hideOutgoing) outgoing.hidden = true;
+  page.scrollTop = 0;
 }
 
 // Slide between the two Home-tab panes. `incoming` enters from `dir` (1 = from
@@ -1334,7 +1613,7 @@ function backToHome() {
 // once it settles. JS drives the transforms against the .home-sliding layout.
 function slidePanes(incoming, outgoing, dir) {
   const page = $('tab-home');
-  if (page.classList.contains('home-sliding')) return;   // a slide is already running
+  if (paneSlide) return;   // a slide is already running
 
   // Reduced motion (or no matchMedia support): skip the animation, just swap.
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
@@ -1354,20 +1633,15 @@ function slidePanes(incoming, outgoing, dir) {
   incoming.style.transform = 'translateX(0)';     // ...then slide the pair across
   outgoing.style.transform = `translateX(${dir * -100}%)`;
 
-  let done = false;
   const settle = (e) => {
     if (e && e.target !== incoming) return;       // ignore transitions bubbling from children
-    if (done) return;
-    done = true;
-    incoming.removeEventListener('transitionend', settle);
-    page.classList.remove('home-sliding', 'home-sliding-run');
-    incoming.style.transform = '';
-    outgoing.style.transform = '';
-    outgoing.hidden = true;
-    page.scrollTop = 0;
+    endPaneSlide();
   };
+  // Held in paneSlide rather than a local `done` flag, so an interrupting
+  // navigation can cancel this settle instead of letting it fire against panes
+  // it no longer describes.
+  paneSlide = { incoming, outgoing, settle, timer: setTimeout(settle, 420) };  // timer: if transitionend never fires
   incoming.addEventListener('transitionend', settle);
-  setTimeout(settle, 420);                        // fallback if transitionend never fires
 }
 
 // Back arrow / Home tap: carousel in from the left, vendor screen out to the right.
