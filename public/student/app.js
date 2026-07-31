@@ -20,6 +20,16 @@ let activeTab = 0;          // 0 = home, 1 = history, 2 = account
 let historyLoaded = false;  // has the history tab fetched at least once?
 let paneSlide = null;       // the in-flight #home <-> #vendor slide, so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
+// Carousel page dots (see renderVendorDots). The window is at most DOT_CAP wide;
+// dotStart is its first index, so the row only ever holds DOT_CAP buttons however
+// many spots there are.
+let dotStart = 0;           // first vendor index shown in the dot window
+let dotActive = 0;          // vendor index the carousel is parked on
+let dotSnaps = [];          // scrollLeft each card snaps to; [] = needs measuring
+let dotsRaf = 0;            // pending sync frame, cancelled on rebuild (cf. tickRaf)
+let dotJump = null;         // index a tapped-dot scroll is flying toward, or null
+let dotJumpTimer = null;    // backstop for browsers without scrollend
+let dotJumpAbort = null;    // drops that jump's listeners in one go, however it ends
 
 const $ = (id) => document.getElementById(id);
 
@@ -131,6 +141,11 @@ function track(event, props) {
     setTheme(next);
   });
   $('vendor-carousel').addEventListener('click', onVendorTap);
+  // Page dots under the carousel. #vendor-carousel and #vendor-dots are stable
+  // elements — only their children are replaced — so these bind exactly once.
+  $('vendor-carousel').addEventListener('scroll', onCarouselScroll, { passive: true });
+  $('vendor-dots').addEventListener('click', onDotTap);
+  window.addEventListener('resize', () => { dotSnaps = []; });   // card widths changed; re-measure lazily
   // Info popovers: the tier (i) opens on its button; the community explainer
   // closes like every popover but no longer opens on the card itself — with a
   // balance the card opens the Move-points sheet instead (community-points.md
@@ -760,9 +775,12 @@ function onSwipeMove(e) {
     // uncancelable; taking the gesture then slides the track *and* the page.
     if (!e.cancelable) { swipe.axis = 'off'; return; }
     if (scrollerInWay(swipe.target, dx)) { swipe.axis = 'off'; return; }
-    // A rightward drag starting on the vendor screen is its own back-out
-    // gesture (see wireVendorSwipe) — leave the axis for that instead.
-    if (dx > 0 && swipe.target.closest('#vendor')) { swipe.axis = 'off'; return; }
+    // A rightward drag on the vendor screen is its own back-out gesture (see
+    // wireVendorSwipe) — leave the axis for that instead. Keyed on the pane
+    // being open rather than on the touch landing inside #vendor: the pane only
+    // spans its own content, so a target test missed any drag starting below a
+    // short vendor's content and stole it back for the tab swipe.
+    if (dx > 0 && !$('vendor').hidden && swipe.target.closest('#tab-home')) { swipe.axis = 'off'; return; }
     swipe.axis = 'x';
     $('tab-track').classList.add('is-dragging');   // cut the easing; the finger is the animation now
   }
@@ -851,7 +869,15 @@ function eatNextClick(el = $('tab-track')) {
 let vswipe = null;   // the vendor back-gesture in flight, or null
 
 function wireVendorSwipe() {
-  const el = $('vendor');
+  // Bound to the *page*, not to #vendor itself. #vendor is only as tall as its
+  // content, so a vendor with few rewards used to leave a strip of bare
+  // #tab-home below it where a touch never reached this listener at all — the
+  // tab swipe took the drag instead and rubber-banded it back, which reads as
+  // the back-swipe working on some vendors and not others. #tab-home always
+  // fills the viewport, so every touch on the vendor screen lands here now.
+  // onVendorSwipeStart gates on #vendor being open; the page outlives both panes,
+  // so this is still wired exactly once.
+  const el = $('tab-home');
   el.addEventListener('touchstart', onVendorSwipeStart, { passive: true });
   el.addEventListener('touchmove', onVendorSwipeMove, { passive: false });   // non-passive to preventDefault
   window.addEventListener('touchend', onVendorSwipeEnd, { passive: true });
@@ -884,6 +910,7 @@ function abortVendorSwipe() {
 function onVendorSwipeStart(e) {
   if (vswipe) abortVendorSwipe();               // a stale gesture whose touchend never landed
   if (e.touches.length !== 1) return;            // a second finger is a pinch, never a back-swipe
+  if ($('vendor').hidden) return;                // on the carousel, not drilled in — nothing to back out of
   if ($('tab-home').classList.contains('home-sliding')) return;   // a slide already owns the axis
   if (document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')) return;
   const t = e.touches[0];
@@ -941,8 +968,9 @@ function onVendorSwipeEnd(e) {
   settleVendorDrag(v >= SWIPE_FLING || dx >= s.width * SWIPE_COMMIT);
 
   // The browser can still fire a click on whatever was under the finger when it
-  // went down — a reward card or the back button.
-  if (Math.abs(dx) > SWIPE_SLOP) eatNextClick($('vendor'));
+  // went down — a reward card or the back button. Scoped to the page for the
+  // same reason the listeners are: a drag can start outside the pane's own box.
+  if (Math.abs(dx) > SWIPE_SLOP) eatNextClick($('tab-home'));
 }
 
 function onVendorSwipeResize() {
@@ -1692,6 +1720,155 @@ function renderVendors() {
       ${map}`;
     wrap.appendChild(card);
   });
+
+  renderVendorDots();   // the pager rebuilds with the row it pages through
+}
+
+/* ---------- carousel page dots ----------
+   At most DOT_CAP dots are in the DOM at once, showing a window onto the full
+   list. The rule the whole thing hangs off: the active dot is never a window
+   edge unless it is genuinely the first or last spot — i.e. there is always one
+   dot of lookahead in the direction you are heading. Walking onto the
+   second-to-last dot is therefore what pushes the window along by one.
+
+   That invariant also keeps the window from juddering: the band it accepts is
+   DOT_CAP - 2 wide, so crossing back over a boundary you just crossed does not
+   shift it back. And because a shrunken edge dot can never be the active one,
+   .is-active and .is-edge never land on the same dot. */
+
+const DOT_CAP = 8;          // most dots on screen at once
+const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// Where the window should start, given the active index and where it starts now.
+function dotWindowStart(n, i, prevStart) {
+  if (n <= DOT_CAP) return 0;                     // whole list fits: no window
+  let s = clampNum(prevStart, 0, n - DOT_CAP);    // prevStart can be stale after n changed
+  if (i < s + 1) s = i - 1;                       // walked off the left lookahead
+  else if (i > s + DOT_CAP - 2) s = i - DOT_CAP + 2;
+  return clampNum(s, 0, n - DOT_CAP);
+}
+
+// Rebuilt with the carousel: renderVendors() empties the scroller, which resets
+// scrollLeft to 0, so the active index goes back to the first card with it.
+function renderVendorDots() {
+  cancelAnimationFrame(dotsRaf); dotsRaf = 0;   // a frame queued against the old cards
+  endDotJump();
+  dotSnaps = [];                                 // dirty; measured on demand, see syncDots
+  const row = $('vendor-dots');
+  const n = allVendors.length;
+  row.hidden = n < 2;                            // 0 or 1 spots: nothing to page through
+  row.innerHTML = '';
+  dotStart = 0;
+  dotActive = 0;
+  if (n < 2) return;
+
+  for (let k = dotStart; k < Math.min(n, dotStart + DOT_CAP); k += 1) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'vdot';
+    b.dataset.i = k;
+    row.appendChild(b);
+  }
+  paintDots();
+}
+
+// Classes + labels only, never innerHTML: this runs on every scroll frame, and
+// rebuilding would drop focus and restart the transitions mid-flight.
+function paintDots() {
+  const n = allVendors.length;
+  const dots = $('vendor-dots').children;
+  // More list past the window on this side → that edge dot shrinks. Both can.
+  const shrinkLeft = n > DOT_CAP && dotStart > 0;
+  const shrinkRight = n > DOT_CAP && dotStart + DOT_CAP < n;
+  for (let d = 0; d < dots.length; d += 1) {
+    const k = dotStart + d;
+    const b = dots[d];
+    b.dataset.i = k;
+    b.classList.toggle('is-active', k === dotActive);
+    b.classList.toggle('is-edge', (d === 0 && shrinkLeft) || (d === dots.length - 1 && shrinkRight));
+    if (k === dotActive) b.setAttribute('aria-current', 'true');
+    else b.removeAttribute('aria-current');
+    // Only the windowed dots exist, so the label is what carries the real count.
+    b.setAttribute('aria-label', `${allVendors[k]?.name ?? 'Spot'}, spot ${k + 1} of ${n}`);
+  }
+}
+
+// Card offsets relative to the first card, so the carousel's 1.3rem gutter (an
+// equal scroll-padding-left, styles.css) drops out of the arithmetic entirely.
+// Deferred until the carousel is actually on screen: renderVendors() also runs
+// from socket pushes while #home is hidden, and [hidden] makes every offset 0.
+function measureDotSnaps() {
+  const cards = $('vendor-carousel').querySelectorAll('.vendor-card');
+  const base = cards[0]?.offsetLeft ?? 0;
+  dotSnaps = [...cards].map((c) => c.offsetLeft - base);
+}
+
+// Nearest snap wins — an argmin, never an equality test, so scroll-snap's
+// fractional scrollLeft is fine. The last card can't reach its own snap offset
+// (it's narrower than the viewport), but it's still the nearest one there.
+function activeFromScroll() {
+  const x = $('vendor-carousel').scrollLeft;
+  let best = 0;
+  let bestD = Infinity;
+  for (let k = 0; k < dotSnaps.length; k += 1) {
+    const d = Math.abs(x - dotSnaps[k]);
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  return best;
+}
+
+function onCarouselScroll() {
+  if (dotsRaf) return;                    // coalesce a burst of scroll events into one frame
+  dotsRaf = requestAnimationFrame(() => { dotsRaf = 0; syncDots(); });
+}
+
+function syncDots() {
+  const n = allVendors.length;
+  if (n < 2) return;
+  if (dotSnaps.length !== n) measureDotSnaps();
+  const i = activeFromScroll();
+  // A tapped-dot scroll fires `scroll` across every card on the way; the dots
+  // already show the destination, so ignore what's under us until it lands.
+  if (dotJump !== null) { if (i === dotJump) endDotJump(); return; }
+  if (i === dotActive) return;            // nothing moved: no DOM writes
+  dotActive = i;
+  dotStart = dotWindowStart(n, i, dotStart);
+  paintDots();
+}
+
+// Release the tapped-dot guard, whichever way the jump ended, and take that
+// jump's listeners with it — scrollend is not universal, so a `once` listener
+// waiting on it would otherwise pile up one per tap on the browsers that lack it.
+function endDotJump() {
+  dotJump = null;
+  clearTimeout(dotJumpTimer);
+  dotJumpTimer = null;
+  dotJumpAbort?.abort();
+  dotJumpAbort = null;
+}
+
+function onDotTap(e) {
+  const btn = e.target.closest('.vdot');
+  if (!btn) return;
+  const k = Number(btn.dataset.i);
+  if (!Number.isInteger(k) || k < 0 || k >= allVendors.length) return;
+  const wrap = $('vendor-carousel');
+  if (dotSnaps.length !== allVendors.length) measureDotSnaps();   // on screen by now
+  endDotJump();                           // supersede a jump still in flight
+  dotJump = k;
+  dotActive = k;
+  dotStart = dotWindowStart(allVendors.length, k, dotStart);
+  paintDots();                            // the dots lead, the scroll follows
+  const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  wrap.scrollTo({ left: dotSnaps[k] ?? 0, behavior: smooth ? 'smooth' : 'auto' });
+  // The jump may never land exactly on the target (see activeFromScroll), and a
+  // finger on the carousel cancels the browser's smooth scroll outright — so
+  // release on either, with the timer as the backstop that always fires.
+  dotJumpAbort = new AbortController();
+  const { signal } = dotJumpAbort;
+  wrap.addEventListener('scrollend', endDotJump, { once: true, signal });
+  wrap.addEventListener('touchstart', endDotJump, { once: true, passive: true, signal });
+  dotJumpTimer = setTimeout(endDotJump, 700);
 }
 
 // Live-patch just the points number on a card (used by socket pushes on home).

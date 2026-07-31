@@ -590,6 +590,57 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* a lone vendor fills the full width (after the parent's padding) */
 .vendor-carousel.single .vendor-card { flex-basis: 100%; max-width: none; }
 
+/* ---------- home: carousel page dots ----------
+   A window of at most 8 (app.js → DOT_CAP). The dot at a window edge shrinks
+   when there is more list past it, on whichever side — the shrunken dot IS the
+   "more that way" cue, which is why it can never also be the active dot (see
+   the lookahead invariant on dotWindowStart).
+
+   Each button is a FIXED box and the visible circle is its ::before, so only
+   the circle resizes: the row's layout is frozen and a dot growing or shrinking
+   can never nudge its neighbours.
+
+   The 0.9rem that used to sit under the carousel moves to this row — it is one
+   of the four constants .home-main's gap arithmetic depends on (see the comment
+   there), and it has to stay at the bottom of the block, not in the middle of
+   it. The carousel keeps just enough to clear the cards' hard shadow. When the
+   row is hidden (fewer than 2 spots) display:none takes its margin with it, so
+   the carousel carries the full constant again in that case. */
+.vendor-dots {
+  display: flex; align-items: center; justify-content: center;
+  height: 2rem;               /* fixed, so the row never reflows as dots resize */
+  margin: 0 1.3rem 0.9rem;    /* NO auto margins — they would join .home-main's four-gap split */
+}
+.vendor-dots[hidden] { display: none; }
+.vendor-carousel { padding-bottom: 0.45rem; }               /* now only shadow clearance */
+.vendor-carousel.single, .vendor-carousel:empty { padding-bottom: 0.9rem; }   /* dots hidden → keep the constant here */
+
+.vdot {
+  flex: 0 0 auto;
+  width: 1.45rem; height: 2rem;   /* ~23×32px tap target; 8 of them still fit a small phone */
+  padding: 0; border: 0; background: none;
+  display: grid; place-items: center;
+  touch-action: manipulation;     /* a tap, never a drag — same as .earn-close */
+}
+.vdot::before {
+  content: "";
+  width: var(--d, 0.5rem); height: var(--d, 0.5rem);
+  border-radius: 50%;
+  background: var(--muted); opacity: 0.45;
+  transition: width 160ms ease, height 160ms ease, background 160ms ease,
+              opacity 160ms ease, box-shadow 160ms ease;
+}
+/* Active: the sticker language scaled down — a 3px border and the hard offset
+   shadow read as a smudge at this size, so it takes a thin ring instead. */
+.vdot.is-active::before {
+  --d: 0.62rem;
+  background: var(--brand); opacity: 1;
+  box-shadow: 0 0 0 1.5px var(--edge);
+}
+/* window edge with more spots beyond it */
+.vdot.is-edge::before { --d: 0.32rem; opacity: 0.3; }
+@media (prefers-reduced-motion: reduce) { .vdot::before { transition: none; } }
+
 /* name, points, and address stack at the top; the map sits at the bottom */
 .vc-body {
   flex: 1 1 auto; min-height: 0;
@@ -963,7 +1014,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* The stylesheet has no focus rules at all, so a brand-new pair of buttons would
    fall back to UA defaults. */
-.btn-redeem:focus-visible, .item-card:focus-visible, .punch-card:focus-visible {
+.btn-redeem:focus-visible, .item-card:focus-visible, .punch-card:focus-visible,
+.vdot:focus-visible {
   outline: 3px solid var(--brand); outline-offset: 2px;
 }
 
@@ -1110,7 +1162,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    native horizontal pan before our axis-lock gets 10px in to decide, which
    reads as the swipe silently doing nothing on any vendor with enough content
    to scroll. pan-y keeps vertical scrolling native; horizontal stays JS-only. */
-#vendor { touch-action: pan-y; }
+/* min-height matches #home above and #history/#account below. Without it the
+   pane is only as tall as its content, and a vendor with few rewards (or punch
+   cards off) leaves a strip of bare #tab-home under it. wireVendorSwipe binds
+   touchstart to the *page*, not this pane, so that strip is no longer dead —
+   but a short pane still shows the wrong background through, and every sibling
+   pane already stretches. */
+#vendor { touch-action: pan-y; min-height: 100%; }
 
 /* Sliding between the carousel (#home) and a vendor's redeem screen (#vendor):
    drilling in slides them leftward, backing out slides them rightward. JS drives

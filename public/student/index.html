@@ -208,6 +208,11 @@
               <p class="home-sub">YOUR SPOTS</p>
               <!-- vendor cards render here: horizontal, scroll-snapped -->
               <div id="vendor-carousel" class="vendor-carousel"></div>
+              <!-- page dots for the carousel above: a window of at most 8, with
+                   the edge dot shrunk on whichever side has more spots past it.
+                   Built by renderVendorDots(); hidden below 2 spots, since one
+                   spot is not a pager. -->
+              <div id="vendor-dots" class="vendor-dots" role="group" aria-label="Choose a spot" hidden></div>
               <p id="vendors-empty" class="empty-state" hidden>No spots yet, check back soon!</p>
 
               <!-- The two ways to earn, stacked. The wrapper — not the buttons —
