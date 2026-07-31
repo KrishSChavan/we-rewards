@@ -1891,7 +1891,7 @@ function decorateCard(card) {
   // gets no stray separator.
   const prices = priceBits(a)
     .map((b) => `<span class="ic-cost-line">${escapeHtml(b)}</span>`)
-    .join('<span class="ic-cost-dot" aria-hidden="true">·</span>');
+    .join('<span class="ic-cost-dot" aria-hidden="true">•</span>');
   card.innerHTML = `
     <span class="ic-emoji">${escapeHtml(card.dataset.emoji || '🎁')}</span>
     <span class="ic-body">

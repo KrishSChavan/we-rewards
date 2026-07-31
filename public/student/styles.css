@@ -790,7 +790,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    divider rather than a third value; aria-hidden in the markup so a screen
    reader hears "150 pts, 5 visits" and not a stray "middle dot". */
 .ic-cost-dot {
-  color: var(--muted); font-size: 0.85rem; line-height: 0.6;
+  color: var(--muted); font-size: 0.65rem; line-height: 1;
   font-weight: 900;
 }
 
