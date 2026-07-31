@@ -348,9 +348,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    no free space left to share. The carousel already carries 0.9rem of bottom
    padding — clearance for the vendor cards' hard shadow, which it would
    otherwise clip — so unless the other three gaps carry the same constant, that
-   one renders wider. Hence padding here (top AND bottom) and .home-sub's
-   margin-top below. THESE FOUR 0.9rem VALUES MOVE TOGETHER; change one alone
-   and the gaps go uneven the moment the screen is too short to have slack.
+   one renders wider. Hence padding here (top AND bottom) and .home-sub-row's
+   margin-top below — the row wraps the heading and the search field, so it is
+   what carries that constant now. THESE FOUR 0.9rem VALUES MOVE TOGETHER;
+   change one alone and the gaps go uneven the moment the screen is too short to
+   have slack.
 
    Auto margins rather than justify-content: space-evenly, because when content
    is taller than the screen space-evenly falls back to `center` and pushes the
@@ -361,7 +363,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    the carousel and the cards inside it the moment the content overflowed. */
 .home-main { flex: 1; padding: 0.9rem 0; display: flex; flex-direction: column; }
 .home-main > * { flex: 0 0 auto; }
-.home-sub { margin: 0.9rem 1.3rem 0.85rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
+/* The heading and the vendor filter share one line. The ROW owns the margins —
+   including the 0.9rem top that is one of the four constants above — so the
+   search field appearing or disappearing can never change the home screen's
+   vertical rhythm. */
+.home-sub-row { display: flex; align-items: center; gap: 0.75rem; margin: 0.9rem 1.3rem 0.85rem; }
+.home-sub { flex: 0 0 auto; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
 
 /* ---------- home: community points card ----------
    The cross-vendor wallet, and the only balance on this screen not tied to one
@@ -556,6 +563,59 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .srb-sub { font-size: 0.78rem; font-weight: 600; color: var(--muted); line-height: 1.25; }
 .srb-arrow { flex: 0 0 auto; color: var(--muted); display: flex; }
 .srb-arrow svg { width: 1.15rem; height: 1.15rem; display: block; }
+
+/* ---------- home: filter the spots ----------
+   A pill on the heading's row, in the same sticker language as everything else
+   here but without the hard shadow: it is a field, not a thing you press.
+   flex: 1 with min-width: 0 so it takes the rest of the line and no more — the
+   heading keeps its natural width on a 320px screen instead of being squeezed
+   into two lines. */
+.vendor-search {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.65rem;
+  background: var(--card);
+  border: 2.5px solid var(--edge); border-radius: 999px;
+  transition: border-color 90ms ease, box-shadow 90ms ease;
+}
+.vendor-search[hidden] { display: none; }
+/* --brand, not --navy: the selected-row treatment used elsewhere pairs navy
+   with a light fill, and navy on its own disappears against the dark card. */
+.vendor-search:focus-within { border-color: var(--brand); box-shadow: inset 0 0 0 1.5px var(--brand); }
+.vendor-search-icon { flex: 0 0 auto; font-size: 0.85rem; line-height: 1; opacity: 0.75; }
+.vendor-search-input {
+  flex: 1 1 auto; min-width: 0;
+  /* 1rem = 16px is the floor that stops iOS Safari zooming the page in on
+     focus. user-scalable=no does not cover that case (see no-zoom.js), and the
+     zoom it triggers leaves the app scrolled sideways with no way back. */
+  font: inherit; font-size: 1rem; font-weight: 700; color: var(--ink);
+  background: none; border: 0; outline: none;
+  padding: 0.15rem 0;
+  -webkit-appearance: none; appearance: none;
+}
+.vendor-search-input::placeholder { color: var(--muted); font-weight: 600; }
+/* the platform's own clear affordance — we ship one that matches the app */
+.vendor-search-input::-webkit-search-cancel-button,
+.vendor-search-input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+.vendor-search-clear {
+  flex: 0 0 auto;
+  width: 1.6rem; height: 1.6rem; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem; font-weight: 900; line-height: 1;
+  color: var(--muted); background: var(--hairline); border: 0;
+  cursor: pointer;
+}
+.vendor-search-clear[hidden] { display: none; }
+.vendor-search-clear:active { transform: scale(0.92); }
+
+/* Announced, never seen: clip rather than display:none, which would take the
+   live region out of the accessibility tree and silence it. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* horizontal, scroll-snapped row of vendor cards */
 .vendor-carousel {
@@ -830,7 +890,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .qr-fallback { font-size: 0.8rem; font-weight: 700; color: var(--muted); }
 
 .app-sub { margin: 1.6rem 0 0.8rem; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
-.empty-state { color: var(--muted); font-weight: 500; padding: 1.5rem 0; }
+.empty-state {color: var(--muted);font-weight: 900;padding: 1.5rem 0;text-align: center;font-style: italic;text-overflow: ellipsis;overflow: hidden;padding: 0px 20px;}
 
 /* ---------- item cards ---------- */
 

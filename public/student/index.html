@@ -205,9 +205,34 @@
                 <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
               </div>
 
-              <p class="home-sub">YOUR SPOTS</p>
+              <!-- The heading and the filter share one row: the home screen
+                   splits its leftover height four ways (see .home-main), so a
+                   search bar on its own line is a whole row of that budget spent
+                   on a control most students with three spots don't need. It
+                   only appears once the row is long enough to be worth
+                   searching — app.js → VENDOR_SEARCH_MIN. -->
+              <div class="home-sub-row">
+                <p class="home-sub">YOUR SPOTS</p>
+                <div id="vendor-search-wrap" class="vendor-search" hidden>
+                  <span class="vendor-search-icon" aria-hidden="true">🔍</span>
+                  <!-- type=search for the phone keyboard's "search" key; the
+                       autocorrect/capitalize opt-outs stop iOS rewriting a
+                       half-typed shop name out from under the filter. -->
+                  <input id="vendor-search" class="vendor-search-input" type="search"
+                         placeholder="Search spots" aria-label="Search your spots"
+                         aria-controls="vendor-carousel"
+                         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+                  <button id="vendor-search-clear" class="vendor-search-clear" type="button"
+                          aria-label="Clear search" hidden>✕</button>
+                </div>
+              </div>
               <!-- vendor cards render here: horizontal, scroll-snapped -->
               <div id="vendor-carousel" class="vendor-carousel"></div>
+              <!-- Filtering swaps the cards out silently, so the result count is
+                   announced here instead. Off-screen, not [hidden]: a hidden
+                   live region is not announced at all. Written only while a
+                   query is active, or every socket push would talk. -->
+              <p id="vendor-search-status" class="sr-only" role="status" aria-live="polite"></p>
               <!-- page dots for the carousel above: a window of at most 8, with
                    the edge dot shrunk on whichever side has more spots past it.
                    Built by renderVendorDots(); hidden below 2 spots, since one

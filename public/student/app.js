@@ -4,6 +4,17 @@
 
 let sb = null;
 let allVendors = [];  // every active vendor + this student's balance at each
+// What the carousel is actually showing: allVendors when the search box is
+// empty, otherwise the matches in rank order. Everything that pages the row —
+// the dots, the snap offsets, the "single" class — counts THIS list, never
+// allVendors; the lookups-by-id keep using allVendors, because a spot you have
+// filtered out of view is still a spot you have points at.
+let shownVendors = [];
+let vendorQuery = '';       // the raw search box text ('' = no filter)
+// Card elements survive filtering, keyed by vendor id. Re-rendering the row
+// from HTML on every keystroke would rebuild every card's 4-tile map mosaic —
+// 120 <img> for 30 spots — so cards are built once and MOVED instead.
+const vendorCards = new Map();
 let vendor = null;    // the vendor whose screen is currently open (null on home)
 let balance = 0;
 let myCodeTimer = null;     // home-screen earn-code refresh loop
@@ -146,6 +157,11 @@ function track(event, props) {
   $('vendor-carousel').addEventListener('scroll', onCarouselScroll, { passive: true });
   $('vendor-dots').addEventListener('click', onDotTap);
   window.addEventListener('resize', () => { dotSnaps = []; });   // card widths changed; re-measure lazily
+  // Filter the spots. Same story as the two above: the field is a stable element
+  // that is only hidden, never replaced, so these bind exactly once.
+  $('vendor-search').addEventListener('input', onVendorSearchInput);
+  $('vendor-search').addEventListener('keydown', onVendorSearchKey);
+  $('vendor-search-clear').addEventListener('click', () => clearVendorSearch());
   // Info popovers: the tier (i) opens on its button; the community explainer
   // closes like every popover but no longer opens on the card itself — with a
   // balance the card opens the Move-points sheet instead (community-points.md
@@ -266,6 +282,7 @@ function render(session) {
     communityReady = false; // same: the next sign-in paints its count, no ticker
     $('community-balance').textContent = '0';
     allVendors = [];
+    resetVendorSearch();        // …and unpaint the cards, or the next student reads them
     vendor = null;
     historyLoaded = false;
     dropHistory();              // …and unpaint the rows, or the next student reads them
@@ -740,6 +757,11 @@ function onSwipeStart(e) {
   if (document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')) return;
   if ($('tab-home').classList.contains('home-sliding')) return;   // the home ↔ vendor slide owns the axis
   const t = e.touches[0];
+  // A sideways drag inside a text field is the caret being moved or a selection
+  // being made — the field wants it, and stealing it to change tab makes the
+  // spot search unusable one-handed. scrollerInWay can't cover this: an <input>
+  // is not an overflow-x scroller.
+  if (t.target?.closest?.('input, textarea, [contenteditable="true"]')) return;
   const base = trackPos();
   swipe = {
     id: t.identifier,
@@ -1688,40 +1710,297 @@ function openMaps(address) {
   if (!win) location.href = url;   // popup blocked / custom scheme → navigate directly
 }
 
-function renderVendors() {
-  const wrap = $('vendor-carousel');
-  wrap.innerHTML = '';
-  wrap.classList.toggle('single', allVendors.length === 1);   // lone vendor → full width
-  $('vendors-empty').hidden = allVendors.length > 0;
-
-  allVendors.forEach((v) => {
-    const card = document.createElement('button');
-    card.className = 'vendor-card';
-    card.dataset.id = v.vendorId;
-    const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
-    if (!map) card.classList.add('no-map');   // center name + points when there's no map
-    const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
-    // Logo (if any) loads from the cacheable endpoint, sized to the name+points height.
-    const logo = v.hasLogo
-      ? `<span class="vc-logo" role="img" aria-label="${escapeHtml(v.name)} logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
-      : '';
-    // Column layout: [logo | name + points], then address, then the map at the bottom.
-    card.innerHTML = `
-      <span class="vc-body">
-        <span class="vc-head">
-          ${logo}
-          <span class="vc-title">
-            <span class="vc-name">${escapeHtml(v.name)}</span>
-            <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
-          </span>
+function buildVendorCard(v) {
+  const card = document.createElement('button');
+  card.className = 'vendor-card';
+  card.dataset.id = v.vendorId;
+  const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
+  if (!map) card.classList.add('no-map');   // center name + points when there's no map
+  const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
+  // Logo (if any) loads from the cacheable endpoint, sized to the name+points height.
+  const logo = v.hasLogo
+    ? `<span class="vc-logo" role="img" aria-label="${escapeHtml(v.name)} logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
+    : '';
+  // Column layout: [logo | name + points], then address, then the map at the bottom.
+  card.innerHTML = `
+    <span class="vc-body">
+      <span class="vc-head">
+        ${logo}
+        <span class="vc-title">
+          <span class="vc-name">${escapeHtml(v.name)}</span>
+          <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
         </span>
-        ${address}
       </span>
-      ${map}`;
-    wrap.appendChild(card);
-  });
+      ${address}
+    </span>
+    ${map}`;
+  return card;
+}
 
-  renderVendorDots();   // the pager rebuilds with the row it pages through
+// Everything on a card except the points number is fixed for the life of that
+// vendor, so this is what decides "reuse it" vs "build it again". Balances move
+// constantly and are patched in place below — deliberately NOT part of the
+// signature, or every socket push would throw the map tiles away and refetch.
+function vendorCardSig(v) {
+  return JSON.stringify([v.name, v.address ?? '', v.latitude ?? null, v.longitude ?? null, !!v.hasLogo]);
+}
+
+// Bring the card pool in line with allVendors — build what's new, patch what
+// moved, drop what's gone. Nothing here touches the DOM order; paintVendorRow()
+// owns that, because the order depends on the search, not on the data.
+function syncVendorCards() {
+  const live = new Set();
+  allVendors.forEach((v) => {
+    const id = String(v.vendorId);
+    live.add(id);
+    const sig = vendorCardSig(v);
+    const card = vendorCards.get(id);
+    if (!card || card.dataset.sig !== sig) {
+      const next = buildVendorCard(v);
+      next.dataset.sig = sig;
+      card?.remove();                      // the stale node may still be mounted
+      vendorCards.set(id, next);
+      return;
+    }
+    const num = card.querySelector('.vc-num');
+    const points = String(v.balance ?? 0);
+    if (num && num.textContent !== points) num.textContent = points;
+  });
+  vendorCards.forEach((card, id) => {      // deleting while iterating a Map is safe
+    if (!live.has(id)) { card.remove(); vendorCards.delete(id); }
+  });
+}
+
+// Mount exactly shownVendors, in order. appendChild/insertBefore MOVE a node
+// that is already in the document rather than recreating it, so a card that
+// survives a keystroke keeps its loaded map tiles and its layout — the whole
+// reason cards are pooled. Set membership rather than an array scan for the
+// unmount pass: that one is otherwise quadratic, which is exactly the stall the
+// search is supposed to avoid.
+function paintVendorRow() {
+  const wrap = $('vendor-carousel');
+  const want = shownVendors.map((v) => vendorCards.get(String(v.vendorId))).filter(Boolean);
+  const wanted = new Set(want);
+  [...wrap.children].forEach((el) => { if (!wanted.has(el)) el.remove(); });
+  want.forEach((el, k) => {
+    // Live HTMLCollection: index k is re-read after each move, so this settles
+    // in one pass with a move only where the order actually differs.
+    if (wrap.children[k] !== el) wrap.insertBefore(el, wrap.children[k] ?? null);
+  });
+}
+
+function renderVendors() {
+  syncVendorCards();
+  buildVendorIndex();
+  syncVendorSearchRow();
+  applyVendorFilter();
+}
+
+// The one place the visible row is decided. `reset` is for a query change: the
+// list under the finger just became a different list, so being parked on card 7
+// of the old one is meaningless — go back to the start. A socket push must NOT
+// pass it, or an award landing while you browse would yank you to the first card.
+function applyVendorFilter(reset = false) {
+  const wrap = $('vendor-carousel');
+  shownVendors = filterVendors(vendorQuery);
+  paintVendorRow();
+  wrap.classList.toggle('single', shownVendors.length === 1);   // lone vendor → full width
+
+  const empty = $('vendors-empty');
+  empty.hidden = shownVendors.length > 0;
+  if (!shownVendors.length) {
+    empty.textContent = allVendors.length
+      ? `No spots match “${vendorQuery.trim()}”.`
+      : 'No spots yet, check back soon!';
+  }
+  // Only while filtering: an idle live region that re-announces on every socket
+  // push would talk over everything else the student is doing.
+  $('vendor-search-status').textContent = vendorQuery.trim()
+    ? `${shownVendors.length} ${shownVendors.length === 1 ? 'spot' : 'spots'} found`
+    : '';
+
+  if (reset) wrap.scrollLeft = 0;   // before the dots: they read the row back
+  renderVendorDots();               // the pager rebuilds with the row it pages through
+}
+
+/* ---------- home: search the spots ----------
+   A student with 30 spots cannot page a carousel 8 dots at a time, so the row
+   gets a filter. The matching itself is an index, not a scan: an inverted index
+   over the spot names and addresses, held in a trie keyed by character, so a
+   keystroke costs the length of the word being typed instead of a pass over
+   every vendor.
+
+   Each token is inserted at every start position, not just at 0 — that is what
+   makes "bucks" find Starbucks. It costs O(len^2) characters per token at BUILD
+   time (once per vendor list, capped below) to buy an O(len) LOOKUP on every
+   keystroke, which is the trade that matters: the build happens when the list
+   arrives, the lookup happens while a thumb is moving.
+
+   Every node carries the set of vendors reachable through it, so a prefix walk
+   ends holding the answer with no subtree to collect. Multi-word queries
+   intersect those sets smallest-first, so "star camp" costs the size of the
+   rarer word, not the sum.
+
+   Ranking then runs over MATCHES ONLY — never the full list — which is why the
+   .some() calls in scoreVendor are not the for-loop this is meant to replace. */
+
+const VENDOR_SEARCH_MIN = 0;   // spots before the field is worth the row it costs
+const SEARCH_SUFFIX_CAP = 24;  // start positions indexed per token (a bound on the O(len^2))
+// Fold to a comparable form: case and accents are not something a student typing
+// one-handed should have to match ("Café" and "cafe" are the same shop).
+const SEARCH_SPLIT = /[^\p{L}\p{N}]+/u;
+const searchFold = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+const searchTokens = (s) => searchFold(s).split(SEARCH_SPLIT).filter(Boolean);
+
+const trieNode = () => ({ kids: new Map(), ids: new Set() });
+// recs[i] describes allVendors[i]: folded name, its words, and the address's.
+const vendorIndex = { root: trieNode(), recs: [], sig: '' };
+
+function trieAdd(root, token, id) {
+  const chars = [...token];   // by code point: an emoji in a shop name is one key, not two
+  const starts = Math.min(chars.length, SEARCH_SUFFIX_CAP);
+  for (let s = 0; s < starts; s += 1) {
+    let node = root;
+    for (let k = s; k < chars.length; k += 1) {
+      let next = node.kids.get(chars[k]);
+      if (!next) { next = trieNode(); node.kids.set(chars[k], next); }
+      next.ids.add(id);
+      node = next;
+    }
+  }
+}
+
+// The set of vendors whose name or address contains `term`, or null if nothing does.
+function trieFind(root, term) {
+  let node = root;
+  for (const ch of term) {
+    node = node.kids.get(ch);
+    if (!node) return null;
+  }
+  return node.ids;
+}
+
+// Rebuilt only when the SPOTS change, not when their balances do — loadVendors()
+// runs on every punch push and every reconnect, and re-indexing there would be
+// pure waste.
+function buildVendorIndex() {
+  const sig = JSON.stringify(allVendors.map((v) => [v.vendorId, v.name, v.address ?? '']));
+  if (sig === vendorIndex.sig) return;
+  const root = trieNode();
+  const recs = allVendors.map((v, i) => {
+    const nameTokens = searchTokens(v.name);
+    const addrTokens = searchTokens(v.address);
+    nameTokens.forEach((t) => trieAdd(root, t, i));
+    addrTokens.forEach((t) => trieAdd(root, t, i));
+    // "Joe's Coffee" is two tokens to a tokenizer and one word to anyone typing
+    // "joes", so the punctuation-free run gets indexed too — otherwise the
+    // apostrophe is a wall you can only get past by guessing it's there.
+    const squashed = nameTokens.join('');
+    if (nameTokens.length > 1) trieAdd(root, squashed, i);
+    return { flat: nameTokens.join(' '), squashed, nameTokens, addrTokens };
+  });
+  vendorIndex.root = root;
+  vendorIndex.recs = recs;
+  vendorIndex.sig = sig;
+}
+
+// AND across the query's words, intersecting the smaller set into the larger.
+function searchVendorIds(terms) {
+  let acc = null;
+  for (const term of terms) {
+    const ids = trieFind(vendorIndex.root, term);
+    if (!ids || !ids.size) return [];
+    if (acc === null) { acc = ids; continue; }   // never mutated: it may BE an index node's set
+    const [small, big] = acc.size <= ids.size ? [acc, ids] : [ids, acc];
+    const next = new Set();
+    small.forEach((id) => { if (big.has(id)) next.add(id); });
+    if (!next.size) return [];
+    acc = next;
+  }
+  return acc === null ? [] : [...acc];
+}
+
+// What "best match" means here, in order: the whole query leads the name, then a
+// word of the name starts with it, then it appears anywhere in the name, then
+// the address. Runs per match, never per vendor.
+function scoreVendor(rec, terms, joined, squashed) {
+  let score = rec.flat.startsWith(joined) || rec.squashed.startsWith(squashed) ? 100 : 0;
+  for (const term of terms) {
+    if (rec.nameTokens.some((t) => t.startsWith(term))) score += 10;
+    else if (rec.squashed.includes(term)) score += 5;
+    else if (rec.addrTokens.some((t) => t.startsWith(term))) score += 2;
+  }
+  return score;
+}
+
+function filterVendors(query) {
+  const terms = searchTokens(query);
+  if (!terms.length) return allVendors.slice();   // no query: the row is the whole list
+  buildVendorIndex();                             // no-op unless the spots changed
+  const ids = searchVendorIds(terms);
+  if (!ids.length) return [];
+  // Both spellings of the query, so a name is ranked by whichever way the
+  // student happened to type it — "joe s" and "joes" both lead Joe's Coffee.
+  const joined = terms.join(' ');
+  const squashed = terms.join('');
+  return ids
+    .map((i) => ({ i, score: scoreVendor(vendorIndex.recs[i], terms, joined, squashed) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)   // ties keep the server's order
+    .map((m) => allVendors[m.i]);
+}
+
+// Hidden under VENDOR_SEARCH_MIN spots — but never while a query is live, or a
+// list shrinking under you (a spot going inactive mid-search) would take the
+// field away with the filter still applied and no way to clear it.
+function syncVendorSearchRow() {
+  $('vendor-search-wrap').hidden = allVendors.length < VENDOR_SEARCH_MIN && !vendorQuery;
+}
+
+// One filter per frame at most. The index lookup is cheap; the DOM moves behind
+// it are not free, and a fast typist can outrun a frame.
+let searchRaf = 0;
+function onVendorSearchInput() {
+  if (searchRaf) return;
+  searchRaf = requestAnimationFrame(() => {
+    searchRaf = 0;
+    const next = $('vendor-search').value;
+    if (next === vendorQuery) return;
+    vendorQuery = next;
+    $('vendor-search-clear').hidden = !next;
+    applyVendorFilter(true);
+  });
+}
+
+function onVendorSearchKey(e) {
+  if (e.key === 'Escape' && $('vendor-search').value) {
+    e.stopPropagation();     // …and not also close whatever sheet the global handler finds
+    clearVendorSearch();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();      // no form to submit; the row is already filtered
+    $('vendor-search').blur();   // what the phone keyboard's "search" key is for: put it away
+  }
+}
+
+function clearVendorSearch(refocus = true) {
+  cancelAnimationFrame(searchRaf); searchRaf = 0;   // a queued keystroke would restore the query
+  $('vendor-search').value = '';
+  $('vendor-search-clear').hidden = true;
+  if (vendorQuery) { vendorQuery = ''; applyVendorFilter(true); }
+  if (refocus) $('vendor-search').focus();
+}
+
+// Sign-out: the next student must not find the last one's spots — the same
+// reason dropHistory() unpaints the activity list.
+function resetVendorSearch() {
+  clearVendorSearch(false);
+  syncVendorSearchRow();
+  vendorCards.forEach((card) => card.remove());
+  vendorCards.clear();
+  vendorIndex.root = trieNode();
+  vendorIndex.recs = [];
+  vendorIndex.sig = '';
+  shownVendors = [];
+  renderVendorDots();
 }
 
 /* ---------- carousel page dots ----------
@@ -1759,7 +2038,7 @@ function renderVendorDots() {
   dotSnaps = [];                                 // dirty; measured on demand, see syncDots
   const row = $('vendor-dots');
   const wrap = $('vendor-carousel');
-  const n = allVendors.length;
+  const n = shownVendors.length;
   row.hidden = n < 2;                            // 0 or 1 spots: nothing to page through
   row.innerHTML = '';
   dotStart = 0;
@@ -1801,7 +2080,7 @@ function renderVendorDots() {
 // Classes + labels only, never innerHTML: this runs on every scroll frame, and
 // rebuilding would drop focus and restart the transitions mid-flight.
 function paintDots() {
-  const n = allVendors.length;
+  const n = shownVendors.length;
   const dots = $('vendor-dots').children;
   // More list past the window on this side → that edge dot shrinks. Both can.
   const shrinkLeft = n > DOT_CAP && dotStart > 0;
@@ -1815,7 +2094,7 @@ function paintDots() {
     if (k === dotActive) b.setAttribute('aria-current', 'true');
     else b.removeAttribute('aria-current');
     // Only the windowed dots exist, so the label is what carries the real count.
-    b.setAttribute('aria-label', `${allVendors[k]?.name ?? 'Spot'}, spot ${k + 1} of ${n}`);
+    b.setAttribute('aria-label', `${shownVendors[k]?.name ?? 'Spot'}, spot ${k + 1} of ${n}`);
   }
 }
 
@@ -1862,7 +2141,7 @@ function onCarouselScroll() {
 }
 
 function syncDots() {
-  const n = allVendors.length;
+  const n = shownVendors.length;
   if (n < 2) return;
   if (dotSnaps.length !== n) measureDotSnaps();
   const i = activeFromScroll();
@@ -1880,7 +2159,7 @@ function syncDots() {
 // makes every offset read 0, and measuring then would poison dotSnaps with a
 // full-length row of zeros that nothing would ever re-measure.
 function dotsFromScroll() {
-  const n = allVendors.length;
+  const n = shownVendors.length;
   if (n < 2) return;
   const wrap = $('vendor-carousel');
   if (!wrap.clientWidth) return;
@@ -1910,13 +2189,13 @@ function onDotTap(e) {
   const btn = e.target.closest('.vdot');
   if (!btn) return;
   const k = Number(btn.dataset.i);
-  if (!Number.isInteger(k) || k < 0 || k >= allVendors.length) return;
+  if (!Number.isInteger(k) || k < 0 || k >= shownVendors.length) return;
   const wrap = $('vendor-carousel');
-  if (dotSnaps.length !== allVendors.length) measureDotSnaps();   // on screen by now
+  if (dotSnaps.length !== shownVendors.length) measureDotSnaps();   // on screen by now
   endDotJump();                           // supersede a jump still in flight
   dotJump = k;
   dotActive = k;
-  dotStart = dotWindowStart(allVendors.length, k, dotStart);
+  dotStart = dotWindowStart(shownVendors.length, k, dotStart);
   paintDots();                            // the dots lead, the scroll follows
   const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   wrap.scrollTo({ left: dotSnaps[k] ?? 0, behavior: smooth ? 'smooth' : 'auto' });
@@ -1933,10 +2212,11 @@ function onDotTap(e) {
 }
 
 // Live-patch just the points number on a card (used by socket pushes on home).
+// Straight off the pool rather than a scan of the row: a card filtered out by a
+// search is still that student's card, and it has to be right the moment the
+// query is cleared — not a loadVendors() later.
 function patchVendorCard(vendorId, next) {
-  const card = [...$('vendor-carousel').querySelectorAll('.vendor-card')]
-    .find((c) => c.dataset.id === String(vendorId));
-  const num = card?.querySelector('.vc-num');
+  const num = vendorCards.get(String(vendorId))?.querySelector('.vc-num');
   if (num) num.textContent = next;
 }
 
