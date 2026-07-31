@@ -1887,7 +1887,11 @@ function decorateCard(card) {
   // The prices stack in their own right-hand column rather than running on one
   // line, so a long title has somewhere to give (it ellipsises) and two prices
   // never push the row past the card edge.
-  const prices = priceBits(a).map((b) => `<span class="ic-cost-line">${escapeHtml(b)}</span>`).join('');
+  // join() puts the dot only BETWEEN the two lines, so a single-price reward
+  // gets no stray separator.
+  const prices = priceBits(a)
+    .map((b) => `<span class="ic-cost-line">${escapeHtml(b)}</span>`)
+    .join('<span class="ic-cost-dot" aria-hidden="true">·</span>');
   card.innerHTML = `
     <span class="ic-emoji">${escapeHtml(card.dataset.emoji || '🎁')}</span>
     <span class="ic-body">

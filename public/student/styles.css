@@ -786,6 +786,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   line-height: 1.2; text-align: right;
 }
 .ic-cost-line { white-space: nowrap; }
+/* Separator between the two stacked prices. Muted and tight so it reads as a
+   divider rather than a third value; aria-hidden in the markup so a screen
+   reader hears "150 pts, 5 visits" and not a stray "middle dot". */
+.ic-cost-dot {
+  color: var(--muted); font-size: 0.85rem; line-height: 0.6;
+  font-weight: 900;
+}
 
 .item-card.locked { opacity: 0.55; }
 .item-card.locked .ic-emoji { background: #e3e7ee; filter: grayscale(1); }
@@ -1327,22 +1334,42 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* Short content: an emoji and a few lines. The 42vh floor the other sheets
    share would hold a band of bare card open under it, so this one sizes to what
-   is in it. .detail-card's 88vh cap and overflow still catch the tall state. */
-#punch-modal .detail-card { min-height: 0; }
+   is in it.
+   The 88vh cap comes down to 50vh: past half the screen the sheet stops growing
+   and the LIST scrolls inside it instead, so the count and the explanation stay
+   put while a long menu moves under them. overflow:hidden here is what hands the
+   scrolling to the list; leaving it `auto` would let the whole card scroll and
+   carry the header off the top. */
+#punch-modal .detail-card {
+  min-height: 0;
+  max-height: 50vh;
+  overflow: hidden;
+}
 
-/* What the counter unlocks, cheapest first. */
+/* What the counter unlocks, cheapest first. min-height:0 is load-bearing: a
+   flex item defaults to min-height:auto, which refuses to shrink below its
+   content and would push the card past its cap instead of scrolling. */
 .punch-modal-list {
   list-style: none; width: 100%;
   display: flex; flex-direction: column; gap: 0.5rem;
   margin-top: 0.4rem;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;   /* don't chain the scroll to the page behind */
 }
 .punch-modal-list li {
   display: flex; align-items: center; justify-content: space-between; gap: 0.9rem;
   padding: 0.7rem 0.9rem;
   border: 2px solid var(--edge); border-radius: 0.8rem;
   font-weight: 800; text-align: left;
+  flex-shrink: 0;   /* rows keep their height as the list overflows and scrolls */
 }
-.pml-title { min-width: 0; }
+/* Long item names ellipsise here too, same trade as the reward rows. */
+.pml-title {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pml-need { white-space: nowrap; color: var(--muted); font-size: 0.9rem; }
 .punch-modal-list li.is-ready { border-color: var(--success); }
 .punch-modal-list li.is-ready .pml-need { color: var(--success); }

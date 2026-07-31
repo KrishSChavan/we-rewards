@@ -984,8 +984,8 @@ Per project memory: there is no local DB. Verify migration-029 against a throwaw
 | 10 | Terminal: preview/confirm/burn, delete the fallback, add `refreshLastActivity()`, Undo + Recent copy. | **done** |
 | 11 | Terminal: reward form punch input + raise-price warning, settings card cleanup, PUNCH tab line. | **done** |
 | 12 | Tests (section 6). | **done** — `test/sql/` harness (19 assertions, runs here) + rewritten `test/integration/punch.test.js` |
-| 13 | Deploy. Confirm the app runs clean with the columns still present. | |
-| 14 | Write and run `migration-030.sql` (drop the two columns, `notify pgrst`). | |
+| 13 | Deploy. Confirm the app runs clean with the columns still present. | **yours** — nothing left to code |
+| 14 | Write `migration-030.sql` (drop the two columns, `notify pgrst`). | **written + verified**; run it only after 13 |
 
 ### Bugs the client review caught (all fixed)
 
