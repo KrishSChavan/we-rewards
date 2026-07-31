@@ -1103,6 +1103,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   position: relative;
 }
 
+/* The vendor screen's own back-swipe (app.js → wireVendorSwipe) needs every
+   touchmove cancelable from the first pixel, on a page tall enough to scroll
+   (more rewards, punch cards on) — same fix as .move-vendors above, and for
+   the same reason: html's pan-x pan-y default lets the browser commit to a
+   native horizontal pan before our axis-lock gets 10px in to decide, which
+   reads as the swipe silently doing nothing on any vendor with enough content
+   to scroll. pan-y keeps vertical scrolling native; horizontal stays JS-only. */
+#vendor { touch-action: pan-y; }
+
 /* Sliding between the carousel (#home) and a vendor's redeem screen (#vendor):
    drilling in slides them leftward, backing out slides them rightward. JS drives
    the direction/transforms; these rules just stack the two panes for the slide. */
