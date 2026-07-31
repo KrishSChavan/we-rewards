@@ -157,18 +157,17 @@ function track(event, props) {
   $('back-btn').addEventListener('click', backToHomeSlide);
   $('items').addEventListener('click', onItemTap);
   $('item-close').addEventListener('click', closeItemModal);
-  $('item-redeem').addEventListener('click', onRedeemTap);
+  $('item-redeem').addEventListener('click', () => onRedeemTap('points'));
+  $('item-redeem-visits').addEventListener('click', () => onRedeemTap('visits'));
   $('item-modal').addEventListener('click', (e) => { if (e.target === $('item-modal')) closeItemModal(); });
-  // punch card: the vendor-page block opens the progress/redeem sheet; the
-  // bottom button opens the full-screen scanner
+  // visits: the vendor-page counter opens the progress sheet; the bottom
+  // button opens the full-screen scanner
   $('punch-card-btn').addEventListener('click', openPunchModal);
   $('punch-close').addEventListener('click', closePunchModal);
   $('punch-modal').addEventListener('click', (e) => { if (e.target === $('punch-modal')) closePunchModal(); });
-  $('punch-redeem-btn').addEventListener('click', onPunchRedeemTap);
   $('punch-scan-btn').addEventListener('click', openPunchScanSheet);
   $('punch-scan-close').addEventListener('click', closePunchScanSheet);
   $('punch-scan-modal').addEventListener('click', (e) => { if (e.target === $('punch-scan-modal')) closePunchScanSheet(); });
-  window.addEventListener('resize', onPunchResize);   // stamp rows are sized against the card's width
   // never leave the punch camera running while the tab is backgrounded
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopPunchScanner();
@@ -260,6 +259,7 @@ function render(session) {
     dropMoveSheet();            // same
     dropPunchScanSheet();       // same (and it holds the camera)
     dropPunchModal();           // same
+    dropItemModal();            // same, and it can be holding a live redemption QR
     syncPendingPunchNote();     // landing may need the "punch spotted" note
     // the popovers live at body level too — same reason
     closeInfo('tier-info', 'tier-info-btn');
@@ -907,11 +907,17 @@ function historyRow(tx) {
 
   // earn → "Earned at X" + "$Y spent"; redeem → "Redeemed <reward>" + "at X";
   // transfer → "Moved to X" + where they came from
-  const title = transfer
-    ? `Moved to ${vendorName}`
-    : earn
-      ? `Earned at ${vendorName}`
-      : (reward ? `Redeemed ${reward}` : 'Redeemed a reward');
+  // A reversal is a compensating row carrying the ORIGINAL row's type with every
+  // number negated, so without this it renders as a second identical entry:
+  // redeem then undo reads as two redemptions.
+  const undone = tx.reverses != null;
+  const title = undone
+    ? (transfer ? 'Undone move' : earn ? `Undone at ${vendorName}` : 'Undone redemption')
+    : transfer
+      ? `Moved to ${vendorName}`
+      : earn
+        ? `Earned at ${vendorName}`
+        : (reward ? `Redeemed ${reward}` : 'Redeemed a reward');
   // Earn rows also surface the 10% that rode along ("+150 pts · +15 community");
   // a compensating row's negative community_points stays out of the sub.
   const mint = earn && (tx.community_points ?? 0) > 0 ? `+${tx.community_points} community` : null;
@@ -921,8 +927,15 @@ function historyRow(tx) {
       ? [tx.dollar_amount != null ? `$${Number(tx.dollar_amount).toFixed(2)} spent` : null, mint, time].filter(Boolean).join(' · ')
       : `at ${vendorName} · ${time}`;
 
-  // points are stored positive for earn + transfer, negative for redeem
-  const pts = earn || transfer ? `+${tx.points}` : `−${Math.abs(tx.points)}`;
+  // A visits redemption costs 0 points, so the usual chip would read "−0 pts".
+  // Show what was actually spent instead (migration-029). Both arms sign from
+  // the stored number rather than assuming it: a reversal negates it, so the old
+  // `+${tx.points}` printed the literal "+-150" on an undone earn, and a
+  // reversed visits row must read "+12", not another "12".
+  const sign = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n)}`;
+  const chip = tx.paid_with === 'visits'
+    ? `${sign(-(tx.visits_spent ?? 0))}<small>visits</small>`
+    : `${sign(tx.points)}<small>pts</small>`;
 
   const row = document.createElement('div');
   row.className = `history-row ${transfer ? 'transfer' : earn ? 'earn' : 'redeem'}`;
@@ -932,7 +945,7 @@ function historyRow(tx) {
       <span class="hr-title">${escapeHtml(title)}</span>
       <span class="hr-sub">${escapeHtml(sub)}</span>
     </span>
-    <span class="hr-points">${pts}<small>pts</small></span>`;
+    <span class="hr-points">${chip}</span>`;
   return row;
 }
 
@@ -1688,14 +1701,22 @@ function connectSocket() {
       else loadCommunity();
       if (historyLoaded) loadHistory();       // ...and it's a new activity row
     });
-    // Punch-card pushes (migration-028): the terminal just redeemed a full
-    // card (or a punch landed from another device). loadVendors() re-syncs the
-    // counts and re-renders the open vendor page's punch block.
+    // Visit pushes (migration-029). EVERY event carries the new count: a punch
+    // from another device, a counter redemption, or an undo restoring visits.
+    // Patch locally for instant feedback, then let loadVendors() confirm.
     socket.on('punch', (payload) => {
       if (!payload?.vendorId) return;
+      const v = allVendors.find((x) => x.vendorId === payload.vendorId);
+      if (v?.punch && payload.visits != null) v.punch.visits = payload.visits;
+      if (vendor && vendor.vendorId === payload.vendorId) {
+        renderPunchUi();
+        // Visits changed, so every reward's lock state may have too.
+        document.querySelectorAll('.item-card').forEach(decorateCard);
+      }
       if (payload.redeemed) {
-        punchToast(`🎉 Punch card redeemed${payload.reward ? ` · ${payload.reward}` : ''}`);
+        punchToast(`🎉 Redeemed${payload.reward ? ` · ${payload.reward}` : ''}`);
         if (!$('punch-modal').hidden) closePunchModal();
+        if (!$('item-modal').hidden) closeItemModal();
       }
       loadVendors();
     });
@@ -1785,19 +1806,24 @@ function renderItems() {
   // Remove previously rendered live cards (keep placeholders where they are)
   wrap.querySelectorAll('.item-card.live').forEach((el) => el.remove());
 
-  // Live items from the vendor's ITEMS tab, cheapest first
+  // Live items from the vendor's ITEMS tab, cheapest first.
+  // A visits-only reward at a spot with punch cards OFF is unreachable, so it
+  // is dropped rather than rendered as a permanently locked card.
   const live = (vendor?.rewards ?? [])
+    .filter((r) => r.cost_in_points != null || vendor?.punch?.enabled)
     .slice()
-    .sort((a, b) => a.cost_in_points - b.cost_in_points);
+    .sort(rewardOrder);
 
   live.forEach((r) => {
     const card = document.createElement('button');
     card.className = 'item-card live';
     card.dataset.id = r.id;
     card.dataset.title = r.title;
-    card.dataset.cost = r.cost_in_points;
+    // Two independent prices, either of which may be absent. Empty string (not
+    // the string "null") so Number() never yields NaN downstream.
+    card.dataset.costPoints = r.cost_in_points ?? '';
+    card.dataset.costVisits = r.cost_in_visits ?? '';
     card.dataset.emoji = r.emoji || '🎁';
-    card.dataset.desc = `Redeem at ${vendor.name} for ${r.cost_in_points} points.`;
     wrap.appendChild(card);
   });
 
@@ -1808,17 +1834,67 @@ function renderItems() {
   $('items-empty').hidden = total > 0;
 }
 
+// Cheapest first across two currencies. A visit is worth far more than a point
+// (one a night, versus points per dollar), so visits are weighted before they
+// are compared; absent prices sort last instead of poisoning the sort with NaN.
+// The visit price only counts when it is actually on show: with punch cards off
+// it is hidden everywhere else, so ranking by it would order the list by a
+// number the student cannot see.
+function rewardOrder(a, b) {
+  const visitsOn = Boolean(vendor?.punch?.enabled);
+  const key = (r) => Math.min(
+    r.cost_in_points ?? Infinity,
+    (visitsOn ? (r.cost_in_visits ?? Infinity) : Infinity) * 100
+  );
+  return key(a) - key(b);
+}
+
+// The single affordability read, shared by the row and the sheet so the two can
+// never disagree. `balance` is the open vendor's points; visits come off the
+// vendor's counter and only count while punch cards are on.
+function affordability(card) {
+  const pts = card.dataset.costPoints === '' || card.dataset.costPoints == null
+    ? null : Number(card.dataset.costPoints);
+  const vis = card.dataset.costVisits === '' || card.dataset.costVisits == null
+    ? null : Number(card.dataset.costVisits);
+  const visitsOn = Boolean(vendor?.punch?.enabled);
+  const visits = vendor?.punch?.visits ?? 0;
+  return {
+    pts, vis, visitsOn, visits,
+    byPoints: pts != null && balance >= pts,
+    byVisits: visitsOn && vis != null && visits >= vis,
+  };
+}
+
+// "50 pts / 5 visits", or just the half that exists.
+function priceBits(a) {
+  const bits = [];
+  if (a.pts != null) bits.push(`${a.pts} pts`);
+  if (a.vis != null && a.visitsOn) bits.push(`${a.vis} visits`);
+  return bits;
+}
+
 function decorateCard(card) {
-  const cost = Number(card.dataset.cost);
-  const affordable = balance >= cost;
-  card.classList.toggle('locked', !affordable);
+  const a = affordability(card);
+  const ready = a.byPoints || a.byVisits;
+  card.classList.toggle('locked', !ready);
+
+  // Per-currency shortfall: never say "pts" for a reward sold only in visits.
+  const gaps = [];
+  if (a.pts != null && !a.byPoints) gaps.push(`${a.pts - balance} pts to go`);
+  if (a.vis != null && a.visitsOn && !a.byVisits) gaps.push(`${a.vis - a.visits} visits to go`);
+
+  // The prices stack in their own right-hand column rather than running on one
+  // line, so a long title has somewhere to give (it ellipsises) and two prices
+  // never push the row past the card edge.
+  const prices = priceBits(a).map((b) => `<span class="ic-cost-line">${escapeHtml(b)}</span>`).join('');
   card.innerHTML = `
     <span class="ic-emoji">${escapeHtml(card.dataset.emoji || '🎁')}</span>
     <span class="ic-body">
       <span class="ic-title">${escapeHtml(card.dataset.title)}</span>
-      <p class="ic-status">${affordable ? 'Ready to redeem ✓' : `${cost - balance} pts to go`}</p>
+      <p class="ic-status">${ready ? 'Ready to redeem ✓' : escapeHtml(gaps.join(' or '))}</p>
     </span>
-    <span class="ic-cost">${cost} pts</span>`;
+    <span class="ic-cost">${prices}</span>`;
 }
 
 /* ---------- item detail modal ---------- */
@@ -1826,45 +1902,46 @@ function decorateCard(card) {
 function onItemTap(e) {
   const card = e.target.closest('.item-card');
   if (!card) return;
+  const a = affordability(card);
   selectedItem = {
     id: card.dataset.id ?? null,
-    sample: card.dataset.sample === '1',
     title: card.dataset.title,
-    cost: Number(card.dataset.cost),
     emoji: card.dataset.emoji || '🎁',
-    desc: card.dataset.desc || '',
+    pts: a.pts,
+    vis: a.vis,
   };
 
+  const bits = priceBits(a);
   $('item-emoji').textContent = selectedItem.emoji;
   $('item-title').textContent = selectedItem.title;
-  $('item-cost').textContent = `${selectedItem.cost} pts`;
-  $('item-desc').textContent = selectedItem.desc;
+  $('item-cost').textContent = bits.join(' / ');
+  // A screen reader would otherwise announce the slash: "50 pts slash 5 visits".
+  $('item-cost').setAttribute('aria-label', bits.join(' or '));
+  $('item-desc').textContent = `Redeem at ${vendor?.name ?? 'this spot'}.`;
 
-  const affordable = balance >= selectedItem.cost;
+  // The buttons carry the user's own wording, so the numbers live here instead
+  // of vanishing with the old disabled-button state.
   const status = $('item-status');
-  const btn = $('item-redeem');
+  status.textContent = `You have ${balance} pts${a.visitsOn ? ` · ${a.visits} visits` : ''}`;
+  status.className = (a.byPoints || a.byVisits) ? 'detail-status ok' : 'detail-status locked';
 
-  if (selectedItem.sample) {
-    status.textContent = 'Sample item, this spot hasn’t added it yet.';
-    status.className = 'detail-status locked';
-    btn.disabled = true;
-    btn.textContent = 'Sample item';
-  } else if (!affordable) {
-    status.textContent = `You have ${balance} pts, ${selectedItem.cost - balance} more to go.`;
-    status.className = 'detail-status locked';
-    btn.disabled = true;
-    btn.textContent = 'Redeem';
-  } else {
-    status.textContent = `You have ${balance} pts, you’re good! ✓`;
-    status.className = 'detail-status ok';
-    btn.disabled = false;
-    btn.textContent = 'Redeem';
-  }
+  $('item-redeem').hidden = !a.byPoints;
+  $('item-redeem').disabled = false;
+  $('item-redeem-visits').hidden = !a.byVisits;
+  $('item-redeem-visits').disabled = false;
+  $('item-notready').hidden = a.byPoints || a.byVisits;
 
-  // fresh open: show the Redeem button, hide any prior code, then slide up
+  // Only warn when there is actually surplus to lose: spending exactly what you
+  // have forfeits nothing.
+  // Names the action, not just the cost: with a points button beside it, a bare
+  // "Uses all 12 of your visits" reads as if either button would burn them.
+  const surplus = a.byVisits && a.visits > a.vis;
+  $('item-forfeit').hidden = !surplus;
+  if (surplus) $('item-forfeit').textContent = `Redeeming with visits uses all ${a.visits} of your visits`;
+
+  // fresh open: hide any prior code, then slide up
   clearInterval(redeemCountdown);
   redeemCountdown = null;
-  $('item-redeem').hidden = false;
   $('item-code').hidden = true;
   openSheet();
 }
@@ -1884,42 +1961,78 @@ function closeItemModal() {
   redeemCountdown = null;
   setTimeout(() => {
     overlay.hidden = true;
-    $('item-redeem').hidden = false;
+    // Every node onItemTap can flip has to be reset here, or state leaks into
+    // the next open. onItemTap decides visibility from scratch, so both buttons
+    // start hidden rather than shown.
+    $('item-redeem').hidden = true;
     $('item-redeem').disabled = false;
+    $('item-redeem-visits').hidden = true;
+    $('item-redeem-visits').disabled = false;
+    $('item-notready').hidden = true;
+    $('item-forfeit').hidden = true;
     $('item-code').hidden = true;
     selectedItem = null;
     loadVendors();                     // balance may have changed while open
   }, 360);
 }
 
+// Hard reset, no animation — for sign-out (same reason as dropEarnSheet). The
+// sheet is a body-level sibling of #app, so hiding #app cannot hide it, and it
+// may be showing a live code whose countdown would keep ticking on the landing
+// page. Deliberately NOT closeItemModal: that animates for 360ms and then calls
+// loadVendors() with a token we no longer have.
+function dropItemModal() {
+  const ov = $('item-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  clearInterval(redeemCountdown);
+  redeemCountdown = null;
+  $('item-redeem').hidden = true;
+  $('item-redeem').disabled = false;
+  $('item-redeem-visits').hidden = true;
+  $('item-redeem-visits').disabled = false;
+  $('item-notready').hidden = true;
+  $('item-forfeit').hidden = true;
+  $('item-code').hidden = true;
+  selectedItem = null;
+}
+
 /* ---------- redemption code ---------- */
 
-async function onRedeemTap() {
-  if (!selectedItem || selectedItem.sample || !vendor) return;
-  const btn = $('item-redeem');
-  btn.disabled = true;
+async function onRedeemTap(paidWith = 'points') {
+  if (!selectedItem || !vendor) return;
+  // Both buttons go down: whichever currency wins, the other code is invalidated
+  // server-side (one live code per student per vendor across both).
+  $('item-redeem').disabled = true;
+  $('item-redeem-visits').disabled = true;
   try {
     const res = await authFetch('/api/me/redeem-code', {
       method: 'POST',
-      body: JSON.stringify({ vendorId: vendor.vendorId, rewardId: selectedItem.id }),
+      body: JSON.stringify({ vendorId: vendor.vendorId, rewardId: selectedItem.id, paidWith }),
     });
     const data = await res.json();
     if (!res.ok) {
       $('item-status').textContent = data.message || 'Couldn’t start redemption, try again.';
       $('item-status').className = 'detail-status locked';
-      btn.disabled = false;
+      $('item-redeem').disabled = false;
+      $('item-redeem-visits').disabled = false;
       return;
     }
     showRedemptionCode(data.code, data.ttlSeconds ?? 120);
   } catch {
     $('item-status').textContent = 'No connection, try again.';
-    btn.disabled = false;
+    $('item-redeem').disabled = false;
+    $('item-redeem-visits').disabled = false;
   }
 }
 
 /* Replace the Redeem button, in place, with the live QR + code + a countdown. */
 function showRedemptionCode(code, seconds) {
+  // All three of the pre-code affordances go, or one would sit live beside the QR.
   $('item-redeem').hidden = true;
+  $('item-redeem-visits').hidden = true;
+  $('item-notready').hidden = true;
+  $('item-forfeit').hidden = true;
   $('item-status').textContent = 'Show this at the counter';
   $('item-status').className = 'detail-status ok';
   $('item-code-value').textContent = code;
@@ -2027,7 +2140,7 @@ function securePendingPunchHold() {
         writePendingPunch({ holdId: data.holdId, expiresAt: Date.now() + (data.expiresIn ?? 600) * 1000 });
       } else if (res.status === 401 || res.status === 403) {
         clearPendingPunch();
-        punchToast(data.message || 'That punch code expired. Scan the live code at the counter.', false);
+        punchToast(data.message || 'That visit code expired. Scan the live code at the counter.', false);
       }
       // other statuses (rate limit, 5xx): keep the token and let the claim retry
     } catch { /* offline — keep the token, the claim will retry */ }
@@ -2058,7 +2171,7 @@ async function claimPendingPunch() {
     if (!current) return;
     if (current.holdId && current.expiresAt && Date.now() > current.expiresAt) {
       clearPendingPunch();
-      punchToast('That punch link expired. Scan the code at the counter again.', false);
+      punchToast('That visit link expired. Scan the code at the counter again.', false);
       return;
     }
     const body = current.holdId ? { holdId: current.holdId } : { token: current.token };
@@ -2072,7 +2185,7 @@ async function claimPendingPunch() {
     }
     clearPendingPunch();   // definitive answer either way: never claim twice
     if (!res.ok) {
-      punchToast(data.message || 'Couldn’t claim that punch.', false);
+      punchToast(data.message || 'Couldn’t add that visit.', false);
       return;
     }
     onPunchClaimed(data);
@@ -2089,131 +2202,96 @@ async function claimPendingPunch() {
 // instant feedback, toast, and let loadVendors() confirm.
 function onPunchClaimed(data) {
   const v = allVendors.find((x) => x.vendorId === data.vendorId);
-  if (v?.punch) {
-    v.punch.punches = data.completed ? 0 : data.punches;
-    v.punch.readyCards = data.readyCards ?? v.punch.readyCards;
-    if (!data.completed) v.punch.cardTarget = data.target;
+  if (v?.punch) v.punch.visits = data.visits ?? v.punch.visits;
+  if (vendor && vendor.vendorId === data.vendorId) {
+    renderPunchUi();
+    document.querySelectorAll('.item-card').forEach(decorateCard);
   }
-  if (vendor && vendor.vendorId === data.vendorId) renderPunchUi();
-  punchToast(data.completed
-    ? `🎟️ Card full at ${data.vendorName}! Tap your punch card to redeem.`
-    : `🎟️ Punched in at ${data.vendorName} · ${data.punches}/${data.target}`);
+  punchToast(`🎟️ Visit added at ${data.vendorName} · ${data.visits} total`);
   loadVendors();
 }
 
-// Render the punch block + bottom scan button for the OPEN vendor page.
-// The block also shows when the feature is off but a full card is still owed
-// (the student earned it while it was on); the scan button follows the toggle.
+// The cheapest visits-priced reward still out of reach, or null when the
+// student can already afford every one of them.
+function nextVisitReward(visits) {
+  return (vendor?.rewards ?? [])
+    .filter((r) => r.cost_in_visits != null && r.cost_in_visits > visits)
+    .sort((a, b) => a.cost_in_visits - b.cost_in_visits)[0] ?? null;
+}
+
+// Any visits-priced reward the student can afford right now.
+function hasUnlockedVisitReward(visits) {
+  return (vendor?.rewards ?? []).some((r) => r.cost_in_visits != null && r.cost_in_visits <= visits);
+}
+
+// Render the visit counter + bottom scan button for the OPEN vendor page.
+// Both follow punch_enabled: with the feature off there is no counter to show
+// and nothing a visit could buy.
 function renderPunchUi() {
   const p = vendor?.punch;
   const enabled = Boolean(p?.enabled);
-  const hasReady = (p?.readyCards ?? 0) > 0;
-  $('punch-block').hidden = !(enabled || hasReady);
+  $('punch-block').hidden = !enabled;
   $('punch-scan-btn').hidden = !enabled;
-  if (!enabled && !hasReady) return;
+  if (!enabled) return;
 
-  const target = p.cardTarget || p.target || 10;
-  const shown = Math.min(p.punches ?? 0, target);
-  $('punch-progress').textContent = `${shown} / ${target}`;
-  $('punch-reward-label').textContent = p.reward ? `Full card = ${p.reward}` : '';
-  $('punch-scan-sub').textContent = hasReady
-    ? 'Card full, tap your punch card above'
-    : 'Scan the code at the counter';
+  const visits = p.visits ?? 0;
+  const unit = visits === 1 ? 'visit' : 'visits';
+  $('punch-count').textContent = visits;
+  $('punch-count-unit').textContent = unit;
+  // The digits are aria-hidden, so the button needs its own name.
+  $('punch-card-btn').setAttribute(
+    'aria-label',
+    `${visits} ${unit} at ${vendor.name}, open your visits`
+  );
 
-  renderPunchDots($('punch-grid'), target, shown);
-  $('punch-ready').hidden = !hasReady;
+  // A vendor can have visits on while nothing is priced in them (they
+  // deactivated or repriced those rewards). Say so, rather than leaving the
+  // counter with a blank subtitle and the sheet with an empty list.
+  const anyVisitPriced = (vendor?.rewards ?? []).some((r) => r.cost_in_visits != null);
+  const next = nextVisitReward(visits);
+  const ready = hasUnlockedVisitReward(visits);
+  $('punch-next').textContent =
+    !anyVisitPriced ? 'Nothing to spend these on here yet'
+    : visits === 0  ? 'Scan the code at the counter to start'
+    : next          ? `${next.cost_in_visits - visits} more for ${next.title}`
+    : ready         ? 'Ready to redeem, see the rewards below'
+                    : '';
+  $('punch-next').classList.toggle('is-ready', ready && !next);
+  $('punch-scan-sub').textContent = 'Scan the code at the counter';
 }
 
-// Stamps per row when the card can't be measured — a phone's worth, and the
-// resize hook lays them out again the moment it can.
-const PUNCH_ROW_FALLBACK = 8;
-let punchGridWidth = 0;              // width the rows were last laid out against
-
-// Lay the stamps out in even rows rather than letting them wrap. Flex-wrap
-// fills each line to the card's edge, so a 10-stamp card breaks 8 + 2 and
-// reads like a mistake. Work out how many fit on a line, spread the stamps
-// over that many rows as evenly as they'll go — 10 becomes 5 + 5 — and when
-// the count won't divide, the leftovers ride on the top rows so the bottom
-// row is one short, centred under the rest by .punch-row.
-function renderPunchDots(grid, total, filled) {
-  // Measure a real stamp instead of hard-coding its size here, where it would
-  // quietly drift out of step with the stylesheet. Inside a row, not loose in
-  // the grid: the grid stacks rows in a column, so a bare stamp would stretch
-  // to its full width. Both reads come back zero while the vendor pane is
-  // still hidden — that's what the fallback is for.
-  grid.innerHTML = '';
-  const probe = document.createElement('span');
-  probe.className = 'punch-row';
-  grid.appendChild(probe);
-  const dotWidth = probe.appendChild(punchDot(false)).getBoundingClientRect().width;
-  const gap = parseFloat(getComputedStyle(probe).columnGap) || 0;
-  punchGridWidth = grid.getBoundingClientRect().width;
-  grid.innerHTML = '';
-
-  const perRow = dotWidth > 0 && punchGridWidth > 0
-    ? Math.max(1, Math.floor((punchGridWidth + gap) / (dotWidth + gap)))
-    : PUNCH_ROW_FALLBACK;
-
-  const rows = Math.ceil(total / perRow);
-  const each = Math.floor(total / rows);      // every row carries at least this many...
-  const spare = total % rows;                 // ...and the first `spare` rows carry one more
-
-  for (let r = 0, n = 0; r < rows; r += 1) {
-    const row = document.createElement('span');
-    row.className = 'punch-row';
-    for (let i = 0; i < each + (r < spare ? 1 : 0); i += 1, n += 1) {
-      row.appendChild(punchDot(n < filled));
-    }
-    grid.appendChild(row);
-  }
-}
-
-function punchDot(isFilled) {
-  const dot = document.createElement('span');
-  dot.className = `punch-dot${isFilled ? ' is-filled' : ''}`;
-  dot.textContent = isFilled ? '✓' : '';
-  return dot;
-}
-
-// The rows are measured against the card, so a rotation (or a dragged desktop
-// window) needs them laid out again. Guarded on the width actually changing:
-// a collapsing URL bar or a soft keyboard fires resize too, and re-rendering
-// mid-scroll would cost a reflow for nothing.
-function onPunchResize() {
-  if (!vendor || $('punch-block').hidden) return;
-  if ($('punch-grid').getBoundingClientRect().width === punchGridWidth) return;
-  renderPunchUi();
-}
-
-/* ---------- punch modal: progress / redeem a full card ---------- */
-
-let punchCodeCountdown = null;
+/* ---------- visits sheet: progress only ---------- */
 
 function openPunchModal() {
   const p = vendor?.punch;
   if (!p) return;
-  clearInterval(punchCodeCountdown);
-  punchCodeCountdown = null;
-  $('punch-code').hidden = true;
-  $('punch-modal-status').textContent = '';
-  $('punch-modal-status').className = 'detail-status';
 
-  const hasReady = (p.readyCards ?? 0) > 0;
-  const target = p.cardTarget || p.target || 10;
-  if (hasReady) {
-    $('punch-modal-title').textContent = 'Card full! 🎉';
-    $('punch-modal-desc').textContent =
-      `Your reward: ${p.reward || 'ask at the counter'}.` +
-      (p.readyCards > 1 ? ` You have ${p.readyCards} full cards. Redeem them one at a time.` : '') +
-      ' Tap Redeem and show the code at the counter.';
-    $('punch-redeem-btn').hidden = false;
-    $('punch-redeem-btn').disabled = false;
-  } else {
-    $('punch-modal-title').textContent = 'Punch card';
-    $('punch-modal-desc').textContent =
-      `${Math.min(p.punches ?? 0, target)} of ${target} punches. Scan the punch-in code at the counter (one punch a night) and a full card earns ${p.reward || 'a reward'}.`;
-    $('punch-redeem-btn').hidden = true;
-  }
+  const visits = p.visits ?? 0;
+  const unit = visits === 1 ? 'visit' : 'visits';
+  const priced = (vendor?.rewards ?? [])
+    .filter((r) => r.cost_in_visits != null)
+    .sort((a, b) => a.cost_in_visits - b.cost_in_visits);
+
+  $('punch-modal-title').textContent = `${visits} ${unit}`;
+  $('punch-modal-desc').textContent =
+    !priced.length ? `${vendor.name} hasn’t priced anything in visits yet. Yours are safe, keep collecting.`
+    : visits === 0 ? `Scan the visit code at the counter to collect your first visit at ${vendor.name}. One a night.`
+                   : `Collected at ${vendor.name}, one a night. Spend them on any reward below that shows a visit price.`;
+
+  // What the counter buys, cheapest first. Redemption itself lives on the
+  // reward, so this is a read-out, not a control.
+  const list = $('punch-modal-list');
+  list.innerHTML = '';
+  priced
+    .forEach((r) => {
+      const ready = visits >= r.cost_in_visits;
+      const li = document.createElement('li');
+      if (ready) li.className = 'is-ready';
+      li.innerHTML = `
+        <span class="pml-title">${escapeHtml(r.title)}</span>
+        <span class="pml-need">${ready ? 'Ready ✓' : `${r.cost_in_visits - visits} more`}</span>`;
+      list.appendChild(li);
+    });
 
   const ov = $('punch-modal');
   ov.hidden = false;
@@ -2226,14 +2304,10 @@ function closePunchModal() {
   const ov = $('punch-modal');
   if (ov.hidden || !ov.classList.contains('is-open')) return;
   ov.classList.remove('is-open');
-  clearInterval(punchCodeCountdown);
-  punchCodeCountdown = null;
   $('punch-card-btn').setAttribute('aria-expanded', 'false');
   setTimeout(() => {
     if (ov.classList.contains('is-open')) return;   // reopened mid-slide
     ov.hidden = true;
-    $('punch-code').hidden = true;
-    $('punch-redeem-btn').disabled = false;
   }, 360);
 }
 
@@ -2242,64 +2316,12 @@ function dropPunchModal() {
   const ov = $('punch-modal');
   ov.classList.remove('is-open');
   ov.hidden = true;
-  clearInterval(punchCodeCountdown);
-  punchCodeCountdown = null;
   $('punch-card-btn').setAttribute('aria-expanded', 'false');
-}
-
-async function onPunchRedeemTap() {
-  if (!vendor) return;
-  const btn = $('punch-redeem-btn');
-  btn.disabled = true;
-  try {
-    const res = await authFetch('/api/me/punch-redeem-code', {
-      method: 'POST',
-      body: JSON.stringify({ vendorId: vendor.vendorId }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      $('punch-modal-status').textContent = data.message || 'Couldn’t start the redemption, try again.';
-      $('punch-modal-status').className = 'detail-status locked';
-      btn.disabled = false;
-      return;
-    }
-    showPunchRedeemCode(data.code, data.ttlSeconds ?? 120);
-  } catch {
-    $('punch-modal-status').textContent = 'No connection, try again.';
-    $('punch-modal-status').className = 'detail-status locked';
-    btn.disabled = false;
-  }
-}
-
-/* Replace the Redeem button, in place, with the live QR + code + countdown. */
-function showPunchRedeemCode(code, seconds) {
-  $('punch-redeem-btn').hidden = true;
-  $('punch-modal-status').textContent = 'Show this at the counter';
-  $('punch-modal-status').className = 'detail-status ok';
-  $('punch-code-value').textContent = code;
-  try {
-    drawQr($('punch-code-qr'), `WRW:P:${code}`, 190);
-  } catch { /* QR failed to render — the digits below still work */ }
-  $('punch-code').hidden = false;
-
-  clearInterval(punchCodeCountdown);
-  let left = seconds;
-  const tick = () => {
-    if (left > 0) {
-      $('punch-code-timer').textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
-    } else {
-      $('punch-code-timer').textContent = 'Expired';
-      clearInterval(punchCodeCountdown);
-    }
-    left -= 1;
-  };
-  tick();
-  punchCodeCountdown = setInterval(tick, 1000);
 }
 
 /* ---------- the full-screen punch-in scanner ---------- */
 
-const PUNCH_SCAN_DEFAULT = 'Point your camera at the punch-in code on the counter screen.';
+const PUNCH_SCAN_DEFAULT = 'Point your camera at the visit code on the counter screen.';
 const PUNCH_JSQR_INTERVAL_MS = 120;   // ~8 decode attempts/sec
 const PUNCH_JSQR_MAX_DIM = 640;       // downscale frames before jsQR for speed
 const PUNCH_DETECTOR_GRACE_MS = 3000; // BarcodeDetector's head start before jsQR joins
@@ -2487,7 +2509,7 @@ function onPunchScanPayload(raw) {
   punchScanLastPayloadAt = now;
 
   const token = punchTokenFromPayload(raw);
-  if (!token) return setPunchScanStatus('That’s not a punch-in code. Look for it on the counter screen.', true);
+  if (!token) return setPunchScanStatus('That’s not a visit code. Look for it on the counter screen.', true);
   submitPunch(token);
 }
 

@@ -53,7 +53,10 @@ async function resolveRedeemCode(code, vendorId) {
   if (!/^\d{4}$/.test(c)) throw new Error('CODE_INVALID');
   const { data } = await supabaseAdmin
     .from('redeem_codes')
-    .select('user_id, reward_id')
+    // paid_with tells the terminal WHICH currency this code spends, so the
+    // typed-code path no longer has to guess by trying one preview and falling
+    // back to the other (migration-029 folded both code tables into this one).
+    .select('user_id, reward_id, paid_with, visits_charged')
     .eq('code', c)
     .eq('vendor_id', vendorId)
     .gt('expires_at', new Date().toISOString())
@@ -73,8 +76,6 @@ router.get('/config', (req, res) => {
     tiers: v.tiers ?? [],
     hasPin: Boolean(v.pin_hash),
     punchEnabled: Boolean(v.punch_enabled),
-    punchTarget: v.punch_target ?? 10,
-    punchReward: v.punch_reward ?? '',
   });
 });
 
@@ -88,7 +89,7 @@ router.get('/config', (req, res) => {
 router.get('/punch-token', (req, res) => {
   const v = req.vendor;
   if (!v.punch_enabled) {
-    return res.status(403).json({ error: 'PUNCH_DISABLED', message: 'Turn on punch cards in Settings first.' });
+    return res.status(403).json({ error: 'PUNCH_DISABLED', message: 'Turn on visits in Settings first.' });
   }
   const windowIndex = currentWindow();
   const token = mintPunchToken(v.id, windowIndex);
@@ -99,8 +100,6 @@ router.get('/punch-token', (req, res) => {
     url: punchUrl(origin, token),
     windowSeconds: PUNCH_WINDOW_SECONDS,
     expiresIn: secondsLeftInWindow(),
-    target: v.punch_target ?? 10,
-    reward: v.punch_reward ?? '',
   });
 });
 
@@ -212,12 +211,14 @@ router.post('/award', async (req, res, next) => {
  */
 router.post('/redeem-preview', requirePin, async (req, res, next) => {
   try {
-    const { user_id: userId, reward_id: rewardId } = await resolveRedeemCode(req.body?.code, req.vendor.id);
+    const { user_id: userId, reward_id: rewardId, paid_with: paidWith, visits_charged: visitsCharged } =
+      await resolveRedeemCode(req.body?.code, req.vendor.id);
 
-    const [{ data: profile }, { data: bal }, { data: reward }] = await Promise.all([
+    const [{ data: profile }, { data: bal }, { data: reward }, { data: card }] = await Promise.all([
       supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle(),
       supabaseAdmin.from('point_balances').select('balance').eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle(),
       supabaseAdmin.from('rewards').select('title, cost_in_points, emoji').eq('id', rewardId).eq('vendor_id', req.vendor.id).maybeSingle(),
+      supabaseAdmin.from('punch_cards').select('punches').eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle(),
     ]);
     if (!reward) throw new Error('REWARD_NOT_FOUND');
 
@@ -227,6 +228,11 @@ router.post('/redeem-preview', requirePin, async (req, res, next) => {
       rewardTitle: reward.title,
       cost: reward.cost_in_points,
       emoji: reward.emoji || '🎁',
+      paidWith,
+      // The confirm screen names both numbers so staff can see the forfeit
+      // before they tap: redeeming a 5-visit reward with 12 banked spends all 12.
+      visitsCharged: visitsCharged ?? null,
+      visitsBalance: card?.punches ?? 0,
     });
   } catch (err) {
     next(err);
@@ -254,77 +260,50 @@ router.post('/redeem', requirePin, async (req, res, next) => {
     if (error) throw error;
     if (!data?.length) throw new Error('CODE_INVALID');
 
-    const newBalance = data[0].new_balance;
+    const { new_balance: newBalance, reward_title: rewardTitle,
+            paid_with: paidWith, visits_left: visitsLeft } = data[0];
     emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
 
-    res.json({ rewardTitle: data[0].reward_title, newBalance });
-  } catch (err) {
-    next(err);
-  }
-});
+    // A visits redemption doesn't move the points balance, so the balance push
+    // alone leaves the student's counter showing its pre-reset value and the
+    // reward still rendering as redeemable — inviting a second tap that fails.
+    if (paidWith === 'visits') {
+      emitPunch(userId, {
+        vendorId: req.vendor.id,
+        visits: visitsLeft,
+        redeemed: true,
+        reward: rewardTitle,
+      });
+    }
 
-/** Resolve a live 4-digit PUNCH redeem code for THIS vendor, or throw CODE_INVALID. */
-async function resolvePunchCode(code, vendorId) {
-  const c = String(code ?? '').trim();
-  if (!/^\d{4}$/.test(c)) throw new Error('CODE_INVALID');
-  const { data } = await supabaseAdmin
-    .from('punch_redeem_codes')
-    .select('user_id, card_id')
-    .eq('code', c)
-    .eq('vendor_id', vendorId)
-    .gt('expires_at', new Date().toISOString())
-    .maybeSingle();
-  if (!data) throw new Error('CODE_INVALID');
-  return data;
-}
-
-/**
- * POST /api/vendor/punch-redeem-preview  { code }
- * Look up a live punch-card redemption code WITHOUT consuming it — the
- * terminal shows "is this the user?" and only /punch-redeem retires the card.
- * PIN-gated like reward redemption: it hands out product.
- */
-router.post('/punch-redeem-preview', requirePin, async (req, res, next) => {
-  try {
-    const { user_id: userId, card_id: cardId } = await resolvePunchCode(req.body?.code, req.vendor.id);
-    const [{ data: profile }, { data: card }] = await Promise.all([
-      supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle(),
-      supabaseAdmin.from('punch_cards').select('target').eq('id', cardId).maybeSingle(),
-    ]);
-    res.json({
-      name: profile?.name ?? 'Customer',
-      reward: req.vendor.punch_reward ?? 'Free reward',
-      target: card?.target ?? req.vendor.punch_target ?? 10,
-    });
+    res.json({ rewardTitle, newBalance, paidWith, visitsLeft });
   } catch (err) {
     next(err);
   }
 });
 
 /**
- * POST /api/vendor/punch-redeem  { code }
- * Final step after the vendor confirms. redeem_punch_card consumes the code
- * and retires the card in ONE transaction — a double-submit finds no code the
- * second time, exactly like redeem_by_code.
+ * GET /api/vendor/visit-impact?from=<int>&to=<int>
+ * How many of this vendor's customers can afford a reward at the CURRENT visit
+ * price but could not at a higher one. Read-only preflight for the Items form,
+ * which warns before a vendor raises a visit price — unlike points, visits take
+ * weeks to accumulate, so silently pushing a reward out of reach stings.
  */
-router.post('/punch-redeem', requirePin, async (req, res, next) => {
+router.get('/visit-impact', requirePin, async (req, res, next) => {
   try {
-    const code = String(req.body?.code ?? '').trim();
-    if (!/^\d{4}$/.test(code)) throw new Error('CODE_INVALID');
-
-    const { data, error } = await supabaseAdmin.rpc('redeem_punch_card', {
-      p_code: code,
-      p_vendor_id: req.vendor.id,
-    });
+    const from = Number(req.query.from);
+    const to = Number(req.query.to);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to <= from) {
+      return res.json({ affected: 0 });
+    }
+    const { count, error } = await supabaseAdmin
+      .from('punch_cards')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('vendor_id', req.vendor.id)
+      .gte('punches', from)
+      .lt('punches', to);
     if (error) throw error;
-    if (!data?.length) throw new Error('CODE_INVALID');
-
-    const { reward_text: reward, customer_id: userId } = data[0];
-    // Live push so the student's open card flips to "redeemed" on the spot.
-    emitPunch(userId, { vendorId: req.vendor.id, redeemed: true, reward });
-
-    const { data: profile } = await supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle();
-    res.json({ reward, customerName: profile?.name ?? 'Customer' });
+    res.json({ affected: count ?? 0 });
   } catch (err) {
     next(err);
   }
@@ -351,10 +330,20 @@ router.post('/reverse', requirePin, async (req, res, next) => {
     if (error) throw error;
     if (!data?.length) throw new Error('TX_NOT_FOUND');
 
-    const { affected_user: userId, new_balance: newBalance, reversed_type: type, reversed_points: points } = data[0];
+    const { affected_user: userId, new_balance: newBalance, reversed_type: type,
+            reversed_points: points, paid_with: paidWith, restored_visits: restoredVisits } = data[0];
     emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push to the student
 
-    res.json({ newBalance, type, points });
+    // Undoing a visits redemption adds the forfeited visits back, so the
+    // student's counter has to hear about it the same way a fill does.
+    if (restoredVisits > 0) {
+      const { data: card } = await supabaseAdmin
+        .from('punch_cards').select('punches')
+        .eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle();
+      emitPunch(userId, { vendorId: req.vendor.id, visits: card?.punches ?? 0 });
+    }
+
+    res.json({ newBalance, type, points, paidWith, restoredVisits });
   } catch (err) {
     next(err);
   }
@@ -365,7 +354,7 @@ router.get('/rewards', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('rewards')
-      .select('id, title, cost_in_points, emoji, active, created_at')
+      .select('id, title, cost_in_points, cost_in_visits, emoji, active, created_at')
       .eq('vendor_id', req.vendor.id)
       .order('created_at', { ascending: true });
     if (error) throw error;
@@ -375,24 +364,49 @@ router.get('/rewards', async (req, res, next) => {
   }
 });
 
-function validReward(title, cost, emoji) {
-  const t = String(title ?? '').trim();
-  const c = Number(cost);
-  const e = String(emoji ?? '🎁').trim().slice(0, 16) || '🎁'; // emoji can be multi-codepoint
-  if (!t || t.length > 60) return { error: 'Give the item a name (up to 60 characters).' };
-  if (!Number.isInteger(c) || c < 1 || c > 100000) return { error: 'Point cost must be a whole number of at least 1.' };
-  return { title: t, cost: c, emoji: e };
+// A price is: a positive integer, or null meaning "not sold in this currency".
+// Blank string counts as null so an emptied form field clears the price.
+function validPrice(raw, label, max) {
+  if (raw == null || raw === '') return { value: null };
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > max) {
+    return { error: `${label} must be a whole number from 1 to ${max}.` };
+  }
+  return { value: n };
 }
 
-/** POST /api/vendor/rewards  { title, costInPoints, emoji } */
+// Mirrors the DB's rewards_has_a_price CHECK (migration-029): points, visits,
+// or both, but never neither.
+function validReward(title, cost, visits, emoji) {
+  const t = String(title ?? '').trim();
+  const e = String(emoji ?? '🎁').trim().slice(0, 16) || '🎁'; // emoji can be multi-codepoint
+  if (!t || t.length > 60) return { error: 'Give the item a name (up to 60 characters).' };
+
+  const p = validPrice(cost, 'Point cost', 100000);
+  if (p.error) return { error: p.error };
+  const v = validPrice(visits, 'Visit cost', 50);
+  if (v.error) return { error: v.error };
+  if (p.value == null && v.value == null) {
+    return { error: 'Set a point cost, a visit cost, or both.' };
+  }
+  return { title: t, cost: p.value, visits: v.value, emoji: e };
+}
+
+/** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji } */
 router.post('/rewards', requirePin, async (req, res, next) => {
   try {
-    const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.emoji);
+    const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
 
     const { data, error } = await supabaseAdmin
       .from('rewards')
-      .insert({ vendor_id: req.vendor.id, title: v.title, cost_in_points: v.cost, emoji: v.emoji })
+      .insert({
+        vendor_id: req.vendor.id,
+        title: v.title,
+        cost_in_points: v.cost,
+        cost_in_visits: v.visits,
+        emoji: v.emoji,
+      })
       .select()
       .single();
     if (error) throw error;
@@ -402,24 +416,42 @@ router.post('/rewards', requirePin, async (req, res, next) => {
   }
 });
 
-/** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, emoji?, active? } */
+/** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, costInVisits?, emoji?, active? } */
 router.patch('/rewards/:id', requirePin, async (req, res, next) => {
   try {
     // A malformed id is a clean 404, not a uuid-cast 500 in the update query.
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
     }
+
+    const touchesFields =
+      req.body?.title !== undefined || req.body?.costInPoints !== undefined ||
+      req.body?.costInVisits !== undefined || req.body?.emoji !== undefined;
+
     const updates = {};
-    if (req.body?.title != null || req.body?.costInPoints != null || req.body?.emoji != null) {
-      const v = validReward(
-        req.body?.title ?? 'placeholder',
-        req.body?.costInPoints ?? 1,
-        req.body?.emoji
-      );
+    if (touchesFields) {
+      // Merge against the STORED row rather than validating placeholder
+      // sentinels. The old code passed `costInPoints ?? 1`, which meant a
+      // partial PATCH silently revalidated a dummy price and, worse, made
+      // clearing a price impossible — the exact operation dual pricing needs.
+      const { data: current } = await supabaseAdmin
+        .from('rewards').select('title, cost_in_points, cost_in_visits, emoji')
+        .eq('id', req.params.id).eq('vendor_id', req.vendor.id).maybeSingle();
+      if (!current) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
+
+      const merged = {
+        title: req.body?.title !== undefined ? req.body.title : current.title,
+        cost: req.body?.costInPoints !== undefined ? req.body.costInPoints : current.cost_in_points,
+        visits: req.body?.costInVisits !== undefined ? req.body.costInVisits : current.cost_in_visits,
+        emoji: req.body?.emoji !== undefined ? req.body.emoji : current.emoji,
+      };
+      const v = validReward(merged.title, merged.cost, merged.visits, merged.emoji);
       if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
-      if (req.body?.title != null) updates.title = v.title;
-      if (req.body?.costInPoints != null) updates.cost_in_points = v.cost;
-      if (req.body?.emoji != null) updates.emoji = v.emoji;
+
+      if (req.body?.title !== undefined) updates.title = v.title;
+      if (req.body?.costInPoints !== undefined) updates.cost_in_points = v.cost;
+      if (req.body?.costInVisits !== undefined) updates.cost_in_visits = v.visits;
+      if (req.body?.emoji !== undefined) updates.emoji = v.emoji;
     }
     if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
     if (!Object.keys(updates).length) {
@@ -433,7 +465,14 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
       .eq('vendor_id', req.vendor.id) // vendors can only touch their own rewards
       .select()
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      // The DB CHECK is the backstop for anything the merge above missed;
+      // surface it as a readable 400 rather than a raw 500.
+      if (String(error.message ?? '').includes('rewards_has_a_price')) {
+        return res.status(400).json({ error: 'BAD_REWARD', message: 'Set a point cost, a visit cost, or both.' });
+      }
+      throw error;
+    }
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
     res.json(data);
   } catch (err) {
@@ -510,7 +549,9 @@ router.get('/recent', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('transactions')
-      .select('id, type, points, dollar_amount, created_at, reverses, reversed_by, profiles:user_id(name), rewards(title)')
+      // paid_with / visits_spent so the Undo copy can say "visits restored"
+      // instead of "points refunded" on a visits redemption (points there is 0).
+      .select('id, type, points, dollar_amount, paid_with, visits_spent, created_at, reverses, reversed_by, profiles:user_id(name), rewards(title)')
       .eq('vendor_id', req.vendor.id)
       .order('created_at', { ascending: false })
       .limit(20);
@@ -635,18 +676,8 @@ function validSettings(body) {
     if (typeof body.punchEnabled !== 'boolean') return { error: 'Punch cards must be on or off.' };
     updates.punch_enabled = body.punchEnabled;
   }
-  if (body?.punchTarget != null) {
-    const t = Number(body.punchTarget);
-    if (!Number.isInteger(t) || t < 2 || t > 50) {
-      return { error: 'Punches for a full card must be a whole number from 2 to 50.' };
-    }
-    updates.punch_target = t;
-  }
-  if (body?.punchReward != null) {
-    const r = String(body.punchReward).trim();
-    if (!r || r.length > 80) return { error: 'Describe the punch-card reward in up to 80 characters.' };
-    updates.punch_reward = r;
-  }
+  // punchTarget / punchReward retired by migration-029: there is no vendor-level
+  // card any more, each reward carries its own cost_in_visits.
 
   if (!Object.keys(updates).length && pin == null) return { error: 'Nothing to update.' };
   return { updates, pin };
@@ -660,8 +691,6 @@ const settingsView = (v) => ({
   address: v.address ?? '',
   logo: v.logo ?? null,
   punchEnabled: Boolean(v.punch_enabled),
-  punchTarget: v.punch_target ?? 10,
-  punchReward: v.punch_reward ?? '',
 });
 
 /** GET /api/vendor/settings — current economics + config for the Settings tab. */

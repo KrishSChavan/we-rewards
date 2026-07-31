@@ -25,6 +25,8 @@ let selectedEmoji = '🎁';  // emoji picked in the item form
 let busy = false;          // guards double-taps / double-submits
 let idleTimeout = null;
 let editingRewardId = null;
+let editingVisitsWas = null;   // punch price the item had when the form opened
+let rewardRaiseArmed = false;  // two-tap confirm for raising a punch price
 let logoValue = null;      // current logo data-URL (null = none) shown in Settings
 let logoChanged = false;   // only PATCH the logo when the vendor actually changed it
 let lastActivity = null;   // most recent transaction (for the "Undo last" button)
@@ -96,7 +98,7 @@ const screens = [
   document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement && document.body.classList.contains('punch-fs')) exitPunchFullscreen();
   });
-  $('set-punch').addEventListener('click', () => { toggleSwitch($('set-punch')); syncPunchFields(); refreshSettingsDirty(); });
+  $('set-punch').addEventListener('click', () => { toggleSwitch($('set-punch')); refreshSettingsDirty(); });
   $('stats-refresh').addEventListener('click', () => loadAnalytics());
   $('settings-save').addEventListener('click', () => saveSettings());
   $('settings-reset').addEventListener('click', () => renderSettings(loadedSettings));
@@ -408,8 +410,12 @@ function parseQrPayload(raw) {
   if (m) return { kind: 'earn', code: m[1] };
   m = /^WRW:R:(\d{4})$/i.exec(s);
   if (m) return { kind: 'redeem', code: m[1] };
+  // WRW:P: was the punch-card code's own prefix before migration-029 folded
+  // both code tables into one. The student app no longer mints it, but a phone
+  // running a cached build still might, and the digits now resolve through the
+  // same preview endpoint — so accept it rather than calling it foreign.
   m = /^WRW:P:(\d{4})$/i.exec(s);
-  if (m) return { kind: 'punch', code: m[1] };
+  if (m) return { kind: 'redeem', code: m[1] };
   if (/[?&]punch=/.test(s)) return { kind: 'punch-url' };
   if (/^\d{6}$/.test(s)) return { kind: 'earn', code: s };
   if (/^\d{4}$/.test(s)) return { kind: 'redeem', code: s };
@@ -725,15 +731,6 @@ function onScanPayload(key, raw) {
   if (parsed.kind === 'punch-url') {
     return flashScanStatus(key, 'That’s the punch-in code: customers scan it with their phones');
   }
-  // A punch-card redemption code belongs on the Redeem screen; there it takes
-  // its own preview path (separate table from reward codes).
-  if (parsed.kind === 'punch') {
-    if (key !== 'redeem') return showScanBanner(key, 'punch');
-    ui.scanner.stop();
-    $(ui.frame).classList.add('is-hit');
-    submitPunchRedeemCode(parsed.code);
-    return;
-  }
   if (parsed.kind !== ui.expect) return showScanBanner(key, parsed.kind);
 
   // (Sightings during a mid-flight request never reach here — the scanner's
@@ -1048,21 +1045,12 @@ async function submitRedeemCode() {
     });
     const data = await res.json();
     if (handlePinRequired(res, data)) return;
-    // Typed codes don't say which kind they are (a scanned QR does): not a
-    // reward code -> maybe a punch-card code, which lives in its own table.
-    if (!res.ok && data.error === 'CODE_INVALID') {
-      const pres = await authFetch('/api/vendor/punch-redeem-preview', {
-        method: 'POST',
-        body: JSON.stringify({ code }),
-      });
-      const pdata = await pres.json().catch(() => ({}));
-      if (handlePinRequired(pres, pdata)) return;
-      if (pres.ok) return showPunchRedeemConfirm(code, pdata);
-    }
     if (!res.ok) {
       return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
     }
-    showRewardRedeemConfirm(code, data);
+    // One code table since migration-029: the row itself says which currency it
+    // spends, so there is no try-one-then-the-other dance any more.
+    showRedeemConfirm(code, data);
   } catch {
     flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
   } finally {
@@ -1070,14 +1058,32 @@ async function submitRedeemCode() {
   }
 }
 
-// The confirm screen serves both code kinds; a punch redemption hides the
-// points chip (nothing is deducted) and re-words the button.
-function showRewardRedeemConfirm(code, data) {
+// One confirm screen, two currencies. A punch redemption hides the points chip
+// (nothing is deducted) and names the FORFEIT: redeeming zeroes the counter
+// whatever the reward costs, so staff see it before they commit.
+function showRedeemConfirm(code, data) {
   pendingRedeemCode = code;
-  pendingRedeemKind = 'reward';
+  pendingRedeemKind = data.paidWith === 'visits' ? 'punch' : 'reward';
   $('redeem-name').textContent = data.name;
+  $('redeem-item').textContent = data.rewardTitle;
+  $('redeem-confirm').disabled = false;
+
+  const chip = document.querySelector('#screen-redeem-confirm .balance-chip');
+  if (pendingRedeemKind === 'punch') {
+    chip.hidden = true;
+    $('redeem-emoji').textContent = '\u{1F39F}\u{FE0F}';
+    const need = data.visitsCharged ?? 0;
+    const have = data.visitsBalance ?? 0;
+    $('redeem-cost').textContent = have > need
+      ? `${need} visits needed · uses all ${have} visits`
+      : `${need} visits will be used`;
+    $('redeem-confirm').textContent = 'Confirm and use visits';
+    show('screen-redeem-confirm');
+    return;
+  }
+
   $('redeem-balance').textContent = data.balance;
-  document.querySelector('#screen-redeem-confirm .balance-chip').hidden = false;
+  chip.hidden = false;
   $('redeem-emoji').textContent = data.emoji || '🎁';
   $('redeem-item').textContent = data.rewardTitle;
   $('redeem-cost').textContent = `${data.cost} pts will be deducted`;
@@ -1086,41 +1092,9 @@ function showRewardRedeemConfirm(code, data) {
   show('screen-redeem-confirm');
 }
 
-function showPunchRedeemConfirm(code, data) {
-  pendingRedeemCode = code;
-  pendingRedeemKind = 'punch';
-  $('redeem-name').textContent = data.name;
-  document.querySelector('#screen-redeem-confirm .balance-chip').hidden = true;
-  $('redeem-emoji').textContent = '🎟️';
-  $('redeem-item').textContent = data.reward || 'Punch-card reward';
-  $('redeem-cost').textContent = `Full punch card (${data.target} punches) will be marked used`;
-  $('redeem-confirm').textContent = 'Confirm and mark card used';
-  $('redeem-confirm').disabled = false;
-  show('screen-redeem-confirm');
-}
-
-/** Preview a punch-card redemption code (a scanned WRW:P: QR names its own
- *  kind, so no typed-code fallback dance is needed here). */
-async function submitPunchRedeemCode(code) {
-  if (busy) return;
-  busy = true;
-  try {
-    const res = await authFetch('/api/vendor/punch-redeem-preview', {
-      method: 'POST',
-      body: JSON.stringify({ code }),
-    });
-    const data = await res.json();
-    if (handlePinRequired(res, data)) return;
-    if (!res.ok) {
-      return flood('error', 'CAN’T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
-    }
-    showPunchRedeemConfirm(code, data);
-  } catch {
-    flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
-  } finally {
-    busy = false;
-  }
-}
+/* showPunchRedeemConfirm and submitPunchRedeemCode are gone: migration-029
+   folded punch codes into redeem_codes, so /redeem-preview resolves every code
+   and reports its currency. There is no second endpoint left to fall back to. */
 
 async function confirmRedeem() {
   if (busy || !pendingRedeemCode) return;
@@ -1128,7 +1102,7 @@ async function confirmRedeem() {
   busy = true;
   $('redeem-confirm').disabled = true;
   try {
-    const res = await authFetch(isPunch ? '/api/vendor/punch-redeem' : '/api/vendor/redeem', {
+    const res = await authFetch('/api/vendor/redeem', {
       method: 'POST',
       body: JSON.stringify({ code: pendingRedeemCode }),
     });
@@ -1137,16 +1111,17 @@ async function confirmRedeem() {
     if (!res.ok) {
       return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
     }
-    if (isPunch) {
-      flood('success', `GIVE: ${data.reward}`, `${data.customerName} · full punch card redeemed`, () => {
-        enterRedeemScan();
-      }, 3500);
-    } else {
-      flood('success', `GIVE: ${data.rewardTitle}`, `Points deducted · balance now ${data.newBalance}`, () => {
-        refreshLastActivity();
-        enterRedeemScan();
-      }, 3500);
-    }
+    // Both branches refresh last-activity now. The old punch path deliberately
+    // did NOT, which is exactly why punch redemptions had no Undo. migration-029
+    // makes them reversible (reverse_transaction adds the forfeited punches
+    // back), so the affordance has to appear for them too.
+    const sub = isPunch
+      ? `Visits used · ${data.visitsLeft ?? 0} left`
+      : `Points deducted · balance now ${data.newBalance}`;
+    flood('success', `GIVE: ${data.rewardTitle}`, sub, () => {
+      refreshLastActivity();
+      enterRedeemScan();
+    }, 3500);
   } catch {
     flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
   } finally {
@@ -1265,9 +1240,9 @@ async function fetchPunchToken() {
     $('punch-qr-cover').hidden = true;
     punchWindowMs = (data.windowSeconds ?? 30) * 1000;
     punchExpiresAt = Date.now() + Math.max(1, data.expiresIn ?? 30) * 1000;
-    $('punch-reward-line').textContent = data.reward
-      ? `${data.target} punches = ${data.reward}`
-      : `${data.target} punches fills the card`;
+    // No vendor-level card since migration-029: punches are a currency, and
+    // each reward carries its own punch price on the ITEMS tab.
+    $('punch-reward-line').textContent = 'Customers scan this once a night to collect a visit';
   } catch {
     // The shown code is stale (or absent): cover it so nobody scans a dead
     // code, and retry shortly. Recovers by itself when the connection does.
@@ -1345,9 +1320,16 @@ function renderRewardList() {
 
     const info = document.createElement('button');
     info.className = 'reward-info';
+    // Either price may be absent, so build the line from what exists rather
+    // than interpolating a null into "null pts · about $NaN of purchases".
+    const bits = [];
+    if (r.cost_in_points != null) {
+      bits.push(`${r.cost_in_points} pts · about $${(r.cost_in_points / config.pointsPerDollar).toFixed(2)} of purchases`);
+    }
+    if (r.cost_in_visits != null) bits.push(`${r.cost_in_visits} visits`);
     info.innerHTML = `
       <span class="reward-emoji">${escapeHtml(r.emoji || '🎁')}</span><span class="redeem-title">${escapeHtml(r.title)}</span>
-      <span class="redeem-cost">${r.cost_in_points} pts · about $${(r.cost_in_points / config.pointsPerDollar).toFixed(2)} of purchases</span>`;
+      <span class="redeem-cost">${escapeHtml(bits.join(' · '))}</span>`;
     info.addEventListener('click', () => openRewardForm(r));
 
     const toggle = document.createElement('button');
@@ -1376,9 +1358,14 @@ async function toggleReward(reward) {
 
 function openRewardForm(reward) {
   editingRewardId = reward?.id ?? null;
+  // Remembered so saveReward can tell a RAISE from a cut and warn accordingly.
+  editingVisitsWas = reward?.cost_in_visits ?? null;
   $('reward-form-title').textContent = reward ? 'Edit item' : 'Add item';
   $('reward-title').value = reward?.title ?? '';
   $('reward-cost').value = reward?.cost_in_points ?? '';
+  $('reward-visits').value = reward?.cost_in_visits ?? '';
+  // A punch price is meaningless while punches are switched off for this spot.
+  $('reward-visits-label').hidden = !config.punchEnabled;
   setSelectedEmoji(reward?.emoji || '🎁');
   $('reward-form-error').hidden = true;
   updateRewardHint();
@@ -1408,18 +1395,45 @@ function updateRewardHint() {
 function closeRewardForm() {
   $('reward-form').hidden = true;
   editingRewardId = null;
+  editingVisitsWas = null;
+  rewardRaiseArmed = false;
 }
 
 async function saveReward() {
   const title = $('reward-title').value.trim();
-  const cost = Number($('reward-cost').value);
+  // Blank means "not sold in this currency" and must reach the server as null,
+  // not as Number('') === 0, which would trip the positive-price validator.
+  const rawCost = $('reward-cost').value.trim();
+  const rawVisits = $('reward-visits').value.trim();
+  const cost = rawCost === '' ? null : Number(rawCost);
+  const visits = rawVisits === '' ? null : Number(rawVisits);
   $('reward-form-error').hidden = true;
+
+  // Raising a punch price silently pushes the item out of reach for anyone who
+  // had just enough. Punches take weeks to collect, so warn once and let them
+  // through on a second tap. Lowering, clearing, or setting a first price never
+  // prompts, and neither does creating a new item.
+  if (editingRewardId && visits != null && editingVisitsWas != null && visits > editingVisitsWas && !rewardRaiseArmed) {
+    try {
+      const q = `from=${editingVisitsWas}&to=${visits}`;
+      const ires = await authFetch(`/api/vendor/visit-impact?${q}`);
+      const idata = await ires.json().catch(() => ({}));
+      if (ires.ok && (idata.affected ?? 0) > 0) {
+        rewardRaiseArmed = true;
+        const who = idata.affected === 1 ? '1 customer' : `${idata.affected} customers`;
+        $('reward-form-error').textContent =
+          `${who} can afford this right now and will lose access. Tap Save again to go ahead.`;
+        $('reward-form-error').hidden = false;
+        return;
+      }
+    } catch { /* the warning is advisory - never block a save on it */ }
+  }
 
   const res = await authFetch(
     editingRewardId ? `/api/vendor/rewards/${editingRewardId}` : '/api/vendor/rewards',
     {
       method: editingRewardId ? 'PATCH' : 'POST',
-      body: JSON.stringify({ title, costInPoints: cost, emoji: selectedEmoji }),
+      body: JSON.stringify({ title, costInPoints: cost, costInVisits: visits, emoji: selectedEmoji }),
     }
   );
   const data = await res.json();
@@ -1641,7 +1655,12 @@ function renderRecent() {
     const time = new Date(tx.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
     // Signed points: earns are +, redeems and corrections carry their own sign.
-    const pts = tx.points > 0 ? `+${tx.points}` : `${tx.points}`;
+    // A punch redemption moves 0 points, so it reports what it actually spent.
+    const paidVisits = tx.paid_with === 'visits';
+    const spent = Math.abs(tx.visits_spent ?? 0);
+    const amount = paidVisits
+      ? `${tx.visits_spent < 0 ? '+' : '-'}${spent} ${spent === 1 ? 'visit' : 'visits'}`
+      : `${tx.points > 0 ? `+${tx.points}` : `${tx.points}`} pts`;
     const what = transfer
       ? `Community points in · ${who}`
       : earn
@@ -1653,7 +1672,7 @@ function renderRecent() {
 
     const info = document.createElement('div');
     info.className = 'recent-info';
-    info.innerHTML = `<span class="recent-what">${escapeHtml(what)}</span><span class="recent-meta">${escapeHtml(pts)} pts · ${escapeHtml(time)}</span>`;
+    info.innerHTML = `<span class="recent-what">${escapeHtml(what)}</span><span class="recent-meta">${escapeHtml(amount)} · ${escapeHtml(time)}</span>`;
     row.appendChild(info);
 
     // Undoable = a real award/redeem, not voided, not itself a correction, not
@@ -1709,8 +1728,15 @@ async function performReverse(txId, after) {
     if (!res.ok) {
       return flood('error', 'COULDN’T UNDO', data.message || 'That entry can’t be undone.', refresh);
     }
-    const back = data.type === 'redeem' ? 'points refunded' : 'points removed';
-    flood('success', 'UNDONE', `Balance now ${data.newBalance} · ${back}`, refresh);
+    // A punch redemption moves no points at all, so "points refunded" would be
+    // a lie and "Balance now N" would name a number that never changed.
+    if (data.paidWith === 'visits') {
+      const n = data.restoredVisits ?? 0;
+      flood('success', 'UNDONE', `${n} ${n === 1 ? 'visit' : 'visits'} put back`, refresh);
+    } else {
+      const back = data.type === 'redeem' ? 'points refunded' : 'points removed';
+      flood('success', 'UNDONE', `Balance now ${data.newBalance} · ${back}`, refresh);
+    }
   } catch {
     flood('error', 'NO CONNECTION', 'Check the internet and try again.', refresh);
   } finally {
@@ -1803,18 +1829,11 @@ function settingsSnapshot() {
     address: $('set-address').value.trim(),
     pin: $('set-pin').value.trim(),
     logo: logoValue,
-    punch: {
-      enabled: switchOn($('set-punch')),
-      target: $('set-punch-target').value.trim(),
-      reward: $('set-punch-reward').value.trim(),
-    },
+    // Just the switch since migration-029: the card's target and reward are
+    // gone, replaced by a per-reward punch price on the ITEMS tab. The key stays
+    // `punch` to keep matching data-card="punch" on the settings card.
+    punch: { enabled: switchOn($('set-punch')) },
   };
-}
-
-// The card-shape fields only matter while the feature is on; dim them (still
-// editable) when it's off so the card reads as one switch with details.
-function syncPunchFields() {
-  $('punch-fields').classList.toggle('is-off', !switchOn($('set-punch')));
 }
 
 // Deep-equal by value for a single card's slice of the snapshot.
@@ -1884,9 +1903,6 @@ function renderSettings(s) {
   $('set-ratio').value = s.pointsPerDollar ?? '';
   setSwitch($('set-exact'), s.allowExactEntry !== false);
   setSwitch($('set-punch'), s.punchEnabled === true);
-  $('set-punch-target').value = s.punchTarget ?? 10;
-  $('set-punch-reward').value = s.punchReward ?? '';
-  syncPunchFields();
   $('set-address').value = s.address ?? '';
   logoValue = s.logo ?? null;
   logoChanged = false;
@@ -2049,12 +2065,6 @@ async function saveSettings(afterTarget) {
     address: $('set-address').value.trim(),
     punchEnabled: switchOn($('set-punch')),
   };
-  // Card shape only rides along when filled in — an untouched blank keeps the
-  // stored value instead of tripping validation.
-  const punchTarget = $('set-punch-target').value.trim();
-  if (punchTarget !== '') body.punchTarget = Number(punchTarget);
-  const punchReward = $('set-punch-reward').value.trim();
-  if (punchReward !== '') body.punchReward = punchReward;
   if (logoChanged) body.logo = logoValue;   // null clears it; a data-URL sets it
   const pin = $('set-pin').value.trim();
   if (pin) body.pin = pin;

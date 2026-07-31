@@ -54,7 +54,7 @@
         <button id="tab-award" class="tab is-active">AWARD</button>
         <button id="tab-redeem" class="tab tab-redeem">REDEEM</button>
         <!-- hidden until the vendor turns punch cards on in Settings -->
-        <button id="tab-punch" class="tab tab-punch" hidden>PUNCH</button>
+        <button id="tab-punch" class="tab tab-punch" hidden>VISITS</button>
         <button id="tab-manage" class="tab tab-manage">ITEMS</button>
         <button id="tab-stats" class="tab tab-stats">STATS</button>
         <button id="tab-settings" class="tab tab-settings">SETTINGS</button>
@@ -241,7 +241,7 @@
            counter-top sign. -->
       <section id="screen-punch" class="screen punch-screen" hidden>
         <div id="punch-stage" class="punch-stage">
-          <h2 class="scan-title punch-title">SCAN TO<br />PUNCH IN</h2>
+          <h2 class="scan-title punch-title">SCAN TO<br />ADD A VISIT</h2>
           <p id="punch-reward-line" class="punch-reward-line"></p>
           <div class="punch-qr-wrap">
             <div class="qr-card-terminal">
@@ -252,7 +252,7 @@
             </div>
           </div>
           <div class="punch-timer" aria-hidden="true"><div id="punch-timer-fill" class="punch-timer-fill"></div></div>
-          <p class="punch-hint">Scan with your phone camera or the WeRewards app · one punch per night</p>
+          <p class="punch-hint">Scan with your phone camera or the WeRewards app · one visit per night</p>
           <div class="punch-actions">
             <button id="punch-fullscreen" class="btn-ghost" type="button">Fullscreen</button>
           </div>
@@ -378,22 +378,14 @@
           <div class="stats-card" data-card="punch">
             <div class="setting-row">
               <span class="setting-label">
-                <span class="setting-name">Punch card</span>
-                <span class="setting-desc">Show a rotating punch-in code on the PUNCH tab. Customers scan it once a night; a full card earns your reward.</span>
+                <span class="setting-name">Visits</span>
+                <span class="setting-desc">Show a rotating visit code on the VISITS tab. Customers scan it once a night to collect a visit, then spend visits on any item you have given a visit price.</span>
               </span>
-              <button id="set-punch" class="switch" type="button" role="switch" aria-checked="false" aria-label="Punch card">
+              <button id="set-punch" class="switch" type="button" role="switch" aria-checked="false" aria-label="Visits">
                 <span class="switch-knob"></span>
               </button>
             </div>
-            <div id="punch-fields">
-              <label class="settings-field">Punches for a full card
-                <input id="set-punch-target" type="number" inputmode="numeric" min="2" max="50" step="1" />
-              </label>
-              <label class="settings-field">Reward for a full card
-                <input id="set-punch-reward" type="text" autocomplete="off" maxlength="80" placeholder="Free cover charge" />
-              </label>
-              <p class="manage-note">Changing the card size only affects new cards, anyone mid-card finishes the card they started.</p>
-            </div>
+            <p class="manage-note">Set what each item costs in visits on the ITEMS tab. Turning this off hides visits from customers, it does not take away the ones they have collected.</p>
           </div>
 
           <div class="stats-card" data-card="pin">
@@ -453,9 +445,17 @@
       <label>Item name
         <input id="reward-title" type="text" maxlength="60" placeholder="Free drink" />
       </label>
+      <!-- Two prices, either optional, at least one required (the DB enforces
+           the same rule via rewards_has_a_price). Leaving one blank means the
+           item simply cannot be bought with that currency. The max on points
+           matches the server's 100000 cap, which the old markup omitted. -->
       <label>Points to redeem
-        <input id="reward-cost" type="number" inputmode="numeric" min="1" step="1" placeholder="150" />
+        <input id="reward-cost" type="number" inputmode="numeric" min="1" max="100000" step="1" placeholder="150" />
       </label>
+      <label id="reward-visits-label">Visits to redeem
+        <input id="reward-visits" type="number" inputmode="numeric" min="1" max="50" step="1" placeholder="5" />
+      </label>
+      <p class="manage-note">Set at least one. Leave a box empty and the item cannot be bought that way.</p>
       <label>Icon</label>
       <div id="emoji-grid" class="emoji-grid">
         <button type="button" data-e="🎁">🎁</button><button type="button" data-e="🥤">🥤</button>

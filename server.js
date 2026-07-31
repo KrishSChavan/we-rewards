@@ -198,16 +198,17 @@ app.use('/api/vendor/verify-pin', pinLimiter);
 // '/api/vendor/redeem' and both punch-card paths covered by nothing but the
 // 1000/15min general cap — enough to sweep 10% of the 4-digit space inside a
 // live code's 120-second life.
+// migration-029 folded the punch-card counter codes into redeem_codes, so the
+// two punch-redeem paths are gone; /api/me/redeem-code joins the list because
+// it MINTS into the same 4-digit space and was previously covered by nothing
+// but the 1000/15min general cap.
 app.use([
   '/api/vendor/redeem-preview',
   '/api/vendor/redeem',
-  '/api/vendor/punch-redeem-preview',
-  '/api/vendor/punch-redeem',
+  '/api/me/redeem-code',
 ], redeemLimiter);
 app.use('/api/me/community-transfer', transferLimiter);
-// Same segment-matching trap: '/api/me/punch' does NOT cover
-// '/api/me/punch-redeem-code'.
-app.use(['/api/me/punch', '/api/me/punch-redeem-code'], punchLimiter);
+app.use('/api/me/punch', punchLimiter);
 app.use('/api/punch/hold', punchHoldLimiter);
 app.use('/api/client-error', clientErrorLimiter);
 app.use('/api/client-event', clientEventLimiter);
@@ -410,7 +411,7 @@ app.post('/api/punch/hold', async (req, res, next) => {
     if (!parsed) {
       return res.status(401).json({
         error: 'PUNCH_INVALID',
-        message: 'That punch code has expired. Scan the live code at the counter.',
+        message: 'That visit code has expired. Scan the live code at the counter.',
       });
     }
     const binding = mintPunchBinding();
@@ -480,13 +481,22 @@ app.use((err, req, res, _next) => {
     VENDOR_INELIGIBLE: [409, 'This spot isn’t accepting moved-in points right now.'],
     VENDOR_CAP_REACHED: [409, 'This spot has hit its limit for moved-in points this month, try another spot.'],
     // Punch cards (migration-028)
-    PUNCH_DISABLED: [403, 'Punch cards aren’t available at this spot right now.'],
-    ALREADY_PUNCHED: [409, 'You already punched in here tonight, come back tomorrow!'],
-    PUNCH_INVALID: [401, 'That punch code has expired. Scan the live code at the counter.'],
-    HOLD_INVALID: [401, 'That punch link has expired. Scan the code at the counter again.'],
-    HOLD_LIMIT: [503, 'Punch-ins are busy right now, try again in a moment.'],
-    PUNCH_CARD_NOT_READY: [409, 'This punch card isn’t full yet.'],
-    PUNCH_CARD_RACE: [503, 'Try that punch again in a second.'],
+    // The error CODES keep their punch_* names (they match the SQL and the DB
+    // schema); only the copy the student reads is in visits language.
+    PUNCH_DISABLED: [403, 'Visits aren’t available at this spot right now.'],
+    ALREADY_PUNCHED: [409, 'You already counted a visit here tonight, come back tomorrow!'],
+    PUNCH_INVALID: [401, 'That visit code has expired. Scan the live code at the counter.'],
+    HOLD_INVALID: [401, 'That visit link has expired. Scan the code at the counter again.'],
+    HOLD_LIMIT: [503, 'Visits are busy right now, try again in a moment.'],
+    PUNCH_CARD_RACE: [503, 'Try that visit again in a second.'],
+    // Visits as a second currency (migration-029). NOTE the matcher below is a
+    // SUBSTRING scan over these keys, so no key here may contain, or be
+    // contained by, another. Checked: none of these collide with
+    // INSUFFICIENT_POINTS or REWARD_NOT_FOUND.
+    INSUFFICIENT_VISITS: [400, 'Not enough visits for this reward yet.'],
+    REWARD_NOT_POINTS_PRICED: [400, 'This reward can’t be bought with points.'],
+    REWARD_NOT_VISITS_PRICED: [400, 'This reward can’t be bought with visits.'],
+    BAD_CURRENCY: [400, 'Choose points or visits.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {

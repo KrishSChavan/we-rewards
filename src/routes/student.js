@@ -137,26 +137,19 @@ router.get('/balances', requireConsent, async (req, res, next) => {
   try {
     const [{ data: vendors, error: vErr }, { data: balances, error: bErr }, { data: cards, error: cErr }] = await Promise.all([
       // Newest vendors first so they land at the start (left) of the home carousel.
-      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, punch_target, punch_reward, rewards(id, title, cost_in_points, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
+      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
       supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
-      // Punch-card state (migration-028): the open card's progress + any full
-      // cards waiting to be redeemed. Redeemed cards are history, not payload.
-      supabaseAdmin.from('punch_cards').select('vendor_id, punches, target, completed_at').eq('user_id', req.user.id).is('redeemed_at', null),
+      // Visit counters (migration-029): exactly one row per (student, vendor).
+      supabaseAdmin.from('punch_cards').select('vendor_id, punches').eq('user_id', req.user.id),
     ]);
     if (vErr) throw vErr;
     if (bErr) throw bErr;
     if (cErr) throw cErr;
 
     const balanceMap = Object.fromEntries((balances ?? []).map((b) => [b.vendor_id, b.balance]));
-    const punchMap = {};
-    for (const c of cards ?? []) {
-      const p = (punchMap[c.vendor_id] ??= { punches: 0, cardTarget: null, readyCards: 0 });
-      if (c.completed_at) p.readyCards += 1;
-      else { p.punches = c.punches; p.cardTarget = c.target; }
-    }
+    const visitMap = Object.fromEntries((cards ?? []).map((c) => [c.vendor_id, c.punches ?? 0]));
     res.json(
       (vendors ?? []).map((v) => {
-        const p = punchMap[v.id];
         return {
           vendorId: v.id,
           name: v.name,
@@ -170,15 +163,12 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           // only — the transfer RPC re-checks eligibility server-side.
           acceptsCommunity: Boolean(v.accepts_community_points),
           rewards: (v.rewards ?? []).filter((r) => r.active),
-          // Punch cards: enabled drives the vendor page's punch UI; progress
-          // reflects the open card (target snapshotted at its creation).
+          // Visits (migration-029): `enabled` drives the counter + scan button
+          // and gates the visits price on every reward row. Each reward carries
+          // its own cost_in_visits; there is no vendor-level card any more.
           punch: {
             enabled: Boolean(v.punch_enabled),
-            target: v.punch_target ?? 10,
-            reward: v.punch_reward ?? '',
-            punches: p?.punches ?? 0,
-            cardTarget: p?.cardTarget ?? (v.punch_target ?? 10),
-            readyCards: p?.readyCards ?? 0,
+            visits: visitMap[v.id] ?? 0,
           },
         };
       })
@@ -235,51 +225,13 @@ router.post('/punch', requireConsent, async (req, res, next) => {
     // The hold is spent; the cookie has nothing left to authorize.
     if (args.p_hold_id) res.clearCookie(PUNCH_BINDING_COOKIE, { path: '/' });
 
-    const payload = {
-      vendorId,
-      punches: row.new_punches,
-      target: row.card_target,
-      completed: row.card_completed,
-      readyCards: row.ready_cards,
-      reward: row.reward_text,
-    };
-    // Other devices this student has open re-sync their stamp grid. No
+    const payload = { vendorId, visits: row.new_punches };
+    // Other devices this student has open re-sync their visit counter. No
     // `redeemed` flag: that one is the vendor's redemption push, which toasts.
     emitPunch(req.user.id, payload);
 
     const { data: vendorRow } = await supabaseAdmin.from('vendors').select('name').eq('id', vendorId).maybeSingle();
     res.json({ ...payload, vendorName: vendorRow?.name ?? 'this spot' });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/**
- * POST /api/me/punch-redeem-code  { vendorId }
- * Mint the 4-digit counter code for a FULL punch card (oldest completed card
- * first). Mirrors /redeem-code: short TTL, one live punch code per student per
- * vendor, atomic single-use consumption on the vendor side.
- */
-router.post('/punch-redeem-code', requireConsent, async (req, res, next) => {
-  try {
-    const { vendorId } = req.body ?? {};
-    if (!isUuid(vendorId)) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'vendorId required.' });
-    }
-
-    const { data: vendorRow } = await supabaseAdmin
-      .from('vendors').select('active, punch_enabled, punch_reward').eq('id', vendorId).maybeSingle();
-    if (!vendorRow?.active) throw new Error('VENDOR_UNAVAILABLE');
-    // A completed card is honored even if the vendor has since toggled the
-    // feature off — the student earned it while it was on.
-
-    const { data, error } = await supabaseAdmin.rpc('create_punch_redeem_code', {
-      p_user_id: req.user.id,
-      p_vendor_id: vendorId,
-      p_ttl_seconds: 120,
-    });
-    if (error) throw error;
-    res.json({ code: data, ttlSeconds: 120, reward: vendorRow.punch_reward ?? 'Free reward' });
   } catch (err) {
     next(err);
   }
@@ -305,25 +257,32 @@ router.post('/earn-code', requireConsent, async (req, res, next) => {
 });
 
 /**
- * POST /api/me/redeem-code  { vendorId, rewardId }
+ * POST /api/me/redeem-code  { vendorId, rewardId, paidWith }
  * Pre-checks affordability so the student gets a clear error before showing a
  * code, then mints a unique 4-digit redemption code (one live code per student
- * per vendor — pending redemptions at other vendors are unaffected).
+ * per vendor, across BOTH currencies — tapping the other button replaces it).
  * The final atomic check + single-use consumption happens in redeem_by_code.
+ *
+ * `paidWith` is 'points' or 'visits'. These checks are advisory only:
+ * create_redeem_code re-verifies against the DB, which is the authority.
  */
 router.post('/redeem-code', requireConsent, async (req, res, next) => {
   try {
-    const { vendorId, rewardId } = req.body ?? {};
+    const { vendorId, rewardId, paidWith = 'points' } = req.body ?? {};
     // Validate the shape up front: a malformed id would otherwise hit a uuid
     // column and error (here it's swallowed into a misleading VENDOR_UNAVAILABLE).
     if (!isUuid(vendorId) || !isUuid(rewardId)) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'vendorId and rewardId required.' });
     }
+    if (paidWith !== 'points' && paidWith !== 'visits') {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Choose points or visits.' });
+    }
 
-    const [{ data: vendorRow }, { data: reward }, { data: bal }] = await Promise.all([
-      supabaseAdmin.from('vendors').select('active').eq('id', vendorId).maybeSingle(),
-      supabaseAdmin.from('rewards').select('cost_in_points, active').eq('id', rewardId).eq('vendor_id', vendorId).maybeSingle(),
+    const [{ data: vendorRow }, { data: reward }, { data: bal }, { data: card }] = await Promise.all([
+      supabaseAdmin.from('vendors').select('active, punch_enabled').eq('id', vendorId).maybeSingle(),
+      supabaseAdmin.from('rewards').select('cost_in_points, cost_in_visits, active').eq('id', rewardId).eq('vendor_id', vendorId).maybeSingle(),
       supabaseAdmin.from('point_balances').select('balance').eq('user_id', req.user.id).eq('vendor_id', vendorId).maybeSingle(),
+      supabaseAdmin.from('punch_cards').select('punches').eq('user_id', req.user.id).eq('vendor_id', vendorId).maybeSingle(),
     ]);
 
     // Belt-and-suspenders for a stale client: a vendor disabled by the operator
@@ -332,16 +291,29 @@ router.post('/redeem-code', requireConsent, async (req, res, next) => {
     // used anyway — this just gives a clear error instead of a dead code.)
     if (!vendorRow?.active) throw new Error('VENDOR_UNAVAILABLE');
     if (!reward?.active) throw new Error('REWARD_NOT_FOUND');
-    if ((bal?.balance ?? 0) < reward.cost_in_points) throw new Error('INSUFFICIENT_POINTS');
+
+    // Both prices are nullable since migration-029, so every comparison has to
+    // be currency-explicit. A bare `balance < reward.cost_in_points` against a
+    // NULL cost is `false` in JS, which would silently mint a code that then
+    // dies at the counter with the student standing in front of the cashier.
+    if (paidWith === 'points') {
+      if (reward.cost_in_points == null) throw new Error('REWARD_NOT_POINTS_PRICED');
+      if ((bal?.balance ?? 0) < reward.cost_in_points) throw new Error('INSUFFICIENT_POINTS');
+    } else {
+      if (!vendorRow.punch_enabled) throw new Error('PUNCH_DISABLED');
+      if (reward.cost_in_visits == null) throw new Error('REWARD_NOT_VISITS_PRICED');
+      if ((card?.punches ?? 0) < reward.cost_in_visits) throw new Error('INSUFFICIENT_VISITS');
+    }
 
     const { data, error } = await supabaseAdmin.rpc('create_redeem_code', {
       p_user_id: req.user.id,
       p_vendor_id: vendorId,
       p_reward_id: rewardId,
+      p_paid_with: paidWith,
       p_ttl_seconds: 120,
     });
     if (error) throw error;
-    res.json({ code: data, ttlSeconds: 120 });
+    res.json({ code: data, ttlSeconds: 120, paidWith });
   } catch (err) {
     next(err);
   }
@@ -431,8 +403,12 @@ router.get('/history', requireConsent, async (req, res, next) => {
     const { data, error } = await supabaseAdmin
       .from('transactions')
       // community_points rides on the earn's own row, so the History tab can
-      // show "+150 pts · +15 community" without a second query.
-      .select('id, vendor_id, type, points, dollar_amount, community_points, created_at, vendors(name), rewards(title)')
+      // show "+150 pts · +15 community" without a second query. paid_with /
+      // visits_spent do the same job for a visits redemption, which is points=0
+      // and would otherwise render as a meaningless "-0 pts".
+      // `reverses` marks a compensating row, which carries the original's type
+      // with every number negated and would otherwise render as a duplicate.
+      .select('id, vendor_id, type, points, dollar_amount, community_points, paid_with, visits_spent, reverses, created_at, vendors(name), rewards(title)')
       .eq('user_id', req.user.id)
       .gte('created_at', since)
       .order('created_at', { ascending: false })
@@ -460,7 +436,9 @@ router.get('/export', async (req, res, next) => {
       supabaseAdmin.from('community_balances').select('balance, lifetime_earned, updated_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin
         .from('transactions')
-        .select('id, vendor_id, type, points, dollar_amount, community_points, reward_id, created_at, vendors(name), rewards(title)')
+        // paid_with / visits_spent too: a visits redemption stores points = 0, so
+        // without them the export would claim the student spent nothing.
+        .select('id, vendor_id, type, points, dollar_amount, community_points, paid_with, visits_spent, reward_id, created_at, vendors(name), rewards(title)')
         .eq('user_id', uid)
         .order('created_at', { ascending: false }),
       supabaseAdmin.from('user_scores').select('*').eq('user_id', uid).maybeSingle(),

@@ -766,9 +766,26 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--sky); border-radius: 0.9rem;
 }
 .ic-body { flex: 1; min-width: 0; }
-.ic-title { font-weight: 900; font-size: 1.15rem; line-height: 1.15; color: var(--ink)}
+/* The title yields rather than painting through the price column beside it.
+   display:block is what makes text-overflow work at all on a span, and the
+   ellipsis is safe because tapping the row opens a sheet with the full name. */
+.ic-title {
+  display: block;
+  font-weight: 900; font-size: 1.15rem; line-height: 1.15; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .ic-status { font-size: 0.9rem; font-weight: 700; color: var(--success); margin-top: 0.2rem; }
-.ic-cost { font-weight: 900; color: var(--brand); white-space: nowrap; font-size: 1.05rem; }
+/* Its own right-hand column: up to two prices STACKED, not run together on one
+   line. flex-shrink:0 keeps them intact and hands the squeeze to the title,
+   which is the part that can degrade gracefully. */
+.ic-cost {
+  flex-shrink: 0;
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 0.1rem;
+  font-weight: 900; color: var(--brand); font-size: 1.05rem;
+  line-height: 1.2; text-align: right;
+}
+.ic-cost-line { white-space: nowrap; }
 
 .item-card.locked { opacity: 0.55; }
 .item-card.locked .ic-emoji { background: #e3e7ee; filter: grayscale(1); }
@@ -917,6 +934,47 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .btn-redeem:active { background: var(--navy-press); }
 .btn-redeem:disabled { opacity: 0.4; }
+
+/* "Redeem with visits" sits beside "Redeem with points". A MODIFIER, never an
+   edit to .btn-redeem itself, which seven other buttons share. Outlined so the
+   two currencies don't read as one duplicated control; the border eats into the
+   padding so both buttons end up exactly the same height.
+
+   --brand, NOT --navy, for the text and border. --navy is the PRIMARY button's
+   FILL, so it tracks the dark theme's surfaces: at #17335c on a --card of
+   #1c2b45 it is all but invisible. --brand is the token for ink that has to
+   stay readable ON a surface, and it flips light (#8fbdf0) in dark mode. Same
+   reason --sky-line rather than --sky for the press: --sky stays pale in dark
+   mode and would flash a near-white slab out of a dark card. */
+.btn-redeem.secondary {
+  background: var(--card); color: var(--brand);
+  border: 3px solid var(--brand);
+  padding: calc(1.1rem - 3px);
+  margin-top: 0.35rem;
+}
+.btn-redeem.secondary:active { background: var(--sky-line); }
+
+/* The stylesheet has no focus rules at all, so a brand-new pair of buttons would
+   fall back to UA defaults. */
+.btn-redeem:focus-visible, .item-card:focus-visible, .punch-card:focus-visible {
+  outline: 3px solid var(--brand); outline-offset: 2px;
+}
+
+/* Named before the tap, not after: redeeming with visits zeroes the counter
+   whatever the reward costs. */
+.item-forfeit { font-weight: 800; font-size: 0.95rem; color: var(--danger); }
+
+/* Replaces both buttons when neither currency covers the price. Dashed so it
+   reads as an absence rather than another control. */
+.item-notready {
+  margin-top: 0.6rem; width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 0.15rem;
+  padding: 1rem; border-radius: 0.9rem;
+  background: var(--sky); border: 2px dashed var(--sky-line);
+}
+.inr-icon { font-size: 1.6rem; }
+.inr-head { font-weight: 900; font-size: 1.15rem; color: var(--ink); }
+.inr-sub { font-weight: 600; font-size: 0.92rem; color: var(--muted); }
 
 /* Redemption code shown in place of the Redeem button: code + timer, side by side. */
 .item-code {
@@ -1238,67 +1296,56 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font-weight: 700; font-size: 0.95rem;
 }
 
-/* --- the punch-card block on the vendor page --- */
+/* --- the visit counter on the vendor page --- */
 
+/* Same sticker treatment as .data-btn / .setting-row / .account-card so it
+   reads as native: 3px edge, 1.1rem radius, hard offset shadow, press sinks. */
 .punch-card {
   width: 100%; text-align: left;
   background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
   padding: 1rem 1.2rem;
-  display: flex; flex-direction: column; gap: 0.75rem;
+  display: flex; flex-direction: column; gap: 0.35rem;
   box-shadow: 0 4px 0 var(--edge);
   transition: transform 80ms ease, box-shadow 80ms ease;
 }
 .punch-card:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
 
+/* The count and its unit sit on a shared baseline, so "12" and "visits" read as
+   one phrase rather than two stacked labels. */
 .punch-card-head {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 0.8rem;
+  display: flex; align-items: baseline; justify-content: flex-start; gap: 0.45rem;
 }
-.punch-progress { font-weight: 900; font-size: 1.3rem; color: var(--brand); white-space: nowrap; }
-.punch-reward-label {
-  font-weight: 700; font-size: 0.9rem; color: var(--muted);
-  text-align: right; min-width: 0;
-}
+.punch-count { font-weight: 900; font-size: 2.4rem; line-height: 1; color: var(--brand); }
+.punch-count-unit { font-weight: 800; font-size: 1rem; color: var(--muted); }
 
-/* Stamp grid: one circle per required punch, ticked as they land. The rows are
-   built in JS (renderPunchDots) and stacked here rather than left to flex-wrap
-   — wrapping fills each line to the card's edge, which breaks a 10-stamp card
-   8 + 2. Every row centres, so an odd count sits as a short row tucked under
-   the long one. */
-.punch-grid { display: flex; flex-direction: column; gap: 0.45rem; }
-.punch-row { display: flex; align-items: center; justify-content: center; gap: 0.45rem; }
-.punch-dot {
-  /* Fixed size, but a row that outruns a narrow card shrinks its stamps rather
-     than spilling past the edge; aspect-ratio keeps them circles as it does. */
-  flex: 0 1 1.9rem; aspect-ratio: 1; border-radius: 50%;
-  border: 2.5px dashed var(--edge);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 0.95rem; font-weight: 900; color: #fff;
-  background: transparent;
-}
-.punch-dot.is-filled {
-  border-style: solid; border-color: var(--success);
-  background: var(--success);
-}
+/* "3 more for Free coffee", or the zero-state prompt. Green when something is
+   already unlocked, muted while the student is still saving toward one. */
+.punch-next { font-weight: 700; font-size: 0.95rem; color: var(--muted); }
+.punch-next.is-ready { color: var(--success); }
 
-.punch-ready { font-weight: 900; color: var(--success); font-size: 1rem; }
+/* --- the progress sheet --- */
 
-/* --- the progress / redeem sheet --- */
-
-/* Short content: an emoji, a line of copy, and — only once a card is full —
-   the Redeem button and the code it mints. The 42vh floor the other sheets
-   share would hold a band of bare card open under all that, so this one sizes
-   to what's in it. Only the floor goes: .detail-card's 88vh cap and its
-   overflow still catch the tall state, once the QR is on screen. */
+/* Short content: an emoji and a few lines. The 42vh floor the other sheets
+   share would hold a band of bare card open under it, so this one sizes to what
+   is in it. .detail-card's 88vh cap and overflow still catch the tall state. */
 #punch-modal .detail-card { min-height: 0; }
 
-/* The status line only ever has text after a redeem attempt, but .detail-status
-   reserves 1.3em for it up front — which, plus the flex gap above it, hangs a
-   band of nothing under the description on the (usual) progress state. Collapse
-   it while it's empty: display:none drops the gap with it, so the sheet ends on
-   the last line of copy with just the card's bottom padding beneath. Nothing to
-   shift here either — the status appears alongside the QR, which resizes the
-   sheet anyway. */
-#punch-modal .detail-status:empty { display: none; }
+/* What the counter unlocks, cheapest first. */
+.punch-modal-list {
+  list-style: none; width: 100%;
+  display: flex; flex-direction: column; gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.punch-modal-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.9rem;
+  padding: 0.7rem 0.9rem;
+  border: 2px solid var(--edge); border-radius: 0.8rem;
+  font-weight: 800; text-align: left;
+}
+.pml-title { min-width: 0; }
+.pml-need { white-space: nowrap; color: var(--muted); font-size: 0.9rem; }
+.punch-modal-list li.is-ready { border-color: var(--success); }
+.punch-modal-list li.is-ready .pml-need { color: var(--success); }
 
 /* --- the "Punch in" button --- */
 

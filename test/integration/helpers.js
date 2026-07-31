@@ -68,11 +68,15 @@ export async function linkStaff(vendorId, userId) {
   if (error) throw error;
 }
 
-/** Add a reward to a vendor. */
-export async function createReward(vendorId, { title = 'Free drink', cost = 100 } = {}) {
+/**
+ * Add a reward to a vendor. Either price may be null (migration-029), but the
+ * DB's rewards_has_a_price CHECK requires at least one, so `cost: null` is only
+ * legal alongside a `visits` price.
+ */
+export async function createReward(vendorId, { title = 'Free drink', cost = 100, visits = null } = {}) {
   const { data, error } = await admin
     .from('rewards')
-    .insert({ vendor_id: vendorId, title, cost_in_points: cost, emoji: '🥤' })
+    .insert({ vendor_id: vendorId, title, cost_in_points: cost, cost_in_visits: visits, emoji: '🥤' })
     .select()
     .single();
   if (error) throw error;

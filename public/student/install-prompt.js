@@ -493,6 +493,8 @@
     for (var i = 0; i < rewards.length; i++) {
       var r = rewards[i];
       var cost = Number(r.cost_in_points);
+      // !cost also covers a visits-only reward (cost_in_points null → 0), which
+      // no amount of spending brings closer, so it is never a points threshold.
       if (!cost || balance >= cost) continue;        // already affordable → not a "threshold"
       var gap = cost - balance;
       if (gap > earned) continue;                    // more than one visit away
