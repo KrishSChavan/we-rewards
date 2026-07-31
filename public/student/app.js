@@ -1844,7 +1844,7 @@ function applyVendorFilter(reset = false) {
    Ranking then runs over MATCHES ONLY — never the full list — which is why the
    .some() calls in scoreVendor are not the for-loop this is meant to replace. */
 
-const VENDOR_SEARCH_MIN = 0;   // spots before the field is worth the row it costs
+const VENDOR_SEARCH_MIN = 5;   // spots before the field is worth the row it costs
 const SEARCH_SUFFIX_CAP = 24;  // start positions indexed per token (a bound on the O(len^2))
 // Fold to a comparable form: case and accents are not something a student typing
 // one-handed should have to match ("Café" and "cafe" are the same shop).
