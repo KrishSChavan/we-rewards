@@ -564,7 +564,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   scroll-snap-type: x mandatory;   /* snap the nearest card into view */
   -webkit-overflow-scrolling: touch;
   padding: 0.4rem 1.3rem 0.9rem;   /* inline padding = the parent's padding */
-  scroll-padding-left: 1.3rem;     /* align a snapped card to that same edge */
+  /* Both sides, not just the left: it makes the snapport symmetric inside the
+     scroller, so `center` lands a card on the true middle of the view and `end`
+     parks the last card against the right gutter. */
+  scroll-padding: 0 1.3rem;
   scrollbar-width: none;
   /* Once the row runs out, the tab swipe takes the rest of the flick (app.js →
      scrollerInWay), so the leftover must not chain outwards and bounce the whole
@@ -575,7 +578,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .vendor-card {
   flex: 0 0 75%; max-width: 300px;   /* ~75% of the view (after padding), capped at 300px */
-  scroll-snap-align: start;
+  /* Middle cards park dead-centre, with a sliver of each neighbour showing on
+     both sides — that peek is what says "there is more this way". The two ends
+     are the exceptions: they align to their own gutter instead, because a
+     centred first/last card would need scroll room that doesn't exist and the
+     browser would just clamp it back to the same place as its neighbour, giving
+     two cards one resting position. See the :first-child/:last-child rules
+     below — and measureDotSnaps() in app.js, which computes the page dots'
+     scroll targets from these same three cases. */
+  scroll-snap-align: center;
   scroll-snap-stop: always;          /* grab the closest card, don't fly past it */
   background: var(--card); border: 3px solid var(--edge); border-radius: 1.3rem;
   box-shadow: 0 5px 0 var(--edge);
@@ -585,6 +596,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   transition: transform 90ms ease;
   min-height: 200px;                 /* cards stretch to the tallest in the row */
 }
+/* The ends stay pinned to their gutter, so the row still starts and finishes
+   flush with the rest of the screen's 1.3rem margin. Order matters for the
+   single-card case, where one element is both: `end` wins, and with nothing to
+   scroll it resolves to the same place as `start` anyway. */
+.vendor-card:first-child { scroll-snap-align: start; }
+.vendor-card:last-child { scroll-snap-align: end; }
 .vendor-card:hover { transform: scale(1.02); }
 .vendor-card:active { transform: scale(0.98); }
 /* a lone vendor fills the full width (after the parent's padding) */

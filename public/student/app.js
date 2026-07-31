@@ -1819,19 +1819,32 @@ function paintDots() {
   }
 }
 
-// Card offsets relative to the first card, so the carousel's 1.3rem gutter (an
-// equal scroll-padding-left, styles.css) drops out of the arithmetic entirely.
+// The scrollLeft each card actually parks at, mirroring the alignment styles.css
+// hands it: the first card to the start gutter (0), the last to the end gutter
+// (the maximum scroll), and every card between them to the middle of the view.
+// Measured off live rects rather than offsetLeft — a .vendor-card's offsetParent
+// is not the scroller, and the centred case needs the card's width and the
+// viewport's, not just an offset. Reading `left` for both and subtracting keeps
+// it correct under the pane's slide transform, which shifts the pair together.
 // Deferred until the carousel is actually on screen: renderVendors() also runs
-// from socket pushes while #home is hidden, and [hidden] makes every offset 0.
+// from socket pushes while #home is hidden, and [hidden] makes every rect 0.
 function measureDotSnaps() {
-  const cards = $('vendor-carousel').querySelectorAll('.vendor-card');
-  const base = cards[0]?.offsetLeft ?? 0;
-  dotSnaps = [...cards].map((c) => c.offsetLeft - base);
+  const wrap = $('vendor-carousel');
+  const cards = [...wrap.querySelectorAll('.vendor-card')];
+  const max = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+  const mid = wrap.getBoundingClientRect().left + wrap.clientWidth / 2;
+  dotSnaps = cards.map((c, k) => {
+    if (k === 0) return 0;
+    if (k === cards.length - 1) return max;
+    const r = c.getBoundingClientRect();
+    // Clamped for the same reason the ends are special-cased: a card close to
+    // either end may not have the room to reach the true centre.
+    return clampNum(wrap.scrollLeft + r.left + r.width / 2 - mid, 0, max);
+  });
 }
 
 // Nearest snap wins — an argmin, never an equality test, so scroll-snap's
-// fractional scrollLeft is fine. The last card can't reach its own snap offset
-// (it's narrower than the viewport), but it's still the nearest one there.
+// fractional scrollLeft is fine.
 function activeFromScroll() {
   const x = $('vendor-carousel').scrollLeft;
   let best = 0;
