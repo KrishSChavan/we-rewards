@@ -123,6 +123,7 @@ function track(event, props) {
     setTab(tab);
   });
   wireTabSwipe();   // …and the same three tabs by dragging the track itself
+  wireVendorSwipe(); // …and a rightward drag on the vendor screen backs out to Home
   // appearance: dark-mode toggle (the <head> script already applied the theme)
   applyTheme(currentTheme());
   $('dark-toggle').addEventListener('click', () => {
@@ -759,6 +760,9 @@ function onSwipeMove(e) {
     // uncancelable; taking the gesture then slides the track *and* the page.
     if (!e.cancelable) { swipe.axis = 'off'; return; }
     if (scrollerInWay(swipe.target, dx)) { swipe.axis = 'off'; return; }
+    // A rightward drag starting on the vendor screen is its own back-out
+    // gesture (see wireVendorSwipe) — leave the axis for that instead.
+    if (dx > 0 && swipe.target.closest('#vendor')) { swipe.axis = 'off'; return; }
     swipe.axis = 'x';
     $('tab-track').classList.add('is-dragging');   // cut the easing; the finger is the animation now
   }
@@ -826,16 +830,152 @@ function onSwipeResize() {
   abortSwipe();
 }
 
-// Capture phase on the track, so it lands ahead of every delegated handler
-// inside it (#vendor-carousel, #items, #community-card, #back-btn, the Account
-// rows). Self-removing, because a swipe that produced no click at all must not
-// then eat a real tap.
-function eatNextClick() {
-  const track = $('tab-track');
+// Capture phase on the given element (defaults to the tab track), so it lands
+// ahead of every delegated handler inside it (#vendor-carousel, #items,
+// #community-card, #back-btn, the Account rows). Self-removing, because a
+// swipe that produced no click at all must not then eat a real tap.
+function eatNextClick(el = $('tab-track')) {
   let timer = 0;
   const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); clearTimeout(timer); };
-  track.addEventListener('click', eat, { capture: true, once: true });
-  timer = setTimeout(() => track.removeEventListener('click', eat, true), 400);
+  el.addEventListener('click', eat, { capture: true, once: true });
+  timer = setTimeout(() => el.removeEventListener('click', eat, true), 400);
+}
+
+/* ---------- vendor screen: swipe right to back out to Home ----------
+   Same axis-lock / fling / commit-by-distance feel as the tab swipe above,
+   but scoped to #vendor and to one direction — a leftward drag there means
+   nothing of its own, so it's left for the tab swipe to claim as normal (see
+   the `closest('#vendor')` check in onSwipeMove, which steps aside for the
+   rightward case so the two gestures never fight over the same touch). */
+
+let vswipe = null;   // the vendor back-gesture in flight, or null
+
+function wireVendorSwipe() {
+  const el = $('vendor');
+  el.addEventListener('touchstart', onVendorSwipeStart, { passive: true });
+  el.addEventListener('touchmove', onVendorSwipeMove, { passive: false });   // non-passive to preventDefault
+  window.addEventListener('touchend', onVendorSwipeEnd, { passive: true });
+  window.addEventListener('touchcancel', onVendorSwipeEnd, { passive: true });
+  window.addEventListener('resize', onVendorSwipeResize);
+}
+
+// Both panes on screen, vendor covering home, ready to follow the finger.
+function beginVendorBackDrag() {
+  $('home').hidden = false;
+  $('tab-home').classList.add('home-sliding');
+  paintVendorDrag(0);
+}
+
+// pos 0 = vendor fully covering (drag start), pos 1 = home fully in place.
+function paintVendorDrag(pos) {
+  $('vendor').style.transform = `translateX(${pos * 100}%)`;
+  $('home').style.transform = `translateX(${(pos - 1) * 100}%)`;
+}
+
+// Give the gesture back without navigating: the vendor screen eases back into
+// place from wherever the finger left it.
+function abortVendorSwipe() {
+  if (!vswipe) return;
+  const wasOurs = vswipe.axis === 'x';
+  vswipe = null;
+  if (wasOurs) settleVendorDrag(false);
+}
+
+function onVendorSwipeStart(e) {
+  if (vswipe) abortVendorSwipe();               // a stale gesture whose touchend never landed
+  if (e.touches.length !== 1) return;            // a second finger is a pinch, never a back-swipe
+  if ($('tab-home').classList.contains('home-sliding')) return;   // a slide already owns the axis
+  if (document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')) return;
+  const t = e.touches[0];
+  vswipe = {
+    id: t.identifier,
+    x0: t.clientX, y0: t.clientY,
+    x: t.clientX, xPrev: t.clientX, tPrev: e.timeStamp,
+    v: null,                    // px/ms, smoothed; null until there's a sample
+    axis: null,                 // null = undecided, 'x' = ours, 'off' = someone else's
+    width: $('tab-home').clientWidth || window.innerWidth,
+  };
+}
+
+function onVendorSwipeMove(e) {
+  if (!vswipe || vswipe.axis === 'off') return;
+  if (e.touches.length !== 1) { abortVendorSwipe(); return; }
+  const t = e.touches[0];
+  if (t.identifier !== vswipe.id) return;
+  const dx = t.clientX - vswipe.x0;
+  const dy = t.clientY - vswipe.y0;
+
+  if (vswipe.axis === null) {
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_SLOP) return;
+    // Leftward (or too vertical) isn't the back gesture — the tab swipe owns that.
+    if (dx <= 0 || dx < Math.abs(dy) * SWIPE_RATIO) { vswipe.axis = 'off'; return; }
+    if (!e.cancelable) { vswipe.axis = 'off'; return; }
+    vswipe.axis = 'x';
+    beginVendorBackDrag();
+  }
+
+  if (e.cancelable) e.preventDefault();
+
+  const dt = e.timeStamp - vswipe.tPrev;
+  if (dt > 0) {
+    const v = (t.clientX - vswipe.xPrev) / dt;
+    vswipe.v = vswipe.v === null ? v : vswipe.v * 0.4 + v * 0.6;   // one jittery sample shouldn't read as a fling
+    vswipe.xPrev = t.clientX;
+    vswipe.tPrev = e.timeStamp;
+  }
+  vswipe.x = t.clientX;
+
+  paintVendorDrag(Math.max(0, Math.min(1, dx / vswipe.width)));
+}
+
+function onVendorSwipeEnd(e) {
+  if (!vswipe) return;
+  const s = vswipe;
+  vswipe = null;
+  if (s.axis !== 'x') return;   // the tab swipe (or nothing) took this one
+
+  const idle = e.timeStamp - s.tPrev;
+  const v = (e.type === 'touchcancel' || idle > SWIPE_IDLE_MS) ? 0 : (s.v ?? 0);
+  const dx = s.x - s.x0;
+
+  settleVendorDrag(v >= SWIPE_FLING || dx >= s.width * SWIPE_COMMIT);
+
+  // The browser can still fire a click on whatever was under the finger when it
+  // went down — a reward card or the back button.
+  if (Math.abs(dx) > SWIPE_SLOP) eatNextClick($('vendor'));
+}
+
+function onVendorSwipeResize() {
+  if (!vswipe || ($('tab-home').clientWidth || window.innerWidth) === vswipe.width) return;
+  abortVendorSwipe();
+}
+
+// Finish the drag from wherever the finger left it: `commit` slides the rest
+// of the way home, same as tapping the back button; otherwise the vendor
+// screen springs back into place. Populates `paneSlide` exactly like
+// slidePanes() does, so an interrupting nav can still cut it short.
+function settleVendorDrag(commit) {
+  const page = $('tab-home');
+  const incoming = commit ? $('home') : $('vendor');
+  const outgoing = commit ? $('vendor') : $('home');
+
+  if (commit) {
+    vendor = null;
+    balanceReady = false;
+    loadVendors();                              // refresh card balances on the way back
+  }
+
+  page.classList.add('home-sliding-run');        // arm the transition...
+  void page.offsetWidth;                          // ...against the drag's current position...
+  incoming.style.transform = 'translateX(0)';    // ...then finish the slide the rest of the way
+  outgoing.style.transform = commit ? 'translateX(100%)' : 'translateX(-100%)';
+
+  const settle = (e) => {
+    if (e && e.target !== incoming) return;
+    endPaneSlide();
+  };
+  paneSlide = { incoming, outgoing, settle, timer: setTimeout(settle, 420) };
+  incoming.addEventListener('transitionend', settle);
 }
 
 /* ---------- history tab (last 30 days) ---------- */
