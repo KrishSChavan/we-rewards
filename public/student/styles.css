@@ -629,29 +629,34 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   line-height: 0;                 /* no text, so no baseline strut to nudge the dot */
   touch-action: manipulation;     /* a tap, never a drag — same as .earn-close */
 }
-/* Sizes are written out per state rather than driven by a --d custom property:
-   unregistered custom properties substitute at computed-value time, so the
-   width/height transitions below snap instead of interpolating — and they do it
-   exactly when the window shifts, which is when several dots resize at once. */
-.vdot::before {
-  content: "";
+/* The circle is a real <span> (app.js → renderVendorDots), not a ::before, and it
+   changes size with transform rather than with width/height. Both parts of that
+   are for iOS Safari: it can leave a pseudo-element painted in its previous state
+   when the parent's class changes, and animating width/height forces a layout that
+   the compositor does not reliably repaint — together they left every dot you had
+   scrolled past still wearing the active look. A real element scaled by transform
+   is composited, so it repaints every time. The box stays 0.5rem in layout however
+   it is scaled, so the row still cannot reflow. */
+.vdot-i {
   width: 0.5rem; height: 0.5rem;
   border-radius: 50%;
   background-color: var(--muted); opacity: 0.45;
+  transform: scale(1);
   box-shadow: 0 0 0 0 transparent;   /* explicit start, so the active ring grows from something */
-  transition: width 160ms ease, height 160ms ease, background-color 160ms ease,
+  transition: transform 160ms ease, background-color 160ms ease,
               opacity 160ms ease, box-shadow 160ms ease;
 }
 /* Active: the sticker language scaled down — a 3px border and the hard offset
-   shadow read as a smudge at this size, so it takes a thin ring instead. */
-.vdot.is-active::before {
-  width: 0.62rem; height: 0.62rem;
+   shadow read as a smudge at this size, so it takes a thin ring instead.
+   scale(1.24) = the old 0.62rem; scale(0.64) = the old 0.32rem. */
+.vdot.is-active .vdot-i {
+  transform: scale(1.24);
   background-color: var(--brand); opacity: 1;
   box-shadow: 0 0 0 1.5px var(--edge);
 }
 /* window edge with more spots beyond it */
-.vdot.is-edge::before { width: 0.32rem; height: 0.32rem; opacity: 0.3; }
-@media (prefers-reduced-motion: reduce) { .vdot::before { transition: none; } }
+.vdot.is-edge .vdot-i { transform: scale(0.64); opacity: 0.3; }
+@media (prefers-reduced-motion: reduce) { .vdot-i { transition: none; } }
 
 /* name, points, and address stack at the top; the map sits at the bottom */
 .vc-body {

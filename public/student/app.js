@@ -1786,6 +1786,13 @@ function renderVendorDots() {
     b.type = 'button';
     b.className = 'vdot';
     b.dataset.i = k;
+    // The circle is a real element rather than a ::before on the button: iOS
+    // Safari can leave a pseudo-element holding its previous paint when the
+    // parent's class changes, which left every dot you scrolled past still
+    // wearing the active look. A real child repaints reliably.
+    const circle = document.createElement('span');
+    circle.className = 'vdot-i';
+    b.appendChild(circle);
     row.appendChild(b);
   }
   paintDots();
