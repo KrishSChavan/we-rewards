@@ -168,6 +168,15 @@ function track(event, props) {
   // step 5), and only an empty wallet gets the explainer, because a new user's
   // first tap should say what this is, not show an empty picker.
   wireInfo('tier-info', 'tier-info-btn');
+  // rewards hub: the wordmark pill opens it; the header row, the dimmed page,
+  // a flick up on the header, or Esc close it
+  $('hub-toggle').addEventListener('click', openHub);
+  $('hub-collapse').addEventListener('click', onHubToggleTap);
+  $('hub-modal').addEventListener('click', (e) => { if (e.target === $('hub-modal')) closeHub(); });
+  $('hub-collapse').addEventListener('pointerdown', onHubDragStart);
+  $('hub-collapse').addEventListener('pointermove', onHubDragMove);
+  $('hub-collapse').addEventListener('pointerup', onHubDragEnd);
+  $('hub-collapse').addEventListener('pointercancel', onHubDragEnd);
   $('community-card').addEventListener('click', onCommunityCardTap);
   $('community-info-close').addEventListener('click', () => closeInfo('community-info', 'community-card'));
   $('community-info').addEventListener('click', (e) => { if (e.target === $('community-info')) closeInfo('community-info', 'community-card'); });
@@ -223,6 +232,7 @@ function track(event, props) {
     closePunchModal();
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
+    closeHub();
   });
 
   sb.auth.onAuthStateChange((event, session) => {
@@ -281,6 +291,8 @@ function render(session) {
     communityPoints = 0;
     communityReady = false; // same: the next sign-in paints its count, no ticker
     $('community-balance').textContent = '0';
+    $('hub-community').textContent = '0';   // the pill shows it too, and it's on-screen
+    resetTier();            // …as is the tier chip beside it
     allVendors = [];
     resetVendorSearch();        // …and unpaint the cards, or the next student reads them
     vendor = null;
@@ -289,6 +301,7 @@ function render(session) {
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
+    dropHub();                  // same
     dropMoveSheet();            // same
     dropPunchScanSheet();       // same (and it holds the camera)
     dropPunchModal();           // same
@@ -616,6 +629,10 @@ async function confirmDelete() {
 // (used on sign-in/out so the reset isn't a visible swipe).
 function setTab(i, animate = true) {
   activeTab = i;
+  // The hub belongs to Home. It overlays the tab track and the bottom nav sits
+  // above it, so leaving it open while History slides in underneath would read
+  // as the panel having escaped its screen.
+  closeHub();
   const track = $('tab-track');
   if (!animate) track.style.transition = 'none';
   track.style.setProperty('--tab', i);
@@ -872,7 +889,7 @@ function onSwipeResize() {
 
 // Capture phase on the given element (defaults to the tab track), so it lands
 // ahead of every delegated handler inside it (#vendor-carousel, #items,
-// #community-card, #back-btn, the Account rows). Self-removing, because a
+// #hub-toggle, #back-btn, the Account rows). Self-removing, because a
 // swipe that produced no click at all must not then eat a real tap.
 function eatNextClick(el = $('tab-track')) {
   let timer = 0;
@@ -1353,10 +1370,10 @@ function onEarnDragEnd(e) {
   else card.style.transform = '';         // short of it → snap cleanly back to the top
 }
 
-/* ---------- home: tier bar (30-day score → earn multiplier) ---------- */
+/* ---------- hub: tier meter (30-day score → earn multiplier) ---------- */
 
-// Paint the meter under the wordmark: fill = score / 1000, marks at the tier
-// cutoffs, scale labels sized to match each tier's share of the bar.
+// Paint the meter inside the rewards hub, plus the multiplier chip the
+// collapsed pill shows when the hub is shut.
 async function loadTier() {
   try {
     const res = await authFetch('/api/me/tier');
@@ -1368,29 +1385,136 @@ async function loadTier() {
 }
 
 function renderTier(t) {
-  const bar = $('tier-bar');
-  const pct = (v) => `${Math.min(100, (v / t.maxScore) * 100)}%`;
+  const nodes = [...$('tier-nodes').querySelectorAll('.tier-node')];
+  const n = nodes.length;
+  // One node per multiplier, and the score that unlocks each: [0, ...cutoffs].
+  // The nodes are spaced EVENLY and the score is mapped onto that spacing —
+  // not the other way round — so every leg of the bar is worth exactly one
+  // tier's progress even though the real cutoffs (350, 700 of 1000) aren't
+  // evenly spaced, and so the last node means "maxed" rather than "score 1000",
+  // which is a number the multiplier stops caring about at 700.
+  const edges = [0, ...(t.cutoffs ?? [])].slice(0, n);
 
-  $('tier-fill').style.width = pct(t.score);
-  bar.querySelectorAll('.tier-mark').forEach((m, i) => {
-    if (t.cutoffs[i] != null) m.style.left = pct(t.cutoffs[i]);
+  nodes.forEach((el, i) => {
+    const at = n > 1 ? i / (n - 1) : 0;
+    // the track is inset by half a dot at each end, so a node's left is that
+    // inset plus its share of what's left — this is what lines the fill up
+    // with the dots (see .tier-meter in styles.css)
+    el.style.left = `calc(var(--tier-inset) + (100% - var(--tier-dot)) * ${at})`;
   });
 
-  // Each label spans its tier's slice of the track (e.g. 35% / 35% / 30%)
-  const edges = [0, ...t.cutoffs, t.maxScore];
-  bar.querySelectorAll('.tier-scale span').forEach((s, i) => {
-    if (edges[i + 1] != null) s.style.width = pct(edges[i + 1] - edges[i]);
+  // How far along, piecewise: which leg the score sits on, plus its progress
+  // across that leg.
+  let leg = 0;
+  while (leg < n - 1 && t.score >= (edges[leg + 1] ?? Infinity)) leg++;
+  let fill = 1;                                   // past the last cutoff = maxed
+  if (leg < n - 1) {
+    const span = (edges[leg + 1] ?? 0) - edges[leg];
+    const within = span > 0 ? Math.max(0, Math.min(1, (t.score - edges[leg]) / span)) : 0;
+    fill = (leg + within) / (n - 1);
+  }
+  $('tier-fill').style.width = `${fill * 100}%`;
+
+  // The tier the server reports wins over anything derived above; they agree,
+  // but this is the authoritative one.
+  const cur = Math.min(n - 1, Math.max(0, (t.tier ?? 1) - 1));
+  nodes.forEach((el, i) => {
+    el.classList.toggle('is-done', i < cur);
+    el.classList.toggle('is-current', i === cur);
+    el.querySelector('.tier-node-cap').textContent =
+      i === cur ? 'Current tier' : i === 0 ? 'Base tier' : i === n - 1 ? 'Max tier' : '';
   });
 
-  $('tier-badge').textContent = `${t.multiplier}x points`;
+  const mult = `${t.multiplier}x`;
+  $('tier-earning-mult').textContent = mult;
   $('tier-hint').textContent =
     t.nextTierScore != null
-      ? `${t.nextTierScore - t.score} to ${t.nextMultiplier}x`
+      ? `${t.nextTierScore - t.score} pts to ${t.nextMultiplier}x`
       : 'Max multiplier ✓';
 
-  bar.classList.remove('t1', 't2', 't3');
-  bar.classList.add(`t${t.tier}`);
-  bar.hidden = false;
+  // The same chip in two places: the collapsed pill and the panel's own header.
+  // Both are painted here so they can never disagree.
+  for (const [id, multId] of [['hub-tier', 'hub-tier-mult'], ['hub-tier-panel', 'hub-tier-panel-mult']]) {
+    const chip = $(id);
+    $(multId).textContent = mult;
+    chip.classList.remove('t1', 't2', 't3');
+    chip.classList.add(`t${t.tier}`);
+    chip.hidden = false;
+  }
+
+  $('tier-bar').hidden = false;
+  renderLevers(t);
+}
+
+/* ---------- hub: "how you climb" (the three score levers) ----------
+   The bar is where you are; the text beside it is what is left to do, never
+   where you stand — "2 more spots", not "4 of 9". A number you can act on beats
+   a number you can only read.
+
+   Those asks come from the server (scoreProfile → `remaining` in
+   src/lib/tiers.js), computed next to the thresholds that define them. So the
+   targets never cross the wire and there is no second copy of VISIT_TARGET /
+   SPEND_TARGET here to go stale the day the scoring is tuned. */
+
+const LEVER_TIPS = [
+  'Variety is holding you back most. Any spot you haven’t tried counts.',
+  'Loyalty is holding you back most. Head back somewhere you’ve already been.',
+  'Spend is holding you back most. Meal-sized orders count for more than a coffee.',
+];
+const LEVER_DONE = 'Maxed ✓';
+
+function renderLevers(t) {
+  const el = $('tier-levers');
+  const comps = [t.breadth, t.loyalty, t.spend];
+  const rem = t.remaining;
+  // An older server that sends neither the components nor the asks: show the
+  // meter alone rather than three empty bars.
+  if (comps.some((c) => typeof c !== 'number') || !rem) { el.hidden = true; return; }
+
+  $('lever-window').textContent = `last ${t.windowDays ?? 30} days`;
+
+  const pct = (v) => `${Math.max(0, Math.min(1, v)) * 100}%`;
+  const more = (n, word) => `${n} more ${word}${n === 1 ? '' : 's'}`;
+
+  $('lever-variety-fill').style.width = pct(t.breadth);
+  $('lever-variety-val').textContent = rem.spots > 0 ? more(rem.spots, 'spot') : LEVER_DONE;
+
+  // Loyalty is two things at once: going back to the same spots (the bigger
+  // half) and going out often. Ask for one at a time, revisits first, or the
+  // row turns into a sentence.
+  $('lever-loyalty-fill').style.width = pct(t.loyalty);
+  $('lever-loyalty-val').textContent =
+    rem.revisits > 0 ? more(rem.revisits, 'revisit')
+      : rem.visits > 0 ? more(rem.visits, 'visit')
+        : LEVER_DONE;
+
+  // Dollars are the credited figure: a visit counts at most $30 (the anti
+  // receipt-stuffing cap), which the (i) explainer spells out. Past the dollar
+  // target there is still the ticket-size half of the term to satisfy.
+  $('lever-spend-fill').style.width = pct(t.spend);
+  $('lever-spend-val').textContent =
+    rem.spend > 0 ? `$${rem.spend} more`
+      : rem.smallOrders ? 'Bigger orders'
+        : LEVER_DONE;
+
+  // The rows say how much; this says which one to spend the effort on.
+  let low = 0;
+  comps.forEach((c, i) => { if (c < comps[low]) low = i; });
+  $('lever-tip').textContent = t.nextTierScore == null
+    ? 'You’re at the top tier. Keep visiting to hold it: the score covers a rolling 30 days.'
+    : LEVER_TIPS[low];
+
+  el.hidden = false;
+}
+
+// Unpaint on sign-out. The multiplier is visible on the home screen the moment
+// the shell appears now, so leaving the last student's tier chip up would show
+// it to the next one.
+function resetTier() {
+  $('tier-bar').hidden = true;
+  $('tier-levers').hidden = true;
+  $('hub-tier').hidden = true;
+  $('hub-tier-panel').hidden = true;
 }
 
 /* ---------- shared info popovers (tier meter + community points) ----------
@@ -1426,7 +1550,114 @@ function closeInfo(id, triggerId) {
   setTimeout(() => { ov.hidden = true; }, 160);   // wait out the fade
 }
 
-/* ---------- home: community points (the cross-vendor wallet) ----------
+/* ---------- the rewards hub (tier meter + community wallet) ----------
+   The two numbers that aren't tied to any one spot live behind the wordmark
+   pill at the top of Home, so the home screen itself can lead with the spots.
+   Collapsed, the pill still carries both (multiplier chip + balance) — the
+   panel hides the detail, never the fact that you have something.
+
+   Three ways out, all of them: the header row, a tap on the dimmed page, and a
+   flick up on the header. Escape too, with the other overlays. */
+
+let hubDrag = null;      // the finger currently on the panel, if any
+let hubDragged = false;  // …and whether it moved, so the click it fires is ignored
+
+function openHub() {
+  const ov = $('hub-modal');
+  const panel = $('hub-panel');
+  hubDrag = null;
+  hubDragged = false;
+  panel.classList.remove('is-dragging');
+  panel.style.transform = '';       // clear anything a previous drag left behind
+  ov.hidden = false;
+  void ov.offsetWidth;              // reflow so the drop-down transition runs
+  ov.classList.add('is-open');
+  $('hub-toggle').setAttribute('aria-expanded', 'true');
+  $('hub-collapse').focus({ preventScroll: true });
+}
+
+function closeHub() {
+  const ov = $('hub-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;   // already closing/closed
+  const panel = $('hub-panel');
+  hubDrag = null;
+  panel.classList.remove('is-dragging');
+  panel.style.transform = '';       // hand the slide-up back to the CSS transition
+  ov.classList.remove('is-open');
+  $('hub-toggle').setAttribute('aria-expanded', 'false');
+  // Only pull focus back if it's still inside the panel, so a close triggered
+  // from elsewhere (a tab change, sign-out) doesn't yank it.
+  if (panel.contains(document.activeElement)) $('hub-toggle').focus({ preventScroll: true });
+  setTimeout(() => {
+    if (!ov.classList.contains('is-open')) ov.hidden = true;   // unless it reopened mid-slide
+  }, 340);
+}
+
+// Hard reset, no animation — for sign-out, same reason as dropEarnSheet().
+function dropHub() {
+  const ov = $('hub-modal');
+  const panel = $('hub-panel');
+  hubDrag = null;
+  hubDragged = false;
+  panel.classList.remove('is-dragging');
+  panel.style.transform = '';
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('hub-toggle').setAttribute('aria-expanded', 'false');
+}
+
+// The header row is both the collapse button and the drag handle. A tap closes;
+// a flick that clears a third of the panel closes; anything shorter snaps back
+// — and hubDragged stops the click that follows a real drag from closing a
+// panel the user just decided to keep.
+function onHubToggleTap() {
+  if (hubDragged) { hubDragged = false; return; }
+  closeHub();
+}
+
+function onHubDragStart(e) {
+  if (hubDrag) return;                                          // one finger owns the panel
+  if (!$('hub-modal').classList.contains('is-open')) return;     // not on one that's leaving
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const panel = $('hub-panel');
+  // Same hand-off as the earn sheet: pin the panel to where it visually is
+  // before cutting the easing, so grabbing it mid-animation doesn't teleport it.
+  const base = sheetOffset(panel);
+  panel.style.transform = `translateY(${base}px)`;
+  panel.classList.add('is-dragging');
+  hubDrag = {
+    id: e.pointerId,
+    y0: e.clientY,
+    base,
+    dy: base,
+    moved: false,
+    height: panel.getBoundingClientRect().height || 1,
+  };
+  e.currentTarget.setPointerCapture(e.pointerId);   // keep the moves coming past the row
+}
+
+function onHubDragMove(e) {
+  if (!hubDrag || e.pointerId !== hubDrag.id) return;
+  // upward only — dragging down would pull the panel off its own top edge and
+  // open a strip of page above it
+  hubDrag.dy = Math.min(0, hubDrag.base + (e.clientY - hubDrag.y0));
+  if (Math.abs(hubDrag.dy - hubDrag.base) > 4) hubDrag.moved = true;
+  $('hub-panel').style.transform = `translateY(${hubDrag.dy}px)`;
+}
+
+function onHubDragEnd(e) {
+  if (!hubDrag || e.pointerId !== hubDrag.id) return;
+  const { dy, height, moved } = hubDrag;
+  hubDrag = null;
+  const panel = $('hub-panel');
+  panel.classList.remove('is-dragging');   // easing back on for either outcome…
+  void panel.offsetWidth;                  // …with the dragged offset as its start point
+  hubDragged = moved;
+  if (-dy >= height / 3) closeHub();       // past a third → let it carry on up
+  else panel.style.transform = '';         // short of it → snap cleanly back down
+}
+
+/* ---------- hub: community points (the cross-vendor wallet) ----------
    10% of everything earned at a spot is also minted into this pool
    (migration-026), and the pool isn't tied to the spot that issued it. Spending
    it means MOVING it into one vendor's balance (migration-027) — the move sheet
@@ -1449,18 +1680,23 @@ async function loadCommunity() {
 // Paint the counter. After the first paint a change counts up (or down) the same
 // way the vendor meter does, so points landing over the socket are actually seen
 // rather than silently swapped in.
+//
+// TWO places show this number — the card in the hub panel and the balance on
+// the collapsed pill — and the panel is usually shut when points land, so the
+// pill is the one that has to move. tickTo keys its frame id per element, so
+// running both is fine.
 function setCommunityPoints(next) {
   const prev = communityPoints;
   communityPoints = next;
 
-  const el = $('community-balance');
+  const els = [$('community-balance'), $('hub-community')];
   if (!communityReady) {          // first paint: just show it, no ticker
     communityReady = true;
-    el.textContent = next;
+    for (const el of els) el.textContent = next;
     return;
   }
   if (next === prev) return;
-  tickTo(el, prev, next);
+  for (const el of els) tickTo(el, prev, next);
 }
 
 /* ---------- home: move community points (the transfer sheet) ----------
@@ -2238,6 +2474,7 @@ function onVendorTap(e) {
 function openVendor(vendorId) {
   const v = allVendors.find((x) => String(x.vendorId) === String(vendorId));
   if (!v) return;
+  closeHub();     // the spot's own screen slides in under it — same story as setTab
   vendor = v;
   balanceReady = false;                       // paint the number instantly, no ticker
   $('pb-vendor').textContent = v.name.toUpperCase();

@@ -26,6 +26,14 @@
   --edge: #101d33;
   --brand: #12294b;
   --hairline: #e5eaf2;
+
+  /* rewards hub (the wordmark pill + the panel it opens): the gutter both
+     share — they must line up to the pixel — and the lit edge that marks the
+     pill as openable. The halo is near-invisible on light paper by design;
+     dark mode is where it earns its keep. */
+  --hub-gutter: 1.1rem;
+  --hub-glow: rgba(150, 190, 230, 0.45);
+  --hub-halo: rgba(18, 41, 75, 0.1);
 }
 
 /* Dark theme — set data-theme="dark" on <html>. Backgrounds go dark, text goes
@@ -48,6 +56,8 @@
   --edge: #35496a;
   --brand: #8fbdf0;
   --hairline: #2a3a56;
+  --hub-glow: rgba(140, 190, 245, 0.6);
+  --hub-halo: rgba(120, 175, 235, 0.22);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -231,39 +241,138 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   display: flex; flex-direction: column;
 }
 
-/* blue banner hugging the top of the screen */
+/* ---------- home header: the rewards-hub handle ----------
+   No banner block any more — just a navy pill floating on the page. The panel
+   it opens (.hub-panel, further down) is what carries the navy now, and the
+   pill is sized and padded to sit exactly under the panel's header row so
+   opening reads as an unfold rather than a sheet landing on top. */
 .brand-banner {
-  background: var(--navy); color: #fff;
-  padding: calc(1.5rem + env(safe-area-inset-top)) 1.3rem 1.5rem;
-  border-radius: 0 0 1.4rem 1.4rem;
-  text-align: center;
+  padding: calc(0.55rem + env(safe-area-inset-top)) var(--hub-gutter) 0;
 }
-.brand-word { font-weight: 900; letter-spacing: 0.01em; font-size: 2rem; line-height: 1; }
+.brand-word { font-weight: 900; letter-spacing: 0.01em; font-size: 1.45rem; line-height: 1; }
 .brand-word em { font-style: normal; color: var(--accent); }
 
-/* 30-day tier meter under the wordmark: fill toward the 1.5x / 2x cutoffs */
-.tier-bar { position: relative; margin-top: 1.15rem; text-align: left; }
+/* Shared by the collapsed pill and the panel's header row: same box, same
+   padding, so the wordmark doesn't shift a pixel between the two states. */
+.hub-toggle {
+  width: 100%;
+  display: flex; align-items: center; gap: 0.55rem;
+  text-align: left; color: #fff;
+  /* The inline padding is also the panel's inner gutter (--hub-pad below), so
+     every section in the open panel lines its left edge up with the wordmark. */
+  padding: 0.8rem 1.05rem;
+}
+/* …the pill adds the chrome the panel header doesn't need */
+.hub-pill {
+  background: var(--navy);
+  border: 2px solid var(--hub-glow);
+  border-radius: 2em;
+  box-shadow: 0 0 16px var(--hub-halo), 0 4px 14px rgba(8, 16, 32, 0.18);
+  transition: transform 80ms ease;
+}
+.hub-pill:active { transform: scale(0.985); }
 
-.tier-top {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 0.5rem;
+/* the two numbers the collapsed pill keeps visible: tier chip + wallet */
+.hub-summary { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; }
+.hub-tier {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font-weight: 900; font-size: 0.82rem; white-space: nowrap;
+  padding: 0.24em 0.62em; border-radius: 2em;
+  border: 1.5px solid currentColor;
+  color: var(--accent);
 }
-.tier-badge {
-  font-weight: 900; font-size: 0.82rem; letter-spacing: 0.08em;
-  background: var(--accent); color: var(--navy);
-  padding: 0.22em 0.7em; border-radius: 2em;
+.hub-tier i { font-style: normal; font-size: 0.78em; }
+.hub-tier.t2 { color: #ffd76e; }
+.hub-tier.t3 { color: #ffb84d; }
+.hub-pts {
+  flex: 0 1 auto; min-width: 0;
+  font-weight: 800; font-size: 0.82rem; color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
-.tier-bar.t2 .tier-badge { background: #ffd76e; }
-.tier-bar.t3 .tier-badge { background: #ffb84d; }
-.tier-top-right { display: flex; align-items: center; gap: 0.5rem; }
-.tier-hint { font-size: 0.8rem; font-weight: 700; color: var(--sky); }
+.hub-pts span { color: #fff; font-weight: 900; }
+
+.hub-chev { flex: 0 0 auto; display: flex; color: rgba(255, 255, 255, 0.75); }
+.hub-chev svg { width: 1.25rem; height: 1.25rem; display: block; }
+/* The panel's copy points the other way — same icon, opposite affordance. It's
+   also the drag handle, so touch-action: none, exactly like .earn-grab: the
+   browser must not claim the upward flick for scrolling, pull-to-refresh, or
+   the horizontal tab swipe underneath. */
+.hub-toggle-open { touch-action: none; }
+.hub-toggle-open .hub-chev { transform: rotate(180deg); }
+
+/* ---------- the hub panel itself ----------
+   A fixed overlay, NOT part of the Home tab (see the comment on #hub-modal in
+   index.html for why). z-index sits under .tabbar's 30 on purpose: the bottom
+   nav stays lit and tappable while the hub is open. */
+.hub-modal {
+  position: fixed; inset: 0; z-index: 25;
+  background: rgba(8, 16, 32, 0);
+  transition: background 220ms ease;
+}
+.hub-modal.is-open { background: rgba(8, 16, 32, 0.5); }
+
+.hub-panel {
+  --hub-pad: 1.05rem;               /* matches .hub-toggle's inline padding */
+  position: absolute;
+  top: calc(0.55rem + env(safe-area-inset-top));
+  left: var(--hub-gutter); right: var(--hub-gutter);
+  background: var(--navy); color: #fff;
+  border: 2px solid var(--hub-glow);
+  border-radius: 1.7rem;
+  box-shadow: 0 0 22px var(--hub-halo), 0 18px 44px rgba(8, 16, 32, 0.45);
+  padding-bottom: 1.25rem;
+  /* Starts tucked up behind the top edge and drops into place. -120% (not
+     -100%) so the shadow clears the screen too and the panel doesn't appear to
+     bleed through the status bar on the way in. */
+  transform: translateY(-120%);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.hub-panel.is-dragging { transition: none; }
+.hub-modal.is-open .hub-panel { transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) {
+  .hub-panel { transition: none; }
+}
+
+/* ---------- 30-day tier meter (lives in the hub panel) ----------
+   Three nodes — one per multiplier in TIERS — evenly spaced, with the real
+   0–1000 score filling the track behind them. JS places the nodes and maps the
+   score onto the track piecewise (see renderTier), so each leg is worth one
+   tier's progress regardless of where the cutoffs actually fall. */
+.tier-bar { margin: 0.55rem var(--hub-pad) 0; }
+
+.tier-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem;
+  margin-bottom: 1.05rem;
+}
+/* Both halves are nowrap: this row has to survive a 320px phone, and the
+   moment either side wraps it collides with the other. The copy on the right
+   is kept short for the same reason — the friendly long form ("You're earning
+   1.5x at all spots") does not fit next to the label at any readable size. */
+.tier-head-label {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0.35rem;
+  font-weight: 900; font-size: 0.68rem; letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.72); white-space: nowrap;
+}
+.tier-earning {
+  flex: 1; min-width: 0; text-align: right;
+  font-size: 0.68rem; font-weight: 700; color: rgba(255, 255, 255, 0.6);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tier-earning b { color: var(--accent); font-weight: 900; }
+
+.tier-hint {
+  margin-top: 0.6rem; text-align: center;
+  font-size: 0.82rem; font-weight: 800; color: var(--accent);
+}
 
 /* (i) info button */
 .tier-info-btn {
   flex: 0 0 auto;
-  width: 1.35rem; height: 1.35rem; border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.55); color: #fff;
-  font-size: 0.82rem; line-height: 1;
+  width: 1.15rem; height: 1.15rem; border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.5); color: #fff;
+  font-size: 0.7rem; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   transition: background 120ms ease, border-color 120ms ease;
 }
@@ -311,58 +420,168 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .info-close:active { background: var(--sky); color: var(--navy); }
 
+/* The meter is a fixed-height box the nodes are absolutely placed over. Its
+   --tier-dot / --tier-inset pair is the whole geometry: the track is inset by
+   half a dot on each side so it runs from the first node's centre to the
+   last's, which is what makes a percentage fill line up with the nodes. */
+.tier-meter {
+  --tier-dot: 2.75rem;
+  --tier-inset: calc(var(--tier-dot) / 2);
+  position: relative; height: calc(var(--tier-dot) + 1.95rem);
+}
 .tier-track {
-  position: relative; height: 0.7rem; border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.16); overflow: hidden;
+  position: absolute; left: var(--tier-inset); right: var(--tier-inset);
+  top: calc(var(--tier-dot) / 2); transform: translateY(-50%);
+  height: 0.6rem; border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.14); overflow: hidden;
 }
 .tier-fill {
   height: 100%; width: 0; border-radius: 1rem;
-  background: linear-gradient(90deg, var(--accent), #ffd76e);
+  background: linear-gradient(90deg, var(--accent), #7fb3ea);
   transition: width 700ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-/* cutoff marks sit above the fill so the tier boundaries stay visible */
-.tier-mark {
-  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 1;
-  background: rgba(255, 255, 255, 0.55);
+
+/* Nodes sit ON the track — opaque, so the fill reads as running between them
+   rather than under them. Wider than the dot so the captions have room; JS
+   sets each one's `left` (renderTier). */
+.tier-nodes { position: absolute; inset: 0; }
+.tier-node {
+  position: absolute; top: 0; width: 4.6rem; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
+}
+.tier-node-dot {
+  width: var(--tier-dot); height: var(--tier-dot); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.8rem; font-weight: 900; line-height: 1;
+  background: var(--navy); color: rgba(255, 255, 255, 0.72);
+  border: 2.5px solid rgba(255, 255, 255, 0.3);
+  transition: border-color 200ms ease, color 200ms ease, box-shadow 200ms ease;
+}
+/* tiers already cleared */
+.tier-node.is-done .tier-node-dot { border-color: var(--accent); color: #fff; }
+/* …and the one you're standing on, ringed like the badge in the pill */
+.tier-node.is-current .tier-node-dot {
+  border-color: #ffd76e; color: #ffd76e;
+  box-shadow: 0 0 0 4px rgba(255, 215, 110, 0.14);
+}
+.tier-node-cap {
+  font-size: 0.6rem; font-weight: 800; letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.45); white-space: nowrap; text-align: center;
+}
+/* The ▲ pushes "Current tier" a line below "Base tier" / "Max tier" — that
+   drop is the marker, so don't reserve the space on the other captions. */
+.tier-node.is-current .tier-node-cap { color: #ffd76e; }
+.tier-node.is-current .tier-node-cap::before {
+  content: "▲"; display: block; font-size: 0.5rem; line-height: 1; margin-bottom: 0.1rem;
 }
 
-.tier-scale {
-  display: flex; margin-top: 0.35rem;
-  font-size: 0.72rem; font-weight: 900; letter-spacing: 0.06em; color: var(--sky);
+/* ---------- hub: "how you climb" (the three score levers) ----------
+   The live version of the tier explainer's three bullets — variety, loyalty,
+   spend. Every number comes out of the /api/me/tier payload the meter above
+   already fetched (see renderLevers), so this section costs no extra request.
+
+   The bars are the API's normalized 0–1 components; the values beside them are
+   the raw counts. Deliberately NO targets shown: the thresholds live in
+   src/lib/tiers.js and are not sent to the client, and hardcoding them here
+   would leave two copies to drift apart. */
+.tier-levers {
+  margin: 1.15rem var(--hub-pad) 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
-.tier-scale span { text-align: center; }
+.lever-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem;
+  margin-bottom: 0.95rem;
+}
+.lever-title {
+  font-weight: 900; font-size: 0.68rem; letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.72); white-space: nowrap;
+}
+.lever-window {
+  font-size: 0.66rem; font-weight: 700; color: rgba(255, 255, 255, 0.42);
+  white-space: nowrap;
+}
+
+.lever { display: flex; flex-direction: column; gap: 0.42rem; margin-bottom: 0.85rem; }
+.lever:last-of-type { margin-bottom: 0; }
+.lever-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; }
+.lever-name { font-size: 0.82rem; font-weight: 800; color: rgba(255, 255, 255, 0.88); }
+.lever-val {
+  font-size: 0.76rem; font-weight: 900; color: var(--accent);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.lever-track {
+  display: block; height: 0.35rem; border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.12); overflow: hidden;
+}
+.lever-fill {
+  display: block; height: 100%; width: 0; border-radius: 1rem;
+  background: var(--accent);
+  transition: width 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* The one line that says what to actually do next. A block rather than a bare
+   sentence so it reads as advice, not as another label. */
+.lever-tip {
+  margin-top: 1.05rem; padding: 0.68rem 0.8rem;
+  background: rgba(255, 255, 255, 0.06); border-radius: 0.85rem;
+  font-size: 0.76rem; font-weight: 700; line-height: 1.4;
+  color: rgba(255, 255, 255, 0.75);
+}
 
 /* No INLINE padding — the carousel scrolls edge to edge and each child supplies
    its own 1.3rem gutter.
 
-   A flex column, so the four gaps down the home screen — banner→card,
-   card→spots, spots→button, button→tab bar — can each be built the SAME way:
+   Two blocks live here — .home-stack (the balance + the earn code) and
+   .home-spots (the carousel) — which makes three gaps down the screen:
+   header→stack, stack→spots, spots→tab bar. Each is built the SAME way:
 
        gap  =  one equal share of the leftover height  +  0.9rem
 
-   The auto half comes from four auto margins (top and bottom of the community
-   card, top and bottom of the earn-code button); flexbox splits free space
-   equally between them, so all four gaps grow and shrink together.
+   The auto half comes from three auto margins: the top and bottom of
+   .home-stack, and the bottom of .home-spots. Flexbox splits free space equally
+   between them, so all three gaps grow and shrink together. Nothing INSIDE
+   either block may take an auto margin of its own, or it earns a fourth share
+   and the three stop being equal.
 
    The 0.9rem half is not decoration, it is what keeps them equal when there is
-   no free space left to share. The carousel already carries 0.9rem of bottom
-   padding — clearance for the vendor cards' hard shadow, which it would
-   otherwise clip — so unless the other three gaps carry the same constant, that
-   one renders wider. Hence padding here (top AND bottom) and .home-sub-row's
-   margin-top below — the row wraps the heading and the search field, so it is
-   what carries that constant now. THESE FOUR 0.9rem VALUES MOVE TOGETHER;
-   change one alone and the gaps go uneven the moment the screen is too short to
-   have slack.
+   no free space left to share. Each gap gets exactly one, from a different
+   place:
+
+     header→stack   this element's padding-top
+     stack→spots    .home-sub-row's margin-top (first thing inside .home-spots)
+     spots→tab bar  the trailing 0.9rem of the spots block, which rides on
+                    .vendor-dots when the pager is up and on the carousel's
+                    padding-bottom when it isn't (see .vendor-dots)
+
+   Hence NO padding-bottom here: the spots block already brought that gap's
+   constant with it, and a second one would make the last gap wider than the
+   other two. THESE THREE 0.9rem VALUES MOVE TOGETHER; change one alone and the
+   gaps go uneven the moment the screen is too short to have slack.
 
    Auto margins rather than justify-content: space-evenly, because when content
    is taller than the screen space-evenly falls back to `center` and pushes the
-   top of the card above the scroll container's start edge, where no scroll can
+   top of the stack above the scroll container's start edge, where no scroll can
    reach it. Auto margins just resolve to 0.
 
    Children are flex: 0 0 auto because the default flex-shrink: 1 would squash
    the carousel and the cards inside it the moment the content overflowed. */
-.home-main { flex: 1; padding: 0.9rem 0; display: flex; flex-direction: column; }
+.home-main { flex: 1; padding: 0.9rem 0 0; display: flex; flex-direction: column; }
 .home-main > * { flex: 0 0 auto; }
+
+/* The wallet block: what you have, then what you do with it. One unit, so the
+   two cards stay welded together while the screen's slack moves around them.
+   The gutter lives HERE now, not on the children, which is what lines the
+   community card and the earn button up to the same edges. */
+.home-stack {
+  margin: auto 1.3rem;
+  display: flex; flex-direction: column; gap: 0.7rem;
+}
+.home-stack > * { flex: 0 0 auto; }
+
+/* The spots block owns the third auto. No inline margin: the carousel bleeds
+   edge to edge and each child brings its own 1.3rem gutter. */
+.home-spots { margin: 0 0 auto; }
 /* The heading and the vendor filter share one line. The ROW owns the margins —
    including the 0.9rem top that is one of the four constants above — so the
    search field appearing or disappearing can never change the home screen's
@@ -376,14 +595,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    hard offset shadow); the accent tile and the brand-coloured number are what
    mark it out as the odd one. */
 .community-card {
-  position: relative; z-index: 2;      /* sits ON the banner, not under it */
-  width: calc(100% - 2.6rem);
-  /* Vertical margins are auto: two of the four equal shares of the leftover
-     height (see .home-main). Both sides have to be auto, not just the bottom —
-     a fixed top margin stays put when the autos collapse on a short screen, and
-     the card then visibly sits nearer the spots row than the banner. The 0.9rem
-     that keeps it clear of the banner's tier scale is .home-main's padding-top. */
-  margin: auto 1.3rem;
+  /* Sizing and spacing belong to .home-stack, which owns the gutter and the
+     auto margins. Anything here would earn an extra share of the leftover
+     height and pull .home-main's three gaps out of true. */
   display: flex; align-items: center; gap: 0.8rem;
   text-align: left;
   background: var(--card);
@@ -484,22 +698,16 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .move-final { font-size: 0.9rem; font-weight: 800; color: var(--warn); text-align: center; }
 
 /* ---------- home: the earn actions ----------
-   The two ways to get points, stacked below the spots.
+   The two ways to get points, directly under the balance they feed.
 
-   The WRAPPER owns the auto margins, not the buttons. .home-main splits its
-   leftover height between exactly four auto margins (see there); if each button
-   kept its own pair that would become six, the shares would shrink, and the gap
-   between these two — which should be a fixed, tight 0.7rem — would breathe
-   along with the rest of the screen. One wrapper = one pair = the split stays as
-   documented, and the stack moves as a single block.
+   A wrapper rather than two loose buttons so the pair reads as one rung of
+   .home-stack: the 0.7rem between them stays fixed and matches the gap to the
+   community card above, and the receipt button (when it ships) joins the stack
+   without changing the screen's spacing anywhere else.
 
-   width: fit-content shrink-wraps the column to its widest child (the primary
-   button) and align-items: stretch then pulls the secondary out to match, so the
-   two read as one deliberate stack rather than two differently-sized buttons.
-   max-width keeps it inside the 1.3rem gutter the rest of the home screen uses. */
+   No width or margin of its own — .home-stack supplies both, which is what
+   makes these buttons exactly as wide as the community card. */
 .home-actions {
-  width: fit-content; max-width: calc(100% - 2.6rem);
-  margin: auto;
   display: flex; flex-direction: column; align-items: stretch; gap: 0.7rem;
 }
 .home-actions > * { flex: 0 0 auto; }
@@ -1182,9 +1390,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    not a sheet, so the app stays fully usable. Reuses the sticker look. */
 .install-banner {
   display: flex; align-items: center; gap: 0.6rem;
-  /* .home-main has no inline padding (the carousel needs to bleed), so the
-     banner brings the same 1.3rem gutter the rest of the screen uses. */
-  margin: 0 1.3rem 0.9rem;
+  /* No margin: this is the last rung of .home-stack, which supplies both the
+     gutter and the 0.7rem above. When it's dismissed, display:none takes its
+     gap with it and the stack closes up on its own. */
+  margin: 0;
   padding: 0.75rem 0.85rem;
   background: var(--card);
   border: 3px solid var(--edge); border-radius: 1.1rem;

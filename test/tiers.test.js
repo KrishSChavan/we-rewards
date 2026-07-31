@@ -187,3 +187,61 @@ test('omitting activeVendorIds preserves the legacy behavior (every txn scores)'
   const covered = scoreProfile({ vendorCount: 5, activeVendorIds: new Set(['v1', 'vGone']), txns });
   assert.deepEqual(covered, legacy);
 });
+
+/* ---------- `remaining`: what each lever still needs for full credit ----------
+   The home screen's "how you climb" rows print these verbatim ("2 more spots"),
+   so they have to be counts the student can act on, never negative, and zero
+   exactly when that component is already maxed. */
+
+test('remaining counts down to zero as each component reaches full credit', () => {
+  // one visit, one vendor, out of five active vendors
+  const early = scoreProfile({ vendorCount: 5, txns: [earn('v1', 5, '2026-07-01')] });
+  assert.equal(early.remaining.spots, 4, 'four unvisited vendors left');
+  assert.equal(early.remaining.revisits, 3, 'revisit target floors at 3');
+  assert.equal(early.remaining.visits, 23, 'one of the 24 visit-days done');
+  assert.equal(early.remaining.spend, 245, '$5 of $250 credited');
+  assert.equal(early.remaining.smallOrders, true, '$5 is under a meal-sized ticket');
+});
+
+test('remaining never goes negative once a target is passed', () => {
+  // every vendor visited many times, well past every target
+  const txns = [];
+  for (const v of ['v1', 'v2']) {
+    for (let d = 1; d <= 28; d++) {
+      txns.push(earn(v, 25, `2026-07-${String(d).padStart(2, '0')}`));
+    }
+  }
+  const maxed = scoreProfile({ vendorCount: 2, txns });   // revisit ask is capped at V
+  for (const [key, value] of Object.entries(maxed.remaining)) {
+    if (key === 'smallOrders') continue;
+    assert.equal(value, 0, `${key} should bottom out at 0, got ${value}`);
+    assert.ok(!Number.isNaN(value), `${key} must be a number`);
+  }
+  assert.equal(maxed.remaining.smallOrders, false, '$25 tickets are meal-sized');
+});
+
+test('remaining.spend reflects the credited spend, not the raw total', () => {
+  // a single $200 visit: only $30 of it is credited (anti receipt-stuffing)
+  const p = scoreProfile({ vendorCount: 1, txns: [earn('v1', 200, '2026-07-01')] });
+  assert.equal(p.totalSpend, 30, 'the per-visit cap applies before this is reported');
+  assert.equal(p.remaining.spend, 220, 'so $220 of credit is still outstanding');
+});
+
+test('remaining.smallOrders is false when there is no visit to judge', () => {
+  const none = scoreProfile({ vendorCount: 4, txns: [] });
+  assert.equal(none.remaining.smallOrders, false, 'no visits ⇒ nothing to call small');
+  assert.equal(none.remaining.spots, 4);
+  assert.equal(none.remaining.visits, 24);
+});
+
+test('remaining.revisits is capped at the vendor count, so the ask is always possible', () => {
+  // Two active vendors, both already revisited. revisitTarget floors at 3, so
+  // the raw gap is 1 — but there is no third vendor to go back to.
+  const txns = [
+    earn('v1', 12, '2026-07-01'), earn('v1', 12, '2026-07-02'),
+    earn('v2', 12, '2026-07-03'), earn('v2', 12, '2026-07-04'),
+  ];
+  const p = scoreProfile({ vendorCount: 2, txns });
+  assert.equal(p.revisitVendors, 2);
+  assert.equal(p.remaining.revisits, 0, 'nothing left to ask for on a two-vendor campus');
+});

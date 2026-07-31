@@ -143,38 +143,50 @@
         <section class="tab-page" id="tab-home" aria-label="Home">
 
           <div id="home">
-            <!-- blue banner hugging the top of the screen -->
+            <!-- The wordmark is a handle, not a banner: tapping it drops the
+                 rewards hub (#hub-modal, further down inside #app) over the
+                 page. Collapsed, it carries the two numbers the panel would
+                 otherwise hide — the tier multiplier and the community balance
+                 — so nothing a student cares about is invisible behind a tap.
+                 The panel repeats this row as its own header, so opening it
+                 reads as the pill unfolding rather than a sheet arriving; keep
+                 the two markups in step. -->
             <header class="brand-banner">
-              <span class="brand-word">We<em>Rewards</em></span>
-
-              <!-- 30-day tier meter: score fills toward the 1.5x / 2x earn multipliers -->
-              <div id="tier-bar" class="tier-bar" hidden>
-                <div class="tier-top">
-                  <span id="tier-badge" class="tier-badge">1x points</span>
-                  <span class="tier-top-right">
-                    <span id="tier-hint" class="tier-hint"></span>
-                    <button id="tier-info-btn" class="tier-info-btn" type="button"
-                            aria-label="How the tier score works"
-                            aria-haspopup="dialog" aria-expanded="false" aria-controls="tier-info">i</button>
+              <!-- No aria-label: the button's content IS its name, which is the
+                   point — a screen reader gets "Your rewards, WeRewards, 1.5x,
+                   240 pts, collapsed" instead of a label that hides the two
+                   numbers this pill exists to show. -->
+              <button id="hub-toggle" class="hub-toggle hub-pill" type="button"
+                      aria-expanded="false" aria-controls="hub-panel">
+                <span class="sr-only">Your rewards:</span>
+                <span class="brand-word">We<em>Rewards</em></span>
+                <span class="hub-summary">
+                  <span id="hub-tier" class="hub-tier t1" hidden>
+                    <i aria-hidden="true">★</i><span id="hub-tier-mult">1x</span>
                   </span>
-                </div>
-                <div class="tier-track">
-                  <div id="tier-fill" class="tier-fill"></div>
-                  <i class="tier-mark"></i>
-                  <i class="tier-mark"></i>
-                </div>
-                <div class="tier-scale">
-                  <span>1x</span><span>1.5x</span><span>2x</span>
-                </div>
-              </div>
+                  <span class="hub-pts"><span id="hub-community">0</span> pts</span>
+                </span>
+                <span class="hub-chev" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 9.5 12 15.5l6-6" />
+                  </svg>
+                </span>
+              </button>
             </header>
 
             <main class="home-main">
+              <!-- ---------- the wallet block ----------
+                   What you have, then what you do with it, as one stack: the
+                   community balance, the earn code that grows it, and the
+                   install nudge that belongs to that code. One block means one
+                   pair of auto margins in .home-main's gap arithmetic, so the
+                   whole thing moves as a unit when the screen is short. -->
+              <div class="home-stack">
+
               <!-- Community points — the one balance on this screen that isn't
                    tied to a single spot: 10% of everything earned anywhere lands
-                   here and spends anywhere. Deliberately first, and pulled up
-                   over the banner's curve, so the navy header and this card read
-                   as one block rather than two stacked bars.
+                   here and spends anywhere. First in the stack, because it is
+                   the balance the button under it feeds.
                    Tapping it opens the Move-points sheet (#move-modal) when
                    there's a balance to move, and the explainer when there isn't
                    — a new user's first tap should say what this is, not show an
@@ -196,59 +208,14 @@
                 </span>
               </button>
 
-              <!-- first-points fallback nudge: a small dismissible inline banner,
-                   not a sheet. install-prompt.js toggles .is-open. -->
-              <div id="install-banner" class="install-banner" hidden>
-                <span class="install-banner-emoji" aria-hidden="true">📲</span>
-                <span id="install-banner-text" class="install-banner-text">Add WeRewards to your home screen. Your code, one tap away.</span>
-                <button id="install-banner-add" class="install-banner-add" type="button">Add</button>
-                <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
-              </div>
-
-              <!-- The heading and the filter share one row: the home screen
-                   splits its leftover height four ways (see .home-main), so a
-                   search bar on its own line is a whole row of that budget spent
-                   on a control most students with three spots don't need. It
-                   only appears once the row is long enough to be worth
-                   searching — app.js → VENDOR_SEARCH_MIN. -->
-              <div class="home-sub-row">
-                <p class="home-sub">YOUR SPOTS</p>
-                <div id="vendor-search-wrap" class="vendor-search" hidden>
-                  <span class="vendor-search-icon" aria-hidden="true">🔍</span>
-                  <!-- type=search for the phone keyboard's "search" key; the
-                       autocorrect/capitalize opt-outs stop iOS rewriting a
-                       half-typed shop name out from under the filter. -->
-                  <input id="vendor-search" class="vendor-search-input" type="search"
-                         placeholder="Search spots" aria-label="Search your spots"
-                         aria-controls="vendor-carousel"
-                         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-                  <button id="vendor-search-clear" class="vendor-search-clear" type="button"
-                          aria-label="Clear search" hidden>✕</button>
-                </div>
-              </div>
-              <!-- vendor cards render here: horizontal, scroll-snapped -->
-              <div id="vendor-carousel" class="vendor-carousel"></div>
-              <!-- Filtering swaps the cards out silently, so the result count is
-                   announced here instead. Off-screen, not [hidden]: a hidden
-                   live region is not announced at all. Written only while a
-                   query is active, or every socket push would talk. -->
-              <p id="vendor-search-status" class="sr-only" role="status" aria-live="polite"></p>
-              <!-- page dots for the carousel above: a window of at most 8, with
-                   the edge dot shrunk on whichever side has more spots past it.
-                   Built by renderVendorDots(); hidden below 2 spots, since one
-                   spot is not a pager. -->
-              <div id="vendor-dots" class="vendor-dots" role="group" aria-label="Choose a spot" hidden></div>
-              <p id="vendors-empty" class="empty-state" hidden>No spots yet, check back soon!</p>
-
-              <!-- The two ways to earn, stacked. The wrapper — not the buttons —
-                   carries the auto margins that .home-main's four-gap split
-                   depends on, so adding a second button here doesn't hand the
-                   flex box extra shares to hand out. See .home-actions. -->
+              <!-- The two ways to earn, stacked directly under the balance they
+                   feed. The wrapper groups them so the receipt button (when it
+                   ships) rides along without becoming a second block in
+                   .home-stack. See .home-actions. -->
               <div class="home-actions">
-                <!-- The code itself now lives in a full-screen sheet (#earn-modal)
-                     so the home screen leads with the spots instead of a QR nobody
-                     is scanning yet. This button sits at the bottom of home and is
-                     the only way in. -->
+                <!-- The code itself lives in a full-screen sheet (#earn-modal)
+                     rather than sitting on the home screen as a QR nobody is
+                     scanning yet. This button is the only way in. -->
                 <button id="show-code-btn" class="show-code-btn" type="button"
                         aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
                   <span class="scb-icon" aria-hidden="true">
@@ -294,6 +261,58 @@
                   </span>
                 </button>
               </div>
+
+              <!-- first-points fallback nudge: a small dismissible inline banner,
+                   not a sheet. Last in the stack because it is about the code
+                   button above it. install-prompt.js toggles .is-open. -->
+              <div id="install-banner" class="install-banner" hidden>
+                <span class="install-banner-emoji" aria-hidden="true">📲</span>
+                <span id="install-banner-text" class="install-banner-text">Add WeRewards to your home screen. Your code, one tap away.</span>
+                <button id="install-banner-add" class="install-banner-add" type="button">Add</button>
+                <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
+              </div>
+              </div><!-- /.home-stack -->
+
+              <!-- ---------- the spots ----------
+                   One block, so it owns exactly one auto margin in .home-main's
+                   split (see there). Nothing inside carries an auto of its own. -->
+              <div class="home-spots">
+
+              <!-- The heading and the filter share one row: the home screen
+                   splits its leftover height three ways (see .home-main), so a
+                   search bar on its own line is a whole row of that budget spent
+                   on a control most students with three spots don't need. It
+                   only appears once the row is long enough to be worth
+                   searching — app.js → VENDOR_SEARCH_MIN. -->
+              <div class="home-sub-row">
+                <p class="home-sub">YOUR SPOTS</p>
+                <div id="vendor-search-wrap" class="vendor-search" hidden>
+                  <span class="vendor-search-icon" aria-hidden="true">🔍</span>
+                  <!-- type=search for the phone keyboard's "search" key; the
+                       autocorrect/capitalize opt-outs stop iOS rewriting a
+                       half-typed shop name out from under the filter. -->
+                  <input id="vendor-search" class="vendor-search-input" type="search"
+                         placeholder="Search spots" aria-label="Search your spots"
+                         aria-controls="vendor-carousel"
+                         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+                  <button id="vendor-search-clear" class="vendor-search-clear" type="button"
+                          aria-label="Clear search" hidden>✕</button>
+                </div>
+              </div>
+              <!-- vendor cards render here: horizontal, scroll-snapped -->
+              <div id="vendor-carousel" class="vendor-carousel"></div>
+              <!-- Filtering swaps the cards out silently, so the result count is
+                   announced here instead. Off-screen, not [hidden]: a hidden
+                   live region is not announced at all. Written only while a
+                   query is active, or every socket push would talk. -->
+              <p id="vendor-search-status" class="sr-only" role="status" aria-live="polite"></p>
+              <!-- page dots for the carousel above: a window of at most 8, with
+                   the edge dot shrunk on whichever side has more spots past it.
+                   Built by renderVendorDots(); hidden below 2 spots, since one
+                   spot is not a pager. -->
+              <div id="vendor-dots" class="vendor-dots" role="group" aria-label="Choose a spot" hidden></div>
+              <p id="vendors-empty" class="empty-state" hidden>No spots yet, check back soon!</p>
+              </div><!-- /.home-spots -->
             </main>
           </div>
 
@@ -447,6 +466,90 @@
       </div>
     </div>
 
+    <!-- ---------- rewards hub (tier meter + community points) ----------
+         Opened by the wordmark pill at the top of Home. It lives HERE, a fixed
+         child of #app, rather than inside the Home tab: .tab-track carries a
+         transform, so anything inside it is trapped in that stacking context
+         and can't be laid over the page. Out here it overlays the spots
+         instead of pushing them down, and it deliberately sits below .tabbar's
+         z-index — the bottom nav stays lit and usable, and tapping another tab
+         closes the hub on the way.
+
+         The header row repeats the collapsed pill's contents so opening reads
+         as an unfold; it's also the drag handle (flick up to dismiss). -->
+    <div id="hub-modal" class="hub-modal" hidden>
+      <div class="hub-panel" id="hub-panel" role="region" aria-label="Your rewards">
+        <button id="hub-collapse" class="hub-toggle hub-toggle-open" type="button"
+                aria-expanded="true" aria-controls="hub-panel">
+          <span class="sr-only">Your rewards:</span>
+          <span class="brand-word">We<em>Rewards</em></span>
+          <span class="hub-summary">
+            <span id="hub-tier-panel" class="hub-tier t1" hidden>
+              <i aria-hidden="true">★</i><span id="hub-tier-panel-mult">1x</span> tier
+            </span>
+          </span>
+          <span class="hub-chev" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 9.5 12 15.5l6-6" />
+            </svg>
+          </span>
+        </button>
+
+        <!-- 30-day tier meter. The nodes are the three multipliers; the track
+             behind them fills with the actual 0–1000 score, mapped piecewise
+             so each leg of the bar is one tier's worth of progress. -->
+        <div id="tier-bar" class="tier-bar" hidden>
+          <div class="tier-head">
+            <span class="tier-head-label">YOUR TIER PROGRESS
+              <button id="tier-info-btn" class="tier-info-btn" type="button"
+                      aria-label="How the tier score works"
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="tier-info">i</button>
+            </span>
+            <span class="tier-earning"><b id="tier-earning-mult">1x</b> at every spot</span>
+          </div>
+
+          <div class="tier-meter">
+            <div class="tier-track"><div id="tier-fill" class="tier-fill"></div></div>
+            <!-- one node per entry in TIERS (src/lib/tiers.js); JS spaces them
+                 evenly across the track and marks which one you're on -->
+            <div id="tier-nodes" class="tier-nodes">
+              <span class="tier-node"><span class="tier-node-dot">1x</span><span class="tier-node-cap"></span></span>
+              <span class="tier-node"><span class="tier-node-dot">1.5x</span><span class="tier-node-cap"></span></span>
+              <span class="tier-node"><span class="tier-node-dot">2x</span><span class="tier-node-cap"></span></span>
+            </div>
+          </div>
+
+          <p id="tier-hint" class="tier-hint"></p>
+        </div>
+
+        <!-- The live version of the tier explainer's three bullets. Every
+             number here is already in the /api/me/tier payload and was being
+             thrown away, so this costs no extra request: it turns the meter
+             above from a status readout into something you can act on. -->
+        <div id="tier-levers" class="tier-levers" hidden>
+          <div class="lever-head">
+            <span class="lever-title">HOW YOU CLIMB</span>
+            <span id="lever-window" class="lever-window">last 30 days</span>
+          </div>
+
+          <div class="lever">
+            <span class="lever-row"><span class="lever-name">Variety</span><span id="lever-variety-val" class="lever-val">0</span></span>
+            <span class="lever-track"><i id="lever-variety-fill" class="lever-fill"></i></span>
+          </div>
+          <div class="lever">
+            <span class="lever-row"><span class="lever-name">Loyalty</span><span id="lever-loyalty-val" class="lever-val">0</span></span>
+            <span class="lever-track"><i id="lever-loyalty-fill" class="lever-fill"></i></span>
+          </div>
+          <div class="lever">
+            <span class="lever-row"><span class="lever-name">Spend</span><span id="lever-spend-val" class="lever-val">$0</span></span>
+            <span class="lever-track"><i id="lever-spend-fill" class="lever-fill"></i></span>
+          </div>
+
+          <p id="lever-tip" class="lever-tip"></p>
+        </div>
+      </div>
+    </div>
+
     <!-- ---------- bottom nav ---------- -->
     <nav class="tabbar" id="tabbar" aria-label="Main">
       <button class="tab-btn is-active" data-tab="0" type="button" aria-current="page" aria-label="Home">
@@ -582,7 +685,7 @@
       <ul>
         <li><strong>Variety</strong>: how many different spots you visit</li>
         <li><strong>Loyalty</strong>: how often you come back to the same spots</li>
-        <li><strong>Spend</strong>: how much you spend, with extra weight for meal-sized orders</li>
+        <li><strong>Spend</strong>: how much you spend, with extra weight for meal-sized orders. Up to $30 of a single visit counts</li>
       </ul>
       <p>Keeping all three balanced climbs fastest. Reach <strong>350</strong> for <strong>1.5× points</strong>, or <strong>700</strong> for <strong>2×</strong>. The multiplier applies to everything you earn. It's a rolling 30-day window, so keep visiting to hold your tier.</p>
     </div>

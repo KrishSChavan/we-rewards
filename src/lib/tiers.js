@@ -96,6 +96,26 @@ export function scoreProfile({ vendorCount, txns, activeVendorIds, revisits = 0 
     maxScore: 1000,
     windowDays: WINDOW_DAYS,
     revisits, // lifetime counter, maintained by award_points
+    /* What each component still needs for FULL credit, for the home screen's
+       "how you climb" rows ("2 more spots", "$40 more").
+       Computed here, beside the targets themselves, for two reasons: the
+       thresholds never have to go over the wire, and there is never a second
+       copy of them in the client to go stale the day this scoring is tuned.
+       `smallOrders` is the other half of the spend term: you can be past
+       SPEND_TARGET and still short on credit if every ticket is tiny. */
+    remaining: {
+      spots: Math.max(0, V - distinct),
+      /* Capped at V, because revisitTarget has a floor of 3 and a campus with
+         one or two active vendors can never reach it. Uncapped, this row would
+         read "1 more revisit" forever with nothing the student could do about
+         it. The SCORE still uses the true target — this is the ask, not the
+         maths, so on a tiny vendor list the bar can sit short of full with
+         nothing left to ask for. That beats an impossible instruction. */
+      revisits: Math.max(0, Math.min(revisitTarget, V) - revisitVendors),
+      visits: Math.max(0, VISIT_TARGET - totalVisits),
+      spend: Math.max(0, Math.ceil(SPEND_TARGET - totalSpend)),
+      smallOrders: totalVisits > 0 && avgTicket < MEAL_TICKET,
+    },
     // raw components + aggregates — ignored by the UI, used by persistTierSnapshot
     breadth: B,
     loyalty: L,
