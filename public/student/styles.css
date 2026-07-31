@@ -617,28 +617,40 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .vdot {
   flex: 0 0 auto;
-  width: 1.45rem; height: 2rem;   /* ~23×32px tap target; 8 of them still fit a small phone */
+  width: 1.5rem; height: 2rem;    /* 24×32px — WCAG 2.5.8 target minimum, without leaning on the
+                                     spacing exception. 8 of these plus the row's margins is
+                                     ~234px, still inside a 320px viewport. */
   padding: 0; border: 0; background: none;
-  display: grid; place-items: center;
+  /* A bare button keeps -webkit-appearance: push-button on iOS, which imposes an
+     internal box of its own and pushes the dot off centre. Every other button in
+     here escapes that by setting a border and a background; this one has neither. */
+  appearance: none; -webkit-appearance: none;
+  display: flex; align-items: center; justify-content: center;
+  line-height: 0;                 /* no text, so no baseline strut to nudge the dot */
   touch-action: manipulation;     /* a tap, never a drag — same as .earn-close */
 }
+/* Sizes are written out per state rather than driven by a --d custom property:
+   unregistered custom properties substitute at computed-value time, so the
+   width/height transitions below snap instead of interpolating — and they do it
+   exactly when the window shifts, which is when several dots resize at once. */
 .vdot::before {
   content: "";
-  width: var(--d, 0.5rem); height: var(--d, 0.5rem);
+  width: 0.5rem; height: 0.5rem;
   border-radius: 50%;
-  background: var(--muted); opacity: 0.45;
-  transition: width 160ms ease, height 160ms ease, background 160ms ease,
+  background-color: var(--muted); opacity: 0.45;
+  box-shadow: 0 0 0 0 transparent;   /* explicit start, so the active ring grows from something */
+  transition: width 160ms ease, height 160ms ease, background-color 160ms ease,
               opacity 160ms ease, box-shadow 160ms ease;
 }
 /* Active: the sticker language scaled down — a 3px border and the hard offset
    shadow read as a smudge at this size, so it takes a thin ring instead. */
 .vdot.is-active::before {
-  --d: 0.62rem;
-  background: var(--brand); opacity: 1;
+  width: 0.62rem; height: 0.62rem;
+  background-color: var(--brand); opacity: 1;
   box-shadow: 0 0 0 1.5px var(--edge);
 }
 /* window edge with more spots beyond it */
-.vdot.is-edge::before { --d: 0.32rem; opacity: 0.3; }
+.vdot.is-edge::before { width: 0.32rem; height: 0.32rem; opacity: 0.3; }
 @media (prefers-reduced-motion: reduce) { .vdot::before { transition: none; } }
 
 /* name, points, and address stack at the top; the map sits at the bottom */

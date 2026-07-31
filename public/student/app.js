@@ -1748,19 +1748,38 @@ function dotWindowStart(n, i, prevStart) {
   return clampNum(s, 0, n - DOT_CAP);
 }
 
-// Rebuilt with the carousel: renderVendors() empties the scroller, which resets
-// scrollLeft to 0, so the active index goes back to the first card with it.
+// Rebuilt with the carousel. Note that emptying and refilling the scroller in one
+// task does NOT reset its scrollLeft — the browser never lays out against the empty
+// element, so it never clamps the offset, and no scroll event fires either. The
+// card on screen therefore survives a rebuild and the active dot has to be read
+// back from the scroller rather than assumed (see below).
 function renderVendorDots() {
   cancelAnimationFrame(dotsRaf); dotsRaf = 0;   // a frame queued against the old cards
   endDotJump();
   dotSnaps = [];                                 // dirty; measured on demand, see syncDots
   const row = $('vendor-dots');
+  const wrap = $('vendor-carousel');
   const n = allVendors.length;
   row.hidden = n < 2;                            // 0 or 1 spots: nothing to page through
   row.innerHTML = '';
   dotStart = 0;
   dotActive = 0;
   if (n < 2) return;
+
+  // Read the carousel's position back rather than assuming it reset. Emptying a
+  // scroller does NOT reliably zero scrollLeft when it is refilled in the same
+  // task, so after backing out of a vendor screen (loadVendors → renderVendors)
+  // the card on screen is still the one you left from — and defaulting to 0 lit
+  // the first dot while a different card was in view.
+  // Guarded on the carousel having a width: this also runs from socket pushes
+  // while #home is hidden, where [hidden] makes every offset read 0. In that case
+  // dotSnaps stays dirty and the first scroll (or the next rebuild, once home is
+  // back on screen) corrects it.
+  if (wrap.clientWidth > 0) {
+    measureDotSnaps();
+    dotActive = activeFromScroll();
+    dotStart = dotWindowStart(n, dotActive, dotActive - Math.floor(DOT_CAP / 2));
+  }
 
   for (let k = dotStart; k < Math.min(n, dotStart + DOT_CAP); k += 1) {
     const b = document.createElement('button');
@@ -1836,15 +1855,35 @@ function syncDots() {
   paintDots();
 }
 
+// Re-derive the active dot from where the carousel actually sits, ignoring the
+// tapped-dot guard. Idempotent, and a no-op while #home is hidden — [hidden]
+// makes every offset read 0, and measuring then would poison dotSnaps with a
+// full-length row of zeros that nothing would ever re-measure.
+function dotsFromScroll() {
+  const n = allVendors.length;
+  if (n < 2) return;
+  const wrap = $('vendor-carousel');
+  if (!wrap.clientWidth) return;
+  if (dotSnaps.length !== n) measureDotSnaps();
+  dotActive = activeFromScroll();
+  dotStart = dotWindowStart(n, dotActive, dotStart);
+  paintDots();
+}
+
 // Release the tapped-dot guard, whichever way the jump ended, and take that
 // jump's listeners with it — scrollend is not universal, so a `once` listener
 // waiting on it would otherwise pile up one per tap on the browsers that lack it.
-function endDotJump() {
+// `resync` re-reads the carousel: an INTERRUPTED jump (wheel-scrolled away
+// mid-flight, or a finger that cancelled the smooth scroll) never reaches its
+// target, so every scroll event on the way was swallowed by the guard and
+// dotActive is left pointing at a card that is no longer on screen.
+function endDotJump(resync = false) {
   dotJump = null;
   clearTimeout(dotJumpTimer);
   dotJumpTimer = null;
   dotJumpAbort?.abort();
   dotJumpAbort = null;
+  if (resync) dotsFromScroll();
 }
 
 function onDotTap(e) {
@@ -1866,9 +1905,11 @@ function onDotTap(e) {
   // release on either, with the timer as the backstop that always fires.
   dotJumpAbort = new AbortController();
   const { signal } = dotJumpAbort;
-  wrap.addEventListener('scrollend', endDotJump, { once: true, signal });
-  wrap.addEventListener('touchstart', endDotJump, { once: true, passive: true, signal });
-  dotJumpTimer = setTimeout(endDotJump, 700);
+  const release = () => endDotJump(true);   // re-read the carousel: the jump may have been cut short
+  wrap.addEventListener('scrollend', release, { once: true, signal });
+  wrap.addEventListener('touchstart', release, { once: true, passive: true, signal });
+  wrap.addEventListener('wheel', release, { once: true, passive: true, signal });   // trackpad/mouse has no touchstart
+  dotJumpTimer = setTimeout(release, 700);
 }
 
 // Live-patch just the points number on a card (used by socket pushes on home).
@@ -1922,6 +1963,7 @@ function backToHome() {
   $('home').hidden = false;
   loadVendors();                              // refresh card balances on the way back
   $('tab-home').scrollTop = 0;
+  dotsFromScroll();                           // #home is visible again — see endPaneSlide
 }
 
 // End the in-flight pane slide: transition listeners off, classes and inline
@@ -1940,6 +1982,11 @@ function endPaneSlide(hideOutgoing = true) {
   outgoing.style.transform = '';
   if (hideOutgoing) outgoing.hidden = true;
   page.scrollTop = 0;
+  // The carousel keeps its scroll position while the pane is away, so the dots
+  // are re-read the moment it is back on screen rather than waiting on the next
+  // loadVendors() to land — that fetch can fail, and the pager would sit on the
+  // wrong card until the user scrolled. A no-op when #home is not the pane showing.
+  dotsFromScroll();
 }
 
 // Slide between the two Home-tab panes. `incoming` enters from `dir` (1 = from
@@ -1955,6 +2002,7 @@ function slidePanes(incoming, outgoing, dir) {
     incoming.hidden = false;
     outgoing.hidden = true;
     page.scrollTop = 0;
+    dotsFromScroll();     // this path skips endPaneSlide, so re-read the dots here too
     return;
   }
 
