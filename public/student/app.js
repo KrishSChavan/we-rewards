@@ -338,6 +338,7 @@ function render(session) {
     communityPoints = 0;
     communityReady = false; // same: the next sign-in paints its count, no ticker
     $('community-balance').textContent = '0';   // on-screen, so it has to be cleared
+    showCommunityAmount(false); // …and back behind its placeholder, or the next student reads that 0 as theirs
     resetTier();            // …as is the tier chip on the pill above it
     allVendors = [];
     resetVendorSearch();        // …and unpaint the cards, or the next student reads them
@@ -1437,7 +1438,10 @@ async function loadTier() {
     if (!res.ok) throw new Error();
     renderTier(await res.json());
   } catch {
-    // keep the last state (or stay hidden) on a transient failure
+    // keep the last state (or stay hidden) on a transient failure — but drop
+    // the placeholder either way. The chip is allowed to be absent; a
+    // permanently shimmering stand-in for it is not.
+    $('hub-tier-skel').hidden = true;
   }
 }
 
@@ -1498,6 +1502,7 @@ function renderTier(t) {
     chip.classList.add(`t${t.tier}`);
     chip.hidden = false;
   }
+  $('hub-tier-skel').hidden = true;   // the real chip is up; its stand-in steps aside
 
   $('tier-bar').hidden = false;
   renderLevers(t);
@@ -1572,6 +1577,7 @@ function resetTier() {
   $('tier-levers').hidden = true;
   $('hub-tier').hidden = true;
   $('hub-tier-panel').hidden = true;
+  $('hub-tier-skel').hidden = false;   // back to first-load state, like dropHistory()
 }
 
 /* ---------- shared info popovers (tier meter + community points) ----------
@@ -1763,6 +1769,14 @@ function onHubDragEnd(e) {
    on an award or a move, and this refetches whenever it doesn't (an undo, a
    reconnect). */
 
+// Reveal the amount and drop its placeholder. Idempotent, and called from both
+// the success and the failure path: a fetch that never lands must not leave the
+// card shimmering for the rest of the session.
+function showCommunityAmount(on) {
+  $('community-skel').hidden = on;
+  $('community-amount').hidden = !on;
+}
+
 async function loadCommunity() {
   try {
     const res = await authFetch('/api/me/community');
@@ -1770,6 +1784,9 @@ async function loadCommunity() {
     setCommunityPoints((await res.json()).balance ?? 0);
   } catch {
     // keep the last painted count on a transient failure, like loadTier() does
+    // — but if there has never been one, show the card's own 0 rather than a
+    // placeholder for a number that isn't coming.
+    showCommunityAmount(true);
   }
 }
 
@@ -1787,6 +1804,7 @@ function setCommunityPoints(next) {
   if (!communityReady) {          // first paint: just show it, no ticker
     communityReady = true;
     el.textContent = next;
+    showCommunityAmount(true);    // …and retire the placeholder it was hiding behind
     return;
   }
   if (next === prev) return;
@@ -1976,6 +1994,15 @@ function moveToast(amount, name) {
 
 // Fetch every vendor + this student's balance at each, render the cards, and
 // (if a vendor screen is open) keep that screen's items + meter in sync.
+// Swap the spots row between its placeholder cards and the real carousel. Only
+// one of the two is ever mounted: both carry the row's padding, and the
+// carousel is measured by the page dots the moment it has cards in it — a
+// scroller sitting [hidden] under the skeleton would measure as a row of zeros.
+function showVendorSkeleton(on) {
+  $('vendor-skel').hidden = !on;
+  $('vendor-carousel').hidden = on;
+}
+
 async function loadVendors() {
   try {
     const res = await authFetch('/api/me/balances');
@@ -1988,6 +2015,10 @@ async function loadVendors() {
       if (v) { vendor = v; renderItems(); renderPunchUi(); applyBalance(v.balance ?? 0); }
     }
   } catch {
+    // The placeholders have to come down here too, or a student with no
+    // connection is left watching two cards shimmer forever with the error
+    // message stranded underneath them.
+    showVendorSkeleton(false);
     $('vendors-empty').textContent = 'Couldn’t load your spots. Check your connection and try again.';
     $('vendors-empty').hidden = false;
   }
@@ -2120,6 +2151,9 @@ function paintVendorRow() {
 }
 
 function renderVendors() {
+  // First, and before anything measures: applyVendorFilter() ends in
+  // renderVendorDots(), which reads the carousel's geometry back off the page.
+  showVendorSkeleton(false);
   syncVendorCards();
   buildVendorIndex();
   syncVendorSearchRow();
@@ -2331,6 +2365,7 @@ function resetVendorSearch() {
   vendorIndex.sig = '';
   shownVendors = [];
   renderVendorDots();
+  showVendorSkeleton(true);   // back to first-load state for whoever signs in next
 }
 
 /* ---------- carousel page dots ----------

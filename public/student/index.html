@@ -162,6 +162,10 @@
                 <span class="sr-only">Your rewards:</span>
                 <span class="brand-word">We<em>Rewards</em></span>
                 <span class="hub-summary">
+                  <!-- Stands in for the chip until /api/me/tier lands, sized to
+                       it so the row doesn't jump. renderTier drops it; resetTier
+                       puts it back for the next sign-in. -->
+                  <span id="hub-tier-skel" class="skel hub-tier-skel" aria-hidden="true"></span>
                   <span id="hub-tier" class="hub-tier t1" hidden>
                     <i aria-hidden="true">★</i><span id="hub-tier-mult">1x</span>
                   </span>
@@ -196,7 +200,13 @@
                 <span class="cc-icon" aria-hidden="true">🫂</span>
                 <span class="cc-body">
                   <span class="cc-label">COMMUNITY POINTS</span>
-                  <span class="cc-amount">
+                  <!-- The amount starts hidden behind its skeleton: the 0 below
+                       is the markup's placeholder, not this student's balance,
+                       and painting it would say "you have nothing" to someone
+                       who has 340. setCommunityPoints swaps the two on the
+                       first real count. -->
+                  <span id="community-skel" class="skel cc-amount-skel" aria-hidden="true"></span>
+                  <span id="community-amount" class="cc-amount" hidden>
                     <span id="community-balance" class="cc-num">0</span><small>pts</small>
                   </span>
                   <span class="cc-sub">10% back · spend at any spot</span>
@@ -321,8 +331,38 @@
                           aria-label="Clear search" hidden>✕</button>
                 </div>
               </div>
+              <!-- Two placeholder cards holding the row's height and shape until
+                   /api/me/balances lands. Static markup, not built by JS, so it
+                   is on screen in the first paint of the shell rather than a
+                   frame after it. The real carousel below is un-mounted while
+                   this is up (see showVendorSkeleton) — one row of padding at a
+                   time, and nothing measures a scroller that isn't showing. -->
+              <div id="vendor-skel" class="vendor-skel" aria-hidden="true">
+                <div class="vskel-row">
+                  <div class="vskel-card">
+                    <span class="vskel-body">
+                      <span class="skel vskel-name"></span>
+                      <span class="skel vskel-num"></span>
+                      <span class="skel vskel-addr"></span>
+                    </span>
+                    <span class="skel vskel-map"></span>
+                  </div>
+                  <div class="vskel-card">
+                    <span class="vskel-body">
+                      <span class="skel vskel-name"></span>
+                      <span class="skel vskel-num"></span>
+                      <span class="skel vskel-addr"></span>
+                    </span>
+                    <span class="skel vskel-map"></span>
+                  </div>
+                </div>
+                <!-- Holds the page dots' row open. Empty on purpose: the number
+                     of dots is exactly what we don't know yet, and inventing one
+                     paints a pager that is wrong more often than not. -->
+                <div class="vskel-dots"></div>
+              </div>
               <!-- vendor cards render here: horizontal, scroll-snapped -->
-              <div id="vendor-carousel" class="vendor-carousel"></div>
+              <div id="vendor-carousel" class="vendor-carousel" hidden></div>
               <!-- Filtering swaps the cards out silently, so the result count is
                    announced here instead. Off-screen, not [hidden]: a hidden
                    live region is not announced at all. Written only while a
@@ -408,7 +448,38 @@
               <p class="page-sub">Your last 30 days</p>
             </header>
             <div id="history-list" class="history-list"></div>
-            <p id="history-loading" class="empty-state">Loading…</p>
+            <!-- Still #history-loading, so every hidden flag app.js already sets
+                 on the old "Loading…" line keeps working — it just has a shape
+                 now. Day divider included: the real list is grouped under one,
+                 and without it every row would shift down when the fetch lands. -->
+            <div id="history-loading" class="history-skel" aria-hidden="true">
+              <span class="skel hskel-day"></span>
+              <div class="hskel-row">
+                <span class="skel hskel-icon"></span>
+                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+                <span class="skel hskel-pts"></span>
+              </div>
+              <div class="hskel-row">
+                <span class="skel hskel-icon"></span>
+                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+                <span class="skel hskel-pts"></span>
+              </div>
+              <div class="hskel-row">
+                <span class="skel hskel-icon"></span>
+                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+                <span class="skel hskel-pts"></span>
+              </div>
+              <div class="hskel-row">
+                <span class="skel hskel-icon"></span>
+                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+                <span class="skel hskel-pts"></span>
+              </div>
+              <div class="hskel-row">
+                <span class="skel hskel-icon"></span>
+                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+                <span class="skel hskel-pts"></span>
+              </div>
+            </div>
             <p id="history-empty" class="empty-state" hidden>No activity in the last 30 days.</p>
           </div>
         </section>

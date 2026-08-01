@@ -234,6 +234,113 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .footer-legal { max-width: 72rem; margin: 1.75rem auto 0; text-align: center; }
 .footer-legal a { color: var(--brand); font-weight: 700; }
 
+/* ---------- skeleton loading ----------
+   The signed-in shell appears before any of its numbers do: the balance, the
+   spots, and the activity list each arrive over their own fetch. Without
+   placeholders that window shows a zero balance and two empty gaps, then
+   rearranges — so every async surface holds a skeleton shaped like what is
+   coming instead.
+
+   Two rules everything below follows:
+     · the CHROME is real, only the CONTENTS are grey. A skeleton spot is a
+       genuine sticker card — same 3px border, radius, and hard shadow — with
+       grey bars where the name and points go. It reads as the card arriving
+       rather than as a placeholder that will be swapped out for one.
+     · nothing here is announced. Every skeleton is aria-hidden, so a screen
+       reader hears the list once, when it is real, instead of hearing a wall of
+       empty boxes first.
+
+   .skel is the primitive: a grey block with a sheen sweeping across it. The
+   sweep is a transform on a pseudo-element rather than an animated
+   background-position, so it stays on the compositor — the History tab puts a
+   dozen of these on screen at once, and a dozen repainting gradients is a
+   visible stutter on a cheap phone. --skel-delay staggers a row of them so they
+   don't pulse in lockstep, which reads as one flashing block. */
+:root {
+  --skel: #e2e8f1;
+  --skel-sheen: rgba(255, 255, 255, 0.72);
+}
+:root[data-theme="dark"] {
+  --skel: #26364f;
+  --skel-sheen: rgba(255, 255, 255, 0.07);
+}
+
+.skel {
+  position: relative; overflow: hidden;
+  background: var(--skel);
+  border-radius: 0.45rem;
+}
+.skel::after {
+  content: ''; position: absolute; inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--skel-sheen), transparent);
+  animation: skel-sweep 1.4s var(--skel-delay, 0s) ease-in-out infinite;
+}
+@keyframes skel-sweep { to { transform: translateX(100%); } }
+/* Static grey for anyone who asked for less motion — the shape still says
+   "loading", which is the part that carries the meaning. */
+@media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
+
+/* ---------- skeleton: the spots row ----------
+   Its own element rather than placeholder children inside #vendor-carousel:
+   the carousel is a pooled, scroll-snapped, dot-paged scroller, and cards it
+   didn't build have no business inside it (paintVendorRow would evict them,
+   measureDotSnaps would have to skip them). The real carousel is un-mounted
+   while this is up, so its padding doesn't stack under the placeholders.
+
+   It stands in for BOTH rows the spots block shows — the cards and the pager
+   under them — because the pager is 2.9rem of height that only appears once
+   there are 2+ spots to page through. Reserve it and the swap is height-neutral
+   for anyone with more than one spot, which is everyone: /api/me/balances
+   returns every active vendor, not just the ones you've visited. No auto
+   margins anywhere in here — see .home-main on why a fourth one would pull the
+   home screen's three gaps out of true. */
+.vendor-skel[hidden] { display: none; }
+.vskel-row {
+  display: flex; gap: 1rem;
+  padding: 0.4rem 1.3rem 0.45rem;   /* .vendor-carousel, dots-showing variant */
+  overflow: hidden;                 /* decorative — never a scroller */
+}
+.vskel-row > :nth-child(2) { --skel-delay: 0.12s; }
+.vskel-dots { height: 2rem; margin: 0 1.3rem 0.9rem; }   /* .vendor-dots, to the pixel */
+
+/* mirrors .vendor-card, map variant (the designed-for case) */
+.vskel-card {
+  flex: 0 0 75%; max-width: 300px; min-height: 200px;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.3rem;
+  box-shadow: 0 5px 0 var(--edge);
+}
+.vskel-body {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+  gap: 0.35rem; padding: 1.1rem 1.3rem;
+}
+.vskel-name { width: 62%; height: 1.68rem; }              /* .vc-name: 1.5rem x 1.12 */
+.vskel-num { width: 45%; height: 3rem; }                  /* .vc-num */
+.vskel-addr { width: 82%; height: 0.82rem; margin-top: 0.6rem; border-radius: 0.3rem; }
+.vskel-map { flex: 0 0 150px; border-radius: 0; border-top: 2px solid var(--edge); }
+
+/* ---------- skeleton: the community balance ----------
+   A number nobody has yet is worse than no number: painting the 0 this card
+   ships with, then ticking it up to 340, tells the student they had nothing.
+   The whole amount row is swapped, so "pts" doesn't sit beside a grey bar. */
+.cc-amount[hidden] { display: none; }
+.cc-amount-skel { width: 5.4rem; height: 1.85rem; border-radius: 0.4rem; }
+
+/* ---------- skeleton: the tier chip ----------
+   Sits on the navy pill, so it carries its own light-on-dark palette — the page
+   grey would read as a hole punched in the wordmark. Sized to the chip it
+   stands in for (see .hub-tier) so nothing on that row moves when it resolves. */
+.hub-tier-skel {
+  flex: 0 0 auto; width: 3.1rem; height: 1.55rem;
+  border-radius: 2em;
+  background: rgba(255, 255, 255, 0.16);
+}
+.hub-tier-skel::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.24), transparent);
+}
+
 /* ---------- signed-in: home (vendor carousel) ---------- */
 
 #home {
@@ -1727,6 +1834,49 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* a community transfer: brand-coloured like the community counter it came from */
 .history-row.transfer .hr-icon { background: var(--sky); }
 .history-row.transfer .hr-points { color: var(--brand); }
+
+/* ---------- skeleton: the activity list ----------
+   This one is #history-loading itself — the element that used to be the word
+   "Loading…" — so every hidden/shown flag app.js already sets on it keeps
+   working untouched, including the sign-out unpaint in dropHistory().
+
+   The day divider is part of the shape: the real list is grouped under
+   "TODAY" / "YESTERDAY" headings, and a skeleton of bare rows would have the
+   whole list shift down by one heading's height the moment it resolved. Bar
+   widths vary per row because five identical rows read as a loading GRAPHIC;
+   uneven ones read as text that hasn't arrived. Row height itself needs no
+   tuning — like the real rows, it is set by the 2.7rem icon square, not by the
+   two bars beside it. */
+.history-skel { display: flex; flex-direction: column; gap: 0.55rem; }
+.history-skel[hidden] { display: none; }
+.hskel-day {
+  width: 4.4rem; height: 0.85rem; border-radius: 0.3rem;   /* .history-day: 0.72rem of caps */
+  margin-bottom: 0.25rem;          /* …and its bottom margin */
+}
+.hskel-row {                        /* mirrors .history-row */
+  display: flex; align-items: center; gap: 0.85rem;
+  background: var(--card); border: 2.5px solid var(--edge); border-radius: 1rem;
+  padding: 0.8rem 1rem; box-shadow: 0 3px 0 var(--edge);
+}
+.hskel-icon { flex-shrink: 0; width: 2.7rem; height: 2.7rem; border-radius: 0.75rem; }
+.hskel-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.34rem; }
+.hskel-title { height: 1rem; width: 64%; border-radius: 0.3rem; }
+.hskel-sub { height: 0.82rem; width: 46%; border-radius: 0.3rem; }
+.hskel-pts { flex-shrink: 0; width: 3.1rem; height: 1.05rem; border-radius: 0.3rem; }
+
+.history-skel > :nth-child(2) { --skel-delay: 0.07s; }
+.history-skel > :nth-child(3) { --skel-delay: 0.14s; }
+.history-skel > :nth-child(4) { --skel-delay: 0.21s; }
+.history-skel > :nth-child(5) { --skel-delay: 0.28s; }
+.history-skel > :nth-child(6) { --skel-delay: 0.35s; }
+.history-skel > :nth-child(3) .hskel-title { width: 52%; }
+.history-skel > :nth-child(3) .hskel-sub { width: 60%; }
+.history-skel > :nth-child(4) .hskel-title { width: 72%; }
+.history-skel > :nth-child(4) .hskel-sub { width: 38%; }
+.history-skel > :nth-child(5) .hskel-title { width: 45%; }
+.history-skel > :nth-child(5) .hskel-sub { width: 55%; }
+.history-skel > :nth-child(6) .hskel-title { width: 66%; }
+.history-skel > :nth-child(6) .hskel-sub { width: 42%; }
 
 /* ---------- account ---------- */
 
