@@ -37,6 +37,19 @@
 </head>
 <body>
 
+  <!-- ================= BOOT SPLASH =================
+       Both #landing and #app start hidden, so without this the first paint is a
+       bare paper-colored page until the session check comes back. This covers
+       that gap and slides away once app.js knows which of the two to show. It is
+       NOT [hidden]: it must be on screen at first paint, before any script runs.
+       app.js (see Splash) is the only thing that takes it down. -->
+  <div id="splash" role="status" aria-live="polite" aria-label="Loading WeRewards">
+    <div class="splash-inner">
+      <span class="splash-wordmark">We<em>Rewards</em></span>
+      <span class="splash-bar" aria-hidden="true"><i></i></span>
+    </div>
+  </div>
+
   <!-- ================= LANDING + AUTH ================= -->
   <div id="landing" hidden>
     <!-- Nav + hero are grouped so the CSS can size them together as one

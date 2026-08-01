@@ -91,10 +91,59 @@ function track(event, props) {
   })();
 }
 
+/* ---------- boot splash ---------- */
+// index.html paints #splash before any script runs, so the first frame is
+// branded rather than the bare paper page you'd otherwise get while both
+// #landing and #app are still hidden. It comes down at exactly one moment: when
+// render() (or the consent gate) has settled which screen this visitor belongs
+// on. That ordering is the point — hiding it any earlier would flash the landing
+// page at someone whose stored session was about to sign them straight in.
+const Splash = (() => {
+  const MIN_MS = 500;    // a splash that blinks past in 80ms reads as a glitch, not a load
+  const MAX_MS = 9000;   // backstop, see armBackstop
+  const shownAt = Date.now();
+  let leaving = false;
+  let backstop = null;
+
+  function hide() {
+    const el = $('splash');
+    if (leaving || !el) return;   // render() runs again on every token refresh
+    leaving = true;
+    clearTimeout(backstop);
+    setTimeout(() => {
+      el.classList.add('is-hiding');
+      // Remove it rather than leave a transparent full-screen layer parked over
+      // the app, which would swallow every tap. Longer than the 0.55s slide.
+      setTimeout(() => el.remove(), 700);
+    }, Math.max(0, MIN_MS - (Date.now() - shownAt)));
+  }
+
+  // If boot() dies before render() ever runs — /api/public-config down, the
+  // supabase CDN blocked — nothing would ever call hide() and the splash would
+  // sit there for good. Fall back to the landing page carrying the same message
+  // a failed consent check shows.
+  function armBackstop() {
+    backstop = setTimeout(() => {
+      if (leaving) return;
+      $('landing').hidden = false;
+      // A consent check still in flight isn't a failure, just a slow one, and it
+      // ends by calling render() itself. Uncover it without claiming it broke.
+      if (!consentChecking) {
+        $('auth-error').textContent = 'Couldn’t reach WeRewards. Check your connection and try again.';
+        $('auth-error').hidden = false;
+      }
+      hide();
+    }, MAX_MS);
+  }
+
+  return { hide, armBackstop };
+})();
+
 /* ---------- boot ---------- */
 
 (async function boot() {
   installErrorReporter();
+  Splash.armBackstop();            // nothing below this may leave the splash up forever
   capturePunchLink();              // stash a camera-scanned ?punch= link BEFORE anything can navigate it away
   pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
@@ -327,6 +376,7 @@ function render(session) {
   $('app').hidden = !ready;
 
   if (!session) {
+    Splash.hide();              // settled: this visitor gets the landing page
     endPaneSlide(false);        // a drill-in still mid-slide would re-hide #home behind us
     $('home').hidden = false;   // reset the Home tab's sub-view for the next sign-in
     $('vendor').hidden = true;
@@ -363,10 +413,14 @@ function render(session) {
   }
 
   // Signed in but unverified: ask the server, then this function runs again.
+  // The splash stays up through that round trip on purpose — it's the same
+  // "still deciding" state as the session check itself, and dropping it here
+  // would show the landing page to someone who is already signed in.
   if (!ready) {
     void ensureConsent(session);
     return;
   }
+  Splash.hide();                // settled: this visitor gets the app shell
   // A fresh sign-in lands on the Home tab, carousel view. onAuthStateChange also
   // fires on silent token refreshes — those must NOT yank the user off a vendor
   // screen or their current tab, so only reset when the app was hidden.
@@ -548,12 +602,16 @@ async function ensureConsent(session) {
     $('landing').hidden = false;
     $('auth-error').textContent = 'Couldn’t reach WeRewards. Check your connection and try again.';
     $('auth-error').hidden = false;
+    Splash.hide();   // settled, badly — but they must see the error, not a spinner
   } finally {
     consentChecking = false;
   }
 }
 
 function openConsentModal(info) {
+  // The gate is the answer for this visitor, so the splash has to come down —
+  // it outranks every overlay in the stylesheet and would bury the modal.
+  Splash.hide();
   consentIsRevision = Boolean(info?.isRevision);
 
   // Someone re-consenting after a revision already has an account and points,

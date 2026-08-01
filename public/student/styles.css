@@ -83,6 +83,75 @@ body {
 button { font-family: inherit; border: none; cursor: pointer; background: none; }
 [hidden] { display: none !important; }
 
+/* ---------- boot splash ----------
+   Covers the gap between first paint and app.js deciding whether this visitor
+   sees the landing page or the app shell. Painted from the stylesheet (no
+   [hidden], no JS) so it is already up on the very first frame; app.js adds
+   .is-hiding, which slides the whole sheet up off the top, and then removes the
+   element. z-index sits above everything else here (the highest in this file is
+   the consent modal at 50) — nothing may draw over the splash while it's up. */
+
+#splash {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--paper);
+  /* the slide-away. transform+opacity only, so it composites on the GPU and
+     doesn't fight the landing page painting underneath it. */
+  transition: transform 0.55s cubic-bezier(0.65, 0, 0.35, 1), opacity 0.45s ease 0.1s;
+}
+#splash.is-hiding { transform: translateY(-100%); opacity: 0; }
+
+.splash-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 1.4rem;
+  /* nudged above true center: optically centered reads better than measured */
+  margin-bottom: 6vh;
+}
+
+/* Same treatment as the landing nav's .wordmark, scaled up — this is the piece
+   that carries over visually once the sheet lifts. */
+.splash-wordmark {
+  font-weight: 900; letter-spacing: 0.12em;
+  font-size: clamp(1.5rem, 6vw, 2.1rem);
+  color: var(--ink);
+  animation: splash-rise 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.splash-wordmark em {
+  font-style: normal; color: var(--navy); background: var(--sky);
+  padding: 0.1em 0.35em; border-radius: 0.3em;
+}
+
+/* Indeterminate bar rather than a spinner: it matches the chunky, flat shapes
+   the rest of the app uses, and it can't be mistaken for a tappable control. */
+.splash-bar {
+  position: relative; overflow: hidden;
+  width: 7.5rem; height: 5px; border-radius: 999px;
+  background: var(--hairline);
+}
+.splash-bar i {
+  position: absolute; inset: 0 auto 0 0;
+  width: 45%; border-radius: 999px;
+  background: var(--brand);
+  animation: splash-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes splash-rise {
+  from { opacity: 0; transform: translateY(0.6rem); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes splash-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(222%); }
+}
+
+/* Less motion: the sheet still leaves, it just fades instead of sliding, and
+   the bar holds a static fill. The shape still says "loading". */
+@media (prefers-reduced-motion: reduce) {
+  #splash { transition: opacity 0.3s ease; }
+  #splash.is-hiding { transform: none; opacity: 0; }
+  .splash-wordmark { animation: none; }
+  .splash-bar i { animation: none; width: 100%; opacity: 0.5; }
+}
+
 /* ---------- nav ---------- */
 
 .nav {
