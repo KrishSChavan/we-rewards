@@ -68,7 +68,7 @@ function installErrorReporter() {
 }
 
 const screens = [
-  'screen-login', 'screen-scan', 'screen-pad',
+  'screen-login', 'screen-recover', 'screen-scan', 'screen-pad',
   'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
   'screen-settings', 'screen-punch',
 ];
@@ -86,6 +86,12 @@ const screens = [
 
   $('login-btn').addEventListener('click', signIn);
   $('login-password').addEventListener('keydown', (e) => e.key === 'Enter' && signIn());
+  $('login-forgot').addEventListener('click', enterRecover);
+  $('recover-back').addEventListener('click', leaveRecover);
+  $('recover-btn').addEventListener('click', submitRecover);
+  $('recover-confirm').addEventListener('keydown', (e) => e.key === 'Enter' && submitRecover());
+  // Show the code the way it was read out (grouped, upper case) while it's typed.
+  $('recover-code').addEventListener('input', (e) => { e.target.value = formatResetCodeInput(e.target.value); });
   $('tab-award').addEventListener('click', () => switchMode('award'));
   $('tab-redeem').addEventListener('click', () => switchMode('redeem'));
   $('tab-punch').addEventListener('click', () => switchMode('punch'));
@@ -157,6 +163,7 @@ async function signIn() {
   const btn = $('login-btn');
   btn.disabled = true;
   $('login-error').hidden = true;
+  $('login-success').hidden = true;   // clear the "password updated" note once they act on it
   const { error } = await sb.auth.signInWithPassword({
     email: $('login-email').value.trim(),
     password: $('login-password').value,
@@ -168,6 +175,115 @@ async function signIn() {
     return;
   }
   await enterApp();
+}
+
+/* ---------- forgot password ----------
+   There is no recovery email in this stack (no SMTP, and vendors sign in with a
+   password rather than Google), so recovery is out-of-band: the operator mints a
+   one-time code in /admin, reads it down the phone, and it gets typed in here.
+   POST /api/vendor/recover verifies it and sets the new password.
+
+   The server treats every failure identically on purpose — unknown email, wrong
+   code, expired, already used — so this screen must not try to explain which one
+   it was. Just show what came back. */
+
+function enterRecover() {
+  // Carry over whatever they already typed on the login card.
+  $('recover-email').value = $('login-email').value.trim();
+  clearRecoverFields();
+  $('recover-error').hidden = true;
+  $('recover-success').hidden = true;
+  $('recover-btn').disabled = false;
+  show('screen-recover');
+  $('recover-code').focus();
+}
+
+function leaveRecover() {
+  clearRecoverFields();
+  $('login-error').hidden = true;
+  // Also drop any "Password updated" note from an earlier reset — backing out of
+  // a second attempt must not leave a green banner claiming this one succeeded.
+  $('login-success').hidden = true;
+  show('screen-login');
+}
+
+function clearRecoverFields() {
+  // Never leave a live code or a typed password sitting in the DOM behind
+  // another screen — same reasoning as the sign-out cleanup below.
+  $('recover-code').value = '';
+  $('recover-password').value = '';
+  $('recover-confirm').value = '';
+}
+
+// Cosmetic echo of the code's printed shape while it is typed: strip
+// separators, upper-case, re-group as XXXX-XXXX. The authoritative parse is
+// normalizeResetCode in src/lib/reset-codes.js, which also folds look-alikes
+// (O to 0, I to 1, ...) — so a vendor who types what they heard still matches
+// even if this preview shows the letter.
+function formatResetCodeInput(raw) {
+  const bare = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  return bare.length > 4 ? `${bare.slice(0, 4)}-${bare.slice(4)}` : bare;
+}
+
+function recoverError(msg) {
+  const el = $('recover-error');
+  el.textContent = msg;
+  el.hidden = false;
+  $('recover-btn').disabled = false;
+}
+
+async function submitRecover() {
+  const btn = $('recover-btn');
+  $('recover-error').hidden = true;
+  $('recover-success').hidden = true;
+
+  const email = $('recover-email').value.trim();
+  const code = $('recover-code').value.trim();
+  const password = $('recover-password').value;
+  const confirm = $('recover-confirm').value;
+
+  // Local checks first so an obvious typo never spends one of the code's five
+  // server-side attempts.
+  if (!email || !code) return recoverError('Enter your email and the reset code.');
+  if (password.length < 8) return recoverError('Password must be at least 8 characters.');
+  if (password.length > 72) return recoverError('Password must be 72 characters or fewer.');
+  if (password !== confirm) return recoverError('The two passwords don’t match.');
+
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/vendor/recover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code, newPassword: password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return recoverError(data.message || 'Couldn’t reset the password. Ask for a new code.');
+    }
+
+    const ok = $('recover-success');
+    ok.textContent = data.vendorName
+      ? `Password updated for ${data.vendorName}.`
+      : 'Password updated.';
+    ok.hidden = false;
+
+    // Hand them back to the login card with the email already filled in, so the
+    // only thing left to do is type the password they just chose.
+    const signedInEmail = email;
+    clearRecoverFields();
+    setTimeout(() => {
+      $('login-email').value = signedInEmail;
+      $('login-password').value = '';
+      $('login-error').hidden = true;
+      const note = $('login-success');
+      note.textContent = 'Password updated. Sign in with your new password.';
+      note.hidden = false;
+      show('screen-login');
+      $('login-password').focus();
+    }, 1200);
+  } catch {
+    recoverError('No connection. Check the internet and try again.');
+  }
 }
 
 async function enterApp() {
@@ -2246,6 +2362,11 @@ function resetToLogin() {
   $('login-email').value = '';
   $('login-password').value = '';
   $('login-error').hidden = true;
+  $('login-success').hidden = true;
+  $('recover-email').value = '';
+  clearRecoverFields();
+  $('recover-error').hidden = true;
+  $('recover-success').hidden = true;
   $('shell').hidden = true;
   show('screen-login');   // also stops the QR cameras, via syncScanners()
 }

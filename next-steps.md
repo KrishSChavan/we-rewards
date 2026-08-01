@@ -69,15 +69,33 @@ the vendor keeps working. Inline green/red feedback.
   will error; leave it off, or extend the form to collect the current password.
   Purely client-side, so nothing to deploy DB-side.
 
-### 2.2 Forgot-password reset (needs SMTP)  ⬜
-A vendor who forgets their password is stuck — reset requires sending an email,
-and **Supabase's built-in SMTP is rate-limited and not for production**.
-- **Do:** configure a transactional email provider in Supabase → Auth → SMTP
-  (Resend / Postmark / SendGrid). Then add a "Forgot password?" link on the
-  terminal sign-in that calls `sb.auth.resetPasswordForEmail(...)`, and a
-  reset-landing page that calls `updateUser`.
-- **Where:** Supabase dashboard (SMTP), terminal sign-in UI. This SMTP config
-  also unblocks any future email (vendor invites, etc.).
+### 2.2 Forgot-password reset (operator-issued code, no SMTP)  ✅ DONE
+A locked-out vendor recovers through the operator instead of through email, so
+this needs no SMTP provider at all. You mint a one-time code in /admin and read
+it to them on the phone; they type it into the terminal's **Forgot password?**
+screen with a new password. Every vendor is onboarded by hand from the
+Applications tab, so "the operator recognises them" is the trust anchor.
+
+- **Code:** 8 characters from a 29-symbol alphabet that drops the glyphs that get
+  misheard (O/Q, I/L, S, Z, B). Stored **only** as a bcrypt hash, displayed once,
+  30-minute TTL, single use, 5 guesses, and re-minting supersedes the old one.
+- **Where:** `supabase/migration-031.sql` (table + `vendor_reset_issue` /
+  `vendor_reset_begin` / `vendor_reset_consume` / `vendor_staff_emails`),
+  `src/lib/reset-codes.js`, `src/routes/vendor-recover.js` (public
+  `POST /api/vendor/recover`), `src/routes/admin.js`
+  (`POST /api/admin/vendors/:id/reset-code`), plus the terminal and dashboard UI.
+- **Deploy:** run `migration-031.sql` in the Supabase SQL Editor. Until you do,
+  the dashboard's Reset password button returns an error (the RPCs don't exist).
+- **Note:** the guess counter is enforced inside the RPC in a single statement,
+  so concurrent requests and IP rotation can't buy extra attempts. The per-IP
+  limiter (`recoverLimiter` in `server.js`) is the second, weaker fence.
+
+**Why not Google sign-in for vendors instead:** it strands any vendor whose email
+isn't a Google account, breaks when their personal Google differs from the
+business address they applied with (a new `auth.users` row with no `vendor_staff`
+link, i.e. a bare `NOT_VENDOR` 403), and weakens the shared counter tablet, since
+Google keeps its session and anyone could tap straight back in. Reasonable to add
+later as an *optional* second method; it does not replace this.
 
 ---
 

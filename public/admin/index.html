@@ -163,6 +163,40 @@
     </div>
   </div>
 
+  <!-- ===== VENDOR PASSWORD RESET ===== -->
+  <!-- Opened from a vendor row's "Reset password" button. There is no recovery
+       email in this stack, so this is the whole channel: mint a one-time code
+       here, read it to the vendor on the phone, they type it into the terminal's
+       "Forgot password?" form. The code is displayed ONCE and only its bcrypt
+       hash is stored — closing this without reading it out means minting another. -->
+  <div id="reset-modal" class="overlay" hidden>
+    <div class="reset-card" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+      <h2 id="reset-title">Reset password</h2>
+      <p id="reset-sub" class="muted"></p>
+
+      <!-- Only rendered when the vendor has more than one staff login. -->
+      <div id="reset-pick" class="reset-pick" hidden>
+        <p class="reset-pick-label">Which login?</p>
+        <div id="reset-pick-list"></div>
+      </div>
+
+      <div id="reset-result" hidden>
+        <p class="reset-code-label">Read this to the vendor</p>
+        <p id="reset-code" class="reset-code"></p>
+        <p id="reset-expiry" class="muted"></p>
+        <p class="reset-warn">Shown once. It is stored hashed, so it cannot be looked up again. If it gets lost, generate a new one.</p>
+      </div>
+
+      <p id="reset-error" class="field-error" role="alert" hidden></p>
+
+      <div class="push-actions">
+        <button id="reset-go" class="btn-primary" type="button">Generate code</button>
+        <button id="reset-copy" class="btn-ghost" type="button" hidden>Copy code</button>
+        <button id="reset-close" class="btn-ghost" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
           integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
           crossorigin="anonymous"></script>

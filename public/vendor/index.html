@@ -41,8 +41,45 @@
         <input id="login-password" type="password" autocomplete="current-password" />
       </label>
       <p id="login-error" class="field-error" hidden></p>
+      <p id="login-success" class="field-success" hidden></p>
       <button id="login-btn" class="btn-primary">Sign in</button>
       <p class="login-note">Sign in stays saved on this device.</p>
+      <button id="login-forgot" class="btn-ghost" type="button">Forgot password?</button>
+    </div>
+  </section>
+
+  <!-- ===== FORGOT PASSWORD =====
+       There is no recovery email in this stack. The operator mints a one-time
+       code in /admin and reads it to the vendor over the phone; it gets typed
+       in here. Server side: POST /api/vendor/recover (src/routes/vendor-recover.js). -->
+  <section id="screen-recover" class="screen" hidden>
+    <div class="login-card">
+      <p class="brand">WEREWARDS</p>
+      <h1>Reset your password</h1>
+      <p class="login-note">
+        Call or text the WeRewards team and ask for a reset code. We’ll read you
+        an 8-character code. Type it below with a new password. Codes last 30
+        minutes and work once.
+      </p>
+      <label>Email
+        <input id="recover-email" type="email" autocomplete="username" inputmode="email" />
+      </label>
+      <label>Reset code
+        <input id="recover-code" type="text" autocomplete="one-time-code" autocapitalize="characters"
+               spellcheck="false" maxlength="12" placeholder="e.g. K7M2-NP94" />
+      </label>
+      <label>New password
+        <input id="recover-password" type="password" autocomplete="new-password"
+               minlength="8" maxlength="72" placeholder="at least 8 characters" />
+      </label>
+      <label>Confirm new password
+        <input id="recover-confirm" type="password" autocomplete="new-password"
+               minlength="8" maxlength="72" placeholder="re-type it" />
+      </label>
+      <p id="recover-error" class="field-error" hidden></p>
+      <p id="recover-success" class="field-success" hidden></p>
+      <button id="recover-btn" class="btn-primary">Set new password</button>
+      <button id="recover-back" class="btn-ghost" type="button">Back to sign in</button>
     </div>
   </section>
 

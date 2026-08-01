@@ -205,6 +205,53 @@ h1, h3 { margin: 0; }
 .vendor-delete:disabled { opacity: 0.6; cursor: default; }
 .vendor-delete:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
 
+/* Neutral, not destructive: a reset changes a password, it doesn't remove
+   anything — so it must not read like Delete sitting next to it. */
+.vendor-reset {
+  flex-shrink: 0; font: inherit; font-size: 0.72rem; font-weight: 700; cursor: pointer;
+  padding: 0.35rem 0.6rem; border-radius: 8px;
+  background: transparent; color: var(--ink); border: 1px solid var(--line);
+}
+.vendor-reset:not(:disabled):hover { background: var(--panel-2); }
+.vendor-reset:disabled { opacity: 0.6; cursor: default; }
+.vendor-reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- vendor password-reset dialog ---------- */
+.reset-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+  padding: 1.75rem; width: min(440px, 100%);
+  animation: push-pop 0.18s ease-out;
+}
+@media (prefers-reduced-motion: reduce) { .reset-card { animation: none; } }
+.reset-card h2 { margin: 0; font-size: 1.25rem; font-weight: 900; }
+.reset-card .muted { font-size: 0.88rem; margin: 0.5rem 0 0; }
+
+.reset-pick { margin-top: 1rem; display: grid; gap: 0.4rem; }
+.reset-pick-label { margin: 0; font-size: 0.78rem; font-weight: 700; color: var(--muted); }
+#reset-pick-list { display: grid; gap: 0.35rem; }
+.reset-login {
+  font: inherit; font-size: 0.85rem; text-align: left; cursor: pointer;
+  padding: 0.5rem 0.65rem; border-radius: 10px;
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+}
+.reset-login:hover { border-color: var(--accent); }
+.reset-login.is-picked { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+.reset-code-label {
+  margin: 1.1rem 0 0.35rem; font-size: 0.78rem; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+/* Big, spaced and monospaced: this gets read aloud down a phone line, so every
+   character has to be unmistakable at a glance. */
+.reset-code {
+  margin: 0; padding: 0.7rem 0.5rem; text-align: center;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 1.9rem; font-weight: 700; letter-spacing: 0.16em;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  user-select: all;   /* one tap/click selects the whole code */
+}
+.reset-warn { margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--bad); }
+
 /* ---------- vendor applications ---------- */
 .app-list { display: grid; gap: 0.6rem; margin-top: 0.85rem; }
 .app-row {

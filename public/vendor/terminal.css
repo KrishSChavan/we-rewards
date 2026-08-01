@@ -80,7 +80,16 @@ button { font-family: inherit; border: none; cursor: pointer; }
 
 /* ---------- login ---------- */
 
-#screen-login { min-height: 100vh; }
+/* The recover card is the login card with more fields, so it shares every rule
+   below — it only needs the same full-height centring. */
+#screen-login, #screen-recover { min-height: 100vh; }
+
+/* The reset code is dictated over the phone and typed character by character;
+   monospace + tracking makes it checkable against what was read out. */
+#recover-code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  letter-spacing: 0.18em; text-transform: uppercase;
+}
 
 .login-card {
   width: min(30rem, 92vw); background: var(--card);

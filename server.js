@@ -11,6 +11,7 @@ import 'dotenv/config';
 
 import studentRoutes from './src/routes/student.js';
 import vendorRoutes from './src/routes/vendor.js';
+import vendorRecoverRoutes from './src/routes/vendor-recover.js';
 import adminRoutes from './src/routes/admin.js';
 import applyRoutes from './src/routes/apply.js';
 import { supabaseAuth, supabaseAdmin } from './src/lib/supabase.js';
@@ -191,8 +192,22 @@ const punchHoldLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
 });
+// Unauthenticated password reset for a locked-out vendor (migration-031). The
+// per-code guess cap inside vendor_reset_begin is the fence that actually
+// matters — it survives IP rotation, which this can't — so size this for the
+// legitimate case instead: a vendor gets one code read to them and types it
+// once, maybe three times with fumbles. Also caps the bcrypt work an anonymous
+// caller can force per IP.
+const recoverLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a few minutes and try again.' },
+});
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
+app.use('/api/vendor/recover', recoverLimiter);
 // Every path that resolves a 4-digit code, not just the preview. app.use()
 // matches on whole path segments, so '/api/vendor/redeem-preview' alone left
 // '/api/vendor/redeem' and both punch-card paths covered by nothing but the
@@ -317,6 +332,11 @@ app.use('/api', (_req, res, next) => {
 
 // API
 app.use('/api/me', studentRoutes);      // student-authenticated endpoints
+// MUST stay above the vendor router: that router applies requireVendor to every
+// path under /api/vendor, and a vendor recovering a password has no session to
+// authenticate with. Express matches mounts in order, so this one answers first
+// and never falls through.
+app.use('/api/vendor/recover', vendorRecoverRoutes);  // public — locked-out vendors
 app.use('/api/vendor', vendorRoutes);   // vendor-authenticated endpoints
 app.use('/api/admin', adminRoutes);     // operator-only (ADMIN_EMAILS) analytics + errors
 app.use('/api/apply', applyRoutes);     // public vendor applications (rate-limited above)

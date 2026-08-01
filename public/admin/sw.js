@@ -8,7 +8,8 @@
    cache here would wipe the student PWA's cache (and vice-versa). */
 
 // v4: zoom disabled app-wide (no-zoom.js).
-const CACHE = 'werewards-admin-v4';
+// v5: vendor password-reset dialog (index.html + admin.js + admin.css).
+const CACHE = 'werewards-admin-v5';
 const SHELL = [
   '/admin/', '/admin/admin.css', '/admin/admin.js', '/admin/no-zoom.js', '/admin/manifest.json',
   '/admin/icons/icon-192.png', '/admin/icons/icon-512.png',

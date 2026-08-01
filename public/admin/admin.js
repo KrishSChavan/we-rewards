@@ -37,6 +37,15 @@ const $ = (id) => document.getElementById(id);
   $('push-modal').addEventListener('click', (e) => {
     if (e.target === $('push-modal')) dismissPushModal();   // backdrop only, not the card
   });
+  $('reset-close').addEventListener('click', closeResetModal);
+  $('reset-go').addEventListener('click', () => mintResetCode());
+  $('reset-copy').addEventListener('click', copyResetCode);
+  $('reset-modal').addEventListener('click', (e) => {
+    if (e.target === $('reset-modal')) closeResetModal();    // backdrop only, not the card
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('reset-modal').hidden) closeResetModal();
+  });
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
 
@@ -289,6 +298,20 @@ function renderVendors() {
     paintVendorRow(row, toggle, v);
     toggle.addEventListener('click', () => toggleVendor(v, toggle, row));
 
+    // Mint a one-time password-reset code to read to the vendor.
+    //
+    // Hidden only when this vendor genuinely has no login to reset. If the
+    // server couldn't resolve the logins at all (staffUnavailable), the button
+    // STAYS so the operator can see something is wrong and get a real error,
+    // rather than watching the only recovery channel silently disappear.
+    const reset = document.createElement('button');
+    reset.className = 'vendor-reset';
+    reset.type = 'button';
+    reset.textContent = 'Reset password';
+    reset.setAttribute('aria-label', `Reset password for ${v.name}`);
+    reset.hidden = !v.staffUnavailable && !(v.staff && v.staff.length);
+    reset.addEventListener('click', () => openResetModal(v));
+
     // Permanent delete — the irreversible counterpart to the on/off switch.
     const del = document.createElement('button');
     del.className = 'vendor-delete';
@@ -299,7 +322,7 @@ function renderVendors() {
 
     const actions = document.createElement('div');
     actions.className = 'vendor-actions';
-    actions.append(toggle, del);
+    actions.append(toggle, reset, del);
 
     top.append(info, actions);
 
@@ -430,6 +453,151 @@ async function deleteVendor(v, btn, row) {
     showVendorError();
     btn.disabled = false;
   }
+}
+
+/* ---------- vendor password reset ----------
+   The whole recovery channel for a locked-out vendor. There is no SMTP in this
+   stack and vendors sign in with a password rather than Google, so Supabase's
+   own recovery email isn't available to them: instead we mint a one-time code
+   here and the operator reads it down the phone. The vendor types it into the
+   terminal's "Forgot password?" form (POST /api/vendor/recover).
+
+   The plaintext exists only in this dialog. The server stores a bcrypt hash and
+   returns the code exactly once, so closing without reading it out means
+   generating another. */
+
+let resetTarget = null;   // { vendor, userId } while the dialog is open
+
+function openResetModal(v) {
+  const logins = v.staff ?? [];
+  resetTarget = { vendor: v, userId: logins.length === 1 ? logins[0].userId : null };
+
+  $('reset-title').textContent = `Reset password: ${v.name}`;
+  $('reset-error').hidden = true;
+  $('reset-result').hidden = true;
+  $('reset-copy').hidden = true;
+  $('reset-code').textContent = '';
+  $('reset-expiry').textContent = '';
+  $('reset-go').hidden = false;
+  $('reset-go').disabled = false;
+  $('reset-go').textContent = 'Generate code';
+
+  const pick = $('reset-pick');
+  const list = $('reset-pick-list');
+  list.innerHTML = '';
+
+  if (logins.length > 1) {
+    // A multi-location owner has several staff logins. Never guess which one
+    // gets a credential — same stance as the server's LOGIN_AMBIGUOUS guard and
+    // requireVendor's VENDOR_AMBIGUOUS.
+    pick.hidden = false;
+    $('reset-sub').textContent = 'This vendor has more than one login. Pick the one that’s locked out.';
+    logins.forEach((s) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'reset-login';
+      b.textContent = s.role ? `${s.email} · ${s.role}` : s.email;
+      b.addEventListener('click', () => {
+        resetTarget.userId = s.userId;
+        list.querySelectorAll('.reset-login').forEach((el) => el.classList.remove('is-picked'));
+        b.classList.add('is-picked');
+        $('reset-error').hidden = true;
+      });
+      list.appendChild(b);
+    });
+  } else {
+    pick.hidden = true;
+    if (logins.length) {
+      $('reset-sub').textContent = `A one-time code for ${logins[0].email}, good for 30 minutes. Read it to them on the phone.`;
+    } else if (v.staffUnavailable) {
+      // The lookup failed rather than coming back empty. Say so, and let them
+      // try anyway: the mint route re-resolves the logins server-side, so a
+      // transient failure here doesn't have to block a vendor who is locked out.
+      $('reset-sub').textContent = 'Couldn’t load this vendor’s logins. Generating a code may still work, try it.';
+    } else {
+      $('reset-sub').textContent = 'This vendor has no login to reset.';
+      $('reset-go').disabled = true;
+    }
+  }
+
+  $('reset-modal').hidden = false;
+  $('reset-go').focus();
+}
+
+function closeResetModal() {
+  // Wipe the code out of the DOM on the way out — it's a live credential for
+  // another 30 minutes and this dashboard is often left open on a desk.
+  $('reset-code').textContent = '';
+  $('reset-expiry').textContent = '';
+  $('reset-result').hidden = true;
+  $('reset-modal').hidden = true;
+  resetTarget = null;
+}
+
+function resetError(msg) {
+  const el = $('reset-error');
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+async function mintResetCode() {
+  if (!resetTarget) return;
+  const { vendor, userId } = resetTarget;
+  const logins = vendor.staff ?? [];
+
+  // staffUnavailable means we never learned the logins, not that there are none,
+  // so let the request through and let the server be the authority.
+  if (!logins.length && !vendor.staffUnavailable) return resetError('This vendor has no login to reset.');
+  if (logins.length > 1 && !userId) return resetError('Pick which login to reset first.');
+
+  $('reset-error').hidden = true;
+  $('reset-go').disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/vendors/${vendor.id}/reset-code`, {
+      method: 'POST',
+      body: JSON.stringify(userId ? { userId } : {}),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      $('reset-go').disabled = false;
+      return resetError(data.message || 'Couldn’t generate a code. Try again.');
+    }
+    showResetCode(data);
+  } catch {
+    $('reset-go').disabled = false;
+    resetError('No connection. Check the internet and try again.');
+  }
+}
+
+function showResetCode(data) {
+  $('reset-pick').hidden = true;
+  $('reset-sub').textContent = `The vendor signs in as ${data.email}. They enter that address and this code at the terminal’s “Forgot password?” screen.`;
+  $('reset-code').textContent = data.code;
+  $('reset-expiry').textContent = data.expiresAt
+    ? `Expires ${new Date(data.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · one use · 5 tries`
+    : `Expires in ${data.ttlMinutes ?? 30} minutes · one use · 5 tries`;
+  $('reset-result').hidden = false;
+  $('reset-copy').hidden = false;
+  // Re-minting immediately would invalidate the code just read out, so the
+  // generate button steps aside once there's a code on screen.
+  $('reset-go').hidden = true;
+  $('reset-copy').focus();
+}
+
+async function copyResetCode() {
+  const code = $('reset-code').textContent;
+  if (!code) return;
+  const btn = $('reset-copy');
+  try {
+    await navigator.clipboard.writeText(code);
+    btn.textContent = 'Copied';
+  } catch {
+    // Clipboard is blocked on insecure origins and in some embedded webviews;
+    // the code is on screen either way, so this is a nicety, not a failure.
+    btn.textContent = 'Copy failed, read it off the screen';
+  }
+  setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
 }
 
 // Single-series revenue bars for the last 14 days (mirrors the vendor terminal).

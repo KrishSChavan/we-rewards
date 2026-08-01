@@ -1,16 +1,23 @@
 import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { geocode } from '../lib/geocode.js';
 import { getVapidPublicKey } from '../lib/push.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
+import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
 
 const router = Router();
 router.use(requireAdmin);
 
 const DAY = 86_400_000;
 const ADDRESS_MAX = 300;   // keep a pasted essay out of the column and the geocoder
+
+// How long a minted password-reset code stays usable. Long enough to finish the
+// phone call and walk to the terminal, short enough that a code read out and
+// forgotten about doesn't sit there for the rest of the day.
+const RESET_TTL_MINUTES = 30;
 
 /**
  * GET /api/admin/overview
@@ -101,7 +108,148 @@ router.get('/vendors', async (req, res, next) => {
       .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, created_at')
       .order('created_at', { ascending: false });
     if (error) throw error;
-    res.json(data ?? []);
+
+    const vendors = data ?? [];
+
+    // Attach the login(s) behind each vendor so the dashboard can name the
+    // account a password reset would target — a vendor can have several staff
+    // logins (multi-location owners; see requireVendor). The addresses live in
+    // auth.users, which PostgREST can't read, hence the definer RPC from
+    // migration-031. One call for the whole roster, not one per row.
+    //
+    // Non-fatal: a vendor whose emails we couldn't resolve still renders with
+    // its on/off switch and address editor, just without the reset button. The
+    // roster is the operator's main control surface and shouldn't 500 because a
+    // lookup that only feeds one button failed.
+    //
+    // But it must not fail SILENTLY either. `staff: []` means "this vendor has
+    // no login"; a failed lookup means "we don't know" — and those render
+    // identically unless we say which happened. Without staffUnavailable the
+    // only password-recovery channel would just quietly vanish from the UI (for
+    // instance before migration-031 is applied, when the RPC doesn't exist yet).
+    if (vendors.length) {
+      const { data: staff, error: staffErr } = await supabaseAdmin
+        .rpc('vendor_staff_emails', { p_vendor_ids: vendors.map((v) => v.id) });
+      if (staffErr) {
+        console.error('vendor_staff_emails failed:', staffErr.message);
+        vendors.forEach((v) => { v.staff = []; v.staffUnavailable = true; });
+      } else {
+        const byVendor = new Map();
+        (staff ?? []).forEach((s) => {
+          if (!byVendor.has(s.vendor_id)) byVendor.set(s.vendor_id, []);
+          byVendor.get(s.vendor_id).push({ userId: s.user_id, email: s.email, role: s.role });
+        });
+        vendors.forEach((v) => { v.staff = byVendor.get(v.id) ?? []; });
+      }
+    }
+
+    res.json(vendors);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/vendors/:id/reset-code   { userId? }
+ * Mint a one-time password-reset code for one of this vendor's logins, for the
+ * operator to read to them over the phone. This is the whole recovery channel —
+ * there is no SMTP in this stack, and vendors sign in with a password rather
+ * than Google, so Supabase's own recovery email is not available to them.
+ *
+ * The plaintext is returned EXACTLY ONCE, here. Only its bcrypt hash is stored
+ * (migration-031), matching how pin_hash and vendor_applications.password_hash
+ * are handled — so a leaked database still can't be used to seize a vendor
+ * terminal, and a code the operator loses has to be re-minted rather than looked
+ * up.
+ *
+ * `userId` is optional and only needed when the vendor has more than one staff
+ * login; with exactly one, the choice is unambiguous and the client can omit it.
+ * The RPC re-checks the staff link either way, so naming a foreign user id can't
+ * aim a reset at someone else's account.
+ */
+router.post('/vendors/:id/reset-code', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    }
+
+    const { data: vendor, error: vendErr } = await supabaseAdmin
+      .from('vendors')
+      .select('id, name')
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (vendErr) throw vendErr;
+    if (!vendor) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+
+    const { data: staff, error: staffErr } = await supabaseAdmin
+      .rpc('vendor_staff_emails', { p_vendor_ids: [vendor.id] });
+    if (staffErr) throw staffErr;
+
+    const logins = staff ?? [];
+    if (!logins.length) {
+      return res.status(409).json({
+        error: 'NO_LOGIN',
+        message: 'This vendor has no staff login to reset.',
+      });
+    }
+
+    const requested = req.body?.userId;
+    let target;
+    if (requested != null) {
+      if (!isUuid(requested)) {
+        return res.status(400).json({ error: 'BAD_USER_ID', message: 'That login id is not valid.' });
+      }
+      target = logins.find((s) => s.user_id === requested);
+      if (!target) {
+        return res.status(404).json({ error: 'NOT_FOUND', message: 'That login is not staff of this vendor.' });
+      }
+    } else if (logins.length === 1) {
+      target = logins[0];
+    } else {
+      // Mirrors requireVendor's VENDOR_AMBIGUOUS: never guess which account to
+      // hand a credential to.
+      return res.status(400).json({
+        error: 'LOGIN_AMBIGUOUS',
+        message: 'This vendor has multiple logins, pick which one to reset.',
+        logins: logins.map((s) => ({ userId: s.user_id, email: s.email, role: s.role })),
+      });
+    }
+
+    // Generated hyphenated for reading aloud; hashed in its bare canonical form
+    // so the terminal's normaliser (which strips separators) always produces the
+    // exact string that was hashed.
+    const code = generateResetCode();
+    const codeHash = await bcrypt.hash(normalizeResetCode(code), 10);
+
+    const { data: issued, error: issueErr } = await supabaseAdmin.rpc('vendor_reset_issue', {
+      p_vendor_id: vendor.id,
+      p_user_id: target.user_id,
+      p_code_hash: codeHash,
+      p_ttl_minutes: RESET_TTL_MINUTES,
+      p_created_by: req.user?.email ?? null,
+    });
+    if (issueErr) {
+      // The RPC's own guards (staff link, missing email) shouldn't be reachable
+      // after the checks above, but surface them as 409s rather than 500s if the
+      // roster shifted between the lookup and the insert.
+      if (/NOT_VENDOR_STAFF|NO_LOGIN_EMAIL/.test(issueErr.message || '')) {
+        return res.status(409).json({
+          error: 'NO_LOGIN',
+          message: 'That login can no longer be reset. Reload the page and try again.',
+        });
+      }
+      throw issueErr;
+    }
+
+    const row = Array.isArray(issued) ? issued[0] : issued;
+    res.json({
+      ok: true,
+      code,                                     // shown once, never retrievable again
+      email: row?.reset_email ?? target.email,  // the address the vendor must type
+      expiresAt: row?.reset_expires_at ?? null,
+      ttlMinutes: RESET_TTL_MINUTES,
+      vendor: { id: vendor.id, name: vendor.name },
+    });
   } catch (err) {
     next(err);
   }
