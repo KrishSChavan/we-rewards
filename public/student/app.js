@@ -1560,12 +1560,14 @@ function closeInfo(id, triggerId) {
 
 let hubDrag = null;      // the finger currently on the panel, if any
 let hubDragged = false;  // …and whether it moved, so the click it fires is ignored
+let hubHideTimer = null; // backstop for the hide at the end of a fold (see closeHub)
 
 function openHub() {
   const ov = $('hub-modal');
   const panel = $('hub-panel');
   hubDrag = null;
   hubDragged = false;
+  clearTimeout(hubHideTimer);
   panel.classList.remove('is-dragging');
   $('hub-body').style.gridTemplateRows = '';   // clear anything a previous drag left behind
   ov.hidden = false;
@@ -1579,17 +1581,38 @@ function closeHub() {
   const ov = $('hub-modal');
   if (ov.hidden || !ov.classList.contains('is-open')) return;   // already closing/closed
   const panel = $('hub-panel');
+  const body = $('hub-body');
   hubDrag = null;
   panel.classList.remove('is-dragging');
-  $('hub-body').style.gridTemplateRows = '';   // hand the fold-up back to the CSS transition
+  body.style.gridTemplateRows = '';   // hand the fold-up back to the CSS transition
   ov.classList.remove('is-open');
   $('hub-toggle').setAttribute('aria-expanded', 'false');
   // Only pull focus back if it's still inside the panel, so a close triggered
   // from elsewhere (a tab change, sign-out) doesn't yank it.
   if (panel.contains(document.activeElement)) $('hub-toggle').focus({ preventScroll: true });
-  setTimeout(() => {
-    if (!ov.classList.contains('is-open')) ov.hidden = true;   // unless it reopened mid-slide
-  }, 340);
+
+  // Hiding is what ends the fold, so it has to land AFTER the last frame and
+  // never on one. A fixed timer can't promise that: the transition doesn't start
+  // until the next style recalc, so a timer set to just clear its duration
+  // lops off the tail and the panel vanishes a few pixels early — a snap right
+  // at the end of the close. transitionend is the honest signal; the timer is
+  // only the backstop for when there is no transition to end (reduced motion,
+  // or a drag released with the panel already folded shut) or the event is lost
+  // to a backgrounded tab.
+  const finish = () => {
+    clearTimeout(hubHideTimer);
+    body.removeEventListener('transitionend', onFoldEnd);
+    if (!ov.classList.contains('is-open')) ov.hidden = true;   // unless it reopened mid-fold
+  };
+  // Both halves of the guard earn their keep: the tier meter and the lever bars
+  // animate their own width inside this element, and those events bubble up
+  // here. Hence no { once: true } either — one of them would eat the listener.
+  const onFoldEnd = (e) => {
+    if (e.target === body && e.propertyName === 'grid-template-rows') finish();
+  };
+  clearTimeout(hubHideTimer);
+  body.addEventListener('transitionend', onFoldEnd);
+  hubHideTimer = setTimeout(finish, 400);
 }
 
 // Hard reset, no animation — for sign-out, same reason as dropEarnSheet().
@@ -1598,6 +1621,7 @@ function dropHub() {
   const panel = $('hub-panel');
   hubDrag = null;
   hubDragged = false;
+  clearTimeout(hubHideTimer);
   panel.classList.remove('is-dragging');
   $('hub-body').style.gridTemplateRows = '';
   ov.classList.remove('is-open');
@@ -1630,8 +1654,12 @@ function onHubDragStart(e) {
   // it is still unfolding pins it where it looks rather than where it ends up.
   // scrollHeight, not offsetHeight: the inner block is squashed to the row, and
   // its natural height is exactly what a full 1fr resolves to.
+  // Capped at openH because these two are measured differently — the live box is
+  // fractional, scrollHeight is rounded — so a fully open panel can read as a
+  // hair over 1fr, and pinning it there bumps the panel a pixel the instant a
+  // finger lands on the row to close it.
   const openH = $('hub-body-inner').scrollHeight || 1;
-  const shown = body.getBoundingClientRect().height;
+  const shown = Math.min(openH, body.getBoundingClientRect().height);
   body.style.gridTemplateRows = `${shown / openH}fr`;
   panel.classList.add('is-dragging');
   hubDrag = { id: e.pointerId, y0: e.clientY, base: shown, shown, openH, moved: false };

@@ -293,7 +293,16 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    browser must not claim the upward flick for scrolling, pull-to-refresh, or
    the horizontal tab swipe underneath. */
 .hub-toggle-open { touch-action: none; }
-.hub-toggle-open .hub-chev { transform: rotate(180deg); }
+/* It turns over WITH the fold instead of in one frame. The panel finishes the
+   close sitting exactly on the pill and is hidden at that instant, so anything
+   still differing between the two pops as it goes — and a chevron that has to
+   flip the moment the panel disappears is the most visible of them. This one
+   has to be pointing the pill's way by the time it lands. */
+.hub-toggle-open .hub-chev { transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1); }
+.hub-modal.is-open .hub-toggle-open .hub-chev {
+  transform: rotate(180deg);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 
 /* ---------- the hub panel itself ----------
    A fixed overlay, NOT part of the Home tab (see the comment on #hub-modal in
@@ -320,7 +329,18 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--navy); color: #fff;
   border: 2px solid var(--hub-glow);
   border-radius: 1.7rem;
+  /* Closed, this is the PILL's shadow, not the panel's. Folded shut the panel is
+     the pill's box to the pixel and gets hidden right there, so a heavier shadow
+     underneath it would drop to the pill's lighter one in a single frame — a
+     thump at the end of the close, on the one part of the screen you are looking
+     at. It deepens as the panel unfolds, which also reads correctly: the thing
+     lifts off the page as it grows. */
+  box-shadow: 0 0 16px var(--hub-halo), 0 4px 14px rgba(8, 16, 32, 0.18);
+  transition: box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.hub-modal.is-open .hub-panel {
   box-shadow: 0 0 22px var(--hub-halo), 0 18px 44px rgba(8, 16, 32, 0.45);
+  transition: box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* The unfold itself: 0fr → 1fr on a one-row grid, which resolves to 0 → the
@@ -338,16 +358,39 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   /* the panel's radius less its 2px border, so contents clip to the rounded
      bottom corners the whole way up instead of squaring them off mid-unfold */
   border-radius: 0 0 1.55rem 1.55rem;
-  transition: grid-template-rows 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* THE CLOSE. Each direction gets its own timing, and a transition takes the
+     one on the state it lands IN — so this rule is the fold-up and the .is-open
+     rule below is the unfold.
+     Flat curve, and shorter, on purpose. A fold is laid out and repainted every
+     frame — it is not composited the way the sheets' transforms are — so unlike
+     a slide it cannot absorb a long crawling tail: the open's ease-out spends
+     its last ~100ms covering about five pixels, and at that speed one dropped
+     frame or one pixel of snapping is the whole movement, which is what the
+     close was juddering on. Ending with the scrim's 220ms also means the two
+     stop together instead of the panel twitching on alone. */
+  transition: grid-template-rows 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .hub-body-inner { min-height: 0; padding-bottom: 1.25rem; }
-.hub-modal.is-open .hub-body { grid-template-rows: 1fr; }
+/* THE UNFOLD — the springy curve the tab track and the earn sheet arrive on.
+   Arriving is the half worth the flourish; leaving just needs to get out. */
+.hub-modal.is-open .hub-body {
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 /* A finger on the header row drives the row size directly (app.js writes a
    fractional value), so the easing has to be out of the way — same hand-off as
    .earn-card.is-dragging. */
 .hub-panel.is-dragging .hub-body { transition: none; }
+/* Every selector, and in this order: each direction now carries its own
+   transition, and the .is-open ones outrank the bare rules — kill only those and
+   the unfold would still animate for someone who asked it not to. */
 @media (prefers-reduced-motion: reduce) {
-  .hub-body { transition: none; }
+  .hub-body,
+  .hub-modal.is-open .hub-body,
+  .hub-panel,
+  .hub-modal.is-open .hub-panel,
+  .hub-toggle-open .hub-chev,
+  .hub-modal.is-open .hub-toggle-open .hub-chev { transition: none; }
 }
 
 /* ---------- 30-day tier meter (lives in the hub panel) ----------
