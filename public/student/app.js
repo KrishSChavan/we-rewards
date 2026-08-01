@@ -1562,7 +1562,7 @@ let hubDrag = null;      // the finger currently on the panel, if any
 let hubDragged = false;  // …and whether it moved, so the click it fires is ignored
 let hubHideTimer = null; // backstop for the hide at the end of a fold (see closeHub)
 
-function openHub() {
+function openHub(e) {
   const ov = $('hub-modal');
   const panel = $('hub-panel');
   hubDrag = null;
@@ -1574,7 +1574,14 @@ function openHub() {
   void ov.offsetWidth;              // reflow so the unfold transition runs
   ov.classList.add('is-open');
   $('hub-toggle').setAttribute('aria-expanded', 'true');
-  $('hub-collapse').focus({ preventScroll: true });
+  // Move focus onto the panel's own close control — but only when the open came
+  // from the keyboard. Chrome treats a programmatic focus() as focus-VISIBLE and
+  // paints the ring even when the panel was opened by a tap, which is the stray
+  // rectangle that used to appear on the first open and go away on the second
+  // (by then focus is already inside, so this line is a no-op). A click event
+  // synthesised by Enter/Space reports detail 0; a real pointer click never
+  // does. Pointer opens leave focus on the pill, which closeHub() is happy with.
+  if (!e || e.detail === 0) $('hub-collapse').focus({ preventScroll: true });
 }
 
 function closeHub() {

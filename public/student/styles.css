@@ -271,6 +271,14 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   transition: transform 80ms ease;
 }
 .hub-pill:active { transform: scale(0.985); }
+/* Both hub buttons had no focus rule, so they fell back to the UA ring — a hard
+   blue rectangle sitting on a rounded navy pill. Keyboard users still need a
+   ring, so this replaces it rather than removing it: the accent gold reads on
+   the navy, and it follows the pill's radius instead of boxing it. (openHub only
+   pulls focus into the panel for keyboard opens — see app.js — so a tap doesn't
+   land one of these on screen at all.) */
+.hub-toggle:focus { outline: none; }
+.hub-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2em; }
 
 /* the number the collapsed pill keeps visible: the tier chip */
 .hub-summary { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; }
@@ -298,7 +306,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    still differing between the two pops as it goes — and a chevron that has to
    flip the moment the panel disappears is the most visible of them. This one
    has to be pointing the pill's way by the time it lands. */
-.hub-toggle-open .hub-chev { transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1); }
+.hub-toggle-open .hub-chev { transition: transform 180ms cubic-bezier(0.3, 0.1, 0.7, 0.4); }
 .hub-modal.is-open .hub-toggle-open .hub-chev {
   transform: rotate(180deg);
   transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -311,9 +319,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .hub-modal {
   position: fixed; inset: 0; z-index: 25;
   background: rgba(8, 16, 32, 0);
+  /* Same split as .hub-body: this rule is the fade-OUT, so it carries the fold
+     -up's 180ms. A scrim still lifting after the panel has folded shut is the
+     other half of the close reading as slow. */
+  transition: background 180ms cubic-bezier(0.3, 0.1, 0.7, 0.4);
+}
+.hub-modal.is-open {
+  background: rgba(8, 16, 32, 0.5);
   transition: background 220ms ease;
 }
-.hub-modal.is-open { background: rgba(8, 16, 32, 0.5); }
 
 /* Nothing here moves: the panel is pinned exactly where the pill is and only
    ever changes HEIGHT. Closed, .hub-body below is zero-high, so the panel IS
@@ -336,7 +350,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
      at. It deepens as the panel unfolds, which also reads correctly: the thing
      lifts off the page as it grows. */
   box-shadow: 0 0 16px var(--hub-halo), 0 4px 14px rgba(8, 16, 32, 0.18);
-  transition: box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: box-shadow 180ms cubic-bezier(0.3, 0.1, 0.7, 0.4);
 }
 .hub-modal.is-open .hub-panel {
   box-shadow: 0 0 22px var(--hub-halo), 0 18px 44px rgba(8, 16, 32, 0.45);
@@ -361,14 +375,17 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   /* THE CLOSE. Each direction gets its own timing, and a transition takes the
      one on the state it lands IN — so this rule is the fold-up and the .is-open
      rule below is the unfold.
-     Flat curve, and shorter, on purpose. A fold is laid out and repainted every
-     frame — it is not composited the way the sheets' transforms are — so unlike
-     a slide it cannot absorb a long crawling tail: the open's ease-out spends
-     its last ~100ms covering about five pixels, and at that speed one dropped
-     frame or one pixel of snapping is the whole movement, which is what the
-     close was juddering on. Ending with the scrim's 220ms also means the two
-     stop together instead of the panel twitching on alone. */
-  transition: grid-template-rows 220ms cubic-bezier(0.4, 0, 0.2, 1);
+     ACCELERATING, and shorter, on purpose. A fold is laid out and repainted
+     every frame — it is not composited the way the sheets' transforms are — so
+     unlike a slide it cannot absorb a crawling tail. Any curve that decelerates
+     into the end (the standard 0.4, 0, 0.2, 1 included) spends its last ~80ms
+     covering a handful of pixels, and a fold moving that slowly reads as the
+     panel hanging open after you have already dismissed it. This one is moving
+     at its fastest when it lands: y1 is non-zero so it leaves the moment you
+     tap, and the end slope is ~2× the average so the last pixels go in one
+     frame instead of five. The scrim and the panel shadow below run the same
+     180ms so all three stop together. */
+  transition: grid-template-rows 180ms cubic-bezier(0.3, 0.1, 0.7, 0.4);
 }
 .hub-body-inner { min-height: 0; padding-bottom: 1.25rem; }
 /* THE UNFOLD — the springy curve the tab track and the earn sheet arrive on.
