@@ -612,6 +612,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   display: flex; align-items: center; justify-content: center;
   font-size: 1.9rem; line-height: 1;
   background: var(--sky); border-radius: 0.9rem;
+  padding: 0px 5px;
 }
 .cc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
 .cc-label { font-weight: 900; letter-spacing: 0.1em; font-size: 0.76rem; color: #8564b9; }
