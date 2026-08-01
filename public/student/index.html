@@ -145,17 +145,18 @@
           <div id="home">
             <!-- The wordmark is a handle, not a banner: tapping it drops the
                  rewards hub (#hub-modal, further down inside #app) over the
-                 page. Collapsed, it carries the two numbers the panel would
-                 otherwise hide — the tier multiplier and the community balance
-                 — so nothing a student cares about is invisible behind a tap.
+                 page. Collapsed, it still carries the tier multiplier, so the
+                 one number the panel would otherwise hide isn't invisible
+                 behind a tap. The community balance is not repeated here — the
+                 card right below it (#community-card) already shows it.
                  The panel repeats this row as its own header, so opening it
                  reads as the pill unfolding rather than a sheet arriving; keep
                  the two markups in step. -->
             <header class="brand-banner">
               <!-- No aria-label: the button's content IS its name, which is the
                    point — a screen reader gets "Your rewards, WeRewards, 1.5x,
-                   240 pts, collapsed" instead of a label that hides the two
-                   numbers this pill exists to show. -->
+                   collapsed" instead of a label that hides the number this pill
+                   exists to show. -->
               <button id="hub-toggle" class="hub-toggle hub-pill" type="button"
                       aria-expanded="false" aria-controls="hub-panel">
                 <span class="sr-only">Your rewards:</span>
@@ -164,7 +165,6 @@
                   <span id="hub-tier" class="hub-tier t1" hidden>
                     <i aria-hidden="true">★</i><span id="hub-tier-mult">1x</span>
                   </span>
-                  <span class="hub-pts"><span id="hub-community">0</span> pts</span>
                 </span>
                 <span class="hub-chev" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">

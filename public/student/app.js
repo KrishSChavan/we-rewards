@@ -290,9 +290,8 @@ function render(session) {
     balanceReady = false;   // re-login should show the balance instantly, no ticker
     communityPoints = 0;
     communityReady = false; // same: the next sign-in paints its count, no ticker
-    $('community-balance').textContent = '0';
-    $('hub-community').textContent = '0';   // the pill shows it too, and it's on-screen
-    resetTier();            // …as is the tier chip beside it
+    $('community-balance').textContent = '0';   // on-screen, so it has to be cleared
+    resetTier();            // …as is the tier chip on the pill above it
     allVendors = [];
     resetVendorSearch();        // …and unpaint the cards, or the next student reads them
     vendor = null;
@@ -1681,22 +1680,20 @@ async function loadCommunity() {
 // way the vendor meter does, so points landing over the socket are actually seen
 // rather than silently swapped in.
 //
-// TWO places show this number — the card in the hub panel and the balance on
-// the collapsed pill — and the panel is usually shut when points land, so the
-// pill is the one that has to move. tickTo keys its frame id per element, so
-// running both is fine.
+// One place shows this number: the community card on Home. It's on-screen
+// whenever points land over the socket, so the ticker is worth running.
 function setCommunityPoints(next) {
   const prev = communityPoints;
   communityPoints = next;
 
-  const els = [$('community-balance'), $('hub-community')];
+  const el = $('community-balance');
   if (!communityReady) {          // first paint: just show it, no ticker
     communityReady = true;
-    for (const el of els) el.textContent = next;
+    el.textContent = next;
     return;
   }
   if (next === prev) return;
-  for (const el of els) tickTo(el, prev, next);
+  tickTo(el, prev, next);
 }
 
 /* ---------- home: move community points (the transfer sheet) ----------

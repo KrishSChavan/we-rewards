@@ -272,7 +272,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .hub-pill:active { transform: scale(0.985); }
 
-/* the two numbers the collapsed pill keeps visible: tier chip + wallet */
+/* the number the collapsed pill keeps visible: the tier chip */
 .hub-summary { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; }
 .hub-tier {
   flex: 0 0 auto;
@@ -285,13 +285,6 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .hub-tier i { font-style: normal; font-size: 0.78em; }
 .hub-tier.t2 { color: #ffd76e; }
 .hub-tier.t3 { color: #ffb84d; }
-.hub-pts {
-  flex: 0 1 auto; min-width: 0;
-  font-weight: 800; font-size: 0.82rem; color: rgba(255, 255, 255, 0.72);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-variant-numeric: tabular-nums;
-}
-.hub-pts span { color: #fff; font-weight: 900; }
 
 .hub-chev { flex: 0 0 auto; display: flex; color: rgba(255, 255, 255, 0.75); }
 .hub-chev svg { width: 1.25rem; height: 1.25rem; display: block; }
@@ -621,7 +614,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--sky); border-radius: 0.9rem;
 }
 .cc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
-.cc-label { font-weight: 900; letter-spacing: 0.1em; font-size: 0.76rem; color: var(--ink); }
+.cc-label { font-weight: 900; letter-spacing: 0.1em; font-size: 0.76rem; color: #8564b9; }
 .cc-amount { display: flex; align-items: baseline; gap: 0.25rem; }
 /* deliberately smaller than the vendor cards' 3rem: this is the secondary
    balance, and it shouldn't out-shout the spot you're actually standing in */
@@ -733,7 +726,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .show-code-btn .scb-icon svg { width: 1.7rem; height: 1.7rem; display: block; }
 .scb-text { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 0.15rem; }
-.scb-title { font-size: 1.15rem; font-weight: 900; line-height: 1.1; }
+.scb-title { font-size: 1.15rem; font-weight: 900; line-height: 1.1; color: #3DDC97 }
 .scb-sub { font-size: 0.85rem; font-weight: 600; color: var(--sky); }
 /* chevron nods upward — the sheet it opens comes up from the bottom */
 .scb-arrow { flex: 0 0 auto; color: var(--accent); display: flex; }
