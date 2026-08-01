@@ -306,6 +306,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .hub-modal.is-open { background: rgba(8, 16, 32, 0.5); }
 
+/* Nothing here moves: the panel is pinned exactly where the pill is and only
+   ever changes HEIGHT. Closed, .hub-body below is zero-high, so the panel IS
+   the header row — the same box as the pill it covers, down to the padding and
+   the lit border, which is why the open reads as the pill growing rather than
+   as a sheet arriving. No transform, so nothing ever travels off the top of the
+   screen and there is nothing to mask. */
 .hub-panel {
   --hub-pad: 1.05rem;               /* matches .hub-toggle's inline padding */
   position: absolute;
@@ -315,17 +321,33 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   border: 2px solid var(--hub-glow);
   border-radius: 1.7rem;
   box-shadow: 0 0 22px var(--hub-halo), 0 18px 44px rgba(8, 16, 32, 0.45);
-  padding-bottom: 1.25rem;
-  /* Starts tucked up behind the top edge and drops into place. -120% (not
-     -100%) so the shadow clears the screen too and the panel doesn't appear to
-     bleed through the status bar on the way in. */
-  transform: translateY(-120%);
-  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.hub-panel.is-dragging { transition: none; }
-.hub-modal.is-open .hub-panel { transform: translateY(0); }
+
+/* The unfold itself: 0fr → 1fr on a one-row grid, which resolves to 0 → the
+   inner block's natural height, so the panel grows to exactly its content
+   without anyone having to measure it. The clip IS the reveal — contents come
+   into view top-down as the row opens.
+
+   The bottom padding lives on the INNER block, not the panel: on the panel it
+   would sit under a zero-high body and leave the collapsed panel 1.25rem
+   taller than the pill it is meant to be indistinguishable from. */
+.hub-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  overflow: hidden;
+  /* the panel's radius less its 2px border, so contents clip to the rounded
+     bottom corners the whole way up instead of squaring them off mid-unfold */
+  border-radius: 0 0 1.55rem 1.55rem;
+  transition: grid-template-rows 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.hub-body-inner { min-height: 0; padding-bottom: 1.25rem; }
+.hub-modal.is-open .hub-body { grid-template-rows: 1fr; }
+/* A finger on the header row drives the row size directly (app.js writes a
+   fractional value), so the easing has to be out of the way — same hand-off as
+   .earn-card.is-dragging. */
+.hub-panel.is-dragging .hub-body { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  .hub-panel { transition: none; }
+  .hub-body { transition: none; }
 }
 
 /* ---------- 30-day tier meter (lives in the hub panel) ----------

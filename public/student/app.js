@@ -1567,9 +1567,9 @@ function openHub() {
   hubDrag = null;
   hubDragged = false;
   panel.classList.remove('is-dragging');
-  panel.style.transform = '';       // clear anything a previous drag left behind
+  $('hub-body').style.gridTemplateRows = '';   // clear anything a previous drag left behind
   ov.hidden = false;
-  void ov.offsetWidth;              // reflow so the drop-down transition runs
+  void ov.offsetWidth;              // reflow so the unfold transition runs
   ov.classList.add('is-open');
   $('hub-toggle').setAttribute('aria-expanded', 'true');
   $('hub-collapse').focus({ preventScroll: true });
@@ -1581,7 +1581,7 @@ function closeHub() {
   const panel = $('hub-panel');
   hubDrag = null;
   panel.classList.remove('is-dragging');
-  panel.style.transform = '';       // hand the slide-up back to the CSS transition
+  $('hub-body').style.gridTemplateRows = '';   // hand the fold-up back to the CSS transition
   ov.classList.remove('is-open');
   $('hub-toggle').setAttribute('aria-expanded', 'false');
   // Only pull focus back if it's still inside the panel, so a close triggered
@@ -1599,16 +1599,21 @@ function dropHub() {
   hubDrag = null;
   hubDragged = false;
   panel.classList.remove('is-dragging');
-  panel.style.transform = '';
+  $('hub-body').style.gridTemplateRows = '';
   ov.classList.remove('is-open');
   ov.hidden = true;
   $('hub-toggle').setAttribute('aria-expanded', 'false');
 }
 
 // The header row is both the collapse button and the drag handle. A tap closes;
-// a flick that clears a third of the panel closes; anything shorter snaps back
-// — and hubDragged stops the click that follows a real drag from closing a
+// a flick that rolls up a third of what's open closes; anything shorter snaps
+// back — and hubDragged stops the click that follows a real drag from closing a
 // panel the user just decided to keep.
+//
+// The panel never moves, so the finger drives the FOLD, not an offset: the drag
+// writes a fractional row size on .hub-body (0fr = shut, 1fr = full height), the
+// same track the CSS transition animates, so a released drag hands straight back
+// to the easing without the value changing type under it.
 function onHubToggleTap() {
   if (hubDragged) { hubDragged = false; return; }
   closeHub();
@@ -1619,41 +1624,40 @@ function onHubDragStart(e) {
   if (!$('hub-modal').classList.contains('is-open')) return;     // not on one that's leaving
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   const panel = $('hub-panel');
-  // Same hand-off as the earn sheet: pin the panel to where it visually is
-  // before cutting the easing, so grabbing it mid-animation doesn't teleport it.
-  const base = sheetOffset(panel);
-  panel.style.transform = `translateY(${base}px)`;
+  const body = $('hub-body');
+  // How much there is to roll up, and how much of it is showing right now. Both
+  // come off the live boxes, mid-animation included, so grabbing the panel while
+  // it is still unfolding pins it where it looks rather than where it ends up.
+  // scrollHeight, not offsetHeight: the inner block is squashed to the row, and
+  // its natural height is exactly what a full 1fr resolves to.
+  const openH = $('hub-body-inner').scrollHeight || 1;
+  const shown = body.getBoundingClientRect().height;
+  body.style.gridTemplateRows = `${shown / openH}fr`;
   panel.classList.add('is-dragging');
-  hubDrag = {
-    id: e.pointerId,
-    y0: e.clientY,
-    base,
-    dy: base,
-    moved: false,
-    height: panel.getBoundingClientRect().height || 1,
-  };
+  hubDrag = { id: e.pointerId, y0: e.clientY, base: shown, shown, openH, moved: false };
   e.currentTarget.setPointerCapture(e.pointerId);   // keep the moves coming past the row
 }
 
 function onHubDragMove(e) {
   if (!hubDrag || e.pointerId !== hubDrag.id) return;
-  // upward only — dragging down would pull the panel off its own top edge and
-  // open a strip of page above it
-  hubDrag.dy = Math.min(0, hubDrag.base + (e.clientY - hubDrag.y0));
-  if (Math.abs(hubDrag.dy - hubDrag.base) > 4) hubDrag.moved = true;
-  $('hub-panel').style.transform = `translateY(${hubDrag.dy}px)`;
+  const { base, openH } = hubDrag;
+  // upward only — there is nothing past fully open to drag into
+  const shown = Math.max(0, Math.min(openH, base + (e.clientY - hubDrag.y0)));
+  hubDrag.shown = shown;
+  if (Math.abs(shown - base) > 4) hubDrag.moved = true;
+  $('hub-body').style.gridTemplateRows = `${shown / openH}fr`;
 }
 
 function onHubDragEnd(e) {
   if (!hubDrag || e.pointerId !== hubDrag.id) return;
-  const { dy, height, moved } = hubDrag;
+  const { shown, openH, moved } = hubDrag;
   hubDrag = null;
   const panel = $('hub-panel');
   panel.classList.remove('is-dragging');   // easing back on for either outcome…
-  void panel.offsetWidth;                  // …with the dragged offset as its start point
+  void panel.offsetWidth;                  // …with the dragged row size as its start point
   hubDragged = moved;
-  if (-dy >= height / 3) closeHub();       // past a third → let it carry on up
-  else panel.style.transform = '';         // short of it → snap cleanly back down
+  if (openH - shown >= openH / 3) closeHub();          // past a third → let it carry on up
+  else $('hub-body').style.gridTemplateRows = '';      // short of it → unfold cleanly again
 }
 
 /* ---------- hub: community points (the cross-vendor wallet) ----------

@@ -495,6 +495,15 @@
           </span>
         </button>
 
+        <!-- Everything below the header row is what unfolds. The wrapper pair is
+             the 0fr→1fr grid trick (see .hub-body): the outer row animates from
+             zero to the inner block's natural height, so the panel grows to fit
+             its contents with nothing measured in JS. Keep them as a PAIR — the
+             inner block must stay a single grid item, or the row has nothing to
+             size itself against. -->
+        <div class="hub-body" id="hub-body">
+        <div class="hub-body-inner" id="hub-body-inner">
+
         <!-- 30-day tier meter. The nodes are the three multipliers; the track
              behind them fills with the actual 0–1000 score, mapped piecewise
              so each leg of the bar is one tier's worth of progress. -->
@@ -547,6 +556,9 @@
 
           <p id="lever-tip" class="lever-tip"></p>
         </div>
+
+        </div><!-- /.hub-body-inner -->
+        </div><!-- /.hub-body -->
       </div>
     </div>
 
