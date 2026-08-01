@@ -31,6 +31,7 @@ let activeTab = 0;          // 0 = home, 1 = history, 2 = account
 let historyLoaded = false;  // has the history tab fetched at least once?
 let paneSlide = null;       // the in-flight #home <-> #vendor slide, so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
+let pendingDealLink = null;       // a ?deal=/?deals= notification tap, held until the app is ready
 // Carousel page dots (see renderVendorDots). The window is at most DOT_CAP wide;
 // dotStart is its first index, so the row only ever holds DOT_CAP buttons however
 // many spots there are.
@@ -95,6 +96,7 @@ function track(event, props) {
 (async function boot() {
   installErrorReporter();
   capturePunchLink();              // stash a camera-scanned ?punch= link BEFORE anything can navigate it away
+  pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
   InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
   const pub = await (await fetch('/api/public-config')).json();
@@ -209,10 +211,23 @@ function track(event, props) {
   $('punch-scan-btn').addEventListener('click', openPunchScanSheet);
   $('punch-scan-close').addEventListener('click', closePunchScanSheet);
   $('punch-scan-modal').addEventListener('click', (e) => { if (e.target === $('punch-scan-modal')) closePunchScanSheet(); });
+  // deals: the home card opens the sheet; ✕ / backdrop / Esc close it
+  $('deals-card').addEventListener('click', () => openDealsSheet());
+  $('deals-close').addEventListener('click', closeDealsSheet);
+  $('deals-modal').addEventListener('click', (e) => { if (e.target === $('deals-modal')) closeDealsSheet(); });
+  $('deals-optin-yes').addEventListener('click', enableDealAlerts);
+  $('deals-optin-no').addEventListener('click', dismissDealOptin);
+  $('deals-toggle').addEventListener('click', onDealsToggle);
   // never leave the punch camera running while the tab is backgrounded
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopPunchScanner();
     else if ($('punch-scan-modal').classList.contains('is-open')) startPunchScanner();
+    // Tell the server whether we're in the foreground, so the campaign worker
+    // can spend a notification on someone who actually needs one.
+    reportVisibility();
+    // Coming back from the background is also when a deal may have landed
+    // while we were away.
+    if (!document.hidden && dealsLoaded) loadDeals();
   });
   // earn code: the home button opens the full-screen sheet; ✕ / drag / Esc close it
   $('show-code-btn').addEventListener('click', openEarnSheet);
@@ -227,6 +242,7 @@ function track(event, props) {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     closeEarnSheet();
+    closeDealsSheet();
     closeMoveSheet();
     closePunchScanSheet();
     closePunchModal();
@@ -253,8 +269,39 @@ function track(event, props) {
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
+    // Tapping a deal notification when a tab is already open focuses that tab
+    // rather than navigating it, so the worker hands us the target instead.
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type !== 'open-deals') return;
+      const id = readDealParam(e.data.url);
+      openDealsSheet(id);
+    });
   }
 })();
+
+/* Deep links from a notification: /?deals=1 opens the list, /?deal=<id> opens
+   it with that campaign pulled to the top. Read once and stripped from the URL
+   so a reload (or the OAuth round-trip) doesn't reopen the sheet forever. */
+function readDealParam(href) {
+  try {
+    const u = new URL(href, location.origin);
+    return u.searchParams.get('deal') || null;
+  } catch { return null; }
+}
+
+function captureDealLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const id = params.get('deal');
+    const all = params.get('deals');
+    if (!id && !all) return null;
+    params.delete('deal');
+    params.delete('deals');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+    return { id: id || null };
+  } catch { return null; }
+}
 
 async function signInWithGoogle() {
   $('auth-error').hidden = true;
@@ -304,6 +351,7 @@ function render(session) {
     dropMoveSheet();            // same
     dropPunchScanSheet();       // same (and it holds the camera)
     dropPunchModal();           // same
+    dropDealsSheet();           // same, and the next student must not read these
     dropItemModal();            // same, and it can be holding a live redemption QR
     syncPendingPunchNote();     // landing may need the "punch spotted" note
     // the popovers live at body level too — same reason
@@ -335,9 +383,19 @@ function render(session) {
   loadVendors();
   loadTier();
   loadCommunity();
+  const dealsReady = loadDeals();
   startMyCode();
   connectSocket();
   void claimPendingPunch();   // a camera-scanned punch waiting through sign-in lands now
+
+  // A notification tap that had to go through sign-in first opens its sheet
+  // once the list has actually loaded, so it never flashes the empty state on
+  // the way in.
+  if (pendingDealLink) {
+    const { id } = pendingDealLink;
+    pendingDealLink = null;
+    dealsReady.then(() => openDealsSheet(id));
+  }
 }
 
 /* ---------- add-to-home-screen: account entry point (trigger 5) ----------
@@ -2658,10 +2716,22 @@ function connectSocket() {
       }
       loadVendors();
     });
+    // A vendor queued a deal aimed at us (migration-032). This fires at
+    // CREATION, not at delivery, so the list is current the moment it exists —
+    // whether or not a notification is ever allowed or sent. It is also why the
+    // server skips pushing to students whose app is open: this already told us.
+    socket.on('deal', () => loadDeals());
     // Catch up on (re)connect in case an update landed while we were offline.
-    socket.on('connect', () => { loadVendors(); loadTier(); loadCommunity(); });
+    socket.on('connect', () => { loadVendors(); loadTier(); loadCommunity(); loadDeals(); reportVisibility(); });
   }
   if (!socket.connected) socket.connect();
+}
+
+// Foreground/background, so the campaign worker can skip students who are
+// looking at the app rather than spending one of their two daily notification
+// slots to tell them something they can already see.
+function reportVisibility() {
+  if (socket?.connected) socket.emit('visible', !document.hidden);
 }
 
 function disconnectSocket() {
@@ -3259,6 +3329,262 @@ function dropPunchModal() {
   ov.classList.remove('is-open');
   ov.hidden = true;
   $('punch-card-btn').setAttribute('aria-expanded', 'false');
+}
+
+/* ============================================================
+   DEALS — vendor campaigns (migration-032)
+
+   THIS LIST IS THE MESSAGE. The notification is only a shortcut to it.
+
+   That distinction is the whole design. A student's favourite spots overlap
+   heavily with everyone else's (the tier score pays for breadth, so the
+   regulars at one place are regulars at five), which means the naive version of
+   this feature buries the best students under five notifications on a Friday
+   and gets the channel blocked forever. So the server hard-limits notifications
+   to at most two a day, never closer than four hours apart, never at night, and
+   bundles whatever several vendors queued at once into ONE. Everything it
+   suppresses still lands HERE, in full, immediately. See the header of
+   supabase/migration-032.sql.
+   ============================================================ */
+
+let deals = [];
+let dealsLoaded = false;
+let vapidKey = null;              // server's public VAPID key; null = push disabled
+let pushInitDone = false;
+const DEAL_OPTIN_DISMISS_KEY = 'wr-deal-optin-dismissed';
+
+async function loadDeals() {
+  try {
+    const res = await authFetch('/api/me/deals');
+    if (!res.ok) return;
+    const data = await res.json();
+    deals = data.deals ?? [];
+    dealsLoaded = true;
+    renderDealsCard(data.unread ?? 0);
+    setDealsToggle(data.dealAlerts !== false);
+    if (!$('deals-modal').hidden) renderDealsList();
+    // Only ask about notifications once there is something to be notified
+    // about. A permission prompt before the first deal exists is a prompt
+    // about nothing, and the browser only grants it once.
+    if (deals.length) void initPush();
+  } catch { /* deals are a nice-to-have — never let them break the app */ }
+}
+
+function renderDealsCard(unread) {
+  const card = $('deals-card');
+  if (!deals.length) {
+    card.hidden = true;
+    return;
+  }
+  const first = deals[0];
+  $('deals-card-line').textContent = deals.length === 1
+    ? `${first.vendor}: ${first.title}`
+    : `${first.vendor} and ${deals.length - 1} more have something on`;
+  $('deals-dot').hidden = !unread;
+  card.hidden = false;
+}
+
+function openDealsSheet(focusId) {
+  if (!dealsLoaded) void loadDeals();
+  renderDealsList(focusId);
+  const ov = $('deals-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('deals-card').setAttribute('aria-expanded', 'true');
+  // Opening the list IS reading it: the dot goes away and stays away.
+  authFetch('/api/me/deals/read', { method: 'POST', body: '{}' })
+    .then(() => { $('deals-dot').hidden = true; deals.forEach((d) => { d.read = true; }); })
+    .catch(() => {});
+}
+
+function closeDealsSheet() {
+  const ov = $('deals-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  $('deals-card').setAttribute('aria-expanded', 'false');
+  setTimeout(() => {
+    if (ov.classList.contains('is-open')) return;   // reopened mid-slide
+    ov.hidden = true;
+  }, 360);
+}
+
+// Hard reset, no animation — for sign-out (same reason as dropEarnSheet).
+function dropDealsSheet() {
+  const ov = $('deals-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('deals-card').hidden = true;
+  $('deals-card').setAttribute('aria-expanded', 'false');
+  deals = [];
+  dealsLoaded = false;
+}
+
+function renderDealsList(focusId) {
+  const list = $('deals-list');
+  list.innerHTML = '';
+  $('deals-empty').hidden = deals.length > 0;
+  syncDealOptin();
+
+  // A deal opened from its own notification sorts to the top, so the tap lands
+  // on the thing the student actually tapped.
+  const ordered = focusId
+    ? [...deals].sort((a, b) => (a.id === focusId ? -1 : b.id === focusId ? 1 : 0))
+    : deals;
+
+  for (const d of ordered) {
+    const li = document.createElement('li');
+    if (!d.read) li.className = 'is-unread';
+    const logo = d.hasLogo
+      ? `<span class="deal-logo" style="background-image:url('/api/vendor-logo/${d.vendorId}')"></span>`
+      : '<span class="deal-logo">🏷️</span>';
+    li.innerHTML = `
+      ${logo}
+      <span class="deal-text">
+        <span class="deal-vendor">${escapeHtml(d.vendor)}</span>
+        <span class="deal-head">${escapeHtml(d.title)}</span>
+        <span class="deal-copy">${escapeHtml(d.body)}</span>
+        <span class="deal-ends">${dealEndsLabel(d.expiresAt)}</span>
+      </span>`;
+    li.addEventListener('click', () => onDealTap(d));
+    list.appendChild(li);
+  }
+}
+
+function dealEndsLabel(iso) {
+  const ms = new Date(iso) - Date.now();
+  if (ms <= 0) return 'Ended';
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 1) return 'Ends within the hour';
+  if (hours < 24) return `Ends in ${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+  const days = Math.round(hours / 24);
+  return `Ends in ${days} ${days === 1 ? 'day' : 'days'}`;
+}
+
+// Tapping a deal takes you to the spot it came from — the point of the whole
+// feature — and records the click-through the vendor's DEALS tab counts.
+function onDealTap(d) {
+  authFetch('/api/me/deals/open', { method: 'POST', body: JSON.stringify({ id: d.id }) }).catch(() => {});
+  closeDealsSheet();
+  // Home first: openVendor slides the spot in over the Home tab, so arriving
+  // from History or Account would leave it stranded behind the wrong pane.
+  setTab(0, false);
+  setTimeout(() => openVendor(d.vendorId), 260);   // after the sheet has slid away
+}
+
+/* ---------- notification permission ---------- */
+
+// Runs once, and only after a deal exists. Already granted: silently
+// (re-)subscribe, since the server upserts and endpoints do rotate. Never
+// asked: show the soft ask inside the deals sheet, because requestPermission()
+// has to come from a gesture and the browser only ever grants it once. Denied:
+// stay out of the way, since re-prompting is impossible.
+async function initPush() {
+  if (pushInitDone) return;
+  pushInitDone = true;
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+    const res = await authFetch('/api/me/push/public-key');
+    if (!res.ok) return;
+    vapidKey = (await res.json())?.publicKey ?? null;
+    if (!vapidKey) return;              // server has no VAPID keys → push disabled
+    if (Notification.permission === 'granted') await subscribePush();
+    syncDealOptin();
+  } catch { /* push is a nice-to-have */ }
+}
+
+function optinDismissed() {
+  try { return !!localStorage.getItem(DEAL_OPTIN_DISMISS_KEY); } catch { return false; }
+}
+
+function syncDealOptin() {
+  const canAsk = vapidKey
+    && 'Notification' in window
+    && Notification.permission === 'default'
+    && !optinDismissed();
+  $('deals-optin').hidden = !canAsk;
+}
+
+async function enableDealAlerts() {
+  try {
+    const perm = await Notification.requestPermission();   // must be inside the gesture
+    if (perm !== 'granted') { $('deals-optin').hidden = true; return; }
+    await subscribePush();
+    setDealsToggle(true);
+  } catch { /* nothing to do — the switch just stays off */ }
+  $('deals-optin').hidden = true;
+}
+
+function dismissDealOptin() {
+  try { localStorage.setItem(DEAL_OPTIN_DISMISS_KEY, '1'); } catch { /* private mode */ }
+  $('deals-optin').hidden = true;
+}
+
+async function subscribePush() {
+  const reg = await navigator.serviceWorker.ready;
+  const existing = await reg.pushManager.getSubscription();
+  const sub = existing ?? await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(vapidKey),
+  });
+  const { endpoint, keys } = sub.toJSON();
+  await authFetch('/api/me/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify({ endpoint, keys }),
+  });
+}
+
+// Standard VAPID key decoder: base64url → the Uint8Array PushManager expects.
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+/* ---------- account: the deal-alerts switch ---------- */
+
+// The switch shows what actually happens, not what the server has on file: a
+// student whose browser has never granted permission receives nothing, however
+// the opt-in flag reads, and a switch sitting on "on" while nothing arrives is
+// the kind of thing people stop trusting the app over.
+function setDealsToggle(on) {
+  const supported = 'Notification' in window;
+  const blocked = supported && Notification.permission === 'denied';
+  const granted = supported && Notification.permission === 'granted';
+  $('deals-toggle').setAttribute('aria-checked', on && granted ? 'true' : 'false');
+  $('deals-toggle').disabled = blocked;
+  $('deals-blocked-note').hidden = !blocked;
+}
+
+async function onDealsToggle() {
+  const wasOn = $('deals-toggle').getAttribute('aria-checked') === 'true';
+  const next = !wasOn;
+  setDealsToggle(next);                      // optimistic; the server is the record
+  try {
+    if (next) {
+      // Turning it on from here still needs permission, and this click is the
+      // gesture that can ask for it.
+      if (!vapidKey) await initPush();
+      if ('Notification' in window && Notification.permission === 'default') {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') { setDealsToggle(false); return; }
+      }
+      await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: true }) });
+      if (vapidKey && Notification.permission === 'granted') await subscribePush();
+    } else {
+      // The server drops every endpoint; drop the browser's own subscription
+      // too, so a re-enable mints a fresh one rather than reviving a ghost.
+      await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: false }) });
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+      } catch { /* no worker / no subscription */ }
+    }
+  } catch {
+    setDealsToggle(wasOn);                   // put it back if the server never heard us
+  }
 }
 
 /* ---------- the full-screen punch-in scanner ---------- */

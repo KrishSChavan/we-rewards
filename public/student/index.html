@@ -208,6 +208,28 @@
                 </span>
               </button>
 
+              <!-- Deals from spots you go to. Hidden until there is at least
+                   one live one, so it never sits here as an empty promise.
+                   It is the SOURCE OF TRUTH for vendor campaigns: every deal
+                   you were targeted by lands in here whether or not a
+                   notification was allowed, delivered, or throttled away (see
+                   supabase/migration-032.sql). Notifications are a shortcut to
+                   this list, never the only copy of it. -->
+              <button id="deals-card" class="deals-card" type="button" hidden
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="deals-modal">
+                <span class="dc-icon" aria-hidden="true">🏷️</span>
+                <span class="dc-body">
+                  <span class="dc-label">DEALS NEARBY</span>
+                  <span id="deals-card-line" class="dc-line"></span>
+                </span>
+                <span id="deals-dot" class="dc-dot" hidden aria-hidden="true"></span>
+                <span class="dc-chevron" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9.5 6 15.5 12l-6 6" />
+                  </svg>
+                </span>
+              </button>
+
               <!-- The two ways to earn, stacked directly under the balance they
                    feed. The wrapper groups them so the receipt button (when it
                    ships) rides along without becoming a second block in
@@ -410,6 +432,24 @@
                   <span id="account-email" class="account-email"></span>
                 </span>
               </div>
+
+              <!-- notifications: the opt-out the Privacy Policy promises.
+                   Turning this off drops this device's push subscription and
+                   stops every future notification; deals still appear in the
+                   app, because "don't interrupt me" is not "don't tell me". -->
+              <h2 class="account-section-title">Notifications</h2>
+              <div class="setting-row">
+                <span class="setting-label">
+                  <span class="setting-name">Deal alerts</span>
+                  <span class="setting-desc">A heads-up when a spot you go to has something on. At most twice a day, never at night.</span>
+                </span>
+                <button id="deals-toggle" class="switch" type="button" role="switch" aria-checked="false" aria-label="Deal alerts">
+                  <span class="switch-knob"></span>
+                </button>
+              </div>
+              <p id="deals-blocked-note" class="setting-note" hidden>
+                Notifications are blocked for WeRewards in your browser settings. Allow them there to turn this on.
+              </p>
 
               <!-- appearance -->
               <h2 class="account-section-title">Appearance</h2>
@@ -803,6 +843,33 @@
        Opened from the vendor page's visit counter. PROGRESS ONLY since
        migration-029: visits are a currency spent on individual rewards, so
        there is nothing to redeem here. The redeem buttons live on the reward. -->
+  <!-- ---------- deals: what the spots you go to have on ----------
+       Opened by the home card, by tapping a deal notification, or by a
+       /?deals=1 deep link. Everything a vendor sent you that is still live is
+       here, whether or not its notification was shown. -->
+  <div id="deals-modal" class="overlay sheet" hidden>
+    <div class="detail-card deals-sheet">
+      <button id="deals-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="detail-emoji">🏷️</p>
+      <h2 class="detail-title">Deals</h2>
+      <p class="detail-desc">Offers from spots you go to. They expire on their own.</p>
+
+      <!-- Soft ask. The real permission prompt must come from this tap (Safari
+           enforces the gesture), and the browser only ever grants it once, so
+           we explain the deal before spending the one chance we get. -->
+      <div id="deals-optin" class="deals-optin" hidden>
+        <p class="deals-optin-text">Want a heads-up when something's on? At most twice a day, never at night.</p>
+        <div class="deals-optin-actions">
+          <button id="deals-optin-yes" class="deals-optin-yes" type="button">Turn on alerts</button>
+          <button id="deals-optin-no" class="deals-optin-no" type="button">Not now</button>
+        </div>
+      </div>
+
+      <ul id="deals-list" class="deals-list"></ul>
+      <p id="deals-empty" class="deals-empty" hidden>Nothing on right now. Check back later.</p>
+    </div>
+  </div>
+
   <div id="punch-modal" class="overlay sheet" hidden>
     <div class="detail-card">
       <button id="punch-close" class="detail-close" aria-label="Close">✕</button>

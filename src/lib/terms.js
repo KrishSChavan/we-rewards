@@ -9,7 +9,11 @@
 // keep operating under a consent record that points at text they never saw.
 // Only bump for material changes — every bump interrupts every user.
 
-export const TERMS_VERSION = '2026-07-29';
+// 2026-08-01: vendor deal notifications. The prior Policy said in so many words
+// that we send students no push notifications, and promised to update it and
+// provide an opt-out before that changed (Privacy Policy §7.4). That is a
+// material change to what students agreed to, so it re-prompts.
+export const TERMS_VERSION = '2026-08-01';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

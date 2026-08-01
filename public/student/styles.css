@@ -707,6 +707,87 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .cc-chevron { flex: 0 0 auto; color: var(--muted); display: flex; }
 .cc-chevron svg { width: 1.15rem; height: 1.15rem; display: block; }
 
+/* ---------- home: deals card ----------
+   Same sticker language as the community card above it; amber tile instead of
+   the brand purple, because this is a thing that expires rather than a balance
+   you hold. Hidden entirely when there is nothing live, so it never sits on
+   Home as an empty promise. */
+.deals-card {
+  display: flex; align-items: center; gap: 0.8rem;
+  text-align: left;
+  background: var(--card);
+  border: 3px solid var(--edge); border-radius: 1.2rem;
+  box-shadow: 0 5px 0 var(--edge);
+  padding: 0.75rem 0.95rem;
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.deals-card:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--edge); }
+.dc-icon {
+  flex: 0 0 auto; align-self: stretch;
+  aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.6rem; line-height: 1;
+  background: #fbe6c2; border-radius: 0.9rem;
+  padding: 0px 5px;
+}
+.dc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.dc-label { font-weight: 900; letter-spacing: 0.1em; font-size: 0.76rem; color: #a56a14; }
+.dc-line { font-size: 1rem; font-weight: 800; line-height: 1.25; }
+/* Unread marker. A dot rather than a count: the number of unread deals is not
+   information anyone acts on, and a growing badge is its own kind of pressure. */
+.dc-dot {
+  flex: 0 0 auto; width: 0.6rem; height: 0.6rem; border-radius: 50%;
+  background: var(--danger);
+}
+.dc-chevron { flex: 0 0 auto; color: var(--muted); display: flex; }
+.dc-chevron svg { width: 1.15rem; height: 1.15rem; display: block; }
+
+/* ---------- deals sheet ---------- */
+
+.deals-sheet { gap: 0.8rem; }
+
+.deals-list { list-style: none; width: 100%; display: flex; flex-direction: column; gap: 0.7rem; }
+.deals-list li {
+  display: flex; align-items: flex-start; gap: 0.75rem; text-align: left;
+  background: var(--paper); border: 2.5px solid var(--edge); border-radius: 1rem;
+  padding: 0.85rem 0.95rem;
+}
+.deals-list li.is-unread { border-color: #a56a14; }
+.deal-logo {
+  flex: 0 0 auto; width: 2.6rem; height: 2.6rem; border-radius: 0.7rem;
+  background: var(--sky) center / contain no-repeat;
+  border: 2px solid var(--edge);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem;
+}
+.deal-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.deal-vendor { font-size: 0.78rem; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.deal-head { font-size: 1.02rem; font-weight: 900; line-height: 1.25; }
+.deal-copy { font-size: 0.9rem; font-weight: 600; color: var(--muted); line-height: 1.35; }
+.deal-ends { font-size: 0.76rem; font-weight: 700; color: #a56a14; }
+
+.deals-empty { color: var(--muted); font-weight: 700; padding: 1.5rem 0; }
+
+/* Soft ask for notification permission. It sits INSIDE the sheet rather than
+   ambushing the home screen, because the browser grants the real prompt once
+   and forever: asking someone who is already reading deals is the moment they
+   are most likely to say yes, and a "no" here costs nothing. */
+.deals-optin {
+  width: 100%; text-align: left;
+  background: #fbe6c2; border: 2.5px solid #a56a14; border-radius: 1rem;
+  padding: 0.85rem 0.95rem; display: flex; flex-direction: column; gap: 0.6rem;
+}
+.deals-optin-text { font-size: 0.92rem; font-weight: 700; color: #5a3d09; line-height: 1.35; }
+.deals-optin-actions { display: flex; gap: 0.5rem; }
+.deals-optin-yes, .deals-optin-no {
+  font: inherit; font-weight: 900; font-size: 0.92rem;
+  padding: 0.55rem 0.9rem; border-radius: 0.7rem; border: 2.5px solid #a56a14;
+}
+.deals-optin-yes { background: #a56a14; color: #fff; }
+.deals-optin-no { background: transparent; color: #5a3d09; }
+
+.setting-note { font-size: 0.82rem; font-weight: 600; color: var(--muted); padding: 0 0.3rem; line-height: 1.35; }
+
 /* ---------- move-points sheet (spending the community balance) ----------
    Rides the shared .overlay.sheet / .detail-card mechanics; these are just the
    destination picker + amount controls inside the card. Same sticker language

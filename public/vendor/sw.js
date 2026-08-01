@@ -8,6 +8,8 @@
    scoped to this app's own 'werewards-terminal-' prefix — deleting every other
    cache here would wipe the student and admin PWA caches (and vice-versa). */
 
+// v8: DEALS tab (send a deal to your regulars) — index.html + terminal.js + terminal.css.
+//
 // v7: "Forgot password?" recovery screen (index.html + terminal.js + terminal.css).
 // The bump matters more than it looks: the precache holds BARE paths, the fetch
 // fallback matches with ignoreSearch, and Cache.match returns the first entry
@@ -17,7 +19,7 @@
 //
 // v6: punch tab (rotating punch-in QR) + qrcode.js encoder; offline precache
 // now actually matches the ?v= versioned asset URLs.
-const CACHE = 'werewards-terminal-v7';
+const CACHE = 'werewards-terminal-v8';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',

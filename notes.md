@@ -100,10 +100,20 @@ offer.
    inert between purchases. Add the network layer: a **map/discovery feed of
    participating vendors**, "points near you," featured/limited rewards. This
    converts a punch card into a habit.
-2. **Vendor→customer marketing (re-engagement).** Web-push plumbing already
-   exists but only alerts *admins*. Let vendors/operator send **"2x points this
-   weekend"** or **"you're 40 pts from a free coffee"** nudges. This is the #1
-   thing loyalty vendors actually pay for, and Snackpass monetizes it heavily.
+2. ~~**Vendor→customer marketing (re-engagement).**~~ **SHIPPED** (migration-032,
+   terminal DEALS tab). Vendors send offers to their top 100 / lapsed /
+   close-to-a-reward customers; students get a push plus an in-app Deals list.
+   The hard part was not the sending. Every vendor's "top 100" is largely the
+   SAME 100 students — the tier model pays for breadth, so the regulars at one
+   spot are regulars at five — which makes a Friday-evening pile-up the default
+   case, not an edge case, and one `Block` kills the channel permanently. So
+   delivery is queued rather than sent: per-student cooldown + daily/weekly caps
+   are the guarantee, a few minutes of hold lets simultaneous campaigns coalesce
+   into one digest, and the in-app list carries anything the throttle suppresses.
+   See the README section and the header of `supabase/migration-032.sql`.
+   Still open from this item: **operator**-sent messages (the platform speaking
+   to all students at once), which would want its own audience and its own quota
+   rather than borrowing a vendor's.
 3. **A light social/referral hook.** Not the whole gifting economy — just
    **referral bonuses** ("bring a friend, both get points") and maybe **gift a
    reward to a friend.** Gives the viral loop a PWA otherwise lacks (no app-store

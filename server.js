@@ -20,6 +20,7 @@ import { logError } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
 import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
+import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 import {
@@ -205,6 +206,18 @@ const recoverLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a few minutes and try again.' },
 });
+// Campaign sends (migration-032) fan one request out to 100 students, so they
+// get a cap of their own on top of the per-vendor weekly quota enforced in
+// create_campaign. The quota is the real fence (it survives IP rotation); this
+// bounds the audience-expansion work an authenticated terminal can force, and
+// covers the reach-preview poll the composer makes as a vendor picks audiences.
+const campaignLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
+});
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
 app.use('/api/vendor/recover', recoverLimiter);
@@ -222,6 +235,7 @@ app.use([
   '/api/vendor/redeem',
   '/api/me/redeem-code',
 ], redeemLimiter);
+app.use('/api/vendor/campaigns', campaignLimiter);
 app.use('/api/me/community-transfer', transferLimiter);
 app.use('/api/me/punch', punchLimiter);
 app.use('/api/punch/hold', punchHoldLimiter);
@@ -517,6 +531,13 @@ app.use((err, req, res, _next) => {
     REWARD_NOT_POINTS_PRICED: [400, 'This reward can’t be bought with points.'],
     REWARD_NOT_VISITS_PRICED: [400, 'This reward can’t be bought with visits.'],
     BAD_CURRENCY: [400, 'Choose points or visits.'],
+    // Vendor campaigns (migration-032). Same substring-scan caveat as above:
+    // checked, none of these contains or is contained by another key.
+    CAMPAIGN_QUOTA: [429, 'You’ve used all your sends this week. The limit is what keeps students from muting every spot at once.'],
+    CAMPAIGN_TITLE_INVALID: [400, 'Give the deal a headline (up to 60 characters).'],
+    CAMPAIGN_BODY_INVALID: [400, 'Write the message (up to 140 characters).'],
+    CAMPAIGN_KIND_INVALID: [400, 'Pick a valid deal type.'],
+    CAMPAIGN_AUDIENCE_INVALID: [400, 'Pick a valid audience.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {
@@ -561,6 +582,13 @@ io.use(async (socket, next) => {
 
 io.on('connection', (socket) => {
   socket.join(`user:${socket.data.userId}`);
+  // Foreground/background, reported by the student app on visibilitychange.
+  // The campaign worker skips students who are looking at the app right now:
+  // the deal already reached them over this socket, so spending one of their
+  // two daily notification slots to say it again is pure cost. Assume visible
+  // until told otherwise, since that only ever DEFERS a notification.
+  socket.data.visible = true;
+  socket.on('visible', (v) => { socket.data.visible = v !== false; });
 });
 
 setIo(io);
@@ -577,6 +605,12 @@ if (isMain) {
   const port = process.env.PORT || 3000;
   server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));
 
+  // Vendor campaign delivery (migration-032). Started only when run directly,
+  // so importing `app` in a test never spins up a background loop. No-op
+  // without VAPID keys: campaigns still queue and still show in every targeted
+  // student's in-app list, they just never interrupt anyone.
+  startCampaignWorker();
+
   // Graceful shutdown. Heroku sends SIGTERM on every deploy and cycles dynos
   // ~daily, then SIGKILLs after ~30s. Draining first lets in-flight awards /
   // redeems finish instead of being cut mid-request. io.close() disconnects the
@@ -588,6 +622,7 @@ if (isMain) {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`${signal} received — draining connections and shutting down`);
+    stopCampaignWorker();   // don't claim a batch we won't live to deliver
     io.close(() => {
       console.log('server closed cleanly');
       process.exit(0);

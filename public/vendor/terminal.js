@@ -70,7 +70,7 @@ function installErrorReporter() {
 const screens = [
   'screen-login', 'screen-recover', 'screen-scan', 'screen-pad',
   'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
-  'screen-settings', 'screen-punch',
+  'screen-settings', 'screen-punch', 'screen-deals',
 ];
 
 /* ---------- boot ---------- */
@@ -96,6 +96,7 @@ const screens = [
   $('tab-redeem').addEventListener('click', () => switchMode('redeem'));
   $('tab-punch').addEventListener('click', () => switchMode('punch'));
   $('tab-manage').addEventListener('click', () => switchMode('manage'));
+  $('tab-deals').addEventListener('click', () => switchMode('deals'));
   $('tab-stats').addEventListener('click', () => switchMode('stats'));
   $('tab-settings').addEventListener('click', () => switchMode('settings'));
   $('punch-fullscreen').addEventListener('click', enterPunchFullscreen);
@@ -146,6 +147,11 @@ const screens = [
   $('redeem-code-input').addEventListener('input', (e) => { e.target.value = normalizeRedeem(e.target.value); });
   $('earn-keypad').addEventListener('click', (e) => onCodeKey(e, 'earn-code-input', normalizeEarn));
   $('redeem-keypad').addEventListener('click', (e) => onCodeKey(e, 'redeem-code-input', normalizeRedeem));
+  $('deal-title').addEventListener('input', onDealInput);
+  $('deal-body').addEventListener('input', onDealInput);
+  $('deal-audience').addEventListener('click', onAudiencePick);
+  $('deal-duration').addEventListener('click', onDurationPick);
+  $('deal-send').addEventListener('click', onDealSendTap);
   setupQrScanning();
 
   const { data } = await sb.auth.getSession();
@@ -364,6 +370,7 @@ function setTabs(active) {
   $('tab-redeem').classList.toggle('is-active', active === 'redeem');
   $('tab-punch').classList.toggle('is-active', active === 'punch');
   $('tab-manage').classList.toggle('is-active', active === 'manage');
+  $('tab-deals').classList.toggle('is-active', active === 'deals');
   $('tab-stats').classList.toggle('is-active', active === 'stats');
   $('tab-settings').classList.toggle('is-active', active === 'settings');
 }
@@ -374,6 +381,7 @@ function setTabs(active) {
 // a branch here or the terminal returns to REDEEM with the PUNCH tab lit.
 function enterModeScreen(m) {
   if (m === 'manage') enterManage();
+  else if (m === 'deals') enterDeals();
   else if (m === 'stats') enterStats();
   else if (m === 'settings') enterSettings();
   else if (m === 'punch') enterPunch();
@@ -428,8 +436,8 @@ function proceedSwitchMode(next) {
     return;
   }
 
-  // redeem, manage, and stats are behind the PIN — but only once per page
-  // session. pinUnlocked is a plain in-memory flag, so refreshing re-asks.
+  // redeem, manage, deals, and stats are behind the PIN — but only once per
+  // page session. pinUnlocked is a plain in-memory flag, so refreshing re-asks.
   if (config.hasPin && !pinUnlocked) {
     mode = next;
     pinTarget = next;
@@ -1702,6 +1710,210 @@ function requestUndoLast() {
     return;
   }
   run();
+}
+
+/* ---------- DEALS (campaigns to this vendor's own customers) ----------
+   The vendor writes the words and picks the audience. WeRewards owns WHO is on
+   the list (the terminal only ever sees a count, never a student) and WHEN it
+   lands. Tapping Send queues; it does not send. That few-minute hold is the
+   whole reason a student whose favourite four spots all post a Friday deal gets
+   one notification listing four spots rather than four notifications. */
+
+let dealAudience = 'top';
+let dealHours = 72;
+let dealSendArmed = false;      // two-tap confirm, like Undo last
+let dealArmTimer = null;
+let dealReachTimer = null;
+let dealQuota = null;
+// Idempotency, same contract as an award retry: one token per composed message,
+// so a Send that fails at the network layer can be repeated without fanning out
+// to a hundred students twice.
+let dealToken = null;
+
+function enterDeals() {
+  show('screen-deals');
+  disarmDealSend();
+  loadCampaigns();
+  refreshReach();
+}
+
+async function loadCampaigns() {
+  try {
+    const res = await authFetch('/api/vendor/campaigns');
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) return;
+    dealQuota = data.quota;
+    renderDealQuota();
+    renderDealNote(data.delivery);
+    renderDealHistory(data.campaigns || []);
+  } catch { /* keep the prior render */ }
+}
+
+function renderDealQuota() {
+  const q = dealQuota;
+  if (!q) return;
+  $('deals-quota').textContent = q.left === 1
+    ? '1 send left this week'
+    : `${q.left} sends left this week`;
+  $('deals-quota').classList.toggle('is-spent', q.left === 0);
+  $('deal-send').disabled = q.left === 0;
+}
+
+function renderDealNote(d) {
+  if (!d) return;
+  const hour = (h) => {
+    const am = h < 12 || h === 24;
+    const twelve = h % 12 === 0 ? 12 : h % 12;
+    return `${twelve}${am ? 'am' : 'pm'}`;
+  };
+  // Said plainly, because a vendor who thinks Send is instant will tap it twice.
+  $('deal-note').textContent =
+    `Goes out within about ${d.holdMinutes} minutes, never between ${hour(d.quietStart)} and ${hour(d.quietEnd)}. `
+    + 'If other spots send around the same time, students get one notification listing all of them, so nobody gets buried.';
+}
+
+function onDealInput() {
+  $('deal-title-count').textContent = `${$('deal-title').value.length}/60`;
+  $('deal-body-count').textContent = `${$('deal-body').value.length}/140`;
+  // Editing after arming means they changed their mind about the wording.
+  disarmDealSend();
+  $('deal-error').hidden = true;
+  $('deal-success').hidden = true;
+}
+
+function onAudiencePick(e) {
+  const btn = e.target.closest('.deal-chip');
+  if (!btn) return;
+  dealAudience = btn.dataset.audience;
+  [...$('deal-audience').children].forEach((b) => b.classList.toggle('is-active', b === btn));
+  disarmDealSend();
+  refreshReach();
+}
+
+function onDurationPick(e) {
+  const btn = e.target.closest('.deal-chip');
+  if (!btn) return;
+  dealHours = Number(btn.dataset.hours);
+  [...$('deal-duration').children].forEach((b) => b.classList.toggle('is-active', b === btn));
+  disarmDealSend();
+}
+
+// Debounced: switching audience chips quickly shouldn't fire three counts.
+function refreshReach() {
+  clearTimeout(dealReachTimer);
+  $('deal-reach').textContent = 'Checking…';
+  dealReachTimer = setTimeout(async () => {
+    try {
+      const res = await authFetch(`/api/vendor/campaigns/reach?audience=${dealAudience}`);
+      const data = await res.json().catch(() => ({}));
+      if (handlePinRequired(res, data)) return;
+      if (!res.ok) { $('deal-reach').textContent = ''; return; }
+      const n = data.reach ?? 0;
+      $('deal-reach').textContent = n === 0
+        ? 'Nobody matches this yet. Award some points first.'
+        : `Reaches ${n} ${n === 1 ? 'student' : 'students'}`;
+    } catch { $('deal-reach').textContent = ''; }
+  }, 250);
+}
+
+// First tap arms, second sends. It reaches a hundred people and there is no
+// recall, so it gets the same guard as Undo last and a punch-price raise.
+function onDealSendTap() {
+  if (busy) return;
+  const title = $('deal-title').value.trim();
+  const body = $('deal-body').value.trim();
+  if (!title || !body) {
+    dealError('Write a headline and a message first.');
+    return;
+  }
+  if (!dealSendArmed) {
+    dealSendArmed = true;
+    dealToken = dealToken || `dl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    $('deal-send').textContent = 'Tap again to send';
+    $('deal-send').classList.add('is-armed');
+    clearTimeout(dealArmTimer);
+    dealArmTimer = setTimeout(disarmDealSend, 5000);
+    return;
+  }
+  sendDeal(title, body);
+}
+
+function disarmDealSend() {
+  dealSendArmed = false;
+  clearTimeout(dealArmTimer);
+  $('deal-send').textContent = 'Send deal';
+  $('deal-send').classList.remove('is-armed');
+}
+
+function dealError(msg) {
+  $('deal-error').textContent = msg;
+  $('deal-error').hidden = false;
+  $('deal-success').hidden = true;
+  disarmDealSend();
+}
+
+async function sendDeal(title, body) {
+  busy = true;
+  $('deal-send').disabled = true;
+  try {
+    const res = await authFetch('/api/vendor/campaigns', {
+      method: 'POST',
+      body: JSON.stringify({
+        title, body, kind: 'deal', audience: dealAudience,
+        durationHours: dealHours, requestId: dealToken,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) {
+      dealError(data?.message || 'Could not send that. Try again in a moment.');
+      return;
+    }
+    $('deal-title').value = '';
+    $('deal-body').value = '';
+    onDealInput();                      // resets the counters (and clears both notes)
+    $('deal-success').textContent = data.queued === 0
+      ? 'Nobody matched that audience, so nothing went out.'
+      : `Queued for ${data.queued} ${data.queued === 1 ? 'student' : 'students'}. `
+        + `Lands within about ${data.holdMinutes} minutes.`;
+    $('deal-success').hidden = false;
+    dealToken = null;                   // a fresh message gets a fresh token
+    loadCampaigns();
+  } catch {
+    // Network drop: the send may or may not have landed, so KEEP the token.
+    // Re-tapping replays the same idempotency key and the server returns the
+    // original campaign instead of blasting the list a second time.
+    dealError('No connection. Tap send again when you are back online.');
+  } finally {
+    busy = false;
+    $('deal-send').disabled = dealQuota ? dealQuota.left === 0 : false;
+    disarmDealSend();
+  }
+}
+
+function renderDealHistory(list) {
+  const box = $('deal-history');
+  if (!list.length) {
+    box.innerHTML = '<p class="manage-note">Nothing sent yet.</p>';
+    return;
+  }
+  box.innerHTML = list.map((c) => {
+    const when = new Date(c.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const live = new Date(c.expires_at) > new Date();
+    return `
+      <div class="deal-row">
+        <div class="deal-row-main">
+          <p class="deal-row-title">${escapeHtml(c.title)}</p>
+          <p class="deal-row-body">${escapeHtml(c.body)}</p>
+        </div>
+        <div class="deal-row-stats">
+          <span class="deal-stat"><b>${c.queued_count}</b> sent to</span>
+          <span class="deal-stat"><b>${c.opened_count}</b> opened</span>
+          <span class="deal-when">${when}${live ? ' · live' : ''}</span>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 /* ---------- STATS (analytics) ---------- */

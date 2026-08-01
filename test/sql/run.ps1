@@ -20,9 +20,21 @@
 # but needs a real Supabase (TEST_SUPABASE_URL) and is skipped without one.
 
 # -Migration is the file UNDER TEST. Everything before it is applied first, then
-# seed.sql populates the pre-migration world, then the migration runs against
+# the seed populates the pre-migration world, then the migration runs against
 # that data. Seeding after it would insert into columns it has already dropped.
-param([string]$Migration = 'migration-029.sql', [switch]$Keep)
+#
+# -Seed / -Behavior pair with the migration: the defaults describe the world
+# migration-029 had to survive, which later migrations then dismantle (030 drops
+# the punch-card columns the default seed writes). A new migration brings its own
+# pair, e.g.
+#   powershell -File test/sql/run.ps1 -Migration migration-032.sql `
+#              -Seed seed-032.sql -Behavior behavior-032.sql
+param(
+  [string]$Migration = 'migration-029.sql',
+  [string]$Seed = 'seed.sql',
+  [string]$Behavior = 'behavior.sql',
+  [switch]$Keep
+)
 
 # Deliberately NOT ErrorActionPreference='Stop': native tools write to stderr
 # routinely (docker rm on a container that isn't there, pg_isready while the
@@ -46,7 +58,7 @@ foreach ($i in 1..40) {
 }
 if (-not $up) { Fail 'postgres never accepted connections' }
 
-foreach ($f in @('bootstrap.sql', 'seed.sql', 'behavior.sql', 'checks.sql')) {
+foreach ($f in (@('bootstrap.sql', 'checks.sql', $Seed, $Behavior) | Select-Object -Unique)) {
   docker cp (Join-Path $here $f) "${name}:/tmp/$f" | Out-Null
 }
 Get-ChildItem "$supa\*.sql" | ForEach-Object { docker cp $_.FullName "${name}:/tmp/$($_.Name)" | Out-Null }
@@ -68,7 +80,7 @@ foreach ($f in @('schema.sql') + $before) {
 Write-Output "applied schema.sql + $($before.Count) migrations (up to but not including $Migration)"
 
 # Populate the PRE-migration world, so the migration runs against real data.
-& $psql 'seed.sql'; if ($LASTEXITCODE -ne 0) { Fail 'seeding' }
+& $psql $Seed; if ($LASTEXITCODE -ne 0) { Fail "seeding ($Seed)" }
 
 & $psql $Migration; if ($LASTEXITCODE -ne 0) { Fail "applying $Migration" }
 Write-Output "applied $Migration"
@@ -79,12 +91,17 @@ foreach ($f in ($all | Where-Object { $_ -gt $Migration })) {
   if ($LASTEXITCODE -ne 0) { Fail "applying $f (after $Migration)" }
 }
 
-$out = docker exec $name psql -U postgres -d t -X -P pager=off -f /tmp/behavior.sql 2>&1
+$out = docker exec $name psql -U postgres -d t -X -P pager=off -f "/tmp/$Behavior" 2>&1
 $lines = $out -split "`n" | Select-String -Pattern 'PASS |FAIL |ERROR' |
   ForEach-Object { ($_ -replace '^.*NOTICE:\s+', '').Trim() }
 $lines | ForEach-Object { Write-Output $_ }
 
-$failed = @($lines | Where-Object { $_ -match '^(FAIL|ERROR)' })
+# -cmatch (case-sensitive) so a PASS message mentioning "error" in prose isn't
+# read as a failure, and 'ERROR:' so psql's own prefixed errors — which arrive as
+# "psql:/tmp/x.sql:12: ERROR: ..." rather than at the start of the line — can't
+# slip through as a clean run. A plpgsql compile error kills the WHOLE DO block,
+# so missing one of those means reporting zero failures for a file that never ran.
+$failed = @($lines | Where-Object { $_ -cmatch '^(FAIL|ERROR)' -or $_ -cmatch 'ERROR:' })
 if ($failed.Count -gt 0) { Fail "$($failed.Count) assertion(s)" }
 
 Write-Output ""

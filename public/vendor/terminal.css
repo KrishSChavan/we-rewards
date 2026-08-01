@@ -602,6 +602,64 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .recent-undo.is-armed { background: var(--error); border-color: var(--error); color: #fff; }
 .recent-tag { flex: none; color: var(--muted); font-weight: 800; font-size: 0.9rem; letter-spacing: 0.04em; }
 
+/* ---------- deals (campaigns) ---------- */
+
+.tab-deals.is-active { background: var(--redeem); border-color: var(--redeem); }
+
+.deals-screen { justify-content: flex-start; padding-top: 1.5rem; overflow-y: auto; align-items: center; }
+.deals-inner { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 1rem; }
+
+/* The weekly allowance sits in the header, not buried in help text: it is the
+   number that decides whether a vendor spends a send on this idea or the next
+   one, and scarcity is what keeps students subscribed. */
+.deals-quota { font-size: 1.05rem; font-weight: 800; color: var(--muted); }
+.deals-quota.is-spent { color: var(--error); }
+
+.deals-compose { gap: 1.1rem; }
+
+.deal-field { display: flex; flex-direction: column; gap: 0.4rem; position: relative; }
+.deal-label { font-size: 1rem; font-weight: 800; letter-spacing: 0.02em; }
+.deal-field input,
+.deal-field textarea {
+  font: inherit; font-size: 1.25rem; padding: 0.8rem 0.9rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+  background: var(--card); color: var(--ink); resize: none;
+}
+.deal-field input:focus,
+.deal-field textarea:focus { outline: none; border-color: var(--navy); }
+.deal-count { align-self: flex-end; font-size: 0.85rem; font-weight: 700; color: var(--muted); }
+
+.deal-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.deal-chip {
+  font: inherit; font-size: 1.02rem; font-weight: 800;
+  padding: 0.65rem 0.95rem; border-radius: 0.6rem;
+  border: 2.5px solid var(--ink); background: var(--card); color: var(--ink);
+}
+.deal-chip.is-active { background: var(--navy); border-color: var(--navy); color: #fff; }
+
+.deal-reach { font-size: 1.05rem; font-weight: 800; color: var(--navy); }
+
+/* Two-tap confirm: the armed state reads as a warning, because the send cannot
+   be recalled once it is queued. */
+#deal-send.is-armed { background: var(--error); border-color: var(--error); }
+#deal-send:disabled { opacity: 0.45; }
+
+.deals-note { font-size: 0.95rem; font-weight: 600; color: var(--muted); line-height: 1.35; }
+
+.deal-history { display: flex; flex-direction: column; gap: 0.7rem; }
+.deal-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  padding-bottom: 0.7rem; border-bottom: 2px solid var(--sky);
+}
+.deal-row:last-child { border-bottom: none; padding-bottom: 0; }
+.deal-row-main { min-width: 0; }
+.deal-row-title { font-size: 1.1rem; font-weight: 900; }
+.deal-row-body { font-size: 0.95rem; font-weight: 600; color: var(--muted); }
+.deal-row-stats { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 0.15rem; }
+.deal-stat { font-size: 0.9rem; font-weight: 600; color: var(--muted); }
+.deal-stat b { font-size: 1.05rem; font-weight: 900; color: var(--ink); }
+.deal-when { font-size: 0.82rem; font-weight: 700; color: var(--muted); }
+
 /* ---------- settings ---------- */
 
 .tab-settings.is-active { background: var(--ink); border-color: var(--ink); }

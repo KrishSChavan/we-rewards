@@ -5,6 +5,7 @@ import { requireUser, requireConsent } from '../middleware/auth.js';
 import { emitBalance, emitPunch } from '../lib/realtime.js';
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
+import { getVapidPublicKey } from '../lib/push.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 
 const router = Router();
@@ -420,6 +421,205 @@ router.get('/history', requireConsent, async (req, res, next) => {
   }
 });
 
+/* ============================================================
+ * Deals: vendor campaigns targeted at this student (migration-032).
+ *
+ * The list is the source of truth, NOT the notification. Every campaign a
+ * student is targeted by lands here the moment it is created, whether or not a
+ * push was ever allowed, delivered, or throttled away. That is what makes the
+ * delivery throttle safe to be as aggressive as it is: suppressing a
+ * notification removes an interruption, never a message.
+ * ============================================================ */
+
+/** GET /api/me/deals — live deals for this student, newest first. */
+router.get('/deals', requireConsent, async (req, res, next) => {
+  try {
+    const nowIso = new Date().toISOString();
+    const [{ data, error }, { data: state }] = await Promise.all([
+      supabaseAdmin
+        .from('campaign_recipients')
+        .select('campaign_id, read_at, opened_at, vendor_campaigns!inner(title, body, kind, expires_at, created_at, vendor_id, vendors!inner(name, has_logo, active))')
+        .eq('user_id', req.user.id)
+        .gt('vendor_campaigns.expires_at', nowIso)
+        .limit(50),
+      supabaseAdmin
+        .from('student_notify_state')
+        .select('push_opt_in')
+        .eq('user_id', req.user.id)
+        .maybeSingle(),
+    ]);
+    if (error) throw error;
+
+    // Sorting and the active-vendor filter are done here rather than in the
+    // query: the list is at most a handful of rows, and filtering across two
+    // levels of embedding is the sort of PostgREST syntax that breaks quietly
+    // on a client upgrade.
+    const deals = (data ?? [])
+      .filter((r) => r.vendor_campaigns?.vendors?.active)
+      .map((r) => ({
+        id: r.campaign_id,
+        vendorId: r.vendor_campaigns.vendor_id,
+        vendor: r.vendor_campaigns.vendors.name,
+        hasLogo: Boolean(r.vendor_campaigns.vendors.has_logo),
+        title: r.vendor_campaigns.title,
+        body: r.vendor_campaigns.body,
+        kind: r.vendor_campaigns.kind,
+        expiresAt: r.vendor_campaigns.expires_at,
+        createdAt: r.vendor_campaigns.created_at,
+        read: Boolean(r.read_at),
+      }))
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({
+      deals,
+      unread: deals.filter((d) => !d.read).length,
+      // `push_opt_in` defaults on; the row only exists once they have been
+      // targeted or have changed the setting.
+      dealAlerts: state?.push_opt_in ?? true,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/deals/read  { id? }
+ * Marks one deal read, or all of them when `id` is absent (which is what
+ * opening the list does).
+ */
+router.post('/deals/read', requireConsent, async (req, res, next) => {
+  try {
+    const id = req.body?.id;
+    if (id !== undefined && !isUuid(String(id))) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Unknown deal.' });
+    }
+    let q = supabaseAdmin
+      .from('campaign_recipients')
+      .update({ read_at: new Date().toISOString() })
+      .eq('user_id', req.user.id)
+      .is('read_at', null);
+    if (id !== undefined) q = q.eq('campaign_id', String(id));
+    const { error } = await q;
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/deals/open  { id }
+ * Click-through attribution: the vendor's DEALS tab shows how many of the
+ * students it reached actually tapped in. Idempotent (first tap wins).
+ */
+router.post('/deals/open', requireConsent, async (req, res, next) => {
+  try {
+    const id = String(req.body?.id ?? '');
+    if (!isUuid(id)) return res.status(400).json({ error: 'BAD_REQUEST', message: 'Unknown deal.' });
+    const now = new Date().toISOString();
+    const { error } = await supabaseAdmin
+      .from('campaign_recipients')
+      .update({ opened_at: now, read_at: now })
+      .eq('user_id', req.user.id)
+      .eq('campaign_id', id)
+      .is('opened_at', null);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- push subscriptions + the student's own switch ---------- */
+
+/** GET /api/me/push/public-key — null when the server has no VAPID keys. */
+router.get('/push/public-key', requireConsent, (req, res) => {
+  res.json({ publicKey: getVapidPublicKey() });
+});
+
+/**
+ * POST /api/me/push/subscribe  { endpoint, keys: { p256dh, auth } }
+ * Upserted on endpoint, so re-posting on every load just keeps it fresh.
+ * role='student' is what keeps operator alerts (notifyAdmins) off this device.
+ */
+router.post('/push/subscribe', requireConsent, async (req, res, next) => {
+  try {
+    const b = req.body ?? {};
+    const endpoint = typeof b.endpoint === 'string' ? b.endpoint : '';
+    const p256dh = typeof b.keys?.p256dh === 'string' ? b.keys.p256dh : '';
+    const auth = typeof b.keys?.auth === 'string' ? b.keys.auth : '';
+    if (!/^https:\/\//.test(endpoint) || endpoint.length > 1000 || !p256dh || !auth
+        || p256dh.length > 300 || auth.length > 100) {
+      return res.status(400).json({ error: 'BAD_SUBSCRIPTION', message: 'That push subscription looks invalid.' });
+    }
+    const { error } = await supabaseAdmin
+      .from('push_subscriptions')
+      .upsert({ endpoint, p256dh, auth, user_id: req.user.id, role: 'student' }, { onConflict: 'endpoint' });
+    if (error) throw error;
+    // Turning notifications on is also an opt-in: a student who switched deal
+    // alerts off and later re-granted permission means it.
+    await supabaseAdmin
+      .from('student_notify_state')
+      .upsert({ user_id: req.user.id, push_opt_in: true, updated_at: new Date().toISOString() },
+              { onConflict: 'user_id' });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/push/unsubscribe  { endpoint? }
+ * Drops this device's endpoint (or all of them). Used when the student turns
+ * deal alerts off, so we stop paying to push at a device that will ignore it.
+ */
+router.post('/push/unsubscribe', requireConsent, async (req, res, next) => {
+  try {
+    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint : null;
+    let q = supabaseAdmin
+      .from('push_subscriptions')
+      .delete()
+      .eq('user_id', req.user.id)
+      .eq('role', 'student');
+    if (endpoint) q = q.eq('endpoint', endpoint);
+    const { error } = await q;
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH /api/me/notify  { dealAlerts: boolean }
+ * The opt-out the Privacy Policy promises. Governs PUSH only: the in-app deals
+ * list is unaffected, because turning off interruptions is not the same as
+ * refusing to be told anything.
+ */
+router.patch('/notify', requireConsent, async (req, res, next) => {
+  try {
+    const on = req.body?.dealAlerts;
+    if (typeof on !== 'boolean') {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Deal alerts must be on or off.' });
+    }
+    const { error } = await supabaseAdmin
+      .from('student_notify_state')
+      .upsert({ user_id: req.user.id, push_opt_in: on, updated_at: new Date().toISOString() },
+              { onConflict: 'user_id' });
+    if (error) throw error;
+    if (!on) {
+      await supabaseAdmin
+        .from('push_subscriptions')
+        .delete()
+        .eq('user_id', req.user.id)
+        .eq('role', 'student');
+    }
+    res.json({ dealAlerts: on });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * GET /api/me/export
  * Everything WeRewards holds about the signed-in student, as a JSON download:
@@ -429,7 +629,7 @@ router.get('/history', requireConsent, async (req, res, next) => {
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, community, transactions, scores] = await Promise.all([
+    const [profile, balances, community, transactions, scores, deals, notify] = await Promise.all([
       supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
       // The community pool is a balance we hold, so the export promises it too.
@@ -442,8 +642,15 @@ router.get('/export', async (req, res, next) => {
         .eq('user_id', uid)
         .order('created_at', { ascending: false }),
       supabaseAdmin.from('user_scores').select('*').eq('user_id', uid).maybeSingle(),
+      // Which vendor deals we targeted this student with, and what we did with
+      // each one. "Everything we hold" now includes the marketing record.
+      supabaseAdmin
+        .from('campaign_recipients')
+        .select('campaign_id, status, pushed_at, read_at, opened_at, vendor_campaigns(title, body, kind, created_at, vendors(name))')
+        .eq('user_id', uid),
+      supabaseAdmin.from('student_notify_state').select('push_opt_in, last_push_at').eq('user_id', uid).maybeSingle(),
     ]);
-    for (const r of [profile, balances, community, transactions, scores]) if (r.error) throw r.error;
+    for (const r of [profile, balances, community, transactions, scores, deals, notify]) if (r.error) throw r.error;
 
     res.setHeader('Content-Disposition', 'attachment; filename="werewards-data.json"');
     res.json({
@@ -454,6 +661,8 @@ router.get('/export', async (req, res, next) => {
       community: community.data ?? { balance: 0, lifetime_earned: 0 },
       transactions: transactions.data ?? [],
       scores: scores.data,
+      deals: deals.data ?? [],
+      notifications: notify.data ?? { push_opt_in: true, last_push_at: null },
     });
   } catch (err) {
     next(err);
@@ -469,6 +678,7 @@ router.get('/export', async (req, res, next) => {
  */
 router.post('/delete', async (req, res, next) => {
   try {
+    await forgetPushSubscriptions(req.user.id);
     const { error } = await supabaseAdmin.auth.admin.deleteUser(req.user.id);
     if (error) throw error;
     res.json({ ok: true });
@@ -476,5 +686,22 @@ router.post('/delete', async (req, res, next) => {
     next(err);
   }
 });
+
+/**
+ * push_subscriptions has NO foreign key on user_id (the error_logs convention,
+ * migration-018), so the profile cascade that clears campaign_recipients and
+ * student_notify_state does NOT reach it. Left alone, a deleted account's push
+ * endpoints would outlive the account — and the Privacy Policy says they are
+ * deleted with it. Done BEFORE the auth user goes, so a failure here surfaces
+ * as a failed deletion rather than silently orphaning them.
+ */
+async function forgetPushSubscriptions(userId) {
+  const { error } = await supabaseAdmin
+    .from('push_subscriptions')
+    .delete()
+    .eq('user_id', userId)
+    .eq('role', 'student');
+  if (error) throw error;
+}
 
 export default router;

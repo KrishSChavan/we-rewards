@@ -4,7 +4,8 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireVendor, requirePin } from '../middleware/auth.js';
-import { emitBalance, emitPunch } from '../lib/realtime.js';
+import { emitBalance, emitPunch, emitDeal } from '../lib/realtime.js';
+import { CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS } from '../lib/campaigns.js';
 import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WINDOW_SECONDS } from '../lib/punch.js';
 import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
@@ -594,6 +595,192 @@ router.get('/analytics', requirePin, async (req, res, next) => {
     }
 
     res.json({ ...rollupVendorAnalytics(txns ?? [], t0), truncated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- campaigns: deals pushed to a vendor's own customers ---------- */
+
+const CAMPAIGN_TITLE_MAX = 60;
+const CAMPAIGN_BODY_MAX = 140;
+const CAMPAIGN_KINDS = new Set(['deal', 'event', 'notice']);
+const CAMPAIGN_AUDIENCES = new Set(['top', 'lapsed', 'close']);
+// "Top 100" is the product promise; the RPC clamps to this too.
+const CAMPAIGN_AUDIENCE_MAX = 100;
+
+/** Campaigns this vendor has sent in the rolling week, for the quota display. */
+async function campaignQuota(vendorId) {
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const { count } = await supabaseAdmin
+    .from('vendor_campaigns')
+    .select('id', { count: 'exact', head: true })
+    .eq('vendor_id', vendorId)
+    .neq('status', 'cancelled')
+    .gte('created_at', since);
+  const used = count ?? 0;
+  return {
+    used,
+    perWeek: CAMPAIGN_CONFIG.vendorWeeklySends,
+    left: Math.max(0, CAMPAIGN_CONFIG.vendorWeeklySends - used),
+  };
+}
+
+/**
+ * GET /api/vendor/campaigns
+ * The DEALS tab: what this vendor has sent, how many sends are left this week,
+ * and the delivery rules to show in the composer. PIN-gated (a campaign speaks
+ * to customers in the vendor's name, which is owner-level).
+ */
+router.get('/campaigns', requirePin, async (req, res, next) => {
+  try {
+    const [{ data, error }, quota] = await Promise.all([
+      supabaseAdmin
+        .from('vendor_campaigns')
+        .select('id, title, body, kind, audience, status, queued_count, sent_count, deliver_after, expires_at, created_at')
+        .eq('vendor_id', req.vendor.id)
+        .order('created_at', { ascending: false })
+        .limit(20),
+      campaignQuota(req.vendor.id),
+    ]);
+    if (error) throw error;
+
+    // Opens are a per-campaign count over the recipient ledger. One extra query
+    // for the whole page rather than one per row.
+    const ids = (data ?? []).map((c) => c.id);
+    const opens = new Map();
+    if (ids.length) {
+      const { data: rows } = await supabaseAdmin
+        .from('campaign_recipients')
+        .select('campaign_id, opened_at')
+        .in('campaign_id', ids)
+        .not('opened_at', 'is', null);
+      for (const r of rows ?? []) opens.set(r.campaign_id, (opens.get(r.campaign_id) ?? 0) + 1);
+    }
+
+    res.json({
+      quota,
+      durations: CAMPAIGN_DURATIONS,
+      // Shown in the composer so a vendor understands why delivery is not
+      // instant, and can see it is a fairness rule rather than a bug.
+      delivery: {
+        holdMinutes: CAMPAIGN_CONFIG.coalesceMinutes,
+        quietStart: CAMPAIGN_CONFIG.quietStart,
+        quietEnd: CAMPAIGN_CONFIG.quietEnd,
+      },
+      campaigns: (data ?? []).map((c) => ({ ...c, opened_count: opens.get(c.id) ?? 0 })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/vendor/campaigns/reach?audience=top
+ * How many students an audience currently resolves to. A COUNT, deliberately:
+ * a vendor never learns who is on the list, only how big it is. (Privacy Policy
+ * §"Marketing communications".)
+ */
+router.get('/campaigns/reach', requirePin, async (req, res, next) => {
+  try {
+    const audience = String(req.query.audience ?? 'top');
+    if (!CAMPAIGN_AUDIENCES.has(audience)) {
+      return res.status(400).json({ error: 'BAD_AUDIENCE', message: 'Pick a valid audience.' });
+    }
+    const { data, error } = await supabaseAdmin.rpc('campaign_audience', {
+      p_vendor_id: req.vendor.id,
+      p_audience: audience,
+      p_limit: CAMPAIGN_AUDIENCE_MAX,
+    });
+    if (error) throw error;
+    res.json({ audience, reach: data?.length ?? 0, max: CAMPAIGN_AUDIENCE_MAX });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/vendor/campaigns  { title, body, kind, audience, durationHours, requestId }
+ *
+ * ENQUEUES. Nothing is delivered on this request: create_campaign writes one
+ * recipient row per targeted student (their in-app list is live immediately)
+ * and sets a release time a few minutes out. The worker in lib/campaigns.js
+ * decides what each student actually receives, subject to the per-student
+ * cooldown and caps that make a five-vendor pile-up impossible.
+ *
+ * `requestId` is the same idempotency contract as /award: a retry after a
+ * network drop returns the original campaign instead of fanning out twice.
+ */
+router.post('/campaigns', requirePin, async (req, res, next) => {
+  try {
+    const b = req.body ?? {};
+    const title = String(b.title ?? '').trim();
+    const body = String(b.body ?? '').trim();
+    const kind = String(b.kind ?? 'deal');
+    const audience = String(b.audience ?? 'top');
+    const durationHours = Number(b.durationHours ?? CAMPAIGN_CONFIG.defaultDurationHours);
+
+    if (!title || title.length > CAMPAIGN_TITLE_MAX) {
+      return res.status(400).json({
+        error: 'BAD_CAMPAIGN',
+        message: `Give the deal a headline (up to ${CAMPAIGN_TITLE_MAX} characters).`,
+      });
+    }
+    if (!body || body.length > CAMPAIGN_BODY_MAX) {
+      return res.status(400).json({
+        error: 'BAD_CAMPAIGN',
+        message: `Write the message (up to ${CAMPAIGN_BODY_MAX} characters).`,
+      });
+    }
+    if (!CAMPAIGN_KINDS.has(kind) || !CAMPAIGN_AUDIENCES.has(audience)) {
+      return res.status(400).json({ error: 'BAD_CAMPAIGN', message: 'Pick a valid type and audience.' });
+    }
+    if (!CAMPAIGN_DURATIONS.includes(durationHours)) {
+      return res.status(400).json({ error: 'BAD_CAMPAIGN', message: 'Pick how long the deal runs.' });
+    }
+
+    const clientToken = (typeof b.requestId === 'string' && /^[\w-]{8,64}$/.test(b.requestId))
+      ? b.requestId
+      : null;
+
+    const { data, error } = await supabaseAdmin.rpc('create_campaign', {
+      p_vendor_id: req.vendor.id,
+      p_created_by: req.user.id,
+      p_title: title,
+      p_body: body,
+      p_kind: kind,
+      p_audience: audience,
+      p_limit: CAMPAIGN_AUDIENCE_MAX,
+      p_client_token: clientToken,
+      p_coalesce_minutes: CAMPAIGN_CONFIG.coalesceMinutes,
+      p_duration_hours: durationHours,
+      p_weekly_sends: CAMPAIGN_CONFIG.vendorWeeklySends,
+    });
+    if (error) throw error;
+
+    const row = data?.[0] ?? {};
+
+    // Nudge any student who already has the app open, so the deal appears in
+    // their list without waiting for a poll. Recipient ids stay server-side —
+    // they are never in the response the vendor reads. Fire-and-forget: a
+    // campaign that is safely queued must not fail on a socket hiccup.
+    if (!row.reused) {
+      supabaseAdmin
+        .from('campaign_recipients')
+        .select('user_id')
+        .eq('campaign_id', row.campaign_id)
+        .then(({ data: rows }) => {
+          for (const r of rows ?? []) emitDeal(r.user_id, { campaignId: row.campaign_id });
+        }, () => {});
+    }
+
+    res.json({
+      campaignId: row.campaign_id,
+      queued: row.queued ?? 0,
+      sendsLeft: row.sends_left ?? 0,
+      reused: Boolean(row.reused),
+      holdMinutes: CAMPAIGN_CONFIG.coalesceMinutes,
+    });
   } catch (err) {
     next(err);
   }

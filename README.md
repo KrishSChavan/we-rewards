@@ -206,10 +206,78 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   `vendor` / `admin`), message, stack, path, and best-effort user id. Stored in
   `error_logs` (migration-013), server-only writes, no client read path.
 
+## Vendor deals (campaigns)
+
+The terminal's **DEALS** tab lets a vendor write an offer and send it to their
+own customers. Students get it as a web-push notification and, always, as an
+entry in the app's Deals list. Migration-032; delivery worker in
+`src/lib/campaigns.js`.
+
+**The problem this is shaped around.** A vendor's top 100 is not a private
+audience. The tier model pays for breadth (`scoreProfile`'s synergy term is
+`cbrt(B·L·S)`, so a one-spot student scores near zero), which means the students
+who rank top-100 anywhere rank top-100 nearly everywhere. Five vendors posting a
+Friday deal do not reach five separate groups — they reach the same core, and the
+network's most valuable students get five notifications in a minute. Browser
+permission is one-shot: after `Block`, `requestPermission()` no-ops forever. A
+storm doesn't annoy the best users, it deletes them from the channel.
+
+So vendors never send. They **enqueue**, and a worker decides what each student
+receives:
+
+| Fence | Default | Override |
+| --- | --- | --- |
+| Coalescing hold before release | 5 min | `CAMPAIGN_COALESCE_MINUTES` |
+| Minimum gap between notifications | 4 h | `CAMPAIGN_COOLDOWN_MINUTES` |
+| Per student per day / week | 2 / 5 | `CAMPAIGN_DAILY_CAP`, `CAMPAIGN_WEEKLY_CAP` |
+| Same vendor to same student | 20 h | `CAMPAIGN_VENDOR_COOLDOWN_HOURS` |
+| Vendors named in one digest | 4 | `CAMPAIGN_BUNDLE_MAX` |
+| Quiet hours (campus-local) | 22:00–09:00 | `CAMPAIGN_QUIET_START/_END`, `CAMPAIGN_TIMEZONE` |
+| Sends per vendor per week | 2 | `CAMPAIGN_VENDOR_WEEKLY_SENDS` |
+
+The cooldown is the hard guarantee — whatever any number of vendors do, two
+notifications to one student can never land closer together than it, enforced
+under a `FOR UPDATE SKIP LOCKED` row lock in `claim_campaign_pushes()`. The hold
+is what keeps that guarantee from being a silent tax on vendors 2..5: everything
+due for a student travels in one claim, and two or more render as a single digest
+("3 spots have something on") that opens the in-app list. A student with the app
+in the foreground is skipped entirely — the socket already told them, so their
+quota isn't spent on it.
+
+Suppression never loses a message. `campaign_recipients` is written in full at
+creation time and is what the Deals list reads, so a throttled, blocked, or
+undeliverable notification only removes the interruption.
+
+Vendors see counts, never students: the audience (`top` / `lapsed` / `close`) is
+expanded server-side by `campaign_audience()`. Students opt out under **Account →
+Notifications → Deal alerts**; the Privacy Policy §7.4 states the caps above, so
+moving those defaults means moving that document (a unit test asserts the pair).
+
+Set the same `VAPID_*` keys as the admin alerts to enable push. With no keys the
+worker never starts, campaigns still queue, and every deal still shows in-app.
+
 ## Tests
 
 `node:test`, no extra runtime deps. `npm test` runs everything; `npm run test:unit`
 is the always-on, DB-free subset.
+
+### Migration tests (Docker, no local Supabase)
+
+`test/sql/run.ps1` builds a throwaway `postgres:16` from `schema.sql` + every
+migration in order, seeds a realistic pre-migration world, applies the migration
+under test, and asserts its runtime behaviour. Docker is on the **PowerShell**
+PATH, not Git Bash:
+
+```powershell
+powershell -File test/sql/run.ps1                        # migration-029 (the default pair)
+powershell -File test/sql/run.ps1 -Migration migration-032.sql `
+           -Seed seed-032.sql -Behavior behavior-032.sql # vendor campaigns
+```
+
+Each migration brings its own `-Seed` / `-Behavior` pair, because a seed written
+for one migration is dismantled by later ones (030 drops the columns 029's seed
+writes). `behavior-032.sql` stages the five-vendors-one-student storm and asserts
+the student receives exactly one bundle.
 
 ### Running the DB tests locally
 

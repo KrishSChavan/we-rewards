@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v31';   // v31: hub fold-up accelerates out (no tail), no stray focus ring on open
+const CACHE = 'werewards-v32';   // v32: vendor deals (push notifications + in-app deals list)
 const SHELL = ['/', '/theme-init.js', '/no-zoom.js', '/styles.css', '/app.js', '/qrcode.js', '/jsQR.js', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -46,5 +46,49 @@ self.addEventListener('fetch', (e) => {
       .catch(() => caches.match(e.request, { ignoreSearch: true }).then((hit) => (
         hit || (e.request.mode === 'navigate' ? caches.match('/') : Response.error())
       )))
+  );
+});
+
+/* ---------- vendor deals (migration-032) ----------
+   Payload: { title, body, url, icon?, tag, count }. The server has already done
+   the hard part — the campaign worker guarantees a student can never be sent
+   two of these close together, and bundles whatever several vendors queued at
+   once into ONE payload. See src/lib/campaigns.js.
+
+   `tag` is the belt-and-braces half of that: a notification with the same tag
+   REPLACES the one already in the shade instead of stacking beside it, and
+   renotify:false means the replacement is silent. So even if something ever
+   did slip past the server-side throttle (a second dyno, a clock skew, a
+   retried delivery), the student's phone still shows exactly one WeRewards
+   notification and only the first one made a sound. */
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data?.json() ?? {}; } catch { /* non-JSON payload — show defaults */ }
+  e.waitUntil(self.registration.showNotification(d.title || 'WeRewards', {
+    body: d.body || '',
+    icon: d.icon || '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    tag: d.tag || 'wr-deals',
+    renotify: false,
+    data: { url: d.url || '/?deals=1' },
+  }));
+});
+
+// Focus an open app if there is one (and route it to the deal), otherwise open
+// a fresh window at the deep link.
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = e.notification.data?.url || '/?deals=1';
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const hit = list.find((c) => new URL(c.url).origin === self.location.origin);
+      if (hit) {
+        // A focused tab won't re-navigate, so hand it the target instead and
+        // let app.js open the right sheet.
+        hit.postMessage({ type: 'open-deals', url });
+        return hit.focus();
+      }
+      return clients.openWindow(url);
+    })
   );
 });

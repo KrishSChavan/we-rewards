@@ -93,6 +93,7 @@
         <!-- hidden until the vendor turns punch cards on in Settings -->
         <button id="tab-punch" class="tab tab-punch" hidden>VISITS</button>
         <button id="tab-manage" class="tab tab-manage">ITEMS</button>
+        <button id="tab-deals" class="tab tab-deals">DEALS</button>
         <button id="tab-stats" class="tab tab-stats">STATS</button>
         <button id="tab-settings" class="tab tab-settings">SETTINGS</button>
       </nav>
@@ -305,6 +306,68 @@
         </div>
         <p class="manage-note">Items that are ON show as buttons on the redeem screen and in the student app.</p>
         <div id="reward-list" class="reward-list"></div>
+      </section>
+
+      <!-- ===== DEALS: send an offer to your own regulars =====
+           The vendor writes the message; WeRewards picks who gets it and when.
+           Nothing is sent on tap: the send is QUEUED and released a few minutes
+           later, which is what lets several spots sending at once arrive as ONE
+           notification per student instead of five. See the header of
+           supabase/migration-032.sql. -->
+      <section id="screen-deals" class="screen deals-screen" hidden>
+        <div class="deals-inner">
+          <div class="stats-head">
+            <h2>Send a deal</h2>
+            <span id="deals-quota" class="deals-quota"></span>
+          </div>
+
+          <div class="stats-card deals-compose">
+            <label class="deal-field">
+              <span class="deal-label">Headline</span>
+              <input id="deal-title" type="text" maxlength="60" placeholder="Half-price wings tonight" />
+              <span id="deal-title-count" class="deal-count">0/60</span>
+            </label>
+
+            <label class="deal-field">
+              <span class="deal-label">Message</span>
+              <textarea id="deal-body" maxlength="140" rows="3"
+                        placeholder="Show your WeRewards code at the counter, 6pm to close."></textarea>
+              <span id="deal-body-count" class="deal-count">0/140</span>
+            </label>
+
+            <div class="deal-field">
+              <span class="deal-label">Who gets it</span>
+              <div id="deal-audience" class="deal-chips" role="group" aria-label="Audience">
+                <button class="deal-chip is-active" type="button" data-audience="top">Top 100 regulars</button>
+                <button class="deal-chip" type="button" data-audience="lapsed">Haven’t been back</button>
+                <button class="deal-chip" type="button" data-audience="close">Close to a reward</button>
+              </div>
+              <p id="deal-reach" class="deal-reach">Checking…</p>
+            </div>
+
+            <div class="deal-field">
+              <span class="deal-label">How long it runs</span>
+              <div id="deal-duration" class="deal-chips" role="group" aria-label="Duration">
+                <button class="deal-chip" type="button" data-hours="24">Today</button>
+                <button class="deal-chip is-active" type="button" data-hours="72">3 days</button>
+                <button class="deal-chip" type="button" data-hours="168">A week</button>
+              </div>
+            </div>
+
+            <p id="deal-error" class="field-error" hidden></p>
+            <p id="deal-success" class="field-success" hidden></p>
+
+            <!-- Two-tap confirm, same as Undo last and the price-raise guard:
+                 this one goes out to a hundred people and cannot be recalled. -->
+            <button id="deal-send" class="btn-primary" type="button">Send deal</button>
+            <p id="deal-note" class="deals-note"></p>
+          </div>
+
+          <div class="stats-card">
+            <h3>Sent recently</h3>
+            <div id="deal-history" class="deal-history"></div>
+          </div>
+        </div>
       </section>
 
       <!-- ===== STATS: ANALYTICS ===== -->
