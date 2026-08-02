@@ -969,6 +969,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   color: var(--accent); background: none; border: none;
   padding: 0.1rem 0.2rem; text-decoration: underline;
 }
+/* The specific reason, under the repair line. Quieter than it: what to DO comes
+   first, why it happened second. */
+.deals-alert-why {
+  font-size: 0.72rem; font-weight: 600; line-height: 1.4;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: -0.35rem;                    /* pulls it under its own line, not a new row */
+}
 
 /* ---------- deals sheet ---------- */
 

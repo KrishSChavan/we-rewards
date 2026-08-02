@@ -3994,6 +3994,11 @@ let pushReady = null;             // null = not known yet
 // look identical from the endpoint count alone, and only one of them should be
 // offered a repair prompt.
 let dealAlertsOn = true;
+// Why the last enable attempt failed, in the student's words. There is no
+// console on a phone PWA, so a subscribe that fails there is otherwise
+// indistinguishable from one that worked — which is exactly how this went
+// unnoticed. Shown on the repair line; cleared by a success.
+let pushFailNote = '';
 const DEAL_OPTIN_DISMISS_KEY = 'wr-deal-optin-dismissed';
 
 async function loadDeals() {
@@ -4084,6 +4089,7 @@ function dropDealsSheet() {
   dealsLoaded = false;
   pushReady = null;
   dealAlertsOn = true;
+  pushFailNote = '';
 }
 
 function renderDealsList(focusId) {
@@ -4176,8 +4182,10 @@ async function initPush() {
       try {
         await subscribePush();
         pushReady = true;
+        pushFailNote = '';
       } catch (err) {
         pushReady = false;
+        pushFailNote = pushErrorNote(err);
         console.warn('[push] subscribe failed:', err?.message ?? err);
       }
     }
@@ -4241,6 +4249,31 @@ function syncDealAlertUi() {
   state.hidden = !label;
   optin.hidden = !showOptin;
   fix.hidden = !showFix;
+  // The repair line carries the actual reason when we have one. Without it the
+  // student sees the same "not registered yet" whether their browser refused the
+  // prompt, the push service was unreachable, or the save failed — three
+  // different problems with three different next steps.
+  $('deals-alert-why').textContent = pushFailNote;
+  $('deals-alert-why').hidden = !(showFix && pushFailNote);
+}
+
+/**
+ * Turn a subscribe failure into something a student can act on. The three that
+ * actually happen in the field are worth naming; anything else keeps its own
+ * message, because a specific string a student can read out beats "something
+ * went wrong" when the next step is them telling us what they saw.
+ */
+function pushErrorNote(err) {
+  const msg = String(err?.message ?? err ?? '');
+  const name = err?.name ?? '';
+  if (name === 'NotAllowedError') return 'Your browser refused the notification prompt.';
+  // Chrome on a device with no Google Play services, and every browser when the
+  // push service itself is unreachable.
+  if (name === 'AbortError' || /registration failed|service not available/i.test(msg)) {
+    return 'Your browser could not reach its push service. Check your connection and try again.';
+  }
+  if (/^subscribe failed: 4\d\d$/.test(msg)) return 'We could not save this device. Try again.';
+  return msg || 'Something stopped this device registering.';
 }
 
 // iOS gates PushManager behind an installed PWA, so a Safari tab reports push as
@@ -4253,23 +4286,103 @@ function isIosSafariTab() {
   return iOS && !window.InstallPrompt?.isInstalled?.();
 }
 
-async function enableDealAlerts() {
+/**
+ * Ask for notification permission. MUST be called with NOTHING awaited before it
+ * in the handler — that is the whole reason it exists as its own function.
+ *
+ * requestPermission() needs transient user activation, and an `await` spends it:
+ * the browser sees the call arrive a network round-trip after the tap and is
+ * entitled to refuse. Safari does refuse, and the promise it hands back can sit
+ * unsettled forever rather than rejecting — which is worse than a refusal,
+ * because the caller then never reaches the code that would put the switch back.
+ *
+ * So: call this FIRST, keep the promise, and do the network work while it is in
+ * flight. Awaiting the result later is fine; only the CALL has to be in the
+ * gesture. The timeout is the backstop for the never-settles case.
+ */
+function askNotificationPermission() {
+  if (!('Notification' in window)) return Promise.resolve('unsupported');
+  if (Notification.permission !== 'default') return Promise.resolve(Notification.permission);
+  let p;
   try {
-    if (!vapidKey) await initPush();
-    const perm = await Notification.requestPermission();   // must be inside the gesture
-    if (perm !== 'granted') { $('deals-optin').hidden = true; syncDealAlertUi(); return; }
-    await subscribePush();
-    pushReady = true;
-    dealAlertsOn = true;        // /push/subscribe flips push_opt_in on server-side
-    setDealsToggle(true);
+    p = Promise.resolve(Notification.requestPermission());
+  } catch {
+    return Promise.resolve('default');           // older callback-only signature
+  }
+  return Promise.race([
+    p.catch(() => 'default'),
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 60_000)),
+  ]);
+}
+
+/**
+ * The one path that turns deal alerts on, shared by the soft opt-in and the
+ * Account switch.
+ *
+ * It reports success ONLY when the server ends up holding an endpoint for this
+ * device. Both callers used to be able to finish "successfully" having created
+ * no subscription at all — the permission branch is skipped when `vapidKey` is
+ * null or permission is not granted, nothing throws, and the switch was left
+ * reading "on" over a server that could not reach this device. It looked fine
+ * until the next launch, when the truth arrived from /api/me/deals and the
+ * switch went back to off on its own.
+ *
+ * @returns {Promise<boolean>} whether alerts are genuinely on now
+ */
+async function enablePushAlerts(permPromise) {
+  // The caller started the permission request inside its gesture; if it didn't,
+  // this is still correct, just liable to be refused.
+  const permP = permPromise ?? askNotificationPermission();
+  if (!vapidKey) await initPush();
+  const perm = await permP;
+  if (perm !== 'granted') {
+    dealAlertsOn = false;
+    // 'timeout' is the never-settled case: the prompt was never really put to
+    // them, so say that rather than "you declined".
+    pushFailNote = perm === 'timeout'
+      ? 'Your browser never answered the permission prompt. Try again.'
+      : perm === 'unsupported'
+        ? 'This browser cannot show notifications.'
+        : '';                                    // a plain "no" needs no explaining
+    return false;
+  }
+  if (!vapidKey) return false;                   // server has push disabled
+  // Record the INTENT before attempting the subscribe, and in this order.
+  // A student who said yes and whose endpoint then failed to register has opted
+  // in with a broken device, not opted out: leaving dealAlertsOn false here made
+  // syncDealAlertUi read it as "their own switch, no repair offered" and hide the
+  // very explanation they need. /push/subscribe would set the flag too, but it is
+  // the call that just failed.
+  dealAlertsOn = true;
+  await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: true }) });
+  // initPush above may already have subscribed on its own — it does that whenever
+  // permission was granted by the time it ran, which is every re-enable and any
+  // prompt the browser answered instantly. Subscribing again would be harmless
+  // (the server upserts) but it is a second pushManager.subscribe and a second
+  // round trip for nothing.
+  if (pushReady !== true) await subscribePush();  // throws if the endpoint never lands
+  pushFailNote = '';
+  pushReady = true;
+  return true;
+}
+
+async function enableDealAlerts() {
+  const permP = askNotificationPermission();     // FIRST — see askNotificationPermission
+  const btn = $('deals-optin-yes');
+  btn.disabled = true;
+  try {
+    await enablePushAlerts(permP);
   } catch (err) {
     // Permission may well have been granted and only the subscribe failed, so
     // this is not "they said no" — it is the repairable state, and
     // syncDealAlertUi below is what offers the repair.
     pushReady = false;
+    pushFailNote = pushErrorNote(err);
     console.warn('[push] enable failed:', err?.message ?? err);
   }
+  btn.disabled = false;
   $('deals-optin').hidden = true;
+  setDealsToggle(dealAlertsOn);
   syncDealAlertUi();
 }
 
@@ -4291,8 +4404,10 @@ async function retryPushSubscribe() {
     await subscribePush();
     pushReady = true;
     dealAlertsOn = true;
+    pushFailNote = '';
   } catch (err) {
     pushReady = false;
+    pushFailNote = pushErrorNote(err);
     console.warn('[push] retry failed:', err?.message ?? err);
   }
   btn.disabled = false;
@@ -4372,26 +4487,26 @@ function setDealsToggle(on) {
 async function onDealsToggle() {
   const wasOn = $('deals-toggle').getAttribute('aria-checked') === 'true';
   const next = !wasOn;
-  dealAlertsOn = next;
-  // Optimistic, and pushReady must be cleared with it: the switch is being told
-  // to reach a state the server has not confirmed yet, and a stale `false` here
-  // would render the new "on" as off again on the very next sync.
-  if (next) pushReady = null;
-  setDealsToggle(next);                      // optimistic; the server is the record
+  // Turning ON is asked for here but not granted here: it needs a permission
+  // prompt and a round trip, either of which can fail or never come back. So the
+  // switch does NOT move yet. It used to move optimistically, which is how it
+  // could sit on "on" all session over a device the server could not reach and
+  // then appear to "turn itself off" at the next launch — that was the truth
+  // arriving, not a setting being lost.
+  //
+  // Turning OFF moves immediately: that direction is safe to promise, since the
+  // worst case is we stop sending to a device that would have accepted.
+  const sw = $('deals-toggle');
+  sw.disabled = true;
+  if (!next) { dealAlertsOn = false; setDealsToggle(false); }
+  // Started before any await, inside this click's gesture — see
+  // askNotificationPermission. Cheap and side-effect-free when it isn't needed.
+  const permP = next ? askNotificationPermission() : null;
   try {
     if (next) {
-      // Turning it on from here still needs permission, and this click is the
-      // gesture that can ask for it.
-      if (!vapidKey) await initPush();
-      if ('Notification' in window && Notification.permission === 'default') {
-        const perm = await Notification.requestPermission();
-        if (perm !== 'granted') { dealAlertsOn = false; setDealsToggle(false); syncDealAlertUi(); return; }
-      }
-      await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: true }) });
-      if (vapidKey && Notification.permission === 'granted') {
-        await subscribePush();
-        pushReady = true;
-      }
+      // enablePushAlerts owns the whole ON path — permission, the opt-in flag,
+      // and the subscription — so the switch and the soft opt-in cannot drift.
+      await enablePushAlerts(permP);
     } else {
       // The server drops every endpoint; drop the browser's own subscription
       // too, so a re-enable mints a fresh one rather than reviving a ghost.
@@ -4403,13 +4518,16 @@ async function onDealsToggle() {
         if (sub) await sub.unsubscribe();
       } catch { /* no worker / no subscription */ }
     }
-  } catch {
-    dealAlertsOn = wasOn;
-    setDealsToggle(wasOn);                   // put it back if the server never heard us
+  } catch (err) {
+    if (next) { pushReady = false; pushFailNote = pushErrorNote(err); }
+    else dealAlertsOn = wasOn;               // the server never heard the opt-out
+    console.warn('[push] toggle failed:', err?.message ?? err);
   }
-  // Whatever happened, the hub's deals block has to agree with the switch —
-  // "alerts on" up there while this reads off is the confusion the whole
-  // pushReady thread exists to prevent.
+  sw.disabled = false;
+  // The switch now shows what is actually true, not what was asked for.
+  setDealsToggle(dealAlertsOn);
+  // …and the hub's deals block has to agree with it — "alerts on" up there while
+  // this reads off is the confusion the whole pushReady thread exists to prevent.
   syncDealAlertUi();
 }
 

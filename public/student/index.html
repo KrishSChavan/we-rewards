@@ -742,6 +742,9 @@
             Alerts are on for this browser but this device isn't registered yet.
             <button id="deals-alert-retry" class="deals-alert-retry" type="button">Fix it</button>
           </p>
+          <!-- The reason, when the last attempt gave us one. There is no console
+               on a phone, so without this every failure looks identical. -->
+          <p id="deals-alert-why" class="deals-alert-why" hidden></p>
         </div>
 
         </div><!-- /.hub-body-inner -->
