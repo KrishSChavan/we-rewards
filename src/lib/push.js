@@ -56,11 +56,25 @@ export async function sendToSubscriptions(subs, payload) {
       );
       return true;
     } catch (err) {
-      if (err?.statusCode === 404 || err?.statusCode === 410) {
+      const code = err?.statusCode;
+      // Four codes mean this endpoint is permanently unusable, not merely
+      // unlucky:
+      //   404/410 — the browser dropped it (unsubscribed, permission revoked);
+      //   401/403 — it was minted against a DIFFERENT VAPID keypair than the one
+      //             we sign with, so every future send is rejected identically.
+      // The 401/403 pair matters because claim_campaign_pushes only checks that
+      // SOME row exists for the student: keeping a rejected row means the
+      // student is claimed, their cooldown and daily cap are spent, and nothing
+      // is delivered — forever. Pruning is what lets the client mint a fresh
+      // subscription on its next pass.
+      if (code === 401 || code === 403 || code === 404 || code === 410) {
         await supabaseAdmin.from('push_subscriptions').delete().eq('endpoint', s.endpoint);
+        console.warn(`[push] dropped dead endpoint (${code}): ${err?.body ?? err?.message ?? ''}`);
+      } else {
+        // A hiccup (5xx, network, 400 payload problem) is the caller's retry
+        // problem, not ours — but it is never silent again.
+        console.warn(`[push] send failed (${code ?? 'no status'}): ${err?.body ?? err?.message ?? err}`);
       }
-      // Any other failure (push service hiccup, network) is dropped by the
-      // caller's own retry policy, not here.
       return false;
     }
   }));

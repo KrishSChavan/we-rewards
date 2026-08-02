@@ -609,14 +609,30 @@ const CAMPAIGN_AUDIENCES = new Set(['top', 'lapsed', 'close']);
 // "Top 100" is the product promise; the RPC clamps to this too.
 const CAMPAIGN_AUDIENCE_MAX = 100;
 
-/** Campaigns this vendor has sent in the rolling week, for the quota display. */
+/**
+ * Campaigns this vendor has sent in the rolling week, for the quota display.
+ *
+ * EVERY campaign counts, including one that was taken down. Taking a deal down
+ * does not give the send back, and the reason is worth stating: a campaign is
+ * "delivered" the moment create_campaign writes its recipient rows, because the
+ * in-app deals list is materialised there and is never throttled. sent_count
+ * only ever counts the PUSH half — it stays 0 when push is unconfigured, and in
+ * a small pilot it stays 0 most of the time anyway. Refunding on sent_count = 0
+ * would therefore have made "send, let it run, take down, send again" an
+ * unlimited in-app fan-out against a 2-per-week cap.
+ *
+ * The typo case that would otherwise argue for a refund is covered by PATCH:
+ * fixing the wording costs nothing and does not need a takedown at all.
+ *
+ * Mirrored in create_campaign (migration-034) — the display and the enforcement
+ * must agree, or a vendor sees sends they cannot spend.
+ */
 async function campaignQuota(vendorId) {
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
   const { count } = await supabaseAdmin
     .from('vendor_campaigns')
     .select('id', { count: 'exact', head: true })
     .eq('vendor_id', vendorId)
-    .neq('status', 'cancelled')
     .gte('created_at', since);
   const used = count ?? 0;
   return {
@@ -781,6 +797,184 @@ router.post('/campaigns', requirePin, async (req, res, next) => {
       reused: Boolean(row.reused),
       holdMinutes: CAMPAIGN_CONFIG.coalesceMinutes,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Load one of THIS vendor's campaigns. The vendor_id equality is the whole
+ * authorisation story for the two routes below: a campaign id is a uuid a
+ * vendor could conceivably learn, and without this check they could rewrite a
+ * competitor's live deal.
+ */
+async function ownCampaign(vendorId, id) {
+  const { data, error } = await supabaseAdmin
+    .from('vendor_campaigns')
+    .select('id, title, body, kind, audience, status, queued_count, sent_count, deliver_after, expires_at, created_at')
+    .eq('id', id)
+    .eq('vendor_id', vendorId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+/** Tell every targeted student's open app to re-read its deals list. */
+function refreshRecipients(campaignId) {
+  supabaseAdmin
+    .from('campaign_recipients')
+    .select('user_id')
+    .eq('campaign_id', campaignId)
+    .then(({ data: rows }) => {
+      for (const r of rows ?? []) emitDeal(r.user_id, { campaignId });
+    }, () => { /* a socket hiccup must not fail the edit */ });
+}
+
+/**
+ * PATCH /api/vendor/campaigns/:id  { title?, body?, durationHours? }
+ *
+ * Corrects a LIVE deal in place. What this can and cannot do is worth being
+ * precise about, because the two halves of a campaign have different physics:
+ *
+ *   • the in-app deals list reads vendor_campaigns on every load, so an edit is
+ *     immediately and completely true there;
+ *   • a notification that already went out is gone. It is a copy of the old
+ *     text sitting in someone's shade and nothing can reach it.
+ *
+ * So this fixes the record, not the interruption. An edit deliberately does NOT
+ * re-notify anyone and does NOT spend a send — otherwise "edit" would be a way
+ * to push the same audience twice for free.
+ *
+ * Audience is immutable: recipient rows are materialised at creation, so
+ * changing it would mean fanning out to new students, which is a new campaign.
+ */
+router.patch('/campaigns/:id', requirePin, async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'That deal no longer exists.' });
+    }
+    const campaign = await ownCampaign(req.vendor.id, req.params.id);
+    if (!campaign) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'That deal no longer exists.' });
+    }
+    if (campaign.status === 'cancelled' || new Date(campaign.expires_at) <= new Date()) {
+      return res.status(409).json({
+        error: 'CAMPAIGN_OVER',
+        message: 'That deal has already ended. Send a new one instead.',
+      });
+    }
+
+    const b = req.body ?? {};
+    const patch = {};
+
+    if (b.title !== undefined) {
+      const title = String(b.title).trim();
+      if (!title || title.length > CAMPAIGN_TITLE_MAX) {
+        return res.status(400).json({
+          error: 'BAD_CAMPAIGN',
+          message: `Give the deal a headline (up to ${CAMPAIGN_TITLE_MAX} characters).`,
+        });
+      }
+      patch.title = title;
+    }
+    if (b.body !== undefined) {
+      const body = String(b.body).trim();
+      if (!body || body.length > CAMPAIGN_BODY_MAX) {
+        return res.status(400).json({
+          error: 'BAD_CAMPAIGN',
+          message: `Write the message (up to ${CAMPAIGN_BODY_MAX} characters).`,
+        });
+      }
+      patch.body = body;
+    }
+    if (b.durationHours !== undefined) {
+      const hours = Number(b.durationHours);
+      if (!CAMPAIGN_DURATIONS.includes(hours)) {
+        return res.status(400).json({ error: 'BAD_CAMPAIGN', message: 'Pick how long the deal runs.' });
+      }
+      // Measured from when it was sent, so the chip a vendor picks means the
+      // same thing on an edit as it did in the composer.
+      const expires = new Date(new Date(campaign.created_at).getTime() + hours * 3_600_000);
+      if (expires <= new Date()) {
+        return res.status(400).json({
+          error: 'BAD_CAMPAIGN',
+          message: 'That would end the deal immediately. Take it down instead.',
+        });
+      }
+      patch.expires_at = expires.toISOString();
+    }
+
+    if (!Object.keys(patch).length) {
+      return res.status(400).json({ error: 'BAD_CAMPAIGN', message: 'Nothing to change.' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('vendor_campaigns')
+      .update(patch)
+      .eq('id', campaign.id)
+      .eq('vendor_id', req.vendor.id)
+      .select('id, title, body, kind, audience, status, queued_count, sent_count, expires_at, created_at')
+      .maybeSingle();
+    if (error) throw error;
+
+    refreshRecipients(campaign.id);
+    res.json({ campaign: data, quota: await campaignQuota(req.vendor.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/vendor/campaigns/:id
+ *
+ * Takes a deal down. expires_at = now() is the mechanism for both halves at
+ * once: /api/me/deals filters on expires_at > now(), and so does the driving
+ * scan in claim_campaign_pushes, so one write removes it from every student's
+ * list AND abandons every push that had not yet been claimed.
+ *
+ * The row is kept, not deleted. Its recipient ledger carries the open counts
+ * the vendor's own DEALS tab reports, and a campaign that genuinely reached
+ * people is a thing that happened — the history shows it as taken down rather
+ * than quietly rewriting the week.
+ *
+ * Recipients already in 'sending' are left alone: a worker owns that batch and
+ * is mid-flight: finish_campaign_batch settles it. Flipping those rows here
+ * would corrupt the batch it is about to settle, and the notification has in
+ * any case already left.
+ */
+router.delete('/campaigns/:id', requirePin, async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'That deal no longer exists.' });
+    }
+    const campaign = await ownCampaign(req.vendor.id, req.params.id);
+    if (!campaign) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'That deal no longer exists.' });
+    }
+    // Idempotent: taking down an already-cancelled deal is a no-op, not a 409,
+    // so a double-tap on a flaky connection reads as success.
+    if (campaign.status !== 'cancelled') {
+      const nowIso = new Date().toISOString();
+      const { error } = await supabaseAdmin
+        .from('vendor_campaigns')
+        .update({ status: 'cancelled', expires_at: nowIso })
+        .eq('id', campaign.id)
+        .eq('vendor_id', req.vendor.id);
+      if (error) throw error;
+
+      // Bookkeeping only — expires_at above is what actually stops delivery.
+      await supabaseAdmin
+        .from('campaign_recipients')
+        .update({ status: 'expired' })
+        .eq('campaign_id', campaign.id)
+        .eq('status', 'queued');
+
+      refreshRecipients(campaign.id);
+    }
+
+    // Note there is no `refunded` here: a takedown never gives the send back.
+    // See campaignQuota for why, and use PATCH if the problem is the wording.
+    res.json({ ok: true, quota: await campaignQuota(req.vendor.id) });
   } catch (err) {
     next(err);
   }

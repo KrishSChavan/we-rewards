@@ -647,12 +647,47 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .deals-note { font-size: 0.95rem; font-weight: 600; color: var(--muted); line-height: 1.35; }
 
 .deal-history { display: flex; flex-direction: column; gap: 0.7rem; }
+/* A column now: the title/stats line, then the edit + take-down controls, then
+   the editor itself when it is open. */
 .deal-row {
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  display: flex; flex-direction: column; gap: 0.6rem;
   padding-bottom: 0.7rem; border-bottom: 2px solid var(--sky);
 }
+.deal-row-top {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+}
 .deal-row:last-child { border-bottom: none; padding-bottom: 0; }
+/* Ended and taken-down deals stay legible but read as past. */
+.deal-row.is-over .deal-row-top { opacity: 0.6; }
 .deal-row-main { min-width: 0; }
+
+.deal-row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* Both of these are toggled by the `hidden` property from openDealEdit /
+   closeDealEdit, and the display:flex above would otherwise defeat it — same
+   trap as .balance-chip. */
+.deal-row-actions[hidden] { display: none; }
+.deal-act {
+  font: inherit; font-size: 0.95rem; font-weight: 800;
+  padding: 0.5rem 0.85rem; border-radius: 0.55rem;
+  border: 2.5px solid var(--ink); background: var(--card); color: var(--ink);
+}
+.deal-act:disabled { opacity: 0.45; }
+.deal-act-go { background: var(--navy); border-color: var(--navy); color: #fff; }
+.deal-act-danger { border-color: var(--error); color: var(--error); }
+/* Armed reads as a warning, matching #deal-send.is-armed. */
+.deal-act-danger.is-armed { background: var(--error); border-color: var(--error); color: #fff; }
+
+.deal-edit { display: flex; flex-direction: column; gap: 0.6rem; }
+.deal-edit[hidden] { display: none; }
+.deal-edit input,
+.deal-edit textarea {
+  font: inherit; font-size: 1.05rem; font-weight: 700;
+  width: 100%; padding: 0.6rem 0.7rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+  background: var(--card); color: var(--ink); resize: none;
+}
+.deal-edit input:focus,
+.deal-edit textarea:focus { outline: none; border-color: var(--navy); }
 .deal-row-title { font-size: 1.1rem; font-weight: 900; }
 .deal-row-body { font-size: 0.95rem; font-weight: 600; color: var(--muted); }
 .deal-row-stats { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 0.15rem; }

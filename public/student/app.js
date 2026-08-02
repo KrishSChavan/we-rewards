@@ -4111,9 +4111,14 @@ function onDealTap(d) {
 // stay out of the way, since re-prompting is impossible.
 async function initPush() {
   if (pushInitDone) return;
-  pushInitDone = true;
   try {
+    // Latched AFTER the support guard, not before: on a platform where push
+    // isn't available yet (an iOS tab before Add to Home Screen) this costs one
+    // cheap property check per call, and leaves onDealsToggle's `if (!vapidKey)
+    // await initPush()` able to succeed later instead of being a no-op for the
+    // rest of the page's life.
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+    pushInitDone = true;
     const res = await authFetch('/api/me/push/public-key');
     if (!res.ok) return;
     vapidKey = (await res.json())?.publicKey ?? null;
@@ -4152,16 +4157,33 @@ function dismissDealOptin() {
 
 async function subscribePush() {
   const reg = await navigator.serviceWorker.ready;
-  const existing = await reg.pushManager.getSubscription();
-  const sub = existing ?? await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(vapidKey),
-  });
+  const appKey = urlBase64ToUint8Array(vapidKey);
+  let sub = await reg.pushManager.getSubscription();
+  // A subscription is bound to the applicationServerKey it was minted with. If
+  // the server's keypair has changed since, the push service answers every send
+  // with 403 "credentials do not correspond" — the endpoint is alive, reusable
+  // and completely dead. getSubscription() hands the same one back forever, so
+  // reusing it blindly makes that state unrecoverable: the client keeps
+  // re-uploading the rejected endpoint on every load. Compare, and re-mint.
+  if (sub && !sameAppServerKey(sub.options?.applicationServerKey, appKey)) {
+    try { await sub.unsubscribe(); } catch { /* already gone */ }
+    sub = null;
+  }
+  sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appKey });
   const { endpoint, keys } = sub.toJSON();
-  await authFetch('/api/me/push/subscribe', {
+  const res = await authFetch('/api/me/push/subscribe', {
     method: 'POST',
     body: JSON.stringify({ endpoint, keys }),
   });
+  // authFetch resolves on a 4xx, so without this a rejected subscribe would
+  // leave the switch reading "on" with nothing stored server-side.
+  if (!res.ok) throw new Error(`subscribe failed: ${res.status}`);
+}
+
+function sameAppServerKey(stored, want) {
+  if (!stored) return false;
+  const a = new Uint8Array(stored);
+  return a.length === want.length && a.every((v, i) => v === want[i]);
 }
 
 // Standard VAPID key decoder: base64url → the Uint8Array PushManager expects.

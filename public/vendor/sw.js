@@ -19,7 +19,8 @@
 //
 // v6: punch tab (rotating punch-in QR) + qrcode.js encoder; offline precache
 // now actually matches the ?v= versioned asset URLs.
-const CACHE = 'werewards-terminal-v8';
+// v10: a live deal can be edited or taken down from the DEALS history.
+const CACHE = 'werewards-terminal-v10';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',

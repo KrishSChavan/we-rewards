@@ -180,24 +180,48 @@ export async function runCampaignTick() {
       continue;
     }
     let accepted = 0;
+    let subs = [];
     try {
-      const subs = await studentSubscriptions(b.out_user_id);
+      subs = await studentSubscriptions(b.out_user_id);
       accepted = await sendToSubscriptions(subs, payload);
-    } catch {
+    } catch (err) {
+      console.error(`[campaigns] send threw for user=${b.out_user_id}: ${err?.message ?? err}`);
       accepted = 0;
     }
-    await settle(b.out_batch, accepted > 0);
+    // The claim has ALREADY spent this student's cooldown and daily cap, so a
+    // silent zero here is a notification that will never be retried inside the
+    // next four hours and never explains itself. Say so.
+    if (accepted === 0) {
+      console.warn(`[campaigns] 0/${subs.length} endpoints accepted user=${b.out_user_id} batch=${b.out_batch} — requeued`);
+    }
+    // accepted === 0 means not one endpoint took it, so the quota this claim
+    // spent bought nothing — refund it (migration-033) rather than silencing the
+    // student for four hours over a delivery that never happened.
+    await settle(b.out_batch, accepted > 0, accepted === 0);
     if (accepted > 0) delivered += 1;
   }
   return { claimed: batches.length, delivered };
 }
 
-async function settle(batch, ok) {
+async function settle(batch, ok, refund = false) {
   try {
-    await supabaseAdmin.rpc('finish_campaign_batch', { p_batch: batch, p_ok: ok });
-  } catch {
+    // p_refund arrived in migration-033. Deploys and migrations do not land in
+    // lockstep, so a server running ahead of its database must not strand every
+    // batch it settles: if the three-argument overload isn't there yet, fall
+    // back to the migration-032 signature. Losing the refund is a bad four
+    // hours for one student; losing the settle re-sends to everyone.
+    let { error } = await supabaseAdmin.rpc('finish_campaign_batch', { p_batch: batch, p_ok: ok, p_refund: refund });
+    if (error) {
+      ({ error } = await supabaseAdmin.rpc('finish_campaign_batch', { p_batch: batch, p_ok: ok }));
+      if (!error) console.warn('[campaigns] finish_campaign_batch has no p_refund — apply migration-033');
+    }
+    // .rpc() RESOLVES with an error rather than throwing, so this was silent
+    // before: a failing settle looked identical to a successful one.
+    if (error) console.error(`[campaigns] settle failed batch=${batch}: ${error.message}`);
+  } catch (err) {
     // Left in 'sending'; claim_campaign_pushes returns it to the queue after
     // ten minutes rather than stranding it.
+    console.error(`[campaigns] settle threw batch=${batch}: ${err?.message ?? err}`);
   }
 }
 
@@ -213,7 +237,8 @@ export function startCampaignWorker() {
     if (running) return;
     running = true;
     try {
-      await runCampaignTick();
+      const r = await runCampaignTick();
+      if (r.claimed) console.log(`[campaigns] tick claimed=${r.claimed} delivered=${r.delivered}`);
     } catch (err) {
       console.error(`[campaigns] delivery tick failed: ${err?.message ?? err}`);
     } finally {

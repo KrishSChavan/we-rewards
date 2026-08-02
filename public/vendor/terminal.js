@@ -152,6 +152,7 @@ const screens = [
   $('deal-audience').addEventListener('click', onAudiencePick);
   $('deal-duration').addEventListener('click', onDurationPick);
   $('deal-send').addEventListener('click', onDealSendTap);
+  $('deal-history').addEventListener('click', onDealHistoryTap);
   setupQrScanning();
 
   const { data } = await sb.auth.getSession();
@@ -1729,10 +1730,16 @@ let dealQuota = null;
 // so a Send that fails at the network layer can be repeated without fanning out
 // to a hundred students twice.
 let dealToken = null;
+// The rendered history, kept so the two-tap "Take down" can re-render its own
+// armed state without another round trip.
+let dealHistory = [];
+let dealDownArmed = null;       // campaign id currently armed for take-down
+let dealDownTimer = null;
 
 function enterDeals() {
   show('screen-deals');
   disarmDealSend();
+  disarmDealDown(true);
   loadCampaigns();
   refreshReach();
 }
@@ -1892,7 +1899,18 @@ async function sendDeal(title, body) {
   }
 }
 
+// Entities rather than literal punctuation: this file mixes real unicode with
+// \uXXXX escapes and the separator is not worth the ambiguity.
+const DOT = ' &middot; ';
+
+function dealRowState(c) {
+  if (c.status === 'cancelled') return { live: false, label: `${DOT}taken down` };
+  if (new Date(c.expires_at) <= new Date()) return { live: false, label: `${DOT}ended` };
+  return { live: true, label: `${DOT}live` };
+}
+
 function renderDealHistory(list) {
+  dealHistory = list;
   const box = $('deal-history');
   if (!list.length) {
     box.innerHTML = '<p class="manage-note">Nothing sent yet.</p>';
@@ -1900,20 +1918,155 @@ function renderDealHistory(list) {
   }
   box.innerHTML = list.map((c) => {
     const when = new Date(c.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    const live = new Date(c.expires_at) > new Date();
+    const { live, label } = dealRowState(c);
+    const armed = dealDownArmed === c.id;
     return `
-      <div class="deal-row">
-        <div class="deal-row-main">
-          <p class="deal-row-title">${escapeHtml(c.title)}</p>
-          <p class="deal-row-body">${escapeHtml(c.body)}</p>
+      <div class="deal-row${live ? '' : ' is-over'}" data-id="${c.id}">
+        <div class="deal-row-top">
+          <div class="deal-row-main">
+            <p class="deal-row-title">${escapeHtml(c.title)}</p>
+            <p class="deal-row-body">${escapeHtml(c.body)}</p>
+          </div>
+          <div class="deal-row-stats">
+            <span class="deal-stat"><b>${c.queued_count}</b> targeted</span>
+            <span class="deal-stat"><b>${c.sent_count}</b> notified</span>
+            <span class="deal-stat"><b>${c.opened_count}</b> opened</span>
+            <span class="deal-when">${when}${label}</span>
+          </div>
         </div>
-        <div class="deal-row-stats">
-          <span class="deal-stat"><b>${c.queued_count}</b> sent to</span>
-          <span class="deal-stat"><b>${c.opened_count}</b> opened</span>
-          <span class="deal-when">${when}${live ? ' · live' : ''}</span>
+        ${live ? `
+        <div class="deal-row-actions">
+          <button class="deal-act" type="button" data-act="edit">Edit</button>
+          <button class="deal-act deal-act-danger${armed ? ' is-armed' : ''}" type="button" data-act="down">${armed ? 'Tap again to take down' : 'Take down'}</button>
         </div>
+        <p class="field-error deal-row-error" hidden></p>
+        <div class="deal-edit" hidden>
+          <label class="deal-field">
+            <span class="deal-label">Headline</span>
+            <input class="deal-edit-title" type="text" maxlength="60" value="${escapeHtml(c.title)}" />
+          </label>
+          <label class="deal-field">
+            <span class="deal-label">Message</span>
+            <textarea class="deal-edit-body" maxlength="140" rows="3">${escapeHtml(c.body)}</textarea>
+          </label>
+          <p class="deals-note">Changes show in the app straight away. A notification that already went out keeps the old wording, and editing does not notify anyone again or use a send.</p>
+          <p class="field-error deal-edit-error" hidden></p>
+          <div class="deal-row-actions">
+            <button class="deal-act deal-act-go" type="button" data-act="save">Save</button>
+            <button class="deal-act" type="button" data-act="cancel">Cancel</button>
+          </div>
+        </div>` : ''}
       </div>`;
   }).join('');
+}
+
+/* Edit / take down. Delegated from the list container, so a re-render never
+   leaves a stale listener behind. */
+function onDealHistoryTap(e) {
+  const btn = e.target.closest('.deal-act');
+  if (!btn) return;
+  const row = btn.closest('.deal-row');
+  if (!row?.dataset.id) return;
+  const id = row.dataset.id;
+  switch (btn.dataset.act) {
+    case 'edit':   openDealEdit(row); break;
+    case 'cancel': closeDealEdit(row); break;
+    case 'save':   void saveDealEdit(row, id); break;
+    case 'down':   void onTakeDownTap(row, id); break;
+    default:       break;
+  }
+}
+
+function openDealEdit(row) {
+  disarmDealDown(true);
+  row.querySelector('.deal-edit').hidden = false;
+  row.querySelector('.deal-row-actions').hidden = true;
+  row.querySelector('.deal-edit-title').focus();
+}
+
+function closeDealEdit(row) {
+  const editor = row.querySelector('.deal-edit');
+  if (!editor) return;
+  editor.hidden = true;
+  row.querySelector('.deal-row-actions').hidden = false;
+  const err = row.querySelector('.deal-edit-error');
+  if (err) err.hidden = true;
+}
+
+async function saveDealEdit(row, id) {
+  const title = row.querySelector('.deal-edit-title').value.trim();
+  const body = row.querySelector('.deal-edit-body').value.trim();
+  const err = row.querySelector('.deal-edit-error');
+  const showErr = (msg) => { err.textContent = msg; err.hidden = false; };
+  if (!title || !body) {
+    showErr('Write a headline and a message.');
+    return;
+  }
+  const buttons = [...row.querySelectorAll('.deal-act')];
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const res = await authFetch(`/api/vendor/campaigns/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title, body }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) {
+      showErr(data?.message || 'Could not save that. Try again in a moment.');
+      return;
+    }
+    await loadCampaigns();          // re-renders the row, closing the editor
+  } catch {
+    showErr('No connection. Try again when you are back online.');
+  } finally {
+    // The row may already be gone (re-render); guard against the detached node.
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+// Two-tap, same as Send: taking a deal down pulls it out of every student's app
+// at once, and the students who were already notified cannot be un-notified.
+//
+// Failures report INTO THE ROW, not through dealError(): #deal-error lives in
+// the composer at the top of the screen, a whole card above the history, so a
+// vendor who is looking at this row would never see it.
+async function onTakeDownTap(row, id) {
+  const err = row.querySelector('.deal-row-error');
+  const showErr = (msg) => { if (err) { err.textContent = msg; err.hidden = false; } };
+  if (err) err.hidden = true;
+
+  if (dealDownArmed !== id) {
+    dealDownArmed = id;
+    clearTimeout(dealDownTimer);
+    dealDownTimer = setTimeout(() => disarmDealDown(), 5000);
+    renderDealHistory(dealHistory);
+    return;
+  }
+  disarmDealDown(true);
+  // The row is only re-rendered on success, so put the label back by hand —
+  // otherwise a failed take-down leaves a button still reading "Tap again".
+  const btn = row.querySelector('.deal-act-danger');
+  if (btn) { btn.classList.remove('is-armed'); btn.textContent = 'Take down'; }
+
+  try {
+    const res = await authFetch(`/api/vendor/campaigns/${id}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) {
+      showErr(data?.message || 'Could not take that down. Try again in a moment.');
+      return;
+    }
+    await loadCampaigns();
+  } catch {
+    showErr('No connection. Try again when you are back online.');
+  }
+}
+
+function disarmDealDown(silent) {
+  const was = dealDownArmed;
+  dealDownArmed = null;
+  clearTimeout(dealDownTimer);
+  if (was && !silent) renderDealHistory(dealHistory);
 }
 
 /* ---------- STATS (analytics) ---------- */
