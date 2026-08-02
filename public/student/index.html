@@ -33,6 +33,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <!-- Leaflet (self-hosted, see public/student/leaflet/) powers the full-screen
+       spots map. Before styles.css on purpose: the app restyles Leaflet's
+       controls and panes, and those overrides have to be the ones that win. -->
+  <link rel="stylesheet" href="/leaflet/leaflet.css" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -343,6 +347,15 @@
                   <button id="vendor-search-clear" class="vendor-search-clear" type="button"
                           aria-label="Clear search" hidden>✕</button>
                 </div>
+                <!-- Every spot on one map. An icon rather than a labelled row
+                     because .home-main splits its leftover height three ways
+                     (see there) and a full-width button would spend a third of
+                     that budget; sitting in this row it costs no height at all.
+                     margin-left:auto in the CSS keeps it hard right on the
+                     screens where the search box is below VENDOR_SEARCH_MIN and
+                     therefore hidden. Hidden until a spot has coordinates. -->
+                <button id="map-open-btn" class="map-open-btn" type="button"
+                        aria-label="See all your spots on a map" hidden>🗺️</button>
               </div>
               <!-- Two placeholder cards holding the row's height and shape until
                    /api/me/balances lands. Static markup, not built by JS, so it
@@ -1010,6 +1023,55 @@
     </div>
   </div>
 
+  <!-- ---------- spots map: full-screen ----------
+       Opened by the 🗺️ in the YOUR SPOTS row (every pin, nothing focused) or by
+       tapping a vendor card's map thumbnail (that vendor centred, its sheet
+       already up). Leaflet is walled to the vendors' own extent, so panning
+       stops at the edge of the pins instead of wandering off to the ocean.
+
+       #map-canvas is left empty: Leaflet owns its children, and app.js builds
+       the map into it the first time the screen opens. The pin sheet below it is
+       a static skeleton that JS fills by textContent rather than innerHTML, same
+       as #item-modal. -->
+  <div id="map-modal" class="overlay map-sheet" hidden>
+    <div id="map-card" class="map-card" role="dialog" aria-modal="true" aria-labelledby="map-heading">
+      <div class="map-head">
+        <p id="map-heading" class="map-title">YOUR SPOTS</p>
+        <button id="map-close" class="map-close" type="button" aria-label="Close map">✕</button>
+      </div>
+
+      <div id="map-stage" class="map-stage">
+        <div id="map-canvas" class="map-canvas"></div>
+
+        <!-- Reads location only when tapped, never on open, and never sends it
+             anywhere. See the privacy policy's "Location on the Map". -->
+        <button id="map-locate" class="map-locate" type="button" aria-label="Show my location">◎</button>
+
+        <!-- e.g. "2 spots aren't on the map yet" — a vendor with no address (or
+             one Nominatim couldn't geocode) has no coordinates and so no pin.
+             Saying so beats a student counting cards and coming up short. -->
+        <p id="map-note" class="map-note" hidden></p>
+
+        <!-- Slides up when a pin is tapped. -->
+        <div id="map-pin-sheet" class="map-pin-sheet" hidden>
+          <button id="map-pin-close" class="map-pin-close" type="button" aria-label="Close">✕</button>
+          <div class="map-pin-head">
+            <span id="map-pin-logo" class="map-pin-logo" role="img" hidden></span>
+            <div class="map-pin-title">
+              <p id="map-pin-name" class="map-pin-name"></p>
+              <p class="map-pin-points"><span id="map-pin-num" class="map-pin-num">0</span><small>pts</small></p>
+            </div>
+          </div>
+          <p id="map-pin-address" class="map-pin-address"></p>
+          <div class="map-pin-actions">
+            <button id="map-pin-open" class="map-pin-btn map-pin-btn-primary" type="button">View rewards</button>
+            <button id="map-pin-dir" class="map-pin-btn" type="button">Directions</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Pinned to an exact version + Subresource Integrity: the browser refuses to
        run this file if its bytes don't match the hash, so a tampered/compromised
        CDN build can't hijack the page or steal auth tokens. Bump BOTH the version
@@ -1024,6 +1086,9 @@
   <!-- QR decoder (UMD, window.jsQR) for the punch-in scanner — the same build
        the vendor terminal uses. Must load before app.js. -->
   <script src="/jsQR.js"></script>
+  <!-- Leaflet (UMD, window.L) for the spots map. Self-hosted alongside the two
+       QR libraries above, so no CDN and no SRI; must load before app.js. -->
+  <script src="/leaflet/leaflet.js"></script>
   <script src="/install-prompt.js"></script>
   <script src="/app.js"></script>
 </body>

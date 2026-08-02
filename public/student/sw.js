@@ -1,8 +1,11 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v35';   // v35: vendor card widens when a big balance won't fit
-const SHELL = ['/', '/theme-init.js', '/no-zoom.js', '/styles.css', '/app.js', '/qrcode.js', '/jsQR.js', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+const CACHE = 'werewards-v36';   // v36: full-screen spots map (Leaflet + OSM tiles)
+// Leaflet's own images are NOT precached: the map uses divIcon pins and no layers
+// control, so nothing ever requests them. The OSM tiles aren't either — they're
+// cross-origin, and the fetch handler below hands those straight to the network.
+const SHELL = ['/', '/theme-init.js', '/no-zoom.js', '/styles.css', '/app.js', '/qrcode.js', '/jsQR.js', '/leaflet/leaflet.js', '/leaflet/leaflet.css', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

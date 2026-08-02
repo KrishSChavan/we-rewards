@@ -213,6 +213,15 @@ const Splash = (() => {
   $('vendor-search').addEventListener('input', onVendorSearchInput);
   $('vendor-search').addEventListener('keydown', onVendorSearchKey);
   $('vendor-search-clear').addEventListener('click', () => clearVendorSearch());
+  // spots map: the 🗺️ opens every pin; a card's map thumbnail opens it focused
+  // on that one (see onVendorTap). ✕ / Esc close it, and Esc puts the pin sheet
+  // away first if one is up.
+  $('map-open-btn').addEventListener('click', () => openMapScreen(null));
+  $('map-close').addEventListener('click', closeMapScreen);
+  $('map-locate').addEventListener('click', onMapLocateTap);
+  $('map-pin-close').addEventListener('click', () => closePinSheet());
+  $('map-pin-open').addEventListener('click', onMapPinOpenVendor);
+  $('map-pin-dir').addEventListener('click', onMapPinDirections);
   // Info popovers: the tier (i) opens on its button; the community explainer
   // closes like every popover but no longer opens on the card itself — with a
   // balance the card opens the Move-points sheet instead (community-points.md
@@ -290,6 +299,10 @@ const Splash = (() => {
   $('earn-grab').addEventListener('pointercancel', onEarnDragEnd);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    // The map screen covers everything under it, so while it is up it owns Esc
+    // outright — otherwise one press would also close sheets the student can't
+    // even see, and they'd come back to Home with the hub collapsed.
+    if (!$('map-modal').hidden) { onMapEscape(); return; }
     closeEarnSheet();
     closeDealsSheet();
     closeMoveSheet();
@@ -404,6 +417,7 @@ function render(session) {
     dropPunchModal();           // same
     dropDealsSheet();           // same, and the next student must not read these
     dropItemModal();            // same, and it can be holding a live redemption QR
+    dropMapScreen();            // same, and it must not leave a location dot up for the next student
     syncPendingPunchNote();     // landing may need the "punch spotted" note
     // the popovers live at body level too — same reason
     closeInfo('tier-info', 'tier-info-btn');
@@ -2216,6 +2230,11 @@ function renderVendors() {
   buildVendorIndex();
   syncVendorSearchRow();
   applyVendorFilter();
+  // The map's own entry point and, if the screen happens to be open, its badges.
+  // Both are cheap no-ops when there is nothing to change, which matters: this
+  // runs on every socket push, not just the first load.
+  syncMapButton();
+  refreshMapPins();
 }
 
 // The one place the visible row is decided. `reset` is for a query change: the
@@ -2643,14 +2662,532 @@ function patchVendorCard(vendorId, next) {
   if (num) num.textContent = next;
 }
 
+/* ==================== the spots map ====================
+   A full-screen Leaflet map of every vendor that has coordinates. It opens two
+   ways: the 🗺️ in the YOUR SPOTS row (all pins, nothing focused) or a tap on a
+   card's map thumbnail (that vendor centred, its sheet already up).
+
+   The map is walled to the vendors' own extent — pan hits a hard edge just past
+   the outermost pin instead of letting someone flick off to the Atlantic and
+   wonder where the app went. Nothing here is keyed or metered: Leaflet is
+   self-hosted (public/student/leaflet/) and the tiles are the same keyless
+   tile.openstreetmap.org the card thumbnails already pull from, so the whole
+   screen costs nothing and needs no account. */
+
+const MAP_MAX_ZOOM = 18;      // deepest zoom we ask OSM for (19 exists but is patchy)
+const MAP_FOCUS_ZOOM = 17;    // "this one, right here" when opening from a card
+const MAP_VIEW_PAD = 0.22;    // breathing room around the pins when fully zoomed out
+const MAP_MIN_SPAN = 0.008;   // ~900m: the smallest world one lone spot may own
+const MAP_PIN_W = 40;         // must match .mp-body in styles.css
+const MAP_PIN_H = 48;         // ...and the bottom of .mp-tip, which is the anchor
+
+let spotsMap = null;             // the Leaflet map, built once on first open
+let mapPins = null;              // L.LayerGroup holding every vendor marker
+const mapMarkers = new Map();    // vendorId -> L.Marker, for lookups by id
+let mapWall = null;              // the LatLngBounds panning is clamped to
+let mapFocusId = null;           // vendor whose pin is highlighted (null = none)
+let mapPinId = null;             // vendor whose sheet is showing
+let mapMe = null;                // the "you are here" marker, once located
+let mapSheetTimer = null;        // pin-sheet slide-out, so it can be cut short
+let mapNoteBase = '';            // the persistent note; flashes restore to this
+let mapNoteTimer = null;
+
+// A coordinate we can actually put on a map, or NaN.
+//
+// The null check is load-bearing and cannot be folded into Number.isFinite:
+// Number(null) and Number('') are both 0, so a vendor with no coordinates would
+// come back as a perfectly finite (0, 0) — a pin in the Gulf of Guinea, and a
+// map walled to a box stretching from campus to the Atlantic.
+function mapCoord(x) {
+  if (x == null || x === '') return NaN;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+// Only vendors we can actually put somewhere. A vendor with no address (or one
+// Nominatim could not geocode) has null coordinates — see src/lib/geocode.js.
+function mappableVendors() {
+  return allVendors.filter((v) => !Number.isNaN(mapCoord(v.latitude)) && !Number.isNaN(mapCoord(v.longitude)));
+}
+
+// The 🗺️ is pointless with nothing to show, so it only appears once at least one
+// spot has coordinates. Called from renderVendors, i.e. on every balances load.
+function syncMapButton() {
+  const btn = $('map-open-btn');
+  if (btn) btn.hidden = mappableVendors().length === 0;
+}
+
+function mapScreenOpen() {
+  return $('map-modal').classList.contains('is-open');
+}
+
+/* ---------- geometry ---------- */
+
+// Grow `bounds` by `ratio` on each side, but never let it come out smaller than
+// minSpanLat tall. Without that floor a single vendor (or two doors apart) makes
+// a zero-area box, which fitBounds answers with the maximum zoom and a view of
+// one rooftop. A degree of longitude shrinks with latitude, so the east-west
+// floor is divided by cos(lat) — otherwise the smallest world is a letterbox.
+function padBounds(bounds, ratio, minSpanLat) {
+  const sw = bounds.getSouthWest();
+  const ne = bounds.getNorthEast();
+  const midLat = (sw.lat + ne.lat) / 2;
+  const midLng = (sw.lng + ne.lng) / 2;
+  const minSpanLng = minSpanLat / Math.max(0.2, Math.cos((midLat * Math.PI) / 180));
+  const latSpan = Math.max(ne.lat - sw.lat, minSpanLat) * (1 + ratio * 2);
+  const lngSpan = Math.max(ne.lng - sw.lng, minSpanLng) * (1 + ratio * 2);
+  return L.latLngBounds(
+    [Math.max(-85, midLat - latSpan / 2), Math.max(-180, midLng - lngSpan / 2)],
+    [Math.min(85, midLat + latSpan / 2), Math.min(180, midLng + lngSpan / 2)]
+  );
+}
+
+// Fit the pins, then decide the two limits that make the map finite:
+//   minZoom — you cannot zoom out past the whole set of spots
+//   maxBounds — you cannot pan past the edge of what that zoom shows
+//
+// The wall is read back off the map AFTER fitting rather than computed
+// alongside `view`, and that ordering is the whole trick: getBoundsZoom floors
+// to a whole zoom level, so what is actually on screen at full zoom-out is a
+// little wider than `view`. Walling to `view` would leave the viewport larger
+// than its own limit, and Leaflet resolves that contradiction by jamming the
+// map into the wall's top-left corner. Measuring the real bounds instead makes
+// the two agree by construction.
+function frameMap(spots, focusId) {
+  const view = padBounds(
+    L.latLngBounds(spots.map((v) => [mapCoord(v.latitude), mapCoord(v.longitude)])),
+    MAP_VIEW_PAD,
+    MAP_MIN_SPAN
+  );
+
+  spotsMap.setMinZoom(0);          // ...or fitBounds cannot zoom out far enough to measure
+  spotsMap.setMaxBounds(null);
+  spotsMap.fitBounds(view, { animate: false });
+  spotsMap.setMinZoom(spotsMap.getZoom());
+  mapWall = spotsMap.getBounds().pad(0.02);   // the hair of slack keeps the edge off the outermost pin
+  spotsMap.setMaxBounds(mapWall);
+
+  const focus = focusId && spots.find((v) => String(v.vendorId) === focusId);
+  if (!focus) return;
+  // Clamped to minZoom: a single spot can leave the whole map zoomed further out
+  // than FOCUS_ZOOM, and asking for a zoom below the floor is ignored anyway.
+  const zoom = Math.max(spotsMap.getMinZoom(), MAP_FOCUS_ZOOM);
+  spotsMap.setView([mapCoord(focus.latitude), mapCoord(focus.longitude)], zoom, { animate: false });
+  // Bias the centre up by half the sheet, so the pin the student tapped is not
+  // sitting underneath the card describing it. panBy moves the viewport down,
+  // which moves the pin up the screen.
+  const lift = mapSheetHeight() / 2;
+  if (lift > 0) spotsMap.panBy([0, lift], { animate: false });
+}
+
+/* ---------- pins ---------- */
+
+// 1240 -> "1.2k". A four-figure balance in a 20px badge is unreadable, and the
+// exact number is one tap away in the sheet.
+function shortPoints(n) {
+  if (n < 1000) return String(n);
+  if (n < 10000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
+// Array.from, not [0]: a name starting with an emoji or an astral character
+// would otherwise be cut mid-surrogate and render as a replacement box.
+function firstLetter(name) {
+  const ch = Array.from(String(name ?? '').trim())[0] ?? '?';
+  return ch.toUpperCase();
+}
+
+function pinHtml(v, focused) {
+  const pts = Number(v.balance ?? 0);
+  const cls = ['mp'];
+  if (pts <= 0) cls.push('is-zero');     // still tappable, just quieter
+  if (focused) cls.push('is-focus');
+  const face = v.hasLogo
+    ? `<span class="mp-body" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
+    : `<span class="mp-body"><span class="mp-initial">${escapeHtml(firstLetter(v.name))}</span></span>`;
+  const badge = pts > 0 ? `<span class="mp-badge">${escapeHtml(shortPoints(pts))}</span>` : '';
+  return `<span class="${cls.join(' ')}">${face}<span class="mp-tip"></span>${badge}</span>`;
+}
+
+// Rebuilt outright on every open rather than diffed like the vendor cards. The
+// screen opens rarely and holds a handful of markers, so the pooling that the
+// carousel needs (it rebuilds on every keystroke) would be complexity for
+// nothing here; logo URLs are already in the browser cache either way.
+function buildMapPins(spots) {
+  mapPins.clearLayers();
+  mapMarkers.clear();
+  spots.forEach((v) => {
+    const id = String(v.vendorId);
+    const focused = id === mapFocusId;
+    const marker = L.marker([mapCoord(v.latitude), mapCoord(v.longitude)], {
+      icon: L.divIcon({
+        // className replaces Leaflet's own 'leaflet-div-icon', which would
+        // otherwise draw a white box with a grey border behind every pin.
+        className: 'mp-wrap',
+        html: pinHtml(v, focused),
+        iconSize: [MAP_PIN_W, MAP_PIN_H],
+        iconAnchor: [MAP_PIN_W / 2, MAP_PIN_H],   // the tip, not the middle
+      }),
+      title: v.name,
+      riseOnHover: true,
+      zIndexOffset: focused ? 1000 : 0,
+    });
+    marker.on('click', () => openPinSheet(id, true));
+    // Leaflet gives the element a tabindex but no role and no name of its own,
+    // so a screen reader would announce every pin as a bare focusable div.
+    //
+    // On 'add' rather than straight after addTo, and this ordering matters: a
+    // map that has not been given a view yet is not "ready", and Leaflet queues
+    // the whole layer-add — icon element included — until it is. frameMap() is
+    // what sets the first view, so at addTo time getElement() is still null and
+    // labelling there silently does nothing on the very first open.
+    marker.on('add', () => {
+      const el = marker.getElement();
+      if (!el) return;
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-label', `${v.name}, ${Number(v.balance ?? 0)} points`);
+      // Re-assert the ring here for the same reason: setFocusPin runs while the
+      // screen is opening, which is before this element exists. pinHtml bakes
+      // the class in for the pin that opened the screen, but a pin tapped
+      // during that window would otherwise never light up.
+      el.querySelector('.mp')?.classList.toggle('is-focus', id === mapFocusId);
+    });
+    marker.addTo(mapPins);
+    mapMarkers.set(id, marker);
+  });
+}
+
+// Balances move while the screen is up (socket pushes land in loadVendors), so
+// the badges are patched in place. Deliberately not a rebuild: re-creating the
+// markers mid-view would drop the focus ring and re-request every logo.
+function refreshMapPins() {
+  if (!spotsMap || !mapScreenOpen()) return;
+  mapMarkers.forEach((marker, id) => {
+    const v = allVendors.find((x) => String(x.vendorId) === id);
+    if (!v) return;
+    const el = marker.getElement();
+    const mp = el?.querySelector('.mp');
+    if (!mp) return;
+    const pts = Number(v.balance ?? 0);
+    let badge = mp.querySelector('.mp-badge');
+    if (pts > 0) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'mp-badge';
+        mp.appendChild(badge);
+      }
+      const next = shortPoints(pts);
+      if (badge.textContent !== next) badge.textContent = next;
+    } else if (badge) {
+      badge.remove();
+    }
+    mp.classList.toggle('is-zero', pts <= 0);
+    el.setAttribute('aria-label', `${v.name}, ${pts} points`);
+  });
+  if (mapPinId) {
+    const v = allVendors.find((x) => String(x.vendorId) === mapPinId);
+    if (v) $('map-pin-num').textContent = String(v.balance ?? 0);
+  }
+}
+
+/* ---------- the note strip ---------- */
+
+function paintMapNote(text) {
+  const note = $('map-note');
+  note.textContent = text;
+  note.hidden = !text;
+}
+
+// The standing message ("2 spots aren't on the map yet"), which every transient
+// one falls back to.
+function setMapNote(text) {
+  mapNoteBase = text;
+  clearTimeout(mapNoteTimer);
+  paintMapNote(text);
+}
+
+function flashMapNote(text) {
+  clearTimeout(mapNoteTimer);
+  paintMapNote(text);
+  mapNoteTimer = setTimeout(() => paintMapNote(mapNoteBase), 5000);
+}
+
+/* ---------- the pin sheet ---------- */
+
+function mapSheetHeight() {
+  const sheet = $('map-pin-sheet');
+  return sheet.hidden ? 0 : sheet.offsetHeight;
+}
+
+// The locate button and the OSM attribution both ride on this: the sheet's
+// height depends on how far the address wraps, so it cannot be a constant in
+// the stylesheet. The attribution is licence-required, so it gets moved out of
+// the way rather than covered.
+function syncMapSheetVar() {
+  $('map-stage').style.setProperty('--map-sheet-h', `${mapSheetHeight()}px`);
+}
+
+function openPinSheet(vendorId, pan) {
+  const id = String(vendorId);
+  const v = allVendors.find((x) => String(x.vendorId) === id);
+  if (!v) return;
+  mapPinId = id;
+  clearTimeout(mapSheetTimer);
+
+  $('map-pin-name').textContent = v.name;
+  $('map-pin-num').textContent = String(v.balance ?? 0);
+  const addr = $('map-pin-address');
+  addr.textContent = v.address ? `📍 ${v.address}` : '';
+  addr.hidden = !v.address;
+  // Directions need an address to hand to the platform's maps app; a vendor
+  // pinned from coordinates alone gets the rewards button on its own.
+  $('map-pin-dir').hidden = !v.address;
+  const logo = $('map-pin-logo');
+  logo.hidden = !v.hasLogo;
+  logo.style.backgroundImage = v.hasLogo
+    ? `url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')`
+    : '';
+  if (v.hasLogo) logo.setAttribute('aria-label', `${v.name} logo`);
+
+  const sheet = $('map-pin-sheet');
+  sheet.hidden = false;
+  void sheet.offsetWidth;              // reflow so the slide-up transition runs
+  sheet.classList.add('is-open');
+  syncMapSheetVar();
+
+  // Whichever pin is showing is the one that gets the ring, so tapping around
+  // the map moves the highlight rather than leaving the original card's pin lit.
+  setFocusPin(id);
+
+  if (!pan) return;
+  const marker = mapMarkers.get(id);
+  if (marker) {
+    spotsMap.panInside(marker.getLatLng(), {
+      paddingTopLeft: [28, 28],
+      paddingBottomRight: [28, mapSheetHeight() + 28],
+    });
+  }
+}
+
+function closePinSheet(instant = false) {
+  const sheet = $('map-pin-sheet');
+  mapPinId = null;
+  clearTimeout(mapSheetTimer);
+  sheet.classList.remove('is-open');
+  $('map-stage').style.setProperty('--map-sheet-h', '0px');
+  if (instant) { sheet.hidden = true; return; }
+  mapSheetTimer = setTimeout(() => {
+    if (!sheet.classList.contains('is-open')) sheet.hidden = true;   // unless it reopened mid-slide
+  }, 340);
+}
+
+// Move the ring (and the z-order) to `id`, or clear it with null.
+function setFocusPin(id) {
+  mapFocusId = id == null ? null : String(id);
+  mapMarkers.forEach((marker, key) => {
+    const mp = marker.getElement()?.querySelector('.mp');
+    const on = key === mapFocusId;
+    if (mp) mp.classList.toggle('is-focus', on);
+    marker.setZIndexOffset(on ? 1000 : 0);
+  });
+}
+
+/* ---------- open / close the screen ---------- */
+
+function buildSpotsMap() {
+  if (spotsMap) return;
+  spotsMap = L.map('map-canvas', {
+    maxZoom: MAP_MAX_ZOOM,
+    zoomControl: true,
+    // A wall, not a rubber band. At the default viscosity a flick sails past the
+    // edge and springs back, which reads as the map being broken rather than
+    // finite; 1 makes the boundary immovable.
+    maxBoundsViscosity: 1,
+    bounceAtZoomLimits: false,
+    // The page kills the wheel-zoom gesture everywhere else (no-zoom.js), but
+    // inside a map a wheel IS a zoom. no-zoom.js skips events over this element.
+    scrollWheelZoom: true,
+  });
+  spotsMap.zoomControl.setPosition('topleft');
+  spotsMap.attributionControl.setPosition('bottomleft');
+  spotsMap.attributionControl.setPrefix('');   // drop the Leaflet flag, keep the licence
+
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: MAP_MAX_ZOOM,
+    // Required by the OpenStreetMap tile licence, and listed as a third party in
+    // legal/student-privacy-policy.html. Do not remove this.
+    attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+  }).addTo(spotsMap);
+
+  mapPins = L.layerGroup().addTo(spotsMap);
+  // Tapping the map itself (not a pin) puts the sheet away.
+  spotsMap.on('click', () => closePinSheet());
+  spotsMap.on('locationfound', onMapLocationFound);
+  spotsMap.on('locationerror', onMapLocationError);
+}
+
+// `focusId` null opens the whole set with nothing selected.
+function openMapScreen(focusId = null) {
+  const spots = mappableVendors();
+  // Leaflet is same-origin and cached by the service worker, but if the script
+  // did not make it we fall back to the behaviour the thumbnail used to have
+  // rather than doing nothing at all.
+  if (typeof L === 'undefined') {
+    const v = focusId && allVendors.find((x) => String(x.vendorId) === String(focusId));
+    if (v?.address) openMaps(v.address);
+    return;
+  }
+  if (!spots.length || mapScreenOpen()) return;
+
+  mapFocusId = focusId == null ? null : String(focusId);
+  const ov = $('map-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+
+  buildSpotsMap();
+  // The container had no size until the line above un-hid it, so whatever
+  // Leaflet measured on construction is stale. Everything below reads geometry.
+  spotsMap.invalidateSize(false);
+  buildMapPins(spots);
+
+  // Sheet first, then frame: frameMap lifts the focused pin by half the sheet,
+  // and it can only measure a sheet that is already laid out.
+  if (mapFocusId) openPinSheet(mapFocusId, false);
+  else closePinSheet(true);
+  frameMap(spots, mapFocusId);
+
+  const missing = allVendors.length - spots.length;
+  setMapNote(missing > 0 ? `${missing} ${missing === 1 ? 'spot isn’t' : 'spots aren’t'} on the map yet` : '');
+}
+
+function closeMapScreen() {
+  const ov = $('map-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;   // already closing/closed
+  ov.classList.remove('is-open');
+  stopMapLocate();
+  closePinSheet(true);
+  setFocusPin(null);
+  setMapNote('');
+  setTimeout(() => {
+    if (!ov.classList.contains('is-open')) ov.hidden = true;     // unless it reopened mid-slide
+  }, 400);
+}
+
+// Hard reset, no animation — for sign-out, same reason as dropItemModal: the
+// screen is a body-level sibling of #app, so hiding #app cannot hide it.
+function dropMapScreen() {
+  const ov = $('map-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  stopMapLocate();
+  closePinSheet(true);
+  setMapNote('');
+  // The pins are the previous student's spots and balances. The map object
+  // itself is kept — it is expensive to build and holds no personal data once
+  // the layer is empty — but nothing of theirs may survive into the next
+  // session, and the entry point goes with it until fresh balances land.
+  mapPins?.clearLayers();
+  mapMarkers.clear();
+  mapFocusId = null;
+  $('map-open-btn').hidden = true;
+}
+
+// Esc backs out one layer at a time: the sheet if it is up, otherwise the map.
+function onMapEscape() {
+  if (mapPinId) closePinSheet();
+  else closeMapScreen();
+}
+
+function onMapPinOpenVendor() {
+  const id = mapPinId;
+  if (!id) return;
+  closeMapScreen();
+  openVendor(id);
+}
+
+function onMapPinDirections() {
+  const v = mapPinId && allVendors.find((x) => String(x.vendorId) === mapPinId);
+  if (v?.address) openMaps(v.address);
+}
+
+/* ---------- my location ----------
+   Read on tap only, never on open, and never sent anywhere: the coordinates go
+   from the browser straight into a marker on this student's own screen. See
+   "Location on the Map" in legal/student-privacy-policy.html. */
+
+function onMapLocateTap() {
+  if (!spotsMap) return;
+  const btn = $('map-locate');
+  // Second tap on a dot we already have: put it away rather than re-prompting.
+  if (mapMe) { stopMapLocate(); return; }
+  btn.classList.add('is-busy');
+  spotsMap.locate({ setView: false, enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+}
+
+function onMapLocationFound(e) {
+  const btn = $('map-locate');
+  btn.classList.remove('is-busy');
+  btn.classList.add('is-on');
+  if (!mapMe) {
+    mapMe = L.marker(e.latlng, {
+      // A 0x0 box: the dot and its halo are absolutely positioned children that
+      // centre themselves on the anchor, so there is nothing to line up.
+      icon: L.divIcon({
+        className: 'map-me',
+        html: '<span class="map-me-ring"></span><span class="map-me-dot"></span>',
+        iconSize: [0, 0],
+      }),
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: -500,        // never on top of a pin they are trying to tap
+    }).addTo(spotsMap);
+  } else {
+    mapMe.setLatLng(e.latlng);
+  }
+  // Only chase them if they are inside the walled area. Pan to a student who is
+  // home for the summer and the wall stops the map at a corner of campus with no
+  // dot anywhere in sight, which looks like a bug.
+  if (mapWall?.contains(e.latlng)) {
+    spotsMap.panInside(e.latlng, {
+      paddingTopLeft: [28, 28],
+      paddingBottomRight: [28, mapSheetHeight() + 28],
+    });
+  } else {
+    flashMapNote('You’re outside the map area, so the view stayed on your spots.');
+  }
+}
+
+function onMapLocationError(e) {
+  $('map-locate').classList.remove('is-busy');
+  // code 1 is PERMISSION_DENIED — worth saying plainly, because the browser only
+  // asks once and the fix is in settings, not in here.
+  flashMapNote(e?.code === 1
+    ? 'Location is off for this site. Turn it on in your browser settings.'
+    : 'Couldn’t get your location. Try again in a moment.');
+}
+
+function stopMapLocate() {
+  spotsMap?.stopLocate();
+  if (mapMe) { mapMe.remove(); mapMe = null; }
+  const btn = $('map-locate');
+  btn.classList.remove('is-on', 'is-busy');
+}
+
 /* ---------- open / leave a vendor screen ---------- */
 
 function onVendorTap(e) {
   const card = e.target.closest('.vendor-card');
   if (!card) return;
-  // Tapping the map or the address opens directions in the user's maps app;
-  // the rest of the card still opens the vendor's rewards screen.
-  if (e.target.closest('.vc-map, .vc-address')) {
+  // Three targets, three destinations. The map picture opens the in-app map on
+  // this vendor's pin; the address line keeps its one tap to walking directions
+  // in the platform's own maps app; the rest of the card opens the rewards
+  // screen. Splitting the first two is why nobody loses the fast path out.
+  if (e.target.closest('.vc-map')) {
+    openMapScreen(card.dataset.id);
+    return;
+  }
+  if (e.target.closest('.vc-address')) {
     const v = allVendors.find((x) => String(x.vendorId) === card.dataset.id);
     if (v?.address) openMaps(v.address);
     return;

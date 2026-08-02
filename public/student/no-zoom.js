@@ -14,7 +14,21 @@
 
    External rather than inline because the page CSP forbids inline scripts. */
 (function () {
+  // The one place a zoom gesture is the point rather than a misfire: the spots
+  // map. Leaflet drives its own pinch and wheel zoom off touch/wheel events, so
+  // what it needs from here is simply to be left alone inside its container.
+  var inMap = function (e) {
+    var t = e.target;
+    return !!(t && t.closest && t.closest('.leaflet-container'));
+  };
+
   // Non-passive, or preventDefault() is a no-op and the pinch goes through.
+  //
+  // Note these stay cancelled over the map too. They are iOS Safari's
+  // proprietary *page* zoom gesture, which Leaflet does not use and which would
+  // otherwise blow the whole document up mid-pinch; the touchstart/touchmove
+  // pair Leaflet actually listens to keeps firing either way, so two-finger
+  // zoom on the map still works.
   for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
     document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
   }
@@ -23,6 +37,6 @@
   // (⌘/Ctrl + +/-) is deliberately left working — that's an accessibility
   // affordance, and it isn't what makes the app feel broken.
   document.addEventListener('wheel', (e) => {
-    if (e.ctrlKey) e.preventDefault();
+    if (e.ctrlKey && !inMap(e)) e.preventDefault();
   }, { passive: false });
 })();
