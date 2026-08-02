@@ -1196,6 +1196,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   text-align: left;
   transition: transform 90ms ease;
   min-height: 200px;                 /* cards stretch to the tallest in the row */
+  /* A big balance widens the card instead of being clipped by the overflow above.
+     min-width beats max-width, so the 300px cap holds until the card's own
+     min-content — logo + gap + the points line + the body's padding — needs more
+     than that, and the card takes exactly the extra it needs. Only the number can
+     push it: .vc-name and .vc-address break anywhere (see below), so their
+     min-content is one character and a long vendor name still wraps rather than
+     stretching the row. Widths stay uniform for every balance that already fits,
+     and measureDotSnaps() reads live rects, so the page dots follow either way. */
+  min-width: min-content;
 }
 /* The ends stay pinned to their gutter, so the row still starts and finishes
    flush with the rest of the screen's 1.3rem margin. Order matters for the
@@ -1302,14 +1311,22 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   border-radius: 0.5rem;
 }
 
-.vc-name { font-weight: 900; font-size: 1.5rem; line-height: 1.12; color: var(--ink); }
-.vc-points { display: flex; align-items: baseline; gap: 0.3rem; }   /* points sit below the name */
-.vc-num { font-size: 3rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; }
-.vc-points small { font-size: 1rem; font-weight: 700; color: var(--muted); }
+/* `anywhere` (not break-word) is deliberate: it is the one wrapping value that
+   also lowers the element's min-content size, which keeps the name out of the
+   card's min-width above — a long name wraps inside the card, only the points
+   line can widen it. It also breaks a single over-long word instead of letting
+   it run under the card's overflow: hidden. */
+.vc-name { font-weight: 900; font-size: 1.5rem; line-height: 1.12; color: var(--ink); overflow-wrap: anywhere; }
+/* The row never wraps, so its min-content is the whole "10000 pts" — that is the
+   width the card's min-width resolves to. */
+.vc-points { display: flex; align-items: baseline; gap: 0.3rem; flex-wrap: nowrap; }   /* points sit below the name */
+.vc-num { font-size: 3rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vc-points small { font-size: 1rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
 /* tappable address line (opens the maps app, like the map itself) */
 .vc-address {
   margin-top: 0.6rem;                /* extra breathing room below the points */
   font-size: 0.82rem; font-weight: 600; color: var(--muted); line-height: 1.25;
+  overflow-wrap: anywhere;           /* same reason as .vc-name: stays out of the card's min-width */
   text-decoration: underline; text-underline-offset: 2px;   /* signal it's clickable */
   display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
