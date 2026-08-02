@@ -334,14 +334,14 @@
                    only appears once the row is long enough to be worth
                    searching — app.js → VENDOR_SEARCH_MIN. -->
               <div class="home-sub-row">
-                <p class="home-sub">YOUR SPOTS</p>
+                <p class="home-sub">VENDORS</p>
                 <div id="vendor-search-wrap" class="vendor-search" hidden>
                   <span class="vendor-search-icon" aria-hidden="true">🔍</span>
                   <!-- type=search for the phone keyboard's "search" key; the
                        autocorrect/capitalize opt-outs stop iOS rewriting a
                        half-typed shop name out from under the filter. -->
                   <input id="vendor-search" class="vendor-search-input" type="search"
-                         placeholder="Search spots" aria-label="Search your spots"
+                         placeholder="Search spots" aria-label="Search vendors"
                          aria-controls="vendor-carousel"
                          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
                   <button id="vendor-search-clear" class="vendor-search-clear" type="button"
@@ -355,7 +355,7 @@
                      screens where the search box is below VENDOR_SEARCH_MIN and
                      therefore hidden. Hidden until a spot has coordinates. -->
                 <button id="map-open-btn" class="map-open-btn" type="button"
-                        aria-label="See all your spots on a map" hidden>🗺️</button>
+                        aria-label="See all vendors on a map" hidden>🗺️</button>
               </div>
               <!-- Two placeholder cards holding the row's height and shape until
                    /api/me/balances lands. Static markup, not built by JS, so it
@@ -408,7 +408,7 @@
           <div id="vendor" hidden>
             <!-- points bar: back button (left) replaces the old sign-out link -->
             <header class="points-bar">
-              <button id="back-btn" class="pb-back" aria-label="Back to your spots">←</button>
+              <button id="back-btn" class="pb-back" aria-label="Back to vendors">←</button>
               <p id="pb-vendor" class="pb-vendor">WEREWARDS</p>
               <div class="pb-points">
                 <span id="pb-balance">0</span><small>pts</small>
@@ -1024,7 +1024,7 @@
   </div>
 
   <!-- ---------- spots map: full-screen ----------
-       Opened by the 🗺️ in the YOUR SPOTS row (every pin, nothing focused) or by
+       Opened by the 🗺️ in the VENDORS row (every pin, nothing focused) or by
        tapping a vendor card's map thumbnail (that vendor centred, its sheet
        already up). Leaflet is walled to the vendors' own extent, so panning
        stops at the edge of the pins instead of wandering off to the ocean.
@@ -1036,7 +1036,7 @@
   <div id="map-modal" class="overlay map-sheet" hidden>
     <div id="map-card" class="map-card" role="dialog" aria-modal="true" aria-labelledby="map-heading">
       <div class="map-head">
-        <p id="map-heading" class="map-title">YOUR SPOTS</p>
+        <p id="map-heading" class="map-title">VENDORS</p>
         <button id="map-close" class="map-close" type="button" aria-label="Close map">✕</button>
       </div>
 
