@@ -275,6 +275,7 @@ const Splash = (() => {
   $('deals-modal').addEventListener('click', (e) => { if (e.target === $('deals-modal')) closeDealsSheet(); });
   $('deals-optin-yes').addEventListener('click', enableDealAlerts);
   $('deals-optin-no').addEventListener('click', dismissDealOptin);
+  $('deals-alert-retry').addEventListener('click', retryPushSubscribe);
   $('deals-toggle').addEventListener('click', onDealsToggle);
   // never leave the punch camera running while the tab is backgrounded
   document.addEventListener('visibilitychange', () => {
@@ -3981,6 +3982,18 @@ let deals = [];
 let dealsLoaded = false;
 let vapidKey = null;              // server's public VAPID key; null = push disabled
 let pushInitDone = false;
+// Whether the SERVER holds a push endpoint for this student. The browser's own
+// permission state is not enough to know that: permission can be granted while
+// the subscribe never completed, or while the endpoint we had was pruned as dead
+// (see the 401/403/404/410 handling in src/lib/push.js). That combination is
+// silent — the switch reads "on" and nothing is ever delivered — so the server
+// reports it and syncDealAlertUi() offers the repair.
+let pushReady = null;             // null = not known yet
+// The student's own switch (Account → Deal alerts), mirrored from the server.
+// Kept apart from pushReady because "I turned this off" and "this is broken"
+// look identical from the endpoint count alone, and only one of them should be
+// offered a repair prompt.
+let dealAlertsOn = true;
 const DEAL_OPTIN_DISMISS_KEY = 'wr-deal-optin-dismissed';
 
 async function loadDeals() {
@@ -3990,20 +4003,27 @@ async function loadDeals() {
     const data = await res.json();
     deals = data.deals ?? [];
     dealsLoaded = true;
+    pushReady = data.pushReady ?? null;
+    dealAlertsOn = data.dealAlerts !== false;
     renderDealsCard(data.unread ?? 0);
-    setDealsToggle(data.dealAlerts !== false);
+    setDealsToggle(dealAlertsOn);
     if (!$('deals-modal').hidden) renderDealsList();
     // Only ask about notifications once there is something to be notified
     // about. A permission prompt before the first deal exists is a prompt
     // about nothing, and the browser only grants it once.
     if (deals.length) void initPush();
+    else syncDealAlertUi();
   } catch { /* deals are a nice-to-have — never let them break the app */ }
 }
 
+// The deals block lives at the foot of the rewards hub, so with the hub shut
+// there is nothing on screen to say a deal landed — that is what #hub-dot on the
+// collapsed pill is for. Both dots are driven from the same unread count.
 function renderDealsCard(unread) {
-  const card = $('deals-card');
+  const block = $('hub-deals');
   if (!deals.length) {
-    card.hidden = true;
+    block.hidden = true;
+    $('hub-dot').hidden = true;
     return;
   }
   const first = deals[0];
@@ -4011,20 +4031,32 @@ function renderDealsCard(unread) {
     ? `${first.vendor}: ${first.title}`
     : `${first.vendor} and ${deals.length - 1} more have something on`;
   $('deals-dot').hidden = !unread;
-  card.hidden = false;
+  $('hub-dot').hidden = !unread;
+  block.hidden = false;
+  syncDealAlertUi();
 }
 
 function openDealsSheet(focusId) {
   if (!dealsLoaded) void loadDeals();
   renderDealsList(focusId);
+  // The button that opens this sits INSIDE the hub panel, which would otherwise
+  // stay unfolded behind the sheet (.overlay is z-index 40, .hub-modal 25) and
+  // still be there when the sheet slides away. Fold it on the way out. Harmless
+  // when the sheet was opened from a notification tap instead — closeHub()
+  // returns immediately if the hub was never open.
+  closeHub();
   const ov = $('deals-modal');
   ov.hidden = false;
   void ov.offsetWidth;                 // reflow so the slide-up transition runs
   ov.classList.add('is-open');
   $('deals-card').setAttribute('aria-expanded', 'true');
-  // Opening the list IS reading it: the dot goes away and stays away.
+  // Opening the list IS reading it: both dots go away and stay away.
   authFetch('/api/me/deals/read', { method: 'POST', body: '{}' })
-    .then(() => { $('deals-dot').hidden = true; deals.forEach((d) => { d.read = true; }); })
+    .then(() => {
+      $('deals-dot').hidden = true;
+      $('hub-dot').hidden = true;
+      deals.forEach((d) => { d.read = true; });
+    })
     .catch(() => {});
 }
 
@@ -4044,17 +4076,20 @@ function dropDealsSheet() {
   const ov = $('deals-modal');
   ov.classList.remove('is-open');
   ov.hidden = true;
-  $('deals-card').hidden = true;
+  $('hub-deals').hidden = true;
+  $('hub-dot').hidden = true;
+  $('deals-dot').hidden = true;
   $('deals-card').setAttribute('aria-expanded', 'false');
   deals = [];
   dealsLoaded = false;
+  pushReady = null;
+  dealAlertsOn = true;
 }
 
 function renderDealsList(focusId) {
   const list = $('deals-list');
   list.innerHTML = '';
   $('deals-empty').hidden = deals.length > 0;
-  syncDealOptin();
 
   // A deal opened from its own notification sorts to the top, so the tap lands
   // on the thing the student actually tapped.
@@ -4104,55 +4139,172 @@ function onDealTap(d) {
 
 /* ---------- notification permission ---------- */
 
-// Runs once, and only after a deal exists. Already granted: silently
-// (re-)subscribe, since the server upserts and endpoints do rotate. Never
-// asked: show the soft ask inside the deals sheet, because requestPermission()
-// has to come from a gesture and the browser only ever grants it once. Denied:
-// stay out of the way, since re-prompting is impossible.
+// Runs once a deal exists. Already granted: (re-)subscribe, since the server
+// upserts and endpoints do rotate. Never asked: show the soft ask in the hub,
+// because requestPermission() has to come from a gesture and the browser only
+// ever grants it once. Denied: stay out of the way, since re-prompting is
+// impossible.
+//
+// pushInitDone latches the SETUP, not the subscribe. A subscribe that failed
+// used to be latched too, which made it unrecoverable for the life of the page
+// and — because the throw skipped the UI sync below — completely silent: the
+// student saw an Account switch reading "on" and received nothing, forever. The
+// failure is caught around the subscribe alone now, so the state it leaves is
+// reported (pushReady stays false) and syncDealAlertUi offers the retry.
 async function initPush() {
-  if (pushInitDone) return;
   try {
     // Latched AFTER the support guard, not before: on a platform where push
     // isn't available yet (an iOS tab before Add to Home Screen) this costs one
     // cheap property check per call, and leaves onDealsToggle's `if (!vapidKey)
     // await initPush()` able to succeed later instead of being a no-op for the
     // rest of the page's life.
-    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
-    pushInitDone = true;
-    const res = await authFetch('/api/me/push/public-key');
-    if (!res.ok) return;
-    vapidKey = (await res.json())?.publicKey ?? null;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      syncDealAlertUi();
+      return;
+    }
+    if (!pushInitDone) {
+      pushInitDone = true;
+      const res = await authFetch('/api/me/push/public-key');
+      if (!res.ok) return;
+      vapidKey = (await res.json())?.publicKey ?? null;
+    }
     if (!vapidKey) return;              // server has no VAPID keys → push disabled
-    if (Notification.permission === 'granted') await subscribePush();
-    syncDealOptin();
-  } catch { /* push is a nice-to-have */ }
+    // Permission granted is NOT the same as "the server can reach this device".
+    // Re-post on every load: the upsert is idempotent and cheap, and it is what
+    // repairs a subscribe that failed earlier or an endpoint the server pruned.
+    if (Notification.permission === 'granted') {
+      try {
+        await subscribePush();
+        pushReady = true;
+      } catch (err) {
+        pushReady = false;
+        console.warn('[push] subscribe failed:', err?.message ?? err);
+      }
+    }
+  } catch (err) {
+    console.warn('[push] setup failed:', err?.message ?? err);
+  }
+  syncDealAlertUi();
 }
 
 function optinDismissed() {
   try { return !!localStorage.getItem(DEAL_OPTIN_DISMISS_KEY); } catch { return false; }
 }
 
-function syncDealOptin() {
-  const canAsk = vapidKey
-    && 'Notification' in window
-    && Notification.permission === 'default'
-    && !optinDismissed();
-  $('deals-optin').hidden = !canAsk;
+/**
+ * Every notification state the hub's deals block can be in, in one place. The
+ * point is that a student receiving nothing can always see WHY: silence with no
+ * explanation is the state that makes people stop trusting the app.
+ *
+ *   unsupported  — an iOS tab before Add to Home Screen; say so, since installing
+ *                  is the fix and nothing else here will work until they do
+ *   switched off — their own choice, in Account. Say it and offer nothing: a
+ *                  "fix this" prompt under a switch they deliberately turned off
+ *                  is nagging, not help
+ *   default      — the soft ask (the only gesture that may call requestPermission)
+ *   denied       — blocked at the browser; we cannot re-prompt, so just say it
+ *   granted, no endpoint — the silent-failure case; offer the repair
+ *   granted, endpoint    — "alerts on"
+ */
+function syncDealAlertUi() {
+  const state = $('deals-alert-state');
+  const optin = $('deals-optin');
+  const fix = $('deals-alert-fix');
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const perm = supported ? Notification.permission : null;
+
+  let label = '';
+  let showOptin = false;
+  let showFix = false;
+
+  if (!supported) {
+    // Only worth saying on iOS, where installing genuinely unlocks it. Anywhere
+    // else "unsupported" is a dead end the student cannot act on.
+    label = isIosSafariTab() ? 'add to home screen for alerts' : '';
+  } else if (!vapidKey) {
+    label = '';                                    // server has push disabled — not their problem
+  } else if (perm === 'denied') {
+    label = 'alerts blocked';
+  } else if (!dealAlertsOn) {
+    label = 'alerts off';                          // their own switch — no repair offered
+  } else if (perm === 'default') {
+    showOptin = !optinDismissed();
+    label = showOptin ? '' : 'alerts off';
+  } else if (pushReady === false) {
+    label = 'alerts off';
+    showFix = true;
+  } else if (pushReady === true) {
+    label = 'alerts on';
+  }
+
+  state.textContent = label;
+  state.hidden = !label;
+  optin.hidden = !showOptin;
+  fix.hidden = !showFix;
+}
+
+// iOS gates PushManager behind an installed PWA, so a Safari tab reports push as
+// unsupported outright. Distinguishing it matters: on iOS the student can fix it
+// (Share → Add to Home Screen), everywhere else "unsupported" means nothing they
+// can do.
+function isIosSafariTab() {
+  const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);   // iPadOS
+  return iOS && !window.InstallPrompt?.isInstalled?.();
 }
 
 async function enableDealAlerts() {
   try {
+    if (!vapidKey) await initPush();
     const perm = await Notification.requestPermission();   // must be inside the gesture
-    if (perm !== 'granted') { $('deals-optin').hidden = true; return; }
+    if (perm !== 'granted') { $('deals-optin').hidden = true; syncDealAlertUi(); return; }
     await subscribePush();
+    pushReady = true;
+    dealAlertsOn = true;        // /push/subscribe flips push_opt_in on server-side
     setDealsToggle(true);
-  } catch { /* nothing to do — the switch just stays off */ }
+  } catch (err) {
+    // Permission may well have been granted and only the subscribe failed, so
+    // this is not "they said no" — it is the repairable state, and
+    // syncDealAlertUi below is what offers the repair.
+    pushReady = false;
+    console.warn('[push] enable failed:', err?.message ?? err);
+  }
   $('deals-optin').hidden = true;
+  syncDealAlertUi();
+}
+
+// The explicit repair for "permission granted, no endpoint on file".
+async function retryPushSubscribe() {
+  const btn = $('deals-alert-retry');
+  btn.disabled = true;
+  btn.textContent = 'Fixing…';
+  try {
+    if (!vapidKey) await initPush();
+    // Throw the browser's own subscription away first. This path is reached
+    // precisely when the endpoint we hold is unusable, and getSubscription()
+    // would otherwise hand the same dead one back to be re-uploaded.
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+    } catch { /* nothing to drop */ }
+    await subscribePush();
+    pushReady = true;
+    dealAlertsOn = true;
+  } catch (err) {
+    pushReady = false;
+    console.warn('[push] retry failed:', err?.message ?? err);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Fix it';
+  setDealsToggle(dealAlertsOn);
+  syncDealAlertUi();
 }
 
 function dismissDealOptin() {
   try { localStorage.setItem(DEAL_OPTIN_DISMISS_KEY, '1'); } catch { /* private mode */ }
   $('deals-optin').hidden = true;
+  syncDealAlertUi();          // the block now reads "alerts off" instead of going blank
 }
 
 async function subscribePush() {
@@ -4200,11 +4352,19 @@ function urlBase64ToUint8Array(base64String) {
 // student whose browser has never granted permission receives nothing, however
 // the opt-in flag reads, and a switch sitting on "on" while nothing arrives is
 // the kind of thing people stop trusting the app over.
+//
+// Permission alone was not enough to make that promise. The server also has to
+// HOLD an endpoint for this device, and it can be granted without one — a
+// subscribe that failed, or an endpoint pruned as dead (src/lib/push.js). That
+// is the exact state this switch used to render as "on", so pushReady is part of
+// the answer. `null` means not yet known, and is treated as fine rather than
+// flickering the switch off on every load.
 function setDealsToggle(on) {
   const supported = 'Notification' in window;
   const blocked = supported && Notification.permission === 'denied';
   const granted = supported && Notification.permission === 'granted';
-  $('deals-toggle').setAttribute('aria-checked', on && granted ? 'true' : 'false');
+  const reachable = pushReady !== false;
+  $('deals-toggle').setAttribute('aria-checked', on && granted && reachable ? 'true' : 'false');
   $('deals-toggle').disabled = blocked;
   $('deals-blocked-note').hidden = !blocked;
 }
@@ -4212,6 +4372,11 @@ function setDealsToggle(on) {
 async function onDealsToggle() {
   const wasOn = $('deals-toggle').getAttribute('aria-checked') === 'true';
   const next = !wasOn;
+  dealAlertsOn = next;
+  // Optimistic, and pushReady must be cleared with it: the switch is being told
+  // to reach a state the server has not confirmed yet, and a stale `false` here
+  // would render the new "on" as off again on the very next sync.
+  if (next) pushReady = null;
   setDealsToggle(next);                      // optimistic; the server is the record
   try {
     if (next) {
@@ -4220,14 +4385,18 @@ async function onDealsToggle() {
       if (!vapidKey) await initPush();
       if ('Notification' in window && Notification.permission === 'default') {
         const perm = await Notification.requestPermission();
-        if (perm !== 'granted') { setDealsToggle(false); return; }
+        if (perm !== 'granted') { dealAlertsOn = false; setDealsToggle(false); syncDealAlertUi(); return; }
       }
       await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: true }) });
-      if (vapidKey && Notification.permission === 'granted') await subscribePush();
+      if (vapidKey && Notification.permission === 'granted') {
+        await subscribePush();
+        pushReady = true;
+      }
     } else {
       // The server drops every endpoint; drop the browser's own subscription
       // too, so a re-enable mints a fresh one rather than reviving a ghost.
       await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: false }) });
+      pushReady = false;
       try {
         const reg = await navigator.serviceWorker.ready;
         const sub = await reg.pushManager.getSubscription();
@@ -4235,8 +4404,13 @@ async function onDealsToggle() {
       } catch { /* no worker / no subscription */ }
     }
   } catch {
+    dealAlertsOn = wasOn;
     setDealsToggle(wasOn);                   // put it back if the server never heard us
   }
+  // Whatever happened, the hub's deals block has to agree with the switch —
+  // "alerts on" up there while this reads off is the confusion the whole
+  // pushReady thread exists to prevent.
+  syncDealAlertUi();
 }
 
 /* ---------- the full-screen punch-in scanner ---------- */

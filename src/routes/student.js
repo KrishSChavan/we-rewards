@@ -435,7 +435,7 @@ router.get('/history', requireConsent, async (req, res, next) => {
 router.get('/deals', requireConsent, async (req, res, next) => {
   try {
     const nowIso = new Date().toISOString();
-    const [{ data, error }, { data: state }] = await Promise.all([
+    const [{ data, error }, { data: state }, { count: subCount }] = await Promise.all([
       supabaseAdmin
         .from('campaign_recipients')
         .select('campaign_id, read_at, opened_at, vendor_campaigns!inner(title, body, kind, expires_at, created_at, vendor_id, vendors!inner(name, has_logo, active))')
@@ -447,6 +447,16 @@ router.get('/deals', requireConsent, async (req, res, next) => {
         .select('push_opt_in')
         .eq('user_id', req.user.id)
         .maybeSingle(),
+      // Do we actually hold somewhere to send to? claim_campaign_pushes will not
+      // claim a student without one (migration-032), so with zero rows here the
+      // student is unreachable no matter what their switch says — and that is
+      // invisible from the browser, where permission can read 'granted' over a
+      // subscribe that never completed or an endpoint we pruned as dead.
+      supabaseAdmin
+        .from('push_subscriptions')
+        .select('endpoint', { count: 'exact', head: true })
+        .eq('user_id', req.user.id)
+        .eq('role', 'student'),
     ]);
     if (error) throw error;
 
@@ -476,6 +486,10 @@ router.get('/deals', requireConsent, async (req, res, next) => {
       // `push_opt_in` defaults on; the row only exists once they have been
       // targeted or have changed the setting.
       dealAlerts: state?.push_opt_in ?? true,
+      // "Can this student be reached at all", as distinct from "did they say
+      // yes". The client re-subscribes when this is false and permission is
+      // granted, which is what repairs the otherwise-permanent silent state.
+      pushReady: (subCount ?? 0) > 0,
     });
   } catch (err) {
     next(err);

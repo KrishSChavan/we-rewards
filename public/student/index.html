@@ -164,8 +164,9 @@
                  rewards hub (#hub-modal, further down inside #app) over the
                  page. Collapsed, it still carries the tier multiplier, so the
                  one number the panel would otherwise hide isn't invisible
-                 behind a tap. The community balance is not repeated here — the
-                 card right below it (#community-card) already shows it.
+                 behind a tap, plus a red dot when a deal is waiting in the
+                 panel's deals block. The community balance is not repeated here
+                 — the card right below it (#community-card) already shows it.
                  The panel repeats this row as its own header, so opening it
                  reads as the pill unfolding rather than a sheet arriving; keep
                  the two markups in step. -->
@@ -187,6 +188,13 @@
                     <i aria-hidden="true">★</i><span id="hub-tier-mult">1x</span>
                   </span>
                 </span>
+                <!-- Unread-deal marker. The deals list lives INSIDE the panel
+                     now, so shut, this pill is the only thing on screen that can
+                     say a deal is waiting — without it the feature is invisible
+                     until you happen to open the hub. A dot, not a count, for the
+                     same reason as .dc-dot: the number is not actionable and a
+                     growing badge is its own kind of pressure. -->
+                <span id="hub-dot" class="hub-dot" hidden><span class="sr-only">New deals</span></span>
                 <span class="hub-chev" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M6 9.5 12 15.5l6-6" />
@@ -229,28 +237,6 @@
                   <span class="cc-sub">10% back · spend at any spot</span>
                 </span>
                 <span class="cc-chevron" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9.5 6 15.5 12l-6 6" />
-                  </svg>
-                </span>
-              </button>
-
-              <!-- Deals from spots you go to. Hidden until there is at least
-                   one live one, so it never sits here as an empty promise.
-                   It is the SOURCE OF TRUTH for vendor campaigns: every deal
-                   you were targeted by lands in here whether or not a
-                   notification was allowed, delivered, or throttled away (see
-                   supabase/migration-032.sql). Notifications are a shortcut to
-                   this list, never the only copy of it. -->
-              <button id="deals-card" class="deals-card" type="button" hidden
-                      aria-haspopup="dialog" aria-expanded="false" aria-controls="deals-modal">
-                <span class="dc-icon" aria-hidden="true">🏷️</span>
-                <span class="dc-body">
-                  <span class="dc-label">DEALS NEARBY</span>
-                  <span id="deals-card-line" class="dc-line"></span>
-                </span>
-                <span id="deals-dot" class="dc-dot" hidden aria-hidden="true"></span>
-                <span class="dc-chevron" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M9.5 6 15.5 12l-6 6" />
                   </svg>
@@ -694,6 +680,70 @@
           <p id="lever-tip" class="lever-tip"></p>
         </div>
 
+        <!-- ---------- deals, at the foot of the panel ----------
+             Deals from spots you go to. Last in the panel on purpose: the tier
+             meter above is the thing the hub exists for, and this is the thing
+             that changes most often — putting it at the bottom means a new deal
+             never reflows the numbers above it.
+
+             The BUTTON is the SOURCE OF TRUTH for vendor campaigns: every deal
+             you were targeted by lands in the list it opens, whether or not a
+             notification was allowed, delivered, or throttled away (see
+             supabase/migration-032.sql). Notifications are a shortcut to that
+             list, never the only copy of it.
+
+             The whole block is hidden until there is at least one live deal, so
+             it never sits here as an empty promise — and #hub-dot on the
+             collapsed pill is what tells you to come and look. -->
+        <div id="hub-deals" class="hub-deals" hidden>
+          <div class="lever-head">
+            <span class="lever-title">DEALS NEARBY</span>
+            <!-- Says what actually happens, not what the server has on file.
+                 syncDealAlertUi() writes every state here: on, off, blocked, or
+                 "needs the app installed". A student who is receiving nothing
+                 should never have to guess why. -->
+            <span id="deals-alert-state" class="lever-window" hidden></span>
+          </div>
+
+          <button id="deals-card" class="hub-deals-btn" type="button"
+                  aria-haspopup="dialog" aria-expanded="false" aria-controls="deals-modal">
+            <span class="dc-icon" aria-hidden="true">🏷️</span>
+            <span class="dc-body">
+              <span id="deals-card-line" class="dc-line"></span>
+              <span class="dc-sub">Tap to see what's on</span>
+            </span>
+            <span id="deals-dot" class="dc-dot" hidden aria-hidden="true"></span>
+            <span class="dc-chevron" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9.5 6 15.5 12l-6 6" />
+              </svg>
+            </span>
+          </button>
+
+          <!-- Soft ask, moved here from inside the deals sheet. The real
+               permission prompt must come from this tap (Safari enforces the
+               gesture) and the browser only ever grants it once, so it has to be
+               somewhere a student will actually see it. Buried in a sheet they
+               had to open first, it was reachable only by someone who already
+               went looking. -->
+          <div id="deals-optin" class="deals-optin" hidden>
+            <p class="deals-optin-text">Want a heads-up when something's on? At most twice a day, never at night.</p>
+            <div class="deals-optin-actions">
+              <button id="deals-optin-yes" class="deals-optin-yes" type="button">Turn on alerts</button>
+              <button id="deals-optin-no" class="deals-optin-no" type="button">Not now</button>
+            </div>
+          </div>
+
+          <!-- The repair path. Permission is granted but this device has no
+               subscription on file (it never completed, or the server pruned a
+               dead endpoint), which is the one broken state the switch in
+               Account cannot fix on its own. -->
+          <p id="deals-alert-fix" class="deals-alert-fix" hidden>
+            Alerts are on for this browser but this device isn't registered yet.
+            <button id="deals-alert-retry" class="deals-alert-retry" type="button">Fix it</button>
+          </p>
+        </div>
+
         </div><!-- /.hub-body-inner -->
         </div><!-- /.hub-body -->
       </div>
@@ -941,9 +991,9 @@
        migration-029: visits are a currency spent on individual rewards, so
        there is nothing to redeem here. The redeem buttons live on the reward. -->
   <!-- ---------- deals: what the spots you go to have on ----------
-       Opened by the home card, by tapping a deal notification, or by a
-       /?deals=1 deep link. Everything a vendor sent you that is still live is
-       here, whether or not its notification was shown. -->
+       Opened by the button at the foot of the rewards hub, by tapping a deal
+       notification, or by a /?deals=1 deep link. Everything a vendor sent you
+       that is still live is here, whether or not its notification was shown. -->
   <div id="deals-modal" class="overlay sheet" hidden>
     <div class="detail-card deals-sheet">
       <button id="deals-close" class="detail-close" aria-label="Close">✕</button>
@@ -951,17 +1001,10 @@
       <h2 class="detail-title">Deals</h2>
       <p class="detail-desc">Offers from spots you go to. They expire on their own.</p>
 
-      <!-- Soft ask. The real permission prompt must come from this tap (Safari
-           enforces the gesture), and the browser only ever grants it once, so
-           we explain the deal before spending the one chance we get. -->
-      <div id="deals-optin" class="deals-optin" hidden>
-        <p class="deals-optin-text">Want a heads-up when something's on? At most twice a day, never at night.</p>
-        <div class="deals-optin-actions">
-          <button id="deals-optin-yes" class="deals-optin-yes" type="button">Turn on alerts</button>
-          <button id="deals-optin-no" class="deals-optin-no" type="button">Not now</button>
-        </div>
-      </div>
-
+      <!-- The soft ask used to live here. It now sits in the hub panel beside
+           the button that opens this sheet (#deals-optin), because a permission
+           prompt reachable only from inside a sheet you already chose to open is
+           a prompt most people never see. -->
       <ul id="deals-list" class="deals-list"></ul>
       <p id="deals-empty" class="deals-empty" hidden>Nothing on right now. Check back later.</p>
     </div>

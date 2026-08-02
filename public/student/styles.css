@@ -470,6 +470,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .hub-tier.t2 { color: #ffd76e; }
 .hub-tier.t3 { color: #ffb84d; }
 
+/* Unread-deal marker on the COLLAPSED pill. Shut, this is the only surface that
+   can say a deal is waiting, since the list itself is inside the panel. The ring
+   is the pill's own navy, not a colour: it keeps the dot legible if it ever
+   lands next to the gold tier chip, and costs nothing when it doesn't. */
+.hub-dot {
+  flex: 0 0 auto; width: 0.55rem; height: 0.55rem; border-radius: 50%;
+  background: var(--danger); box-shadow: 0 0 0 2px var(--navy);
+}
+
 .hub-chev { flex: 0 0 auto; display: flex; color: rgba(255, 255, 255, 0.75); }
 .hub-chev svg { width: 1.25rem; height: 1.25rem; display: block; }
 /* The panel's copy points the other way — same icon, opposite affordance. It's
@@ -883,40 +892,83 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .cc-chevron { flex: 0 0 auto; color: var(--muted); display: flex; }
 .cc-chevron svg { width: 1.15rem; height: 1.15rem; display: block; }
 
-/* ---------- home: deals card ----------
-   Same sticker language as the community card above it; amber tile instead of
-   the brand purple, because this is a thing that expires rather than a balance
-   you hold. Hidden entirely when there is nothing live, so it never sits on
-   Home as an empty promise. */
-.deals-card {
-  display: flex; align-items: center; gap: 0.8rem;
-  text-align: left;
-  background: var(--card);
-  border: 3px solid var(--edge); border-radius: 1.2rem;
-  box-shadow: 0 5px 0 var(--edge);
-  padding: 0.75rem 0.95rem;
-  transition: transform 80ms ease, box-shadow 80ms ease;
+/* ---------- hub: the deals block at the foot of the panel ----------
+   Same section grammar as .tier-levers directly above it — the --hub-pad gutter
+   and the hairline rule — so the panel reads as one column of sections rather
+   than a meter with a card bolted underneath. The whole block is hidden while
+   there is nothing live, and the hairline goes with it, so the panel does not
+   end on a rule leading to nothing. */
+.hub-deals {
+  margin: 1.15rem var(--hub-pad) 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex; flex-direction: column; gap: 0.7rem;
 }
-.deals-card:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--edge); }
+/* .lever-head is borrowed for the section header so the two sections carry the
+   same label treatment, but its own bottom margin would stack on top of the
+   flex gap above and open a hole this block doesn't have room for. */
+.hub-deals .lever-head { margin-bottom: 0; }
+/* The tappable row. On navy the home stack's sticker treatment (paper fill,
+   hard offset shadow) has nothing to sit on, so this is a raised translucent
+   tile instead: the amber left tile still carries the deals colour, and press
+   feedback is a fill change rather than a drop, since there is no shadow to
+   collapse into. */
+.hub-deals-btn {
+  display: flex; align-items: center; gap: 0.7rem;
+  width: 100%; text-align: left;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.95rem;
+  padding: 0.6rem 0.7rem;
+  color: #fff;
+  transition: background 80ms ease, transform 80ms ease;
+}
+.hub-deals-btn:active { background: rgba(255, 255, 255, 0.13); transform: scale(0.99); }
 .dc-icon {
-  flex: 0 0 auto; align-self: stretch;
-  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
+  width: 2.3rem; height: 2.3rem;
   display: flex; align-items: center; justify-content: center;
-  font-size: 1.6rem; line-height: 1;
-  background: #fbe6c2; border-radius: 0.9rem;
-  padding: 0px 5px;
+  font-size: 1.25rem; line-height: 1;
+  background: #fbe6c2; border-radius: 0.7rem;
 }
-.dc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
-.dc-label { font-weight: 900; letter-spacing: 0.1em; font-size: 0.76rem; color: #a56a14; }
-.dc-line { font-size: 1rem; font-weight: 800; line-height: 1.25; }
+.dc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+/* Two lines that must not push the chevron off the row: the deal line clamps to
+   two, the subtitle stays one. Both need min-width:0 on .dc-body above to be
+   allowed to shrink at all inside the flex row. */
+.dc-line {
+  font-size: 0.92rem; font-weight: 800; line-height: 1.3;
+  display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden;
+}
+.dc-sub {
+  font-size: 0.72rem; font-weight: 700;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* Unread marker. A dot rather than a count: the number of unread deals is not
-   information anyone acts on, and a growing badge is its own kind of pressure. */
+   information anyone acts on, and a growing badge is its own kind of pressure.
+   The same dot appears on the collapsed pill (.hub-dot) — this one is what you
+   see once the panel is open. */
 .dc-dot {
-  flex: 0 0 auto; width: 0.6rem; height: 0.6rem; border-radius: 50%;
+  flex: 0 0 auto; width: 0.55rem; height: 0.55rem; border-radius: 50%;
   background: var(--danger);
 }
-.dc-chevron { flex: 0 0 auto; color: var(--muted); display: flex; }
-.dc-chevron svg { width: 1.15rem; height: 1.15rem; display: block; }
+.dc-chevron { flex: 0 0 auto; color: rgba(255, 255, 255, 0.45); display: flex; }
+.dc-chevron svg { width: 1.05rem; height: 1.05rem; display: block; }
+
+/* The one broken state the Account switch cannot fix on its own: permission is
+   granted, but this device has no subscription on file. Quiet until it applies,
+   then explicit, with the repair one tap away. */
+.deals-alert-fix {
+  font-size: 0.76rem; font-weight: 700; line-height: 1.4;
+  color: rgba(255, 255, 255, 0.62);
+}
+.deals-alert-retry {
+  font: inherit; font-weight: 900;
+  color: var(--accent); background: none; border: none;
+  padding: 0.1rem 0.2rem; text-decoration: underline;
+}
 
 /* ---------- deals sheet ---------- */
 
@@ -948,19 +1000,29 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    ambushing the home screen, because the browser grants the real prompt once
    and forever: asking someone who is already reading deals is the moment they
    are most likely to say yes, and a "no" here costs nothing. */
+/* Soft ask, in the hub panel under the deals button. It sat on paper inside the
+   deals sheet before the move, so the amber-on-cream treatment is gone: on navy
+   it is --accent that has to carry it, the same tint the tier chip uses. Sized
+   down from a sheet card to a panel section — it is one of several things in the
+   fold, not the whole screen's business. */
 .deals-optin {
   width: 100%; text-align: left;
-  background: #fbe6c2; border: 2.5px solid #a56a14; border-radius: 1rem;
-  padding: 0.85rem 0.95rem; display: flex; flex-direction: column; gap: 0.6rem;
+  background: rgba(150, 190, 230, 0.12);
+  border: 1.5px solid rgba(150, 190, 230, 0.34);
+  border-radius: 0.95rem;
+  padding: 0.7rem 0.8rem; display: flex; flex-direction: column; gap: 0.55rem;
 }
-.deals-optin-text { font-size: 0.92rem; font-weight: 700; color: #5a3d09; line-height: 1.35; }
-.deals-optin-actions { display: flex; gap: 0.5rem; }
+.deals-optin-text {
+  font-size: 0.8rem; font-weight: 700; line-height: 1.4;
+  color: rgba(255, 255, 255, 0.86);
+}
+.deals-optin-actions { display: flex; gap: 0.45rem; }
 .deals-optin-yes, .deals-optin-no {
-  font: inherit; font-weight: 900; font-size: 0.92rem;
-  padding: 0.55rem 0.9rem; border-radius: 0.7rem; border: 2.5px solid #a56a14;
+  font: inherit; font-weight: 900; font-size: 0.82rem;
+  padding: 0.45rem 0.8rem; border-radius: 0.6rem; border: 1.5px solid var(--accent);
 }
-.deals-optin-yes { background: #a56a14; color: #fff; }
-.deals-optin-no { background: transparent; color: #5a3d09; }
+.deals-optin-yes { background: var(--accent); color: var(--navy); }
+.deals-optin-no { background: transparent; color: rgba(255, 255, 255, 0.72); border-color: rgba(255, 255, 255, 0.24); }
 
 .setting-note { font-size: 0.82rem; font-weight: 600; color: var(--muted); padding: 0 0.3rem; line-height: 1.35; }
 
