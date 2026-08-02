@@ -2259,9 +2259,21 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .map-sheet.is-open .map-card { transform: translateY(0); }
 @media (prefers-reduced-motion: reduce) { .map-card { transition: none; } }
 
+/* Sized around the ✕, not around the title. The button is absolutely positioned
+   (so the title stays centred on the full width rather than on what is left of
+   it), which means the header does not grow to contain it: at the title's own
+   height the ✕ ran past the bottom edge and hung over the map. min-height is
+   the button's reach — 0.9rem down plus its 2.6rem — with the same 0.9rem again
+   as clearance beneath it. Centring the title in that box then lands it exactly
+   on the button's midline, since 0.9 + 2.6/2 is half of 4.4.
+   The inset is padding rather than part of the centred box so the title is
+   never pushed up under a notch, and the horizontal padding is symmetric so a
+   longer title wraps clear of the ✕ instead of running underneath it. */
 .map-head {
   position: relative; flex: 0 0 auto;
-  padding: calc(1.1rem + env(safe-area-inset-top, 0px)) 1.3rem 0.9rem;
+  min-height: calc(4.4rem + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 4.4rem 0;
+  display: flex; align-items: center; justify-content: center;
   text-align: center;
 }
 .map-title { font-weight: 900; letter-spacing: 0.16em; font-size: 0.9rem; color: var(--muted); }
