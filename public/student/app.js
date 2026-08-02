@@ -2148,7 +2148,7 @@ function buildVendorCard(v) {
   card.className = 'vendor-card';
   card.dataset.id = v.vendorId;
   const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
-  if (!map) card.classList.add('no-map');   // center name + points when there's no map
+  if (!map) card.classList.add('no-map');   // shrink to content + centre in the row (styles.css)
   const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
   // Logo (if any) loads from the cacheable endpoint, sized to the name+points height.
   const logo = v.hasLogo

@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v36';   // v36: full-screen spots map (Leaflet + OSM tiles)
+const CACHE = 'werewards-v37';   // v37: map-less vendor cards shrink to content and centre in the row
 // Leaflet's own images are NOT precached: the map uses divIcon pins and no layers
 // control, so nothing ever requests them. The OSM tiles aren't either — they're
 // cross-origin, and the fetch handler below hands those straight to the network.

@@ -1291,8 +1291,14 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 0.35rem;
   padding: 1.1rem 1.3rem;
 }
-/* no map → the body still fills the card, but content stays left-aligned at the top */
-.vendor-card.no-map .vc-body { justify-content: flex-start; }
+/* No map → nothing to fill the bottom 150px with, so the card stops stretching to
+   the row's tallest card and takes only the height its own content needs, then
+   centres itself on the cross axis so it floats in the middle of the row instead
+   of hanging from the top. min-height goes with it: the 200px floor above exists
+   to give a map card's body some presence, and here it would just reintroduce the
+   empty space this rule removes. The body's own justify-content is moot once the
+   card is content-sized — there is no slack left to distribute. */
+.vendor-card.no-map { align-self: center; min-height: 0; }
 
 /* logo sits left of the name+points, centred against them */
 .vc-head { display: flex; align-items: center; gap: 0.7rem; }
