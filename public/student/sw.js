@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v41';   // v41: a failed turn-on says why at the switch (dismissed/quieted permission prompt)
+const CACHE = 'werewards-v42';   // v42: toggle-off keeps the browser subscription (unsubscribe→resubscribe race froze the switch)
+// v41: a failed turn-on says why at the switch (dismissed/quieted permission prompt)
 // v40: permission asked inside the gesture; switch reports only confirmed state
 // v39: deals moved into the rewards hub; push subscription self-heals
 // v38: push re-subscribes when the server's VAPID key has changed

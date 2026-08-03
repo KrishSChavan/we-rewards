@@ -4273,6 +4273,7 @@ function pushErrorNote(err) {
     return 'Your browser could not reach its push service. Check your connection and try again.';
   }
   if (/^subscribe failed: 4\d\d$/.test(msg)) return 'We could not save this device. Try again.';
+  if (/timed out/i.test(msg)) return 'The push service did not answer. Try again in a moment.';
   return msg || 'Something stopped this device registering.';
 }
 
@@ -4441,7 +4442,7 @@ async function subscribePush() {
     try { await sub.unsubscribe(); } catch { /* already gone */ }
     sub = null;
   }
-  sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appKey });
+  sub ??= await mintPushSubscription(reg, appKey);
   const { endpoint, keys } = sub.toJSON();
   const res = await authFetch('/api/me/push/subscribe', {
     method: 'POST',
@@ -4450,6 +4451,30 @@ async function subscribePush() {
   // authFetch resolves on a 4xx, so without this a rejected subscribe would
   // leave the switch reading "on" with nothing stored server-side.
   if (!res.ok) throw new Error(`subscribe failed: ${res.status}`);
+}
+
+// pushManager.subscribe() is the one await in the enable path with no backstop
+// of its own, and it needs one twice over: right after an unsubscribe() the
+// push service is still tearing the old token down, and a subscribe() inside
+// that window can reject with AbortError — or simply never settle, which would
+// hang the caller (and the disabled switch above it) forever. So: race a hard
+// timeout, and give the teardown one short-fuse retry to finish. A second
+// failure is a real outage and is thrown to the caller for the fail note.
+// The repair path (retryPushSubscribe) unsubscribes deliberately, so it walks
+// straight into this race every time; the timeout is what keeps the never-
+// settles case from freezing the UI.
+async function mintPushSubscription(reg, appKey) {
+  const attempt = () => Promise.race([
+    reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appKey }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('push subscribe timed out')), 20_000)),
+  ]);
+  try {
+    return await attempt();
+  } catch (err) {
+    if (err?.name === 'NotAllowedError') throw err;   // permission problem — a retry cannot help
+    await new Promise((r) => setTimeout(r, 3000));
+    return attempt();
+  }
 }
 
 function sameAppServerKey(stored, want) {
@@ -4514,15 +4539,18 @@ async function onDealsToggle() {
       // and the subscription — so the switch and the soft opt-in cannot drift.
       ok = await enablePushAlerts(permP);
     } else {
-      // The server drops every endpoint; drop the browser's own subscription
-      // too, so a re-enable mints a fresh one rather than reviving a ghost.
+      // Server-side only: PATCH false deletes every stored endpoint, and an
+      // endpoint nobody holds cannot be pushed to — that alone is "off".
+      // The browser's own subscription is deliberately KEPT. unsubscribe()
+      // tears the push service's token down ASYNCHRONOUSLY, and a re-enable
+      // landing inside that window gets an AbortError — or a subscribe() that
+      // never settles — out of pushManager.subscribe(). The never-settles case
+      // is the worst: it hangs this handler while the switch is disabled, so
+      // the switch stays dead for the life of the page ("it won't turn back
+      // on"). Keeping the subscription also makes re-enable instant and
+      // prompt-free: the same subscription is simply uploaded again.
       await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: false }) });
       pushReady = false;
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
-        if (sub) await sub.unsubscribe();
-      } catch { /* no worker / no subscription */ }
     }
   } catch (err) {
     ok = false;
