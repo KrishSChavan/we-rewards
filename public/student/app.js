@@ -4169,16 +4169,25 @@ async function initPush() {
       return;
     }
     if (!pushInitDone) {
-      pushInitDone = true;
+      // Latched only on SUCCESS. Latching before the fetch meant one failed
+      // public-key request disabled push for the rest of the page's life —
+      // line below is the only place vapidKey is ever assigned, and every
+      // later call (including the toggle's own `if (!vapidKey) await
+      // initPush()`) found the latch set and gave up without retrying.
       const res = await authFetch('/api/me/push/public-key');
-      if (!res.ok) return;
+      if (!res.ok) return;                       // not latched — the next call retries
       vapidKey = (await res.json())?.publicKey ?? null;
+      pushInitDone = true;
     }
     if (!vapidKey) return;              // server has no VAPID keys → push disabled
     // Permission granted is NOT the same as "the server can reach this device".
     // Re-post on every load: the upsert is idempotent and cheap, and it is what
     // repairs a subscribe that failed earlier or an endpoint the server pruned.
-    if (Notification.permission === 'granted') {
+    // The dealAlertsOn gate respects an explicit opt-out: without it, a student
+    // who toggled alerts OFF was silently re-subscribed on the next load —
+    // /push/subscribe force-sets push_opt_in=true server-side, so their choice
+    // was quietly undone while the switch went on reading "off".
+    if (Notification.permission === 'granted' && dealAlertsOn) {
       try {
         await subscribePush();
         pushReady = true;
@@ -4272,7 +4281,8 @@ function pushErrorNote(err) {
   if (name === 'AbortError' || /registration failed|service not available/i.test(msg)) {
     return 'Your browser could not reach its push service. Check your connection and try again.';
   }
-  if (/^subscribe failed: 4\d\d$/.test(msg)) return 'We could not save this device. Try again.';
+  if (/^(subscribe|notify) failed: \d\d\d$/.test(msg)) return 'We could not save this device. Try again.';
+  if (/never became ready/i.test(msg)) return 'The app did not finish setting up on this device. Reload and try again.';
   if (/timed out/i.test(msg)) return 'The push service did not answer. Try again in a moment.';
   return msg || 'Something stopped this device registering.';
 }
@@ -4352,7 +4362,13 @@ async function enablePushAlerts(permPromise) {
           : '';                                  // an explicit Block gets deals-blocked-note instead
     return false;
   }
-  if (!vapidKey) return false;                   // server has push disabled
+  if (!vapidKey) {
+    // The key fetch failed this session (initPush above now retries it) or the
+    // server genuinely has push off. This was the ONE enable path that failed
+    // with no note and no switch movement — a switch that silently refuses.
+    pushFailNote = 'Alerts could not be set up. Reload the app and try again.';
+    return false;
+  }
   // Record the INTENT before attempting the subscribe, and in this order.
   // A student who said yes and whose endpoint then failed to register has opted
   // in with a broken device, not opted out: leaving dealAlertsOn false here made
@@ -4360,7 +4376,9 @@ async function enablePushAlerts(permPromise) {
   // very explanation they need. /push/subscribe would set the flag too, but it is
   // the call that just failed.
   dealAlertsOn = true;
-  await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: true }) });
+  const saved = await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: true }) });
+  // authFetch resolves on a 4xx; unchecked, a rejected opt-in read as success.
+  if (!saved.ok) throw new Error(`notify failed: ${saved.status}`);
   // initPush above may already have subscribed on its own — it does that whenever
   // permission was granted by the time it ran, which is every re-enable and any
   // prompt the browser answered instantly. Subscribing again would be harmless
@@ -4403,7 +4421,7 @@ async function retryPushSubscribe() {
     // precisely when the endpoint we hold is unusable, and getSubscription()
     // would otherwise hand the same dead one back to be re-uploaded.
     try {
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await swReady();
       const sub = await reg.pushManager.getSubscription();
       if (sub) await sub.unsubscribe();
     } catch { /* nothing to drop */ }
@@ -4428,8 +4446,19 @@ function dismissDealOptin() {
   syncDealAlertUi();          // the block now reads "alerts off" instead of going blank
 }
 
+// navigator.serviceWorker.ready has no failure mode: if registration failed
+// (the register() call swallows its error) it never resolves, and an await on
+// it freezes whichever handler is holding the switch disabled — with no
+// :disabled styling, that reads as a switch that ignores taps. Race a timeout.
+function swReady(ms = 10_000) {
+  return Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('service worker never became ready')), ms)),
+  ]);
+}
+
 async function subscribePush() {
-  const reg = await navigator.serviceWorker.ready;
+  const reg = await swReady();
   const appKey = urlBase64ToUint8Array(vapidKey);
   let sub = await reg.pushManager.getSubscription();
   // A subscription is bound to the applicationServerKey it was minted with. If
@@ -4549,7 +4578,8 @@ async function onDealsToggle() {
       // the switch stays dead for the life of the page ("it won't turn back
       // on"). Keeping the subscription also makes re-enable instant and
       // prompt-free: the same subscription is simply uploaded again.
-      await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: false }) });
+      const res = await authFetch('/api/me/notify', { method: 'PATCH', body: JSON.stringify({ dealAlerts: false }) });
+      if (!res.ok) throw new Error(`notify failed: ${res.status}`);   // catch puts the switch back
       pushReady = false;
     }
   } catch (err) {
