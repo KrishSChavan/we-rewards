@@ -4343,7 +4343,12 @@ async function enablePushAlerts(permPromise) {
       ? 'Your browser never answered the permission prompt. Try again.'
       : perm === 'unsupported'
         ? 'This browser cannot show notifications.'
-        : '';                                    // a plain "no" needs no explaining
+        : perm === 'default'
+          // Dismissed — or never shown at all: after enough dismissals the
+          // browser quiets the prompt and resolves 'default' with no UI. From
+          // the outside that is "the switch refuses and nothing says why".
+          ? 'The notification prompt went unanswered. If you never saw one, your browser is quieting prompts for this site — allow notifications in your browser\'s site settings, then try again.'
+          : '';                                  // an explicit Block gets deals-blocked-note instead
     return false;
   }
   if (!vapidKey) return false;                   // server has push disabled
@@ -4502,11 +4507,12 @@ async function onDealsToggle() {
   // Started before any await, inside this click's gesture — see
   // askNotificationPermission. Cheap and side-effect-free when it isn't needed.
   const permP = next ? askNotificationPermission() : null;
+  let ok = true;
   try {
     if (next) {
       // enablePushAlerts owns the whole ON path — permission, the opt-in flag,
       // and the subscription — so the switch and the soft opt-in cannot drift.
-      await enablePushAlerts(permP);
+      ok = await enablePushAlerts(permP);
     } else {
       // The server drops every endpoint; drop the browser's own subscription
       // too, so a re-enable mints a fresh one rather than reviving a ghost.
@@ -4519,6 +4525,7 @@ async function onDealsToggle() {
       } catch { /* no worker / no subscription */ }
     }
   } catch (err) {
+    ok = false;
     if (next) { pushReady = false; pushFailNote = pushErrorNote(err); }
     else dealAlertsOn = wasOn;               // the server never heard the opt-out
     console.warn('[push] toggle failed:', err?.message ?? err);
@@ -4529,6 +4536,14 @@ async function onDealsToggle() {
   // …and the hub's deals block has to agree with it — "alerts on" up there while
   // this reads off is the confusion the whole pushReady thread exists to prevent.
   syncDealAlertUi();
+  // A turn-on that failed snaps the switch straight back — which reads as "it
+  // won't let me" unless the reason is said HERE, at the switch being touched.
+  // The hub's repair line is a different screen entirely. An explicit Block is
+  // the one case with its own note (deals-blocked-note, via setDealsToggle).
+  const denied = 'Notification' in window && Notification.permission === 'denied';
+  const showWhy = next && !ok && Boolean(pushFailNote) && !denied;
+  $('deals-fail-note').textContent = showWhy ? pushFailNote : '';
+  $('deals-fail-note').hidden = !showWhy;
 }
 
 /* ---------- the full-screen punch-in scanner ---------- */

@@ -533,6 +533,10 @@
               <p id="deals-blocked-note" class="setting-note" hidden>
                 Notifications are blocked for WeRewards in your browser settings. Allow them there to turn this on.
               </p>
+              <!-- Why the last turn-on attempt failed, when the browser itself
+                   isn't reporting "blocked" — e.g. a permission prompt that was
+                   dismissed, quieted, or never answered. Filled by onDealsToggle. -->
+              <p id="deals-fail-note" class="setting-note" hidden></p>
 
               <!-- appearance -->
               <h2 class="account-section-title">Appearance</h2>
