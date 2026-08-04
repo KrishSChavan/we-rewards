@@ -4363,10 +4363,16 @@ async function enablePushAlerts(permPromise) {
     return false;
   }
   if (!vapidKey) {
-    // The key fetch failed this session (initPush above now retries it) or the
-    // server genuinely has push off. This was the ONE enable path that failed
-    // with no note and no switch movement — a switch that silently refuses.
-    pushFailNote = 'Alerts could not be set up. Reload the app and try again.';
+    // Two different states end here, and only one is fixable from the student's
+    // side. pushInitDone latched = the server ANSWERED and said it has no push
+    // keys (publicKey: null) — true until someone configures the server, so
+    // "reload and try again" would be a lie. Not latched = the key fetch itself
+    // failed this session (initPush above retries it); a reload can fix that.
+    // (This branch used to be the ONE enable path that failed with no note and
+    // no switch movement — a switch that silently refuses.)
+    pushFailNote = pushInitDone
+      ? 'Deal alerts aren\'t available right now. Try again later.'
+      : 'Alerts could not be set up. Reload the app and try again.';
     return false;
   }
   // Record the INTENT before attempting the subscribe, and in this order.
@@ -4458,6 +4464,11 @@ function swReady(ms = 10_000) {
 }
 
 async function subscribePush() {
+  // No key means the server has push disabled: subscribing is impossible, and
+  // without this guard urlBase64ToUint8Array(null) throws a raw TypeError that
+  // reaches the student's fail note verbatim (the "Fix it" path gets here even
+  // when initPush could not produce a key).
+  if (!vapidKey) throw new Error('Deal alerts aren\'t available right now. Try again later.');
   const reg = await swReady();
   const appKey = urlBase64ToUint8Array(vapidKey);
   let sub = await reg.pushManager.getSubscription();
