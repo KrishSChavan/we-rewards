@@ -5,7 +5,8 @@ Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one
 ## Architecture
 
 - **`/`** — student PWA (rotating identity code, balances, redeem)
-- **`/terminal`** — vendor terminal web app (enter code → award/redeem, big buttons, stats)
+- **`/terminal`** — vendor terminal web app (one SCAN tab: the code's own shape
+  routes it to award or redeem, big buttons, stats)
 - **`/admin`** — operator dashboard (platform analytics + error log + vendor
   applications; `ADMIN_EMAILS`-gated)
 - **`/join`** — public vendor application page; applications land in the admin
@@ -100,7 +101,8 @@ config — the terminal never sends a point value.
 ## Point math
 
 - Ratio: `points_per_dollar` per vendor (e.g., 10).
-- Quick-amount buttons (the terminal's AWARD screen) award `floor(amount × ratio)`
+- Quick-amount buttons (shown once the terminal's SCAN tab resolves a customer)
+  award `floor(amount × ratio)`
   from a fixed dollar `amount` per button (edited in SETTINGS) — derived at request
   time, so changing the ratio updates every button automatically.
 - Exact entry awards `floor(amount × ratio)`. Always floor, never round up.
@@ -154,7 +156,7 @@ amount — never deletes — adjusts the balance (clamped at 0, so clawing back
 already-spent points can't go negative), and refuses to double-reverse or reverse
 a reversal. The original and its correction are linked (`reversed_by` / `reverses`).
 The terminal's **STATS → Recent activity** list has a two-tap **Undo** on each real
-award/redeem, and the AWARD/REDEEM scan screens carry a quick **Undo last** button
+award/redeem, and the **SCAN** tab carries a quick **Undo last** button
 (two-tap, PIN-gated) for fixing a mistake mid-shift. Undo is only allowed within
 **1 minute** of the transaction — enforced in the RPC, not just the UI — so a
 vendor can fix an immediate slip but can't quietly claw points back from a customer
@@ -166,7 +168,7 @@ later. Analytics sums are signed, so a voided transaction nets back out.
 economics from the terminal's **SETTINGS** tab: points-per-dollar (bounded), the
 exact-entry toggle, the quick-amount buttons (label + fixed dollar amount each),
 and the staff PIN. The quick-amount buttons render as tap-to-award buttons on the
-AWARD screen. A PIN change is re-hashed with bcrypt and **invalidates every
+award pad the SCAN tab opens. A PIN change is re-hashed with bcrypt and **invalidates every
 existing PIN session** for that vendor, so the terminal re-asks for the new PIN.
 
 ## Student data export + deletion

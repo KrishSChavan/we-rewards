@@ -20,7 +20,9 @@
 // v6: punch tab (rotating punch-in QR) + qrcode.js encoder; offline precache
 // now actually matches the ?v= versioned asset URLs.
 // v10: a live deal can be edited or taken down from the DEALS history.
-const CACHE = 'werewards-terminal-v10';
+// v11: AWARD + REDEEM merged into one SCAN tab with a single camera that routes
+// by what it decodes (index.html + terminal.js + terminal.css).
+const CACHE = 'werewards-terminal-v11';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',

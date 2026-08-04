@@ -1,13 +1,19 @@
 /* WeRewards — vendor terminal client
-   Tabs:  AWARD  → scan customer's QR (or type their 6-digit code) → name + balance + $ keypad → award
-          REDEEM → PIN → scan redemption QR (or type the 4-digit code) → confirm (name + points + item) → deduct
+   Tabs:  SCAN   → one camera for both directions. The payload decides:
+                     6-digit earn code   → name + balance + $ keypad → award
+                     4-digit redeem code → PIN → confirm (name + points + item) → deduct
           ITEMS  → PIN → manage rewards (add / edit / on-off)
+
+   AWARD and REDEEM used to be two tabs with a camera each, which made the
+   cashier classify the code BEFORE scanning it and put a "wrong screen, jump
+   over there" banner on every mistake. Since the two code shapes are already
+   distinguishable (see parseQrPayload), one screen can route them itself.
 */
 
 let sb = null;             // supabase client
 let config = null;         // vendor config from /api/vendor/config
 let rewards = [];          // vendor's rewards from /api/vendor/rewards
-let mode = 'award';        // 'award' | 'redeem' | 'manage'
+let mode = 'scan';         // 'scan' | 'punch' | 'manage' | 'deals' | 'stats' | 'settings'
 let pinTarget = null;      // where the PIN gate leads on success
 let currentEarnCode = null;    // customer's 6-digit earn code on the award pad
 let currentMultiplier = 1;     // scanned customer's tier multiplier (1x/1.5x/2x)
@@ -20,7 +26,8 @@ let pinUnlocked = false;   // set once the PIN is entered correctly; lives in
 let pinToken = null;       // server-side PIN session token from verify-pin, sent
                            // as X-Vendor-Pin on redeem/manage requests
 let pinAction = null;      // callback to run after a successful PIN unlock (e.g.
-                           // "undo last" from the un-gated award screen)
+                           // a scanned redeem code, or "undo last", from the
+                           // un-gated scan screen)
 let selectedEmoji = '🎁';  // emoji picked in the item form
 let busy = false;          // guards double-taps / double-submits
 let idleTimeout = null;
@@ -69,7 +76,7 @@ function installErrorReporter() {
 
 const screens = [
   'screen-login', 'screen-recover', 'screen-scan', 'screen-pad',
-  'screen-pin', 'screen-redeem-scan', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
+  'screen-pin', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
   'screen-settings', 'screen-punch', 'screen-deals',
 ];
 
@@ -92,8 +99,7 @@ const screens = [
   $('recover-confirm').addEventListener('keydown', (e) => e.key === 'Enter' && submitRecover());
   // Show the code the way it was read out (grouped, upper case) while it's typed.
   $('recover-code').addEventListener('input', (e) => { e.target.value = formatResetCodeInput(e.target.value); });
-  $('tab-award').addEventListener('click', () => switchMode('award'));
-  $('tab-redeem').addEventListener('click', () => switchMode('redeem'));
+  $('tab-scan').addEventListener('click', () => switchMode('scan'));
   $('tab-punch').addEventListener('click', () => switchMode('punch'));
   $('tab-manage').addEventListener('click', () => switchMode('manage'));
   $('tab-deals').addEventListener('click', () => switchMode('deals'));
@@ -131,22 +137,18 @@ const screens = [
   $('pad-cancel').addEventListener('click', () => enterScan());
   $('pad-award').addEventListener('click', () => awardAmount(Number(padValue)));
   $('quick-awards').addEventListener('click', onQuickAward);
-  $('undo-last-award').addEventListener('click', onUndoLastTap);
-  $('undo-last-redeem').addEventListener('click', onUndoLastTap);
+  $('undo-last').addEventListener('click', onUndoLastTap);
   $('amount-keypad').addEventListener('click', onAmountKey);
   $('pin-keypad').addEventListener('click', onPinKey);
-  $('redeem-cancel').addEventListener('click', () => enterRedeemScan());
+  $('redeem-cancel').addEventListener('click', () => enterScan());
   $('redeem-confirm').addEventListener('click', confirmRedeem);
   $('add-reward-btn').addEventListener('click', () => openRewardForm(null));
   $('reward-form-cancel').addEventListener('click', closeRewardForm);
   $('reward-form-save').addEventListener('click', saveReward);
   $('emoji-grid').addEventListener('click', onEmojiPick);
-  $('earn-code-form').addEventListener('submit', (e) => { e.preventDefault(); submitEarnCode(); });
-  $('redeem-code-form').addEventListener('submit', (e) => { e.preventDefault(); submitRedeemCode(); });
-  $('earn-code-input').addEventListener('input', (e) => { e.target.value = normalizeEarn(e.target.value); });
-  $('redeem-code-input').addEventListener('input', (e) => { e.target.value = normalizeRedeem(e.target.value); });
-  $('earn-keypad').addEventListener('click', (e) => onCodeKey(e, 'earn-code-input', normalizeEarn));
-  $('redeem-keypad').addEventListener('click', (e) => onCodeKey(e, 'redeem-code-input', normalizeRedeem));
+  $('scan-code-form').addEventListener('submit', (e) => { e.preventDefault(); submitTypedCode(); });
+  $('scan-code-input').addEventListener('input', (e) => { e.target.value = normalizeCode(e.target.value); });
+  $('scan-keypad').addEventListener('click', (e) => onCodeKey(e, 'scan-code-input', normalizeCode));
   $('deal-title').addEventListener('input', onDealInput);
   $('deal-body').addEventListener('input', onDealInput);
   $('deal-audience').addEventListener('click', onAudiencePick);
@@ -334,19 +336,43 @@ async function authFetch(path, opts = {}) {
   });
 }
 
+/** Run `action` once the staff PIN is satisfied. No PIN configured, or one
+ *  already entered this page session, runs it straight away; otherwise the PIN
+ *  pad goes up and onPinKey resumes the action on success. This is what keeps
+ *  redeeming gated now that it shares the un-gated SCAN tab with awarding —
+ *  the server gates /redeem-preview and /redeem regardless. */
+function requirePin(action) {
+  if (!config?.hasPin || pinUnlocked) { action(); return; }
+  pinAction = action;
+  pinValue = '';
+  renderPinDots();
+  $('pin-error').hidden = true;
+  show('screen-pin');
+}
+
 // The PIN session can expire mid-shift; a 401 PIN_REQUIRED from a gated route
 // means re-authenticate. Reset the gate and bounce back to the PIN screen.
-function handlePinRequired(res, data) {
+// `retry` (optional) is the call to replay once the new PIN lands — pass it for
+// an action started from an un-gated screen, which has nowhere else to resume.
+function handlePinRequired(res, data, retry) {
   if (res.status === 401 && data?.error === 'PIN_REQUIRED') {
     pinUnlocked = false;
     pinToken = null;
     pinValue = '';
+    if (retry) {
+      // The server is authoritative about the gate. A cached config claiming
+      // this vendor has no PIN (another terminal set one mid-shift) would make
+      // requirePin wave the retry straight back through, into a 401 loop.
+      if (config) config.hasPin = true;
+      requirePin(retry);
+      return true;
+    }
     // The response can arrive after the vendor has already moved to an UN-gated
-    // tab (AWARD, PUNCH) — a slow gated request from the tab they left. Drop the
+    // tab (SCAN, VISITS) — a slow gated request from the tab they left. Drop the
     // gate but stay put: replacing a live punch-in display with a PIN pad nobody
     // asked for would strand the counter, and the next gated tab re-prompts
     // anyway now that pinUnlocked is false.
-    if (mode === 'award' || mode === 'punch') return true;
+    if (mode === 'scan' || mode === 'punch') return true;
     pinTarget = mode;
     renderPinDots();
     $('pin-error').hidden = true;
@@ -360,15 +386,15 @@ function show(id) {
   screens.forEach((s) => ($(s).hidden = s !== id));
   clearTimeout(idleTimeout);
   // If the vendor walks away mid-transaction, fall back to the scan screen
-  if (id === 'screen-pad') idleTimeout = setTimeout(() => enterScan(), 60_000);
-  if (id === 'screen-redeem-confirm') idleTimeout = setTimeout(() => enterRedeemScan(), 60_000);
+  if (id === 'screen-pad' || id === 'screen-redeem-confirm') {
+    idleTimeout = setTimeout(() => enterScan(), 60_000);
+  }
   syncScanners();   // camera runs only while its scan screen is the visible one
   syncPunch();      // rotating code refreshes only while the PUNCH screen shows
 }
 
 function setTabs(active) {
-  $('tab-award').classList.toggle('is-active', active === 'award');
-  $('tab-redeem').classList.toggle('is-active', active === 'redeem');
+  $('tab-scan').classList.toggle('is-active', active === 'scan');
   $('tab-punch').classList.toggle('is-active', active === 'punch');
   $('tab-manage').classList.toggle('is-active', active === 'manage');
   $('tab-deals').classList.toggle('is-active', active === 'deals');
@@ -386,17 +412,18 @@ function enterModeScreen(m) {
   else if (m === 'stats') enterStats();
   else if (m === 'settings') enterSettings();
   else if (m === 'punch') enterPunch();
-  else enterRedeemScan();
+  else enterScan();
 }
 
 function switchMode(next) {
   if (mode === next) {
-    // Normally a no-op, with one exception: the "Undo last" PIN detour shows
-    // the PIN pad without changing `mode`, so the active tab (and the pad's
-    // Cancel key, which routes here) must still offer a way off it. Award is
-    // un-gated, so bailing back to its scan screen is always safe; PIN-gated
-    // tabs stay on the pad so the gate can't be skipped by re-tapping the tab.
-    if (next === 'award' && !$('screen-pin').hidden) {
+    // Normally a no-op, with one exception: a PIN detour (the "Undo last"
+    // button, or a scanned redemption code) shows the PIN pad without changing
+    // `mode`, so the active tab (and the pad's Cancel key, which routes here)
+    // must still offer a way off it. SCAN is un-gated, so bailing back to it is
+    // always safe; PIN-gated tabs stay on the pad so the gate can't be skipped
+    // by re-tapping the tab.
+    if (next === 'scan' && !$('screen-pin').hidden) {
       pinValue = '';
       pinAction = null;
       enterScan();
@@ -421,15 +448,18 @@ function proceedSwitchMode(next) {
   pinValue = '';
   pinAction = null;   // a tab switch cancels any deferred PIN action (e.g. undo)
 
-  if (next === 'award') {
-    mode = 'award';
-    setTabs('award');
+  // SCAN stays outside the PIN gate so awarding points, the busiest thing a
+  // terminal does, never asks for one. Redeeming still does: the gate moved
+  // from the tab onto the redemption code itself (see startRedeem).
+  if (next === 'scan') {
+    mode = 'scan';
+    setTabs('scan');
     enterScan();
     return;
   }
 
   // PUNCH is display-only (the rotating code can only give customers punches),
-  // so like AWARD it sits outside the PIN gate.
+  // so like SCAN it sits outside the PIN gate.
   if (next === 'punch') {
     mode = 'punch';
     setTabs('punch');
@@ -437,7 +467,7 @@ function proceedSwitchMode(next) {
     return;
   }
 
-  // redeem, manage, deals, and stats are behind the PIN — but only once per
+  // manage, deals, stats and settings are behind the PIN — but only once per
   // page session. pinUnlocked is a plain in-memory flag, so refreshing re-asks.
   if (config.hasPin && !pinUnlocked) {
     mode = next;
@@ -455,14 +485,11 @@ function proceedSwitchMode(next) {
 
 /* ---------- code entry helpers ---------- */
 
-// Earn codes are 6 digits; redeem codes are 4 digits. Normalize as the
-// vendor types so the field only ever holds valid characters.
-function normalizeEarn(v) {
+// One field takes both codes, so it normalizes to the LONGER of the two (6):
+// a 4-digit redemption code is simply a shorter valid value, and submitting is
+// what decides which it was. Capping at 4 would make earn codes untypable.
+function normalizeCode(v) {
   return String(v || '').replace(/\D/g, '').slice(0, 6);
-}
-
-function normalizeRedeem(v) {
-  return String(v || '').replace(/\D/g, '').slice(0, 4);
 }
 
 // On-screen number pad next to a code field: digits append, ⌫ deletes the last
@@ -483,45 +510,33 @@ function onCodeKey(e, inputId, normalize) {
 }
 
 /* ---------- QR camera scanner ----------
-   The camera is the primary input on both scan screens; the keypads stay as the
-   typed fallback. QR payloads are pure transport for the same codes the server
-   already mints:
+   ONE camera, on the one scan screen; the keypad stays as the typed fallback.
+   QR payloads are pure transport for the same codes the server already mints:
      WRW:E:123456 → customer earn code     WRW:R:1234 → redemption code
-   (bare 6/4-digit payloads are accepted defensively). Decoding is deliberately
-   belt-and-braces: the native BarcodeDetector is used where it advertises
-   qr_code support, but a jsQR canvas loop joins in if the detector produces
-   nothing within a few seconds — some builds exist yet silently never match,
-   which is what killed the previous camera scanner here. Where BarcodeDetector
-   is missing entirely (iPad Safari) jsQR runs from the start. */
+   (bare 6/4-digit payloads are accepted defensively). Those two shapes are what
+   let a single viewfinder serve both directions: parseQrPayload names the kind
+   and onScanPayload routes to the award pad or the redeem preview.
+
+   Decoding is deliberately belt-and-braces: the native BarcodeDetector is used
+   where it advertises qr_code support, but a jsQR canvas loop joins in if the
+   detector produces nothing within a few seconds — some builds exist yet
+   silently never match, which is what killed the previous camera scanner here.
+   Where BarcodeDetector is missing entirely (iPad Safari) jsQR runs from the
+   start. */
 
 const CAMERA_KEY = 'wrw-terminal-camera';  // preferred camera deviceId (localStorage)
 const SCAN_DEBOUNCE_MS = 3000;    // ignore re-reads of the same payload inside this window
                                   // (counted in camera-on time — start() re-arms it)
-const SCAN_BANNER_MS = 4000;      // wrong-screen banner auto-dismiss
 const JSQR_INTERVAL_MS = 120;     // ~8 decode attempts/sec keeps an iPad responsive
 const JSQR_MAX_DIM = 640;         // downscale frames before jsQR for speed
 const DETECTOR_GRACE_MS = 3000;   // BarcodeDetector gets this long before jsQR joins in
 
-// Per-screen scanner UI state. `manual` = the vendor chose (or a camera failure
-// forced) the keypad; it sticks for the session so a typing-first vendor isn't
-// bounced back to the camera after every transaction.
+// Scanner UI state. `manual` = the vendor chose (or a camera failure forced) the
+// keypad; it sticks for the session so a typing-first vendor isn't bounced back
+// to the camera after every transaction.
+const DEFAULT_SCAN_STATUS = 'Point the camera at the QR code in the customer’s WeRewards app.';
 const scanUi = {
-  earn: {
-    expect: 'earn',
-    scanArea: 'earn-scan-area', manualArea: 'earn-manual-area',
-    frame: 'earn-qr-frame', status: 'earn-qr-status', cameraMsg: 'earn-camera-msg',
-    banner: 'earn-qr-banner', bannerText: 'earn-qr-banner-text', bannerGo: 'earn-qr-banner-go',
-    defaultStatus: 'Point the camera at the QR code in the customer’s WeRewards app.',
-    manual: false, cameraMsgText: null, scanner: null, bannerTimer: null, statusTimer: null,
-  },
-  redeem: {
-    expect: 'redeem',
-    scanArea: 'redeem-scan-area', manualArea: 'redeem-manual-area',
-    frame: 'redeem-qr-frame', status: 'redeem-qr-status', cameraMsg: 'redeem-camera-msg',
-    banner: 'redeem-qr-banner', bannerText: 'redeem-qr-banner-text', bannerGo: 'redeem-qr-banner-go',
-    defaultStatus: 'Point the camera at the customer’s redemption QR code.',
-    manual: false, cameraMsgText: null, scanner: null, bannerTimer: null, statusTimer: null,
-  },
+  manual: false, cameraMsgText: null, scanner: null, statusTimer: null,
 };
 
 // WRW:E:<6 digits> / WRW:R:<4 digits> / WRW:P:<4 digits> per the shared
@@ -568,7 +583,6 @@ function createScanner({ videoId, flipId, onPayload, onFail }) {
   const flipBtn = $(flipId);
   let stream = null;
   let running = false;
-  let paused = false;        // wrong-screen banner up → sightings are ignored
   let session = 0;           // bumped by stop(); stale async work checks it and bails
   let rafId = 0;
   let detectorTimer = null;  // interval driving BarcodeDetector.detect
@@ -648,7 +662,6 @@ function createScanner({ videoId, flipId, onPayload, onFail }) {
       return onFail('The camera started but sent no picture. Enter codes manually.');
     }
     running = true;
-    paused = false;
     // The camera was off in between (result flood, tab away), so we couldn't see
     // whether the last QR ever left the frame — restart its debounce window from
     // now. Otherwise a code still held up across a >SCAN_DEBOUNCE_MS gap would
@@ -662,7 +675,6 @@ function createScanner({ videoId, flipId, onPayload, onFail }) {
   function stop() {
     session++;             // cancels any in-flight start() and decoder callbacks
     running = false;
-    paused = false;
     jsqrOn = false;
     cancelAnimationFrame(rafId);
     clearInterval(detectorTimer);
@@ -735,7 +747,7 @@ function createScanner({ videoId, flipId, onPayload, onFail }) {
   }
 
   function handlePayload(raw) {
-    if (!running || paused) return;
+    if (!running) return;
     // Another request is mid-flight (e.g. an undo fired from this screen): drop
     // the sighting BEFORE the debounce bookkeeping. Recording it here would let
     // every later sighting refresh the debounce window, so a QR first seen while
@@ -772,182 +784,135 @@ function createScanner({ videoId, flipId, onPayload, onFail }) {
     start();
   }
 
-  return {
-    start, stop, flip,
-    setPaused(v) { paused = v; },
-    isRunning: () => running,
-  };
+  return { start, stop, flip, isRunning: () => running };
 }
 
 function setupQrScanning() {
-  scanUi.earn.scanner = createScanner({
-    videoId: 'earn-qr-video', flipId: 'earn-qr-flip',
-    onPayload: (raw) => onScanPayload('earn', raw),
-    onFail: onCameraFail,
-  });
-  scanUi.redeem.scanner = createScanner({
-    videoId: 'redeem-qr-video', flipId: 'redeem-qr-flip',
-    onPayload: (raw) => onScanPayload('redeem', raw),
+  scanUi.scanner = createScanner({
+    videoId: 'scan-qr-video', flipId: 'scan-qr-flip',
+    onPayload: onScanPayload,
     onFail: onCameraFail,
   });
 
-  $('earn-qr-flip').addEventListener('click', () => scanUi.earn.scanner.flip());
-  $('redeem-qr-flip').addEventListener('click', () => scanUi.redeem.scanner.flip());
-  $('earn-manual-btn').addEventListener('click', () => setManualMode('earn', true));
-  $('redeem-manual-btn').addEventListener('click', () => setManualMode('redeem', true));
-  $('earn-scan-btn').addEventListener('click', () => setManualMode('earn', false));
-  $('redeem-scan-btn').addEventListener('click', () => setManualMode('redeem', false));
-  // Wrong-screen banner jumps go through switchMode like a tab tap would, so
-  // the Redeem PIN gate still applies.
-  $('earn-qr-banner-go').addEventListener('click', () => { hideScanBanner('earn'); switchMode('redeem'); });
-  $('redeem-qr-banner-go').addEventListener('click', () => { hideScanBanner('redeem'); switchMode('award'); });
-  $('earn-qr-banner-close').addEventListener('click', () => hideScanBanner('earn'));
-  $('redeem-qr-banner-close').addEventListener('click', () => hideScanBanner('redeem'));
+  $('scan-qr-flip').addEventListener('click', () => scanUi.scanner.flip());
+  $('scan-manual-btn').addEventListener('click', () => setManualMode(true));
+  $('scan-camera-btn').addEventListener('click', () => setManualMode(false));
 
   // Kiosk hygiene: never leave the camera running while the tab is backgrounded.
   // Same for the punch loop — no point refreshing a code nobody can see (and a
   // backgrounded timer would fall behind anyway; syncPunch restarts it cleanly).
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { scanUi.earn.scanner.stop(); scanUi.redeem.scanner.stop(); stopPunchLoop(); }
+    if (document.hidden) { scanUi.scanner.stop(); stopPunchLoop(); }
     else { syncScanners(); syncPunch(); }
   });
 }
 
-function activeScanKey() {
-  if (!$('screen-scan').hidden) return 'earn';
-  if (!$('screen-redeem-scan').hidden) return 'redeem';
-  return null;
-}
-
-// Reconcile both scan screens with reality: camera on only for the visible scan
-// screen in scanner mode; keypad shown when the vendor (or a camera failure)
+// Reconcile the scan screen with reality: camera on only while that screen is
+// visible in scanner mode; keypad shown when the vendor (or a camera failure)
 // picked manual entry. Runs on every screen change + visibility change.
 function syncScanners() {
-  if (!scanUi.earn.scanner) return;   // boot hasn't wired the scanners yet
-  const active = activeScanKey();
-  ['earn', 'redeem'].forEach((key) => {
-    const ui = scanUi[key];
-    $(ui.scanArea).hidden = ui.manual;
-    $(ui.manualArea).hidden = !ui.manual;
-    const msgEl = $(ui.cameraMsg);
-    msgEl.textContent = ui.cameraMsgText || '';
-    msgEl.hidden = !ui.cameraMsgText;
-    if (active === key && !ui.manual && !document.hidden) {
-      if (!ui.scanner.isRunning()) {
-        $(ui.frame).classList.remove('is-hit');
-        $(ui.status).textContent = ui.defaultStatus;
-        $(ui.status).classList.remove('is-error');
-      }
-      ui.scanner.start();
-    } else {
-      ui.scanner.stop();
+  if (!scanUi.scanner) return;   // boot hasn't wired the scanner yet
+  const ui = scanUi;
+  $('scan-area').hidden = ui.manual;
+  $('scan-manual-area').hidden = !ui.manual;
+  const msgEl = $('scan-camera-msg');
+  msgEl.textContent = ui.cameraMsgText || '';
+  msgEl.hidden = !ui.cameraMsgText;
+  if (!$('screen-scan').hidden && !ui.manual && !document.hidden) {
+    if (!ui.scanner.isRunning()) {
+      $('scan-qr-frame').classList.remove('is-hit');
+      $('scan-qr-status').textContent = DEFAULT_SCAN_STATUS;
+      $('scan-qr-status').classList.remove('is-error');
     }
-    if (active !== key) hideScanBanner(key);
-  });
+    ui.scanner.start();
+  } else {
+    ui.scanner.stop();
+  }
 }
 
-// A decoded QR payload from one of the scan screens.
-function onScanPayload(key, raw) {
-  const ui = scanUi[key];
+/** A decoded QR payload. Both kinds are welcome here — routing IS the feature —
+ *  so there is no "wrong screen" case left to explain, only a foreign QR. */
+function onScanPayload(raw) {
   const parsed = parseQrPayload(raw);
-  if (!parsed) return flashScanStatus(key, 'Not a WeRewards code');
+  if (!parsed) return flashScanStatus('Not a WeRewards code');
   // The rotating punch-in code pointed back at the terminal's own camera:
   // harmless, so just say what it is and keep scanning.
   if (parsed.kind === 'punch-url') {
-    return flashScanStatus(key, 'That’s the punch-in code: customers scan it with their phones');
+    return flashScanStatus('That’s the punch-in code: customers scan it with their phones');
   }
-  if (parsed.kind !== ui.expect) return showScanBanner(key, parsed.kind);
 
   // (Sightings during a mid-flight request never reach here — the scanner's
   // handlePayload drops them before its debounce bookkeeping.)
 
-  // Right code for this screen: stop + flash, then feed the exact same submit
-  // path the keypad uses so preview/confirm behavior is identical.
-  ui.scanner.stop();
-  $(ui.frame).classList.add('is-hit');
-  if (key === 'earn') {
-    $('earn-code-input').value = parsed.code;
-    submitEarnCode();
-  } else {
-    $('redeem-code-input').value = parsed.code;
-    submitRedeemCode();
-  }
-}
-
-// Right QR, wrong screen: pause decoding, tell the vendor where it belongs, and
-// offer a one-tap jump to the other tab.
-function showScanBanner(key, kind) {
-  const ui = scanUi[key];
-  ui.scanner.setPaused(true);
-  $(ui.bannerText).textContent = kind === 'redeem'
-    ? 'That’s a redemption code, use the Redeem screen'
-    : kind === 'punch'
-      ? 'That’s a punch-card reward, use the Redeem screen'
-      : 'That’s a customer earn code, use the Award screen';
-  $(ui.bannerGo).textContent = kind === 'redeem' || kind === 'punch' ? 'Open Redeem' : 'Open Award';
-  $(ui.banner).hidden = false;
-  clearTimeout(ui.bannerTimer);
-  ui.bannerTimer = setTimeout(() => hideScanBanner(key), SCAN_BANNER_MS);
-}
-
-function hideScanBanner(key) {
-  const ui = scanUi[key];
-  clearTimeout(ui.bannerTimer);
-  ui.bannerTimer = null;
-  $(ui.banner).hidden = true;
-  ui.scanner?.setPaused(false);   // resume decoding
+  // Stop + flash, then feed the exact same submit path the keypad uses so
+  // preview/confirm behavior is identical however the code arrived.
+  scanUi.scanner.stop();
+  $('scan-qr-frame').classList.add('is-hit');
+  if (parsed.kind === 'earn') submitEarnCode(parsed.code);
+  else startRedeem(parsed.code);
 }
 
 // Transient "that QR isn't ours" note under the viewfinder; scanning continues.
 // Repeat sightings of the same payload are already throttled by the scanner's
 // debounce, so this doesn't flicker while a foreign QR sits in view.
-function flashScanStatus(key, msg) {
-  const ui = scanUi[key];
-  const el = $(ui.status);
+function flashScanStatus(msg) {
+  const el = $('scan-qr-status');
   el.textContent = msg;
   el.classList.add('is-error');
-  clearTimeout(ui.statusTimer);
-  ui.statusTimer = setTimeout(() => {
-    el.textContent = ui.defaultStatus;
+  clearTimeout(scanUi.statusTimer);
+  scanUi.statusTimer = setTimeout(() => {
+    el.textContent = DEFAULT_SCAN_STATUS;
     el.classList.remove('is-error');
   }, 2500);
 }
 
-// Toggle a scan screen between camera and keypad. The choice sticks for the
+// Toggle the scan screen between camera and keypad. The choice sticks for the
 // session; "Scan QR code instead" doubles as the retry after a camera error.
-function setManualMode(key, manual) {
-  const ui = scanUi[key];
-  ui.manual = manual;
-  if (!manual) ui.cameraMsgText = null;   // retrying clears the stale error note
-  hideScanBanner(key);
+function setManualMode(manual) {
+  scanUi.manual = manual;
+  if (!manual) scanUi.cameraMsgText = null;   // retrying clears the stale error note
   syncScanners();
 }
 
 // getUserMedia failed (denied / missing / in use / insecure): reveal the keypad
-// on BOTH scan screens — it's one physical camera — with a note saying why.
+// with a note saying why.
 function onCameraFail(msg) {
-  scanUi.earn.manual = true;
-  scanUi.redeem.manual = true;
-  scanUi.earn.cameraMsgText = msg;
-  scanUi.redeem.cameraMsgText = msg;
+  scanUi.manual = true;
+  scanUi.cameraMsgText = msg;
   syncScanners();
 }
 
-/* ---------- AWARD flow: scan → name + balance + $ keypad ---------- */
+/* ---------- SCAN flow: one screen, both directions ---------- */
 
 function enterScan() {
   currentEarnCode = null;
   currentMultiplier = 1;
+  pendingRedeemCode = null;
+  pendingRedeemKind = 'reward';
   show('screen-scan');
-  const input = $('earn-code-input');
-  input.value = '';
+  $('scan-code-input').value = '';
   // Don't auto-focus: on a tablet that pops the native keyboard, and entry now
   // goes through the on-screen digit pad. Tapping the field still works.
 }
 
-async function submitEarnCode() {
+/** The typed fallback. Length is the discriminator the QR prefix gives us for
+ *  free: 6 digits is a customer's earn code, 4 is a redemption code. */
+function submitTypedCode() {
   if (busy) return;
-  const code = normalizeEarn($('earn-code-input').value);
+  const code = normalizeCode($('scan-code-input').value);
+  if (code.length === 6) return submitEarnCode(code);
+  if (code.length === 4) return startRedeem(code);
+  flood('error', 'CHECK THE CODE', 'Enter the customer’s 6-digit code, or a 4-digit redeem code.', enterScan);
+}
+
+/** A redemption code, from either input. Redeeming moves points, so it sits
+ *  behind the staff PIN even though the SCAN tab it arrived on does not. */
+function startRedeem(code) {
+  requirePin(() => submitRedeemCode(code));
+}
+
+async function submitEarnCode(code) {
+  if (busy) return;
   if (code.length !== 6) {
     return flood('error', 'ENTER 6 DIGITS', 'The customer’s code is 6 numbers.', enterScan);
   }
@@ -1097,7 +1062,7 @@ async function awardAmount(dollarAmount) {
   }
 }
 
-/* ---------- REDEEM flow: enter 4-digit code → confirm → deduct ---------- */
+/* ---------- REDEEM flow: 4-digit code → PIN → confirm → deduct ---------- */
 
 function renderPinDots() {
   [...$('pin-dots').children].forEach((dot, i) => dot.classList.toggle('filled', i < pinValue.length));
@@ -1106,7 +1071,7 @@ function renderPinDots() {
 async function onPinKey(e) {
   const k = e.target.dataset?.k;
   if (!k) return;
-  if (k === 'cancel') return switchMode('award');
+  if (k === 'cancel') return switchMode('scan');
   if (k === 'back') pinValue = pinValue.slice(0, -1);
   else if (pinValue.length < 4) pinValue += k;
   renderPinDots();
@@ -1123,13 +1088,13 @@ async function onPinKey(e) {
       pinUnlocked = true;       // stays unlocked until the page is refreshed
       pinToken = data.token ?? null; // server session token for gated requests
       if (pinAction) {
-        // Deferred action (e.g. undo from a scan screen): the detour never
-        // changed `mode`, so land back on that mode's screen first — otherwise
-        // the action's result flood would close over a stranded, empty PIN pad.
+        // Deferred action (a scanned redemption, or undo from the scan screen):
+        // the detour never changed `mode`, so land back on that mode's screen
+        // first — otherwise the action's result flood would close over a
+        // stranded, empty PIN pad.
         const fn = pinAction;
         pinAction = null;
-        if (mode === 'award') enterScan();
-        else enterModeScreen(mode);
+        enterModeScreen(mode);
         fn();
       } else {
         enterModeScreen(pinTarget);
@@ -1145,22 +1110,12 @@ async function onPinKey(e) {
   }
 }
 
-function enterRedeemScan() {
-  pendingRedeemCode = null;
-  pendingRedeemKind = 'reward';
-  show('screen-redeem-scan');
-  const input = $('redeem-code-input');
-  input.value = '';
-  // Don't auto-focus: on a tablet that pops the native keyboard, and entry now
-  // goes through the on-screen digit pad. Tapping the field still works.
-}
-
-/** 4-digit code entered → preview (nothing deducted yet) → "is this the user?" */
-async function submitRedeemCode() {
+/** 4-digit code, PIN cleared: preview (nothing deducted yet), then "is this the
+ *  user?". Reached only through startRedeem, so the gate is never skipped. */
+async function submitRedeemCode(code) {
   if (busy) return;
-  const code = normalizeRedeem($('redeem-code-input').value);
   if (code.length !== 4) {
-    return flood('error', 'ENTER 4 DIGITS', 'The redemption code is 4 numbers.', enterRedeemScan);
+    return flood('error', 'ENTER 4 DIGITS', 'The redemption code is 4 numbers.', enterScan);
   }
   busy = true;
   try {
@@ -1169,15 +1124,18 @@ async function submitRedeemCode() {
       body: JSON.stringify({ code }),
     });
     const data = await res.json();
-    if (handlePinRequired(res, data)) return;
+    // Pass the retry: SCAN is un-gated, so a PIN session that expired mid-shift
+    // has no gated tab to bounce back to. Re-ask, then resume this very code
+    // rather than making staff find the customer's QR again.
+    if (handlePinRequired(res, data, () => submitRedeemCode(code))) return;
     if (!res.ok) {
-      return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
+      return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterScan);
     }
     // One code table since migration-029: the row itself says which currency it
     // spends, so there is no try-one-then-the-other dance any more.
     showRedeemConfirm(code, data);
   } catch {
-    flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
+    flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterScan);
   } finally {
     busy = false;
   }
@@ -1223,18 +1181,22 @@ function showRedeemConfirm(code, data) {
 
 async function confirmRedeem() {
   if (busy || !pendingRedeemCode) return;
+  const code = pendingRedeemCode;   // the `finally` below clears the global
   const isPunch = pendingRedeemKind === 'punch';
   busy = true;
   $('redeem-confirm').disabled = true;
   try {
     const res = await authFetch('/api/vendor/redeem', {
       method: 'POST',
-      body: JSON.stringify({ code: pendingRedeemCode }),
+      body: JSON.stringify({ code }),
     });
     const data = await res.json();
-    if (handlePinRequired(res, data)) return;
+    // Expired PIN session: re-ask, then replay the PREVIEW rather than the
+    // deduction. Nothing has been taken yet, and coming back to the confirm
+    // screen keeps the last thing staff tap the thing that spends the points.
+    if (handlePinRequired(res, data, () => submitRedeemCode(code))) return;
     if (!res.ok) {
-      return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterRedeemScan);
+      return flood('error', 'CAN\u2019T REDEEM', data.message || 'Code expired or already used.', enterScan);
     }
     // Both branches refresh last-activity now. The old punch path deliberately
     // did NOT, which is exactly why punch redemptions had no Undo. migration-029
@@ -1245,10 +1207,10 @@ async function confirmRedeem() {
       : `Points deducted · balance now ${data.newBalance}`;
     flood('success', `GIVE: ${data.rewardTitle}`, sub, () => {
       refreshLastActivity();
-      enterRedeemScan();
+      enterScan();
     }, 3500);
   } catch {
-    flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterRedeemScan);
+    flood('error', 'NO CONNECTION', 'Check the internet and try again.', enterScan);
   } finally {
     busy = false;
     pendingRedeemCode = null;
@@ -1309,7 +1271,7 @@ function enterPunch() {
 function syncPunchTab() {
   const on = Boolean(config?.punchEnabled);
   $('tab-punch').hidden = !on;
-  if (!on && mode === 'punch') proceedSwitchMode('award');
+  if (!on && mode === 'punch') proceedSwitchMode('scan');
 }
 
 // The rotating code refreshes only while its screen is actually visible —
@@ -1668,16 +1630,13 @@ function scheduleUndoExpiry() {
   }, Math.max(0, remaining));
 }
 
-// Show/hide + label the "Undo last" buttons on both scan screens.
+// Show/hide + label the "Undo last" button on the scan screen.
 function renderUndoLast() {
   const canUndo = Boolean(lastActivity?.undoable);
-  ['undo-last-award', 'undo-last-redeem'].forEach((id) => {
-    const btn = $(id);
-    if (!btn) return;
-    btn.hidden = !canUndo;
-    btn.textContent = undoLastArmed ? 'Tap again to undo' : 'Undo last';
-    btn.classList.toggle('is-armed', undoLastArmed);
-  });
+  const btn = $('undo-last');
+  btn.hidden = !canUndo;
+  btn.textContent = undoLastArmed ? 'Tap again to undo' : 'Undo last';
+  btn.classList.toggle('is-armed', undoLastArmed);
 }
 
 // Two-tap confirm, then reverse the most recent transaction.
@@ -1696,21 +1655,12 @@ function onUndoLastTap() {
   requestUndoLast();
 }
 
-// Reverse is PIN-gated but the award/redeem scan screens are not, so if the PIN
-// isn't unlocked yet, detour through the PIN pad and finish the undo after.
+// Reverse is PIN-gated but the scan screen is not, so if the PIN isn't unlocked
+// yet, detour through the PIN pad and finish the undo after.
 function requestUndoLast() {
   const tx = lastActivity;
   if (!tx?.id || !tx.undoable) return;
-  const run = () => performReverse(tx.id, null);
-  if (config.hasPin && !pinUnlocked) {
-    pinAction = run;
-    pinValue = '';
-    renderPinDots();
-    $('pin-error').hidden = true;
-    show('screen-pin');
-    return;
-  }
-  run();
+  requirePin(() => performReverse(tx.id, null));
 }
 
 /* ---------- DEALS (campaigns to this vendor's own customers) ----------
@@ -2580,7 +2530,7 @@ async function saveSettings(afterTarget) {
       // re-asks for the new PIN before any further sensitive action.
       pinUnlocked = false;
       pinToken = null;
-      flood('success', 'SETTINGS SAVED', 'New PIN set. Re-enter it to continue.', () => switchMode('award'));
+      flood('success', 'SETTINGS SAVED', 'New PIN set. Re-enter it to continue.', () => switchMode('scan'));
     } else if (afterTarget) {
       // "Save & leave" — head to the tab the vendor was trying to reach.
       flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => proceedSwitchMode(afterTarget));
@@ -2712,8 +2662,8 @@ function resetToLogin() {
   clearTimeout(undoExpiryTimer);
   renderUndoLast();
   refreshSettingsDirty();   // clears the tab dot, Save ring and per-card highlights
-  mode = 'award';
-  setTabs('award');
+  mode = 'scan';
+  setTabs('scan');
 
   // Don't leave the previous vendor's PIN / password keystrokes sitting in the
   // hidden form fields; renderSettings() re-clears them on the next sign-in too.

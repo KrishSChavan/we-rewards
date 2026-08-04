@@ -66,7 +66,6 @@ button { font-family: inherit; border: none; cursor: pointer; }
   border: 3px solid var(--ink);
 }
 .tab.is-active { background: var(--navy); border-color: var(--navy); color: #fff; }
-.tab-redeem.is-active { background: var(--redeem); border-color: var(--redeem); }
 
 #main { flex: 1; display: flex; min-height: 0; }
 
@@ -141,13 +140,12 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .field-error { color: var(--error); font-weight: 700; font-size: 1.05rem; }
 .field-success { color: var(--success); font-weight: 700; font-size: 1.05rem; }
 
-/* ---------- scan screens ---------- */
+/* ---------- scan screen ---------- */
 
 .scan-title {
   font-size: clamp(2.2rem, 6vw, 3.6rem);
   font-weight: 900; line-height: 1.02; text-align: center; letter-spacing: 0.02em;
 }
-.scan-redeem .scan-title { color: var(--redeem); }
 
 /* Customer / redemption code entry — the typed fallback behind the QR camera
    scanner (revealed by "Enter code manually" or when the camera fails). */
@@ -164,7 +162,6 @@ button { font-family: inherit; border: none; cursor: pointer; }
   border: 3px solid var(--sky-line); background: var(--card);
 }
 .code-input:focus { outline: none; border-color: var(--navy); }
-.scan-redeem .code-input:focus { border-color: var(--redeem); }
 .code-input::placeholder { color: var(--sky-line); letter-spacing: 0.3em; }
 .code-submit { width: 100%; }
 .code-hint { color: var(--muted); font-weight: 500; font-size: 1.05rem; text-align: center; }
@@ -190,7 +187,7 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .code-pad-left .last-activity { margin: 0; }
 /* .code-keypad reuses the shared .keypad grid; nothing extra needed here. */
 
-/* ---------- QR camera scanner (primary input on both scan screens) ---------- */
+/* ---------- QR camera scanner (primary input on the scan screen) ---------- */
 
 .qr-area {
   width: 100%;
@@ -211,7 +208,6 @@ button { font-family: inherit; border: none; cursor: pointer; }
   border: 3px solid var(--ink); border-radius: 1.2rem; overflow: hidden;
   background: #0b1220;   /* dark while the camera warms up */
 }
-.scan-redeem .qr-frame { border-color: var(--redeem); }
 .qr-video { display: block; width: 100%; height: 100%; object-fit: cover; }
 
 /* centered targeting square; the huge box-shadow dims everything outside it */
@@ -241,28 +237,10 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .qr-status { color: var(--muted); font-weight: 500; font-size: 1.05rem; text-align: center; min-height: 1.4em; }
 .qr-status.is-error { color: var(--error); font-weight: 700; }
 
-/* "right QR, wrong screen" banner with a jump button to the other tab */
-.qr-banner {
-  width: min(26rem, 86vw);
-  display: flex; flex-wrap: wrap; align-items: center; gap: 0.7rem;
-  background: var(--card); border: 3px solid var(--ink); border-radius: 0.9rem;
-  padding: 0.8rem 1rem; font-weight: 700;
-}
-.qr-banner[hidden] { display: none; }
-.qr-banner-text { flex: 1 1 12rem; }
-.qr-banner-go {
-  flex: none; color: #fff; font-weight: 900; font-size: 1rem;
-  padding: 0.7rem 1rem; border-radius: 0.6rem;
-  background: var(--redeem);            /* AWARD screen's banner points to REDEEM */
-}
-.scan-redeem .qr-banner-go { background: var(--navy); }   /* and vice-versa */
-.qr-banner-go:active { filter: brightness(0.85); }
-.qr-banner-close {
-  flex: none; width: 2.6rem; height: 2.6rem; border-radius: 0.5rem;
-  border: 2.5px solid var(--sky-line); background: var(--paper); color: var(--muted);
-  font-weight: 900; font-size: 1rem;
-}
-.qr-banner-close:active { background: var(--sky); }
+/* The "right QR, wrong screen" banner lived here. It went with the second scan
+   screen: one viewfinder takes both code kinds, so there is no wrong screen to
+   send anyone to. A foreign QR just flashes .qr-status.is-error and scanning
+   carries on. */
 
 /* camera-failure note above the fallback keypad */
 .qr-camera-msg { width: min(30rem, 90vw); text-align: center; }

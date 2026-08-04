@@ -85,7 +85,7 @@ router.get('/config', (req, res) => {
  * The rotating punch-in code for the PUNCH tab. Mints a fresh HMAC-signed URL
  * for the current 30-second slot; the terminal re-asks when expiresIn runs
  * out. Not PIN-gated: displaying the code IS the feature (it can only give
- * students punches), same trust level as the un-gated award screen.
+ * students punches), same trust level as the un-gated scan screen.
  */
 router.get('/punch-token', (req, res) => {
   const v = req.vendor;
