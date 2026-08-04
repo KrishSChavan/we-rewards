@@ -291,8 +291,10 @@ function versionAssets(html, mount, root) {
 // container, whose frame on a notched phone is the screen minus the status bar but
 // still pinned to y=0: the app sits one status bar too high and strands that height
 // at the bottom, where no CSS can reach — the vendor terminal's bottom-band bug.
-// Only public/vendor/index.html carries the slot, so this is a no-op for the other
-// three shells.
+// Confirmed on an iPhone: iOS re-reads the tag from the served document at launch,
+// so dropping it fixes an already-installed icon without a delete-and-re-add.
+// public/vendor and public/admin carry the slot; student and join never declared
+// the tag at all, so the replace below is a no-op for them.
 //
 // iPadOS 13+ Safari defaults to a desktop-class UA carrying no OS version, so an
 // iPad normally falls into the "can't date it" branch and keeps the tag. That is

@@ -9,7 +9,13 @@
 
 // v4: zoom disabled app-wide (no-zoom.js).
 // v5: vendor password-reset dialog (index.html + admin.js + admin.css).
-const CACHE = 'werewards-admin-v5';
+// v6: dropped apple-mobile-web-app-status-bar-style=black-translucent and moved
+// apple-mobile-web-app-capable behind server.js's iOS-version gate. The vendor
+// terminal shipped the identical pair and it cost four attempts to work out that
+// `capable` was selecting a web view sized to the screen minus the status bar and
+// pinned to the top, stranding that height under the layout. Admin had never been
+// installed on a phone, so it was latent rather than reported.
+const CACHE = 'werewards-admin-v6';
 const SHELL = [
   '/admin/', '/admin/admin.css', '/admin/admin.js', '/admin/no-zoom.js', '/admin/manifest.json',
   '/admin/icons/icon-192.png', '/admin/icons/icon-512.png',

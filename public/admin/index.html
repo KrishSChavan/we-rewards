@@ -19,8 +19,25 @@
   <!-- Installable PWA (scoped to /admin) so operators can add it to a phone. -->
   <link rel="manifest" href="/admin/manifest.json" />
   <link rel="apple-touch-icon" href="/admin/icons/icon-192.png" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <!-- apple-mobile-web-app-capable goes in the slot below, emitted by server.js
+       only for iOS < 16.4. Same reasoning as public/vendor/index.html, which is
+       where this bit us: the tag opts a Home Screen icon into the legacy WebClip
+       container, whose frame is the screen minus the status bar but still pinned
+       to y=0, so the app sits one status bar too high and strands that height at
+       the bottom. From 16.4 the manifest's `display: standalone` launches
+       chrome-less on its own. Nothing here is a kiosk, so there is no iPad-on-old-
+       iOS case to protect; the gate is shared code, not a judgement about admin. -->
+  <!--APPLE-CAPABLE-->
+  <!-- Deliberately no apple-mobile-web-app-status-bar-style. It used to be
+       `black-translucent` here, which is deprecated (WebKit has warned since 2017)
+       and inert anyway once the tag above is gone.
+
+       Also deliberately no viewport-fit=cover on the viewport meta: admin.css uses
+       env(safe-area-inset-*) nowhere, so the default (`auto`) is what we want. It
+       keeps the page inside the safe area and lets iOS paint the status bar and
+       home-indicator strips itself. Adding cover here would hand this layout the
+       full screen and run the header under the clock. If admin ever grows a fixed
+       bottom bar, add cover and the insets together, not one without the other. -->
   <meta name="apple-mobile-web-app-title" content="WR Admin" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

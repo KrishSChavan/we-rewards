@@ -36,9 +36,10 @@
 // the icon into the legacy WebClip container that sizes the web view to the screen
 // minus the status bar and still pins it to y=0. server.js now emits that tag only
 // for iOS < 16.4 (see needsLegacyCapable), so modern devices get the manifest path
-// the student PWA has always used. Also: #main's bottom padding was 3px short of
-// the tab bar's real height, and /terminal/viewport-check.html is a temporary probe
-// that reports the installed app's real window geometry.
+// the student PWA has always used. Confirmed on an iPhone: iOS re-reads that tag at
+// launch, so this fixed an already-installed icon on the next force-quit, with no
+// delete-and-re-add. Also: #main's bottom padding was 3px short of the tab bar's
+// real height, because --nav-h omits the bar's own border-top.
 const CACHE = 'werewards-terminal-v16';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
