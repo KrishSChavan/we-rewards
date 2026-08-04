@@ -17,6 +17,23 @@
    Kept as its own copy per app: each shell is served from its own static root
    (/, /terminal, /admin), so there is no shared asset path to point at. */
 (function () {
+  /* Self-heal a stale shell's viewport meta.
+     The phone layout needs `viewport-fit=cover`, or iOS keeps the page out of
+     the home-indicator strip entirely: the tab bar and even a
+     `position: fixed; inset: 0` overlay stop ~93px short of the screen edge.
+     That tag lives in index.html, which is the one asset here that goes stale
+     (server.js memoises the rendered shell, and a cached document still pulls
+     CURRENT terminal.css/terminal.js because the server ignores the ?v= stamp)
+     — so an old shell pairs the new stylesheet with a viewport that can't
+     support it.
+     This script is loaded from <head>, directly after the meta and before the
+     body is parsed, so a correction here still lands in the first layout.
+     A no-op on an up-to-date shell. */
+  const vp = document.querySelector('meta[name="viewport"]');
+  if (vp && !/viewport-fit\s*=\s*cover/i.test(vp.content)) {
+    vp.setAttribute('content', `${vp.content}, viewport-fit=cover`);
+  }
+
   // Non-passive, or preventDefault() is a no-op and the pinch goes through.
   for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
     document.addEventListener(type, (e) => e.preventDefault(), { passive: false });

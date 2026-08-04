@@ -27,7 +27,11 @@
 // v13: safe-area fallback — <body> carries the colour of whatever meets the
 // screen edge, so a shell served without viewport-fit=cover no longer shows a
 // gap under the tab bar (terminal.css).
-const CACHE = 'werewards-terminal-v13';
+// v14: no-zoom.js re-adds viewport-fit=cover when a cached shell is missing it.
+// v15: dropped apple-mobile-web-app-status-bar-style=black-translucent, which
+// was stranding ~93px below the tab bar in the INSTALLED app only (the same
+// page was flush in a Safari tab, where that meta is ignored).
+const CACHE = 'werewards-terminal-v15';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',

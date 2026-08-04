@@ -23,7 +23,16 @@
   <link rel="manifest" href="/terminal/manifest.json" />
   <link rel="apple-touch-icon" href="/terminal/icons/icon-192.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <!-- No apple-mobile-web-app-status-bar-style, deliberately. `black-translucent`
+       tells iOS to run the web view under the status bar, and in standalone mode
+       it then sizes that view to the SAFE height (screen - top inset - bottom
+       inset) while pinning it to the top — stranding ~93px at the bottom that
+       nothing can paint, not the tab bar and not a `fixed; inset: 0` overlay.
+       The same page in a Safari tab, where this meta is ignored, sits flush.
+       public/student/index.html omits it for the same reason. Leaving it unset
+       (= `default`) puts the view below the status bar, and terminal.css reads
+       env(safe-area-inset-*) either way, so both modes lay out correctly. -->
+
   <meta name="apple-mobile-web-app-title" content="WR Terminal" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
