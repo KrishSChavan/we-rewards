@@ -22,7 +22,9 @@
 // v10: a live deal can be edited or taken down from the DEALS history.
 // v11: AWARD + REDEEM merged into one SCAN tab with a single camera that routes
 // by what it decodes (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v11';
+// v12: phone layout — tabs become a fixed bottom bar, portrait viewfinder, and
+// every side-by-side pair stacks (terminal.css + index.html viewport/titles).
+const CACHE = 'werewards-terminal-v12';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',

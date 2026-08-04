@@ -9,7 +9,10 @@
   <!-- user-scalable=no + maximum-scale=1: no pinch/double-tap zoom, and no
        auto-zoom when iOS focuses an input. See no-zoom.js for the browsers
        that ignore this and what covers them. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <!-- viewport-fit=cover + env(safe-area-inset-*) in terminal.css: the phone
+       layout puts the tab bar against the bottom edge, which is where the
+       home indicator lives. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <!-- in <head> so the gesture listeners are attached before the first paint a
        user could pinch on -->
   <script src="/terminal/no-zoom.js"></script>
@@ -110,7 +113,9 @@
            confirm screen. Awarding is un-gated; a redemption detours through
            the staff PIN first, which is why this tab itself is not gated. -->
       <section id="screen-scan" class="screen scan-screen" hidden>
-        <h2 class="scan-title">SCAN TO AWARD<br />OR REDEEM</h2>
+        <!-- the space before the <br> matters: the phone stylesheet hides the
+             break and lets the title set on one line. -->
+        <h2 class="scan-title">SCAN TO AWARD <br />OR REDEEM</h2>
 
         <!-- Camera-first: scan the QR from the customer's WeRewards app.
              The keypad below stays as the manual fallback. -->
@@ -237,7 +242,7 @@
            counter-top sign. -->
       <section id="screen-punch" class="screen punch-screen" hidden>
         <div id="punch-stage" class="punch-stage">
-          <h2 class="scan-title punch-title">SCAN TO<br />ADD A VISIT</h2>
+          <h2 class="scan-title punch-title">SCAN TO <br />ADD A VISIT</h2>
           <p id="punch-reward-line" class="punch-reward-line"></p>
           <div class="punch-qr-wrap">
             <div class="qr-card-terminal">
