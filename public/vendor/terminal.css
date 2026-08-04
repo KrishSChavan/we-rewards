@@ -959,8 +959,11 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
   }
   .tab-settings.is-active.is-dirty::after { background: var(--redeem); }
 
-  /* keep the scroll area clear of the bar */
-  #main { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
+  /* Keep the scroll area clear of the bar. The 3px is the bar's own border-top
+     (below): --nav-h is the .tab height, so the bar measures --nav-h + 3px, and
+     reserving only --nav-h left the last 3px of every scrollable screen tucked
+     under that dark rule. */
+  #main { padding-bottom: calc(var(--nav-h) + 3px + env(safe-area-inset-bottom)); }
 
   /* ---------- safe areas ----------
 

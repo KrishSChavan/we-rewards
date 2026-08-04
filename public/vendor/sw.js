@@ -31,7 +31,15 @@
 // v15: dropped apple-mobile-web-app-status-bar-style=black-translucent, which
 // was stranding ~93px below the tab bar in the INSTALLED app only (the same
 // page was flush in a Safari tab, where that meta is ignored).
-const CACHE = 'werewards-terminal-v15';
+// v16: the bottom band again, and v13-v15 were all treating the wrong cause. The
+// status-bar-style meta was a passenger; apple-mobile-web-app-capable is what opts
+// the icon into the legacy WebClip container that sizes the web view to the screen
+// minus the status bar and still pins it to y=0. server.js now emits that tag only
+// for iOS < 16.4 (see needsLegacyCapable), so modern devices get the manifest path
+// the student PWA has always used. Also: #main's bottom padding was 3px short of
+// the tab bar's real height, and /terminal/viewport-check.html is a temporary probe
+// that reports the installed app's real window geometry.
+const CACHE = 'werewards-terminal-v16';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',

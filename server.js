@@ -281,16 +281,48 @@ function versionAssets(html, mount, root) {
   });
 }
 
-const renderedShells = new Map();   // index.html path -> versioned HTML string
+// apple-mobile-web-app-capable, emitted per-request. iOS 16.4 (March 2023) made a
+// manifest `display: standalone` enough on its own to launch a Home Screen icon
+// chrome-less — that is how the student PWA runs, declaring no apple-* meta at all.
+// Before 16.4 this tag is the only thing keeping a counter iPad out of Safari's URL
+// bar and toolbars mid-transaction, so old devices must keep it.
+//
+// It is not free on modern iOS. The tag also opts the icon into the legacy WebClip
+// container, whose frame on a notched phone is the screen minus the status bar but
+// still pinned to y=0: the app sits one status bar too high and strands that height
+// at the bottom, where no CSS can reach — the vendor terminal's bottom-band bug.
+// Only public/vendor/index.html carries the slot, so this is a no-op for the other
+// three shells.
+//
+// iPadOS 13+ Safari defaults to a desktop-class UA carrying no OS version, so an
+// iPad normally falls into the "can't date it" branch and keeps the tag. That is
+// the safe side of the trade: worst case it keeps a visible layout bug, rather than
+// putting a live terminal behind browser chrome.
+const IOS_UA = /\b(?:iPhone|iPad|iPod)\b.*?\bOS (\d+)[._](\d+)/;
+function needsLegacyCapable(ua) {
+  const m = IOS_UA.exec(ua || '');
+  if (!m) return true;   // desktop, Android, or iPadOS desktop mode — leave the shell as authored
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  return major < 16 || (major === 16 && minor < 4);
+}
+const CAPABLE_SLOT = '<!--APPLE-CAPABLE-->';
+const CAPABLE_META = '<meta name="apple-mobile-web-app-capable" content="yes" />';
+
+const renderedShells = new Map();   // "<index.html path>|<variant>" -> versioned HTML string
 function serveShell(mount, root) {
   const htmlPath = path.join(root, 'index.html');
-  return (_req, res) => {
-    let html = renderedShells.get(htmlPath);
+  return (req, res) => {
+    const legacy = needsLegacyCapable(req.get('user-agent'));
+    const key = `${htmlPath}|${legacy ? 'legacy' : 'modern'}`;
+    let html = renderedShells.get(key);
     if (html == null) {
-      html = versionAssets(fs.readFileSync(htmlPath, 'utf8'), mount, root);
-      renderedShells.set(htmlPath, html);
+      html = versionAssets(fs.readFileSync(htmlPath, 'utf8'), mount, root)
+        .replace(CAPABLE_SLOT, legacy ? CAPABLE_META : '');
+      renderedShells.set(key, html);
     }
     res.set('Cache-Control', 'no-cache');   // always revalidate so new ?v= tags are seen
+    res.vary('User-Agent');                 // ...and never hand one device's variant to another
     res.type('html').send(html);
   };
 }

@@ -22,16 +22,25 @@
   <!-- Installable PWA (scoped to /terminal) so a vendor can add it to a device. -->
   <link rel="manifest" href="/terminal/manifest.json" />
   <link rel="apple-touch-icon" href="/terminal/icons/icon-192.png" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <!-- No apple-mobile-web-app-status-bar-style, deliberately. `black-translucent`
-       tells iOS to run the web view under the status bar, and in standalone mode
-       it then sizes that view to the SAFE height (screen - top inset - bottom
-       inset) while pinning it to the top — stranding ~93px at the bottom that
-       nothing can paint, not the tab bar and not a `fixed; inset: 0` overlay.
-       The same page in a Safari tab, where this meta is ignored, sits flush.
-       public/student/index.html omits it for the same reason. Leaving it unset
-       (= `default`) puts the view below the status bar, and terminal.css reads
-       env(safe-area-inset-*) either way, so both modes lay out correctly. -->
+  <!-- apple-mobile-web-app-capable goes in the slot below, and server.js decides
+       whether to emit it: only for iOS older than 16.4. See needsLegacyCapable()
+       there for the full reasoning. Short version: from 16.4 the manifest's
+       `display: standalone` launches a Home Screen icon chrome-less on its own
+       (that is how public/student runs, with no apple-* meta at all), and this
+       tag additionally opts the icon into the LEGACY WebClip container, whose
+       frame on a notched phone is the screen minus the status bar while still
+       pinned to y=0. The whole app then sits one status bar too high and strands
+       that height at the bottom, where nothing can paint, not the fixed tab bar
+       and not a `fixed; inset: 0` overlay. Below 16.4 the tag is still the only
+       thing keeping a counter iPad out of Safari's chrome, so those keep it. -->
+  <!--APPLE-CAPABLE-->
+  <!-- No apple-mobile-web-app-status-bar-style. It is inert without the tag above,
+       and `black-translucent` has carried a WebKit removal warning since 2017.
+       An earlier comment here asserted that black-translucent shrinks the web view
+       to the safe height and pins it to the top; Apple's Safari HTML Reference says
+       the opposite (black-translucent renders on the ENTIRE screen, `default`
+       renders below the status bar), so do not reason from that claim. It was an
+       inference from one observation, and three fixes were built on it. -->
 
   <meta name="apple-mobile-web-app-title" content="WR Terminal" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
