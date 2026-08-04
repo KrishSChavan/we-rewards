@@ -962,6 +962,28 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
   /* keep the scroll area clear of the bar */
   #main { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
 
+  /* ---------- safe areas ----------
+
+     With viewport-fit=cover the page owns the home-indicator strip, and the
+     bar's own padding-bottom fills it. WITHOUT it (an old cached shell, or a
+     browser that ignores the meta) iOS keeps the whole layout viewport out of
+     that strip and paints it itself, using the background propagated from
+     <body> — and nothing the page draws can reach it, not even
+     `position: fixed; inset: 0`. That is why a gap can appear under the tab
+     bar AND under an open modal at the same time.
+
+     So: <body> carries the colour of whatever meets the bottom edge, and the
+     paper background moves onto the scrolling area. Under cover these are all
+     no-ops; without it the strip reads as part of the bar above it instead of
+     as a gap. */
+  body { background: var(--card); }
+  #main { background: var(--paper); }
+  #screen-login, #screen-recover { background: var(--paper); }
+  /* the scrim colour, pre-blended: rgba(16,29,51,.55) over --paper */
+  body:has(.overlay:not([hidden])) { background: #747c8b; }
+  body:has(#flood.success:not([hidden])) { background: var(--success); }
+  body:has(#flood.error:not([hidden])) { background: var(--error); }
+
   /* ---------- shared sizing ---------- */
 
   .screen { padding: 0.9rem 0.9rem 1rem; gap: 0.8rem; }

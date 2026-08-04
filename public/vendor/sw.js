@@ -24,7 +24,10 @@
 // by what it decodes (index.html + terminal.js + terminal.css).
 // v12: phone layout — tabs become a fixed bottom bar, portrait viewfinder, and
 // every side-by-side pair stacks (terminal.css + index.html viewport/titles).
-const CACHE = 'werewards-terminal-v12';
+// v13: safe-area fallback — <body> carries the colour of whatever meets the
+// screen edge, so a shell served without viewport-fit=cover no longer shows a
+// gap under the tab bar (terminal.css).
+const CACHE = 'werewards-terminal-v13';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',
