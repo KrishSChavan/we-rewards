@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v43';   // v43: no silent enable failures (key-fetch retries, vapid-null note, sw-ready timeout, PATCH checked); load no longer re-subscribes an opted-out student
+const CACHE = 'werewards-v44';   // v44: app icons redrawn — REWARDS set under the WE
+// v43: no silent enable failures (key-fetch retries, vapid-null note, sw-ready timeout, PATCH checked); load no longer re-subscribes an opted-out student
 // v42: toggle-off keeps the browser subscription (unsubscribe→resubscribe race froze the switch)
 // v41: a failed turn-on says why at the switch (dismissed/quieted permission prompt)
 // v40: permission asked inside the gesture; switch reports only confirmed state
