@@ -128,7 +128,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--hairline);
 }
 .splash-bar i {
-  position: absolute; inset: 0 auto 0 0;
+  /* Longhands, not `inset: 0 auto 0 0`. The build lowers the inset shorthand for
+     old Safari (which only understood it from 14.1), but esbuild bails on a
+     value containing `auto` and passes it through untouched — so this one has to
+     be written out by hand or the bar loses its fill on exactly the old devices
+     the splash is still sitting in front of. */
+  position: absolute; top: 0; right: auto; bottom: 0; left: 0;
   width: 45%; border-radius: 999px;
   background: var(--brand);
   animation: splash-slide 1.15s ease-in-out infinite;

@@ -13,6 +13,14 @@
        layout puts the tab bar against the bottom edge, which is where the
        home indicator lives. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <!-- FIRST script on the page, before anything that could fail. Everything here
+       is lowered for old browsers by scripts/build-client.js, but some device is
+       always older than the target, and every <section class="screen"> below
+       ships `hidden` with terminal.js as the only thing that unhides one. So a
+       script that fails to parse leaves a vendor looking at a white counter iPad
+       with nothing reported. The guard swaps that for a readable explanation and
+       posts it to /api/client-error. Source: public/shared/boot-guard.js. -->
+  <script src="/terminal/boot-guard.js"></script>
   <!-- in <head> so the gesture listeners are attached before the first paint a
        user could pinch on -->
   <script src="/terminal/no-zoom.js"></script>
@@ -604,11 +612,10 @@
     </div>
   </div>
 
-  <!-- Pinned version + Subresource Integrity — see the note in the student app.
-       Keep this in sync with public/student/index.html and public/admin/index.html. -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
-          integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
-          crossorigin="anonymous"></script>
+  <!-- supabase-js, self-hosted and lowered by scripts/build-client.js — see the
+       note in public/student/index.html. Keep in sync with that file and
+       public/admin/index.html. -->
+  <script src="/terminal/supabase.js"></script>
   <!-- QR decode fallback (UMD, exposes window.jsQR) — served same-origin so the
        'self' script-src covers it. Must load before terminal.js. -->
   <script src="/terminal/jsQR.js"></script>

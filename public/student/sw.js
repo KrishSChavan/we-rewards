@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v47';   // v47: vendor email+password sign-in on the landing page (dual-role accounts, migration-035)
+const CACHE = 'werewards-v48';   // v48: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the CDN; boot guard added
+// v47: vendor email+password sign-in on the landing page (dual-role accounts, migration-035)
 // v46: server-without-push-keys gets an honest fail note (was "reload and try again"); subscribePush guards the null key
 // v45: app icons redrawn in Archivo — REWARDS in accent under the WE, thin accent border, no rule
 // v44: app icons redrawn — REWARDS set under the WE
@@ -14,7 +15,11 @@ const CACHE = 'werewards-v47';   // v47: vendor email+password sign-in on the la
 // Leaflet's own images are NOT precached: the map uses divIcon pins and no layers
 // control, so nothing ever requests them. The OSM tiles aren't either — they're
 // cross-origin, and the fetch handler below hands those straight to the network.
-const SHELL = ['/', '/theme-init.js', '/no-zoom.js', '/styles.css', '/app.js', '/qrcode.js', '/jsQR.js', '/leaflet/leaflet.js', '/leaflet/leaflet.css', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+// '/supabase.js' is precached now that it is served from this origin instead of
+// jsDelivr (see scripts/build-client.js). It was never cacheable before: the
+// fetch handler below skips cross-origin requests, so an offline launch used to
+// find the shell in cache and then fail on the CDN.
+const SHELL = ['/', '/boot-guard.js', '/theme-init.js', '/no-zoom.js', '/styles.css', '/supabase.js', '/app.js', '/qrcode.js', '/jsQR.js', '/leaflet/leaflet.js', '/leaflet/leaflet.css', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

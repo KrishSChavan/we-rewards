@@ -22,6 +22,7 @@ import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { requireJson } from './src/middleware/require-json.js';
+import { buildClientAssets, buildRoot, ensureFresh } from './scripts/build-client.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 import {
   verifyPunchToken, mintPunchBinding, PUNCH_BINDING_COOKIE, PUNCH_HOLD_TTL_SECONDS,
@@ -49,11 +50,13 @@ app.set(
 );
 
 // ---- Security headers (helmet) ----
-// CSP is allow-listed to exactly what the two apps load: supabase-js from
-// jsDelivr, Google Fonts, Google avatar images, OpenStreetMap tiles (vendor map
-// thumbnails), and Supabase REST/auth/realtime + socket.io over ws/wss.
-// Misconfiguring this breaks the apps — keep in sync with the <script>/<link>
-// tags and the SUPABASE_URL.
+// CSP is allow-listed to exactly what the two apps load: Google Fonts, Google
+// avatar images, OpenStreetMap tiles (vendor map thumbnails), and Supabase
+// REST/auth/realtime + socket.io over ws/wss. Misconfiguring this breaks the
+// apps — keep in sync with the <script>/<link> tags and the SUPABASE_URL.
+//
+// No CDN in script-src any more: supabase-js is self-hosted out of node_modules
+// (scripts/build-client.js), so every script this page runs is same-origin.
 const supabaseOrigin = (() => {
   try { return new URL(process.env.SUPABASE_URL).origin; } catch { return ''; }
 })();
@@ -63,7 +66,7 @@ app.use(helmet({
     useDefaults: true,
     directives: {
       'default-src': ["'self'"],
-      'script-src': ["'self'", 'https://cdn.jsdelivr.net'],
+      'script-src': ["'self'"],
       'style-src': ["'self'", 'https://fonts.googleapis.com', "'unsafe-inline'"],
       'font-src': ["'self'", 'https://fonts.gstatic.com'],
       // Google avatars + OpenStreetMap tiles for the vendor map thumbnails
@@ -384,12 +387,38 @@ function serveShell(mount, root) {
   };
 }
 
+// ---- Client asset build ----
+// Nothing under public/ is served directly any more. Every .js and .css is
+// lowered to ES2017 (and old-Safari-safe CSS) into .build/ first, and the mounts
+// below point at that mirror. See scripts/build-client.js for the why — short
+// version: the hand-authored bundles and supabase-js all needed Safari 14+ just
+// to PARSE, so on an older iPad every script died with a SyntaxError before its
+// first statement, leaving the student PWA stuck on its boot splash and the
+// vendor terminal on a white screen.
+//
+// Built at boot, synchronously and before any route is mounted: a fresh dyno
+// then serves bytes that match the source it was deployed with, `node --watch`
+// picks changes up on restart, and a broken build takes the process down here
+// instead of serving a half-lowered app.
+buildClientAssets({ log: (msg) => console.log(msg) });
+
 const shells = [
-  { mount: '/',         root: path.join(__dirname, 'public/student') },
-  { mount: '/terminal', root: path.join(__dirname, 'public/vendor')  },
-  { mount: '/admin',    root: path.join(__dirname, 'public/admin')   },
-  { mount: '/join',     root: path.join(__dirname, 'public/join')    },
-];
+  { mount: '/',         dir: 'student' },
+  { mount: '/terminal', dir: 'vendor'  },
+  { mount: '/admin',    dir: 'admin'   },
+  { mount: '/join',     dir: 'join'    },
+].map((shell) => ({ ...shell, root: buildRoot(shell.dir) }));
+
+// Dev-only: re-lower one asset if its source changed since boot. See the static
+// mount loop below for why this exists. A malformed percent-escape in the URL is
+// not worth a 500 — fall through and let express.static answer it.
+function freshenAsset(dir) {
+  return (req, _res, next) => {
+    try { ensureFresh(dir, decodeURIComponent(req.path).replace(/^\/+/, '')); }
+    catch { /* undecodable path, or a source file that no longer parses — serve what's built */ }
+    next();
+  };
+}
 
 // ---- Test-deployment overrides (APP_ENV != production) ----
 // Both routes below are registered ONLY on a test deployment. In production
@@ -467,7 +496,17 @@ if (IS_TEST_ENV) {
   }
 }
 // Then the static assets themselves (index disabled — the routes above own the HTML).
-for (const { mount, root } of shells) {
+//
+// Off production, each mount is preceded by a freshness check. Before the build
+// existed, express.static read public/ directly and an edit to app.js or
+// styles.css was live on the next reload; now that the mirror is built once at
+// boot, that would silently stop being true and cost an afternoon of editing a
+// file nobody is serving. ensureFresh re-lowers a single file when its source is
+// newer than its build output, which restores the old loop. Production skips it:
+// there the source can't change under a running dyno, so it would be two wasted
+// stat() calls on every asset request.
+for (const { mount, dir, root } of shells) {
+  if (IS_TEST_ENV) app.use(mount, freshenAsset(dir));
   app.use(mount, express.static(root, { index: false }));
 }
 

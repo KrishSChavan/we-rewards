@@ -22,6 +22,13 @@
   <title>WeRewards · eat local, earn free food</title>
   <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
   <meta name="theme-color" content="#12294b" />
+  <!-- FIRST script on the page, before anything that could fail. Everything here
+       is lowered for old browsers by scripts/build-client.js, but some device is
+       always older than the target, and a script that fails to parse leaves this
+       page showing its boot splash forever with nothing reported. The guard
+       swaps that for a readable explanation and posts it to /api/client-error.
+       Source: public/shared/boot-guard.js. -->
+  <script src="/boot-guard.js"></script>
   <!-- apply the saved (or system) theme before first paint to avoid a flash
        (external so the page CSP can forbid inline scripts) -->
   <script src="/theme-init.js"></script>
@@ -1133,13 +1140,15 @@
     </div>
   </div>
 
-  <!-- Pinned to an exact version + Subresource Integrity: the browser refuses to
-       run this file if its bytes don't match the hash, so a tampered/compromised
-       CDN build can't hijack the page or steal auth tokens. Bump BOTH the version
-       and the hash together when upgrading supabase-js. -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
-          integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
-          crossorigin="anonymous"></script>
+  <!-- supabase-js, self-hosted. It used to come from jsDelivr pinned with an SRI
+       hash; it is now copied out of node_modules by scripts/build-client.js and
+       lowered like every other bundle. That is the only way to fix it: the CDN
+       build uses `||=` / `&&=` / `??=`, which no Safari before 14 can parse, and
+       a SyntaxError here takes the whole page down. Self-hosting also drops a
+       third-party origin from a page that handles auth tokens (so no SRI needed,
+       it is same-origin now) and ties the version to package.json instead of a
+       URL that has to be bumped by hand. Must load before app.js. -->
+  <script src="/supabase.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <!-- self-hosted QR encoder (qrcode-generator UMD build, global `qrcode`);
        same-origin, so no SRI needed — must load before app.js -->

@@ -44,9 +44,16 @@
 // collapses); Save & leave no longer swallows a tap while a request is in
 // flight; a save that hits an expired PIN session replays after the unlock
 // instead of losing the edits.
-const CACHE = 'werewards-terminal-v17';
+// v18: bundles lowered to ES2017 so an older counter iPad can parse them at all;
+// supabase-js self-hosted off the CDN; boot guard added.
+const CACHE = 'werewards-terminal-v18';
+// '/terminal/supabase.js' is precached now that it is served from this origin
+// instead of jsDelivr (see scripts/build-client.js). It was never cacheable
+// before: the fetch handler skips cross-origin requests, so an offline launch
+// found the shell in cache and then failed on the CDN.
 const SHELL = [
-  '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
+  '/terminal/', '/terminal/boot-guard.js', '/terminal/terminal.css', '/terminal/terminal.js',
+  '/terminal/supabase.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',
   '/terminal/icons/icon-192.png', '/terminal/icons/icon-512.png',
 ];

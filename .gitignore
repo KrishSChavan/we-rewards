@@ -13,5 +13,9 @@ dist/
 build/
 coverage/
 
+# Lowered copy of public/, regenerated at every server boot by
+# scripts/build-client.js. This is what actually gets served.
+.build/
+
 .DS_Store
 Thumbs.db

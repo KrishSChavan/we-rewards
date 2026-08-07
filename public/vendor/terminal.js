@@ -10,6 +10,12 @@
    distinguishable (see parseQrPayload), one screen can route them itself.
 */
 
+// Tells the boot guard this file parsed and is executing. Keep it the first
+// statement: if the browser can't read the syntax below, nothing here runs, no
+// screen is ever unhidden, and the guard's timer turns that white page into an
+// explanation the vendor can read out. See public/shared/boot-guard.js.
+if (window.__wrBooted) window.__wrBooted();
+
 let sb = null;             // supabase client
 let config = null;         // vendor config from /api/vendor/config
 let rewards = [];          // vendor's rewards from /api/vendor/rewards
@@ -1032,7 +1038,14 @@ async function awardAmount(dollarAmount) {
   const key = `${currentEarnCode}:${amt}`;
   const now = Date.now();
   if (!pendingAward || pendingAward.key !== key || now - pendingAward.at > 120_000) {
-    pendingAward = { key, token: crypto.randomUUID(), at: now };
+    // crypto.randomUUID is Safari 15.4+, and this app has to run on counter
+    // iPads well below that, where a bare call throws and takes the award with
+    // it. Same fallback shape as the community transfer in app.js and the deal
+    // token below; the server accepts any /^[\w-]{8,64}$/ idempotency token, so
+    // it only has to be unique, not a real UUID.
+    const token = crypto.randomUUID?.()
+      ?? `aw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    pendingAward = { key, token, at: now };
   }
   const requestId = pendingAward.token;
 

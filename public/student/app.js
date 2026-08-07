@@ -2,6 +2,12 @@
    Home (vendor carousel) → tap a card → vendor screen (points bar with back
    button → your earn code → rewards → item detail modal → redemption code). */
 
+// Tells the boot guard this file parsed and is executing. Keep it the first
+// statement: if the browser can't read the syntax below, nothing here runs, the
+// guard's timer finds this uncalled and replaces the stuck splash with an
+// explanation instead of leaving it spinning. See public/shared/boot-guard.js.
+if (window.__wrBooted) window.__wrBooted();
+
 let sb = null;
 let allVendors = [];  // every active vendor + this student's balance at each
 // What the carousel is actually showing: allVendors when the search box is

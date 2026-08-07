@@ -3,6 +3,10 @@
    platform analytics (/api/admin/overview) + the error log (/api/admin/errors),
    which aggregates server 500s and client-reported crashes from both apps. */
 
+// Tells the boot guard this file parsed and is executing. Keep it the first
+// statement. See public/shared/boot-guard.js.
+if (window.__wrBooted) window.__wrBooted();
+
 let sb = null;
 let errorSource = '';   // '' = all sources; else server|student|vendor|admin
 let vendors = [];       // full roster (active + inactive) for the on/off panel

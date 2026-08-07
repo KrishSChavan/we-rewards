@@ -17,9 +17,12 @@
 // installed on a phone, so it was latent rather than reported.
 // v7: per-vendor Edit modal (points-per-dollar + reward items); accept flow can
 // link an existing account as the vendor login (dual-role, migration-035).
-const CACHE = 'werewards-admin-v7';
+// v8: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the
+// CDN (and therefore precachable now); boot guard added.
+const CACHE = 'werewards-admin-v8';
 const SHELL = [
-  '/admin/', '/admin/admin.css', '/admin/admin.js', '/admin/no-zoom.js', '/admin/manifest.json',
+  '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
+  '/admin/no-zoom.js', '/admin/manifest.json',
   '/admin/icons/icon-192.png', '/admin/icons/icon-512.png',
 ];
 

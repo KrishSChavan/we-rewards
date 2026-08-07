@@ -10,6 +10,9 @@
        auto-zoom when iOS focuses an input. See no-zoom.js for the browsers
        that ignore this and what covers them. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <!-- FIRST script on the page, before anything that could fail. See the note in
+       public/student/index.html. Source: public/shared/boot-guard.js. -->
+  <script src="/admin/boot-guard.js"></script>
   <!-- in <head> so the gesture listeners are attached before the first paint a
        user could pinch on -->
   <script src="/admin/no-zoom.js"></script>
@@ -250,9 +253,9 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
-          integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
-          crossorigin="anonymous"></script>
+  <!-- supabase-js, self-hosted and lowered by scripts/build-client.js — see the
+       note in public/student/index.html. -->
+  <script src="/admin/supabase.js"></script>
   <script src="/admin/admin.js"></script>
 </body>
 </html>
