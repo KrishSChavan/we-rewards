@@ -7,6 +7,7 @@ import { getVapidPublicKey } from '../lib/push.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
+import { validReward, validRatio } from '../lib/rewards.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -256,8 +257,8 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
 });
 
 /**
- * PATCH /api/admin/vendors/:id  { active?: boolean, address?: string }
- * Operator edits for one vendor. Two independent updates:
+ * PATCH /api/admin/vendors/:id  { active?: boolean, address?: string, pointsPerDollar?: number }
+ * Operator edits for one vendor. Independent updates:
  *  - `active` is the kill-switch. Off = fully cut off: hidden from students
  *    (active=true filters) and its terminal is blocked at requireVendor.
  *    Non-destructive — balances, rewards, and history are preserved, so
@@ -266,6 +267,9 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
  *    card. It's geocoded (Nominatim) so latitude/longitude stay in sync; a
  *    geocode miss keeps the address but drops coords (no map until it resolves).
  *    Sending '' clears the address and its coordinates.
+ *  - `pointsPerDollar` is the vendor's earn ratio, same bounds as the vendor's
+ *    own Settings save (validRatio, shared in src/lib/rewards.js). The terminal
+ *    picks it up on its next /api/vendor/config fetch.
  */
 router.patch('/vendors/:id', async (req, res, next) => {
   try {
@@ -293,8 +297,14 @@ router.patch('/vendors/:id', async (req, res, next) => {
       updates.address = a || null;
     }
 
+    if (body.pointsPerDollar != null) {
+      const r = validRatio(body.pointsPerDollar);
+      if (r.error) return res.status(400).json({ error: 'BAD_REQUEST', message: r.error });
+      updates.points_per_dollar = r.value;
+    }
+
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send active and/or address).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send active, address, and/or pointsPerDollar).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -312,6 +322,133 @@ router.patch('/vendors/:id', async (req, res, next) => {
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- per-vendor reward items (operator side) ----------
+   Mirrors the vendor's own /api/vendor/rewards routes — same validators from
+   src/lib/rewards.js, same merge-then-validate PATCH semantics — but keyed by
+   the vendor id in the path and admin-gated instead of PIN-gated. Deliberately
+   works on disabled vendors too: requireVendor's active=false kill-switch only
+   blocks the terminal, and the operator may need to fix a catalog before
+   switching a vendor back on. */
+
+/** Path :id → true if the vendor exists; otherwise responds 404 and returns false. */
+async function vendorExists(req, res) {
+  if (!isUuid(req.params.id)) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    return false;
+  }
+  const { data, error } = await supabaseAdmin
+    .from('vendors').select('id').eq('id', req.params.id).maybeSingle();
+  if (error) throw error;
+  if (!data) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    return false;
+  }
+  return true;
+}
+
+/** GET /api/admin/vendors/:id/rewards — all of one vendor's items incl. inactive. */
+router.get('/vendors/:id/rewards', async (req, res, next) => {
+  try {
+    if (!(await vendorExists(req, res))) return;
+    const { data, error } = await supabaseAdmin
+      .from('rewards')
+      .select('id, title, cost_in_points, cost_in_visits, emoji, active, created_at')
+      .eq('vendor_id', req.params.id)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/admin/vendors/:id/rewards  { title, costInPoints, costInVisits, emoji } */
+router.post('/vendors/:id/rewards', async (req, res, next) => {
+  try {
+    if (!(await vendorExists(req, res))) return;
+    const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji);
+    if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
+
+    const { data, error } = await supabaseAdmin
+      .from('rewards')
+      .insert({
+        vendor_id: req.params.id,
+        title: v.title,
+        cost_in_points: v.cost,
+        cost_in_visits: v.visits,
+        emoji: v.emoji,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH /api/admin/vendors/:id/rewards/:rewardId  { title?, costInPoints?, costInVisits?, emoji?, active? } */
+router.patch('/vendors/:id/rewards/:rewardId', async (req, res, next) => {
+  try {
+    if (!(await vendorExists(req, res))) return;
+    if (!isUuid(req.params.rewardId)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
+    }
+
+    const touchesFields =
+      req.body?.title !== undefined || req.body?.costInPoints !== undefined ||
+      req.body?.costInVisits !== undefined || req.body?.emoji !== undefined;
+
+    const updates = {};
+    if (touchesFields) {
+      // Merge against the STORED row so a partial PATCH revalidates real values
+      // and clearing one of the two prices stays possible (same reasoning as
+      // the vendor-side PATCH in src/routes/vendor.js).
+      const { data: current } = await supabaseAdmin
+        .from('rewards').select('title, cost_in_points, cost_in_visits, emoji')
+        .eq('id', req.params.rewardId).eq('vendor_id', req.params.id).maybeSingle();
+      if (!current) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
+
+      const merged = {
+        title: req.body?.title !== undefined ? req.body.title : current.title,
+        cost: req.body?.costInPoints !== undefined ? req.body.costInPoints : current.cost_in_points,
+        visits: req.body?.costInVisits !== undefined ? req.body.costInVisits : current.cost_in_visits,
+        emoji: req.body?.emoji !== undefined ? req.body.emoji : current.emoji,
+      };
+      const v = validReward(merged.title, merged.cost, merged.visits, merged.emoji);
+      if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
+
+      if (req.body?.title !== undefined) updates.title = v.title;
+      if (req.body?.costInPoints !== undefined) updates.cost_in_points = v.cost;
+      if (req.body?.costInVisits !== undefined) updates.cost_in_visits = v.visits;
+      if (req.body?.emoji !== undefined) updates.emoji = v.emoji;
+    }
+    if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update.' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('rewards')
+      .update(updates)
+      .eq('id', req.params.rewardId)
+      .eq('vendor_id', req.params.id) // an id from another vendor is a 404, not a cross-edit
+      .select()
+      .maybeSingle();
+    if (error) {
+      // The DB CHECK is the backstop for anything the merge above missed.
+      if (String(error.message ?? '').includes('rewards_has_a_price')) {
+        return res.status(400).json({ error: 'BAD_REWARD', message: 'Set a point cost, a visit cost, or both.' });
+      }
+      throw error;
+    }
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
     res.json(data);
   } catch (err) {
     next(err);
@@ -361,14 +498,24 @@ router.delete('/vendors/:id', async (req, res, next) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
 
-    // Remove each login that's now orphaned (no remaining vendor_staff link).
+    // Remove each login that's now orphaned (no remaining vendor_staff link) —
+    // UNLESS it is also a student account (has a profiles row). Deleting a
+    // dual-role auth user here would cascade the person's balances, history,
+    // and profile away with the vendor; instead they simply stop being vendor
+    // staff (the cascade already removed the link, and the migration-035
+    // trigger flipped profiles.is_vendor off).
     for (const { user_id: uid } of staff ?? []) {
       const { count } = await supabaseAdmin
         .from('vendor_staff')
         .select('vendor_id', { count: 'exact', head: true })
         .eq('user_id', uid);
       if (!count) {
-        await supabaseAdmin.auth.admin.deleteUser(uid).catch(() => {});
+        const { data: profile } = await supabaseAdmin
+          .from('profiles')
+          .select('user_id')
+          .eq('user_id', uid)
+          .maybeSingle();
+        if (!profile) await supabaseAdmin.auth.admin.deleteUser(uid).catch(() => {});
       }
     }
 
@@ -418,6 +565,16 @@ router.get('/applications', async (req, res, next) => {
  * table defaults and pin_hash stays null (redeem is ungated until the vendor
  * sets a PIN in terminal Settings — existing behavior).
  *
+ * Dual-role accounts (migration-035): when the email already has an account
+ * (typically a student who wants to run a vendor under the same login), that
+ * EXISTING account is linked as the vendor login instead of failing. Its
+ * password is deliberately left untouched — /join never verifies the applicant
+ * owns the inbox, so applying the application's password to a pre-existing
+ * account would let anyone hijack it by applying with a stranger's email. The
+ * account keeps its current password / Google sign-in; if the vendor needs a
+ * terminal password, mint one through the Reset password channel. The response
+ * carries `linkedExisting: true` so the dashboard can tell the operator.
+ *
  * Each later step unwinds the earlier ones on failure, and the application row
  * is only deleted at the very end — so any failed accept leaves a clean slate
  * and the application still in the queue to retry.
@@ -438,22 +595,36 @@ router.post('/applications/:id/accept', async (req, res, next) => {
     // Already accepted/rejected (double-click, or a second admin got there first).
     if (!app) return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
 
+    let userId;
+    let linkedExisting = false;
     const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.createUser({
       email: app.email,
       password_hash: app.password_hash,
       email_confirm: true,
     });
     if (userErr) {
-      // Someone signed up with this email after the application was submitted.
       if (userErr.code === 'email_exists' || userErr.status === 422) {
-        return res.status(409).json({
-          error: 'EMAIL_EXISTS',
-          message: 'An account with this email already exists. Reject this application or resolve it manually.',
-        });
+        // The email already has an account — link it as the vendor login (see
+        // the route comment for why its password is left alone).
+        const { data: existingId, error: lookupErr } = await supabaseAdmin
+          .rpc('auth_user_id_by_email', { p_email: app.email });
+        if (lookupErr) throw lookupErr;
+        if (!existingId) {
+          // createUser said taken but the lookup finds nothing — the account
+          // vanished between the two calls. Leave the application queued.
+          return res.status(409).json({
+            error: 'EMAIL_EXISTS',
+            message: 'This email’s account changed mid-accept. Reload and try again.',
+          });
+        }
+        userId = existingId;
+        linkedExisting = true;
+      } else {
+        throw userErr;
       }
-      throw userErr;
+    } else {
+      userId = userData.user.id;
     }
-    const userId = userData.user.id;
 
     // A geocode miss is never fatal (matches onboard-vendor.js / PATCH vendors):
     // the address is kept, the student card just shows no map until it's edited.
@@ -489,7 +660,9 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       if (staffErr) throw staffErr;
     } catch (err) {
       if (vendor) await supabaseAdmin.from('vendors').delete().eq('id', vendor.id).then(() => {}, () => {});
-      await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+      // Unwind only a login WE created. A linked pre-existing account (a
+      // student's, possibly) must survive a failed accept untouched.
+      if (!linkedExisting) await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
       throw err;
     }
 
@@ -499,7 +672,7 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       .eq('id', app.id);
     if (delErr) throw delErr; // vendor IS onboarded; surfacing the 500 beats hiding a stuck row
 
-    res.json({ ok: true, vendor });
+    res.json({ ok: true, vendor, linkedExisting });
   } catch (err) {
     next(err);
   }

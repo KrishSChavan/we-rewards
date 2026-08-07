@@ -40,7 +40,11 @@
 // launch, so this fixed an already-installed icon on the next force-quit, with no
 // delete-and-re-add. Also: #main's bottom padding was 3px short of the tab bar's
 // real height, because --nav-h omits the bar's own border-top.
-const CACHE = 'werewards-terminal-v16';
+// v17: quick-amount buttons are optional (empty list = keypad only, wrapper
+// collapses); Save & leave no longer swallows a tap while a request is in
+// flight; a save that hits an expired PIN session replays after the unlock
+// instead of losing the edits.
+const CACHE = 'werewards-terminal-v17';
 const SHELL = [
   '/terminal/', '/terminal/terminal.css', '/terminal/terminal.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',

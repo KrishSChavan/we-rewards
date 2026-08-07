@@ -164,6 +164,13 @@ const Splash = (() => {
   void securePendingPunchHold();
 
   document.querySelectorAll('[data-signin]').forEach((b) => b.addEventListener('click', signInWithGoogle));
+  // Vendor path: same auth pool, password credentials (the terminal login).
+  $('vendor-signin-toggle').addEventListener('click', () => {
+    const form = $('vendor-signin');
+    form.hidden = !form.hidden;
+    if (!form.hidden) $('vendor-signin-email').focus();
+  });
+  $('vendor-signin').addEventListener('submit', signInWithPassword);
   $('account-signout').addEventListener('click', async () => {
     await sb.auth.signOut();
     render(null);
@@ -375,6 +382,35 @@ async function signInWithGoogle() {
   if (error) {
     $('auth-error').textContent = 'Couldn’t start sign-in. Try again in a moment.';
     $('auth-error').hidden = false;
+  }
+}
+
+// Vendor accounts are password-based (created by the /join application flow)
+// and live in the same Supabase auth pool as students, so a vendor's email
+// works on both apps: here it starts a normal student session (consent gate and
+// all), while the terminal keeps its own separate 'psu-vendor-auth' session.
+async function signInWithPassword(e) {
+  e.preventDefault();
+  $('auth-error').hidden = true;
+  const email = $('vendor-signin-email').value.trim();
+  const password = $('vendor-signin-password').value;
+  if (!email || !password) return;
+  const btn = $('vendor-signin-go');
+  btn.disabled = true;
+  try {
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) {
+      $('auth-error').textContent = 'Wrong email or password. Vendors use the same login as the terminal.';
+      $('auth-error').hidden = false;
+      return;
+    }
+    // Success: onAuthStateChange takes it from here (consent check → app).
+    $('vendor-signin-password').value = '';
+  } catch {
+    $('auth-error').textContent = 'No connection. Try again in a moment.';
+    $('auth-error').hidden = false;
+  } finally {
+    btn.disabled = false;
   }
 }
 

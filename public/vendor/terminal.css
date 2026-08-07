@@ -302,6 +302,9 @@ button { font-family: inherit; border: none; cursor: pointer; }
   gap: clamp(0.4rem, 1.2vh, 0.75rem); width: min(30rem, 100%);
 }
 .quick-awards[hidden] { display: none; }
+/* No quick buttons at all: collapse the wrapper too, or its empty flex child
+   leaves a stray gap above the keypad (see renderQuickAwards). */
+.pad-shortcut-wrapper.is-empty { display: none; }
 .exact-entry[hidden] { display: none; }
 .quick-award {
   display: flex; flex-direction: column; align-items: center; gap: 0.1rem;

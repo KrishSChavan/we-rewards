@@ -15,7 +15,9 @@
 // `capable` was selecting a web view sized to the screen minus the status bar and
 // pinned to the top, stranding that height under the layout. Admin had never been
 // installed on a phone, so it was latent rather than reported.
-const CACHE = 'werewards-admin-v6';
+// v7: per-vendor Edit modal (points-per-dollar + reward items); accept flow can
+// link an existing account as the vendor login (dual-role, migration-035).
+const CACHE = 'werewards-admin-v7';
 const SHELL = [
   '/admin/', '/admin/admin.css', '/admin/admin.js', '/admin/no-zoom.js', '/admin/manifest.json',
   '/admin/icons/icon-192.png', '/admin/icons/icon-512.png',

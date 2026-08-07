@@ -222,6 +222,34 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .auth-error { margin-top: 0.9rem; color: #a93226; font-weight: 700; }
 .fine { margin-top: 0.9rem; color: var(--muted); font-size: 0.92rem; font-weight: 500; }
 
+/* vendor password sign-in, tucked under the Google button as a text link that
+   unfolds into a small email + password form (same account pool; see app.js) */
+.vendor-signin-toggle {
+  display: block; margin-top: 0.9rem; padding: 0;
+  background: none; border: 0; cursor: pointer;
+  color: var(--muted); font-size: 0.92rem; font-weight: 700;
+  text-decoration: underline; text-align: left;
+}
+.vendor-signin-toggle:hover { color: var(--ink); }
+.vendor-signin {
+  margin-top: 0.7rem; display: flex; flex-wrap: wrap; gap: 0.5rem;
+  max-width: 30rem;
+}
+.vendor-signin input {
+  flex: 1 1 12rem; min-width: 0;
+  font: inherit; font-size: 1rem; font-weight: 500;
+  padding: 0.65rem 0.8rem; border-radius: 0.7rem;
+  border: 2px solid var(--edge); background: var(--card); color: var(--ink);
+}
+.vendor-signin input:focus-visible { outline: 3px solid var(--brand); outline-offset: 1px; }
+.vendor-signin-go {
+  flex: 0 0 auto;
+  font: inherit; font-size: 1rem; font-weight: 800; cursor: pointer;
+  padding: 0.65rem 1.2rem; border-radius: 0.7rem;
+  border: 2px solid var(--edge); background: var(--navy); color: #fff;
+}
+.vendor-signin-go:disabled { opacity: 0.6; cursor: default; }
+
 /* small vendor pitch under the auth copy — links out to the /join application */
 .vendor-invite { margin-top: 0.35rem; }
 .vendor-invite a { color: var(--brand); font-weight: 800; text-decoration: underline; }

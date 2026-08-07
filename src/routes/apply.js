@@ -72,22 +72,12 @@ router.post('/', async (req, res, next) => {
     const v = validApplication(req.body);
     if (v.error) return res.status(400).json({ error: 'BAD_APPLICATION', message: v.error });
 
-    // If this email already has ANY account (student, vendor, or admin login),
-    // an application is a dead end: accept would fail at createUser. Bounce it
-    // now with a clear message instead of queueing something the operator can't
-    // approve.
-    //
-    // Asks auth.users via RPC rather than profiles: since migration-022 dropped
-    // the auto-create trigger, a profiles row only exists for students who
-    // accepted the terms, so a profiles lookup would miss vendor and admin
-    // accounts entirely.
-    const { data: emailTaken, error: profErr } = await supabaseAdmin
-      .rpc('email_has_account', { p_email: v.fields.email });
-    if (profErr) throw profErr;
-    if (emailTaken) {
-      return res.status(409).json({ error: 'EMAIL_IN_USE', message: 'An account with this email already exists.' });
-    }
-
+    // An email that already has an account is no longer a dead end: since
+    // migration-035 the accept flow LINKS the existing account as the vendor
+    // login instead of failing at createUser (dual-role accounts — a student
+    // can run a vendor with the same email, and a multi-location owner can
+    // apply again). So the old email_has_account bounce is gone; the unique
+    // index on pending applications still stops duplicate submissions below.
     const { error } = await supabaseAdmin
       .from('vendor_applications')
       .insert({ ...v.fields, password_hash: await bcrypt.hash(v.password, 10) });

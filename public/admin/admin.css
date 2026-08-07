@@ -252,6 +252,70 @@ h1, h3 { margin: 0; }
 }
 .reset-warn { margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--bad); }
 
+/* ---------- vendor pricing editor (Edit modal) ---------- */
+/* Same neutral chrome as Reset password: Edit changes config, it doesn't
+   destroy anything, so it must not read like Delete beside it. */
+.vendor-edit {
+  flex-shrink: 0; font: inherit; font-size: 0.72rem; font-weight: 700; cursor: pointer;
+  padding: 0.35rem 0.6rem; border-radius: 8px;
+  background: transparent; color: var(--ink); border: 1px solid var(--line);
+}
+.vendor-edit:not(:disabled):hover { background: var(--panel-2); }
+.vendor-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Wider than the reset card (item rows carry four fields), left-aligned, and
+   scrollable inside the viewport for vendors with long catalogs. */
+.vendor-edit-card { width: min(620px, 100%); max-height: 90dvh; overflow-y: auto; text-align: left; }
+.vendor-edit-section { margin-top: 1.2rem; }
+.vendor-edit-label {
+  margin: 0 0 0.4rem; font-size: 0.78rem; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.vendor-edit-hint { color: var(--muted); font-size: 0.75rem; margin: 0.3rem 0 0.5rem; }
+.vendor-ratio-row { display: flex; align-items: center; gap: 0.5rem; }
+
+.vendor-edit-input, .vr-emoji, .vr-title, .vr-pts, .vr-visits {
+  font: inherit; font-size: 0.85rem; padding: 0.45rem 0.55rem; border-radius: 8px;
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+}
+.vendor-edit-input::placeholder, .vr-title::placeholder,
+.vr-pts::placeholder, .vr-visits::placeholder { color: var(--muted); }
+.vendor-edit-input:focus-visible, .vr-emoji:focus-visible, .vr-title:focus-visible,
+.vr-pts:focus-visible, .vr-visits:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vendor-edit-input { width: 7rem; }
+
+.vendor-edit-note { font-size: 0.75rem; color: var(--muted); }
+.vendor-edit-note.is-ok { color: var(--good); }
+.vendor-edit-note.is-err { color: var(--bad); }
+
+.vendor-reward-list { display: grid; gap: 0.45rem; margin: 0.5rem 0; }
+.vr-row {
+  display: grid; grid-template-columns: 2.9rem minmax(0, 1fr) 4.6rem 4.6rem;
+  gap: 0.4rem; align-items: center;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.5rem;
+}
+/* Mirror the roster rows: dim the fields when hidden from students, never the switch. */
+.vr-row.is-off .vr-emoji, .vr-row.is-off .vr-title,
+.vr-row.is-off .vr-pts, .vr-row.is-off .vr-visits { opacity: 0.55; }
+.vr-emoji { text-align: center; padding-inline: 0.2rem; }
+.vr-emoji, .vr-title, .vr-pts, .vr-visits { background: var(--panel); }
+.vr-actions {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 0.6rem;
+  justify-content: flex-end;
+}
+.vr-note { flex: 1; min-width: 0; font-size: 0.72rem; color: var(--muted); text-align: left; }
+.vr-note.is-ok { color: var(--good); }
+.vr-note.is-err { color: var(--bad); }
+.vr-save, .vr-cancel {
+  flex-shrink: 0; font: inherit; font-size: 0.75rem; font-weight: 700; cursor: pointer;
+  padding: 0.4rem 0.7rem; border-radius: 8px;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+}
+.vr-save:not(:disabled):hover, .vr-cancel:not(:disabled):hover { background: var(--panel-2); }
+.vr-save:disabled, .vr-cancel:disabled { opacity: 0.6; cursor: default; }
+.vr-save:focus-visible, .vr-cancel:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ---------- vendor applications ---------- */
 .app-list { display: grid; gap: 0.6rem; margin-top: 0.85rem; }
 .app-row {

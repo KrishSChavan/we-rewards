@@ -214,6 +214,42 @@
     </div>
   </div>
 
+  <!-- ===== VENDOR PRICING EDITOR ===== -->
+  <!-- Opened from a vendor row's "Edit" button. The operator edits the vendor's
+       points-per-dollar rate and its reward items in place. The server reuses
+       the vendor terminal's own validators (src/lib/rewards.js), so nothing an
+       operator saves here could be rejected by the vendor's Settings screen. -->
+  <div id="vendor-modal" class="overlay" hidden>
+    <div class="reset-card vendor-edit-card" role="dialog" aria-modal="true" aria-labelledby="vendor-edit-title">
+      <h2 id="vendor-edit-title">Edit vendor</h2>
+      <p class="muted">Changes are live for students and the terminal right away.</p>
+
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">Points per dollar</p>
+        <div class="vendor-ratio-row">
+          <input id="vendor-edit-ratio" class="vendor-edit-input" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" aria-label="Points per dollar" />
+          <button id="vendor-ratio-save" class="vr-save" type="button">Save rate</button>
+          <span id="vendor-ratio-note" class="vendor-edit-note"></span>
+        </div>
+        <p class="vendor-edit-hint">A $10 purchase at rate 10 earns 100 points. Allowed: 0.5 to 1000.</p>
+      </div>
+
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">Reward items</p>
+        <p class="vendor-edit-hint">Each item needs a point cost, a visit cost, or both. Clear a cost field to drop that way to pay. The switch hides an item from students without deleting it.</p>
+        <p id="vendor-rewards-msg" class="muted" hidden></p>
+        <div id="vendor-reward-list" class="vendor-reward-list"></div>
+        <button id="vendor-reward-add" class="btn-ghost btn-compact" type="button">+ Add item</button>
+      </div>
+
+      <p id="vendor-edit-error" class="field-error" role="alert" hidden></p>
+
+      <div class="push-actions">
+        <button id="vendor-edit-close" class="btn-ghost" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.0/dist/umd/supabase.js"
           integrity="sha384-3wY11tldQ5+yWqAvmTN4XtQvnjoTva0cV15O/O/O5NTtp0ivVopSzLOzsVXWZse9"
           crossorigin="anonymous"></script>

@@ -243,6 +243,21 @@ app.use('/api/client-error', clientErrorLimiter);
 app.use('/api/client-event', clientEventLimiter);
 app.use('/api/apply', applyLimiter);
 
+// ---- Which deployment is this? ----
+// A test deployment (APP_ENV=staging) runs byte-identical code from the same
+// branch as production; everything that differs is SERVED, never committed, so
+// `staging` and `main` never drift apart and nothing has to be stripped before
+// a merge. What has to differ is confined to the phone:
+//   • the installed PWA must be an obviously different app, or the test icon
+//     and the real one are indistinguishable on the home screen (same name,
+//     same artwork, same everything) — see serveTestManifest + markTestEnv;
+//   • each deploy must invalidate its own service-worker cache, or a test
+//     session silently runs the previous deploy's bytes — see serveTestSw.
+// Unset means production, so an unconfigured environment can never accidentally
+// present itself as the safe one to experiment in.
+const APP_ENV = process.env.APP_ENV || 'production';
+const IS_TEST_ENV = APP_ENV !== 'production';
+
 // Static app shells: student PWA at / , vendor terminal at /terminal , operator
 // dash at /admin , public vendor application page at /join .
 //
@@ -264,6 +279,32 @@ function assetHash(absPath) {
     assetHashes.set(absPath, h);
   }
   return assetHashes.get(absPath);
+}
+
+// One id standing for everything an app currently serves: a hash over the
+// content hashes of every file under its root. It changes if and only if that
+// app's bytes change, which is what makes it usable as a service-worker cache
+// name (see serveTestSw) — a release id or a boot timestamp would also change
+// when an idle Eco dyno sleeps and wakes, throwing away a good cache several
+// times a day for nothing. Memoised per root: asset bytes can't change while
+// the process lives, and a deploy starts a fresh one.
+const appBuildIds = new Map();   // app root -> 8-char id
+function appBuildId(root) {
+  if (!appBuildIds.has(root)) {
+    const h = crypto.createHash('sha1');
+    const walk = (dir) => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name));   // stable order → stable id
+      for (const entry of entries) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(abs);
+        else h.update(`${path.relative(root, abs)}:${assetHash(abs)}\n`);
+      }
+    };
+    try { walk(root); } catch { /* unreadable → the empty hash, still stable */ }
+    appBuildIds.set(root, h.digest('hex').slice(0, 8));
+  }
+  return appBuildIds.get(root);
 }
 
 // Add ?v=<hash> to href/src values that point at a local .js/.css file.
@@ -311,6 +352,19 @@ function needsLegacyCapable(ua) {
 const CAPABLE_SLOT = '<!--APPLE-CAPABLE-->';
 const CAPABLE_META = '<meta name="apple-mobile-web-app-capable" content="yes" />';
 
+// Non-production shells carry two marks. `data-app-env` on <html> is a hook for
+// any later CSS or script that wants to shout "this is the test app" — nothing
+// uses it yet on purpose, because a fixed banner has to be fitted around the
+// iOS safe-area handling rather than dropped on top of it. The <title> prefix
+// is the one that pays off immediately: it's what the phone's app switcher and
+// the browser tab show, so the two installs stop looking alike there too.
+// Interpunct, not an em dash — the shells' COPY RULE covers this string.
+function markTestEnv(html) {
+  return html
+    .replace(/<html\b/i, `<html data-app-env="${APP_ENV}"`)
+    .replace(/<title>([^<]*)<\/title>/i, (_full, title) => `<title>TEST · ${title}</title>`);
+}
+
 const renderedShells = new Map();   // "<index.html path>|<variant>" -> versioned HTML string
 function serveShell(mount, root) {
   const htmlPath = path.join(root, 'index.html');
@@ -321,6 +375,7 @@ function serveShell(mount, root) {
     if (html == null) {
       html = versionAssets(fs.readFileSync(htmlPath, 'utf8'), mount, root)
         .replace(CAPABLE_SLOT, legacy ? CAPABLE_META : '');
+      if (IS_TEST_ENV) html = markTestEnv(html);
       renderedShells.set(key, html);
     }
     res.set('Cache-Control', 'no-cache');   // always revalidate so new ?v= tags are seen
@@ -335,9 +390,81 @@ const shells = [
   { mount: '/admin',    root: path.join(__dirname, 'public/admin')   },
   { mount: '/join',     root: path.join(__dirname, 'public/join')    },
 ];
+
+// ---- Test-deployment overrides (APP_ENV != production) ----
+// Both routes below are registered ONLY on a test deployment. In production
+// they don't exist at all and express.static serves both files off disk exactly
+// as before, so the risk this adds to the live app is a boolean.
+
+// A different origin already gives a test deployment its own service worker,
+// caches, storage and push subscription — but not its own identity. Installed
+// from the same manifest, the test app lands on the home screen with the real
+// app's name and artwork and there is no way to tell which one you tapped.
+// Rewriting the name and the theme colour (which tints the Android status bar
+// and the iOS splash) fixes that without a second set of icon files.
+const TEST_THEME_COLOR = '#b3261e';   // crimson; nothing in the real apps is this colour
+function serveTestManifest(root) {
+  const file = path.join(root, 'manifest.json');
+  return (_req, res) => {
+    let manifest;
+    try { manifest = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch { return res.status(404).end(); }
+    if (manifest.name) manifest.name = `TEST ${manifest.name}`;
+    if (manifest.short_name) manifest.short_name = `TEST ${manifest.short_name}`;
+    manifest.theme_color = TEST_THEME_COLOR;
+    res.set('Cache-Control', 'no-cache');
+    res.type('application/manifest+json').send(JSON.stringify(manifest, null, 2));
+  };
+}
+
+// Stamp the app's build id onto the service worker's cache name. Two things
+// follow, and the second is the point: the served sw.js BYTES change whenever
+// the app changes, which is the only signal a browser uses to decide it has a
+// new worker to install, and the cache name changes with it so the activate
+// handler's prefix sweep drops the previous build. Net effect on a test
+// deployment: a deploy always reaches the installed PWA, with no CACHE constant
+// to remember to bump — forgetting that bump means an afternoon of testing the
+// previous deploy's code and drawing conclusions from it.
+//
+// The suffix keeps each app inside its own namespace ('werewards-v46' becomes
+// 'werewards-v46-1a2b3c4d', still matching the 'werewards-v' prefix the student
+// worker sweeps on, and likewise for the terminal and admin prefixes), so the
+// existing cleanup logic collects old build ids unchanged.
+//
+// Production is deliberately left alone for now: the same treatment would work
+// there and would retire the manual bump for good, but it should earn that by
+// behaving here first. Flipping it on later is this one condition.
+const SW_CACHE_CONST = /(const\s+CACHE\s*=\s*)(['"])([^'"]+)\2/;
+function serveTestSw(root) {
+  const file = path.join(root, 'sw.js');
+  return (_req, res) => {
+    let js;
+    try { js = fs.readFileSync(file, 'utf8'); }
+    catch { return res.status(404).end(); }
+    js = js.replace(SW_CACHE_CONST, (_full, head, quote, name) =>
+      `${head}${quote}${name}-${appBuildId(root)}${quote}`);
+    res.set('Cache-Control', 'no-cache');   // never let a stale worker script be reused
+    res.type('application/javascript').send(js);
+  };
+}
+
 // Versioned HTML shells first, so they win over express.static's own index.html.
 for (const { mount, root } of shells) {
   app.get(mount === '/' ? ['/'] : [mount, mount + '/'], serveShell(mount, root));
+}
+// Then the test-only rewrites, which must also beat express.static to the file.
+// Only the apps that actually ship a manifest / worker get a route (public/join
+// is a plain page, not an installable app).
+if (IS_TEST_ENV) {
+  const base = (mount) => (mount === '/' ? '' : mount);
+  for (const { mount, root } of shells) {
+    if (fs.existsSync(path.join(root, 'manifest.json'))) {
+      app.get(`${base(mount)}/manifest.json`, serveTestManifest(root));
+    }
+    if (fs.existsSync(path.join(root, 'sw.js'))) {
+      app.get(`${base(mount)}/sw.js`, serveTestSw(root));
+    }
+  }
 }
 // Then the static assets themselves (index disabled — the routes above own the HTML).
 for (const { mount, root } of shells) {

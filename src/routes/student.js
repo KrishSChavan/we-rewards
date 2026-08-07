@@ -32,7 +32,7 @@ router.get('/consent', async (req, res, next) => {
   try {
     const { data: profile, error } = await supabaseAdmin
       .from('profiles')
-      .select('terms_accepted_at, terms_version')
+      .select('terms_accepted_at, terms_version, is_vendor')
       .eq('user_id', req.user.id)
       .maybeSingle();
     if (error) throw error;
@@ -43,6 +43,8 @@ router.get('/consent', async (req, res, next) => {
       // True when they previously agreed to an older version — the modal says
       // "our terms have changed" rather than greeting them as a new user.
       isRevision: Boolean(profile?.terms_accepted_at) && !accepted,
+      // Dual-role flag (migration-035): this student account also runs a vendor.
+      isVendor: Boolean(profile?.is_vendor),
       termsVersion: TERMS_VERSION,
       documents: TERMS_DOCUMENTS,
     });
@@ -113,9 +115,29 @@ router.post('/accept-terms', async (req, res, next) => {
  * account deletion, so the client must confirm before calling it. Same
  * underlying operation as /delete; kept separate so the two intents are
  * distinguishable in logs and so the client can word each one properly.
+ *
+ * Dual-role guard (migration-035): if this login is ALSO vendor staff (a
+ * vendor exploring the student side and saying no thanks), deleting the auth
+ * user would cascade vendor_staff away and destroy their terminal login.
+ * Instead, remove only the student side: the profiles row if one exists.
  */
 router.post('/decline', async (req, res, next) => {
   try {
+    const { count, error: staffErr } = await supabaseAdmin
+      .from('vendor_staff')
+      .select('vendor_id', { count: 'exact', head: true })
+      .eq('user_id', req.user.id);
+    if (staffErr) throw staffErr;
+
+    if (count) {
+      const { error } = await supabaseAdmin
+        .from('profiles')
+        .delete()
+        .eq('user_id', req.user.id);
+      if (error) throw error;
+      return res.json({ ok: true, keptVendorLogin: true });
+    }
+
     const { error } = await supabaseAdmin.auth.admin.deleteUser(req.user.id);
     if (error) throw error;
     res.json({ ok: true });
@@ -689,10 +711,31 @@ router.get('/export', async (req, res, next) => {
  * profile, balances, live codes, and score snapshot; transaction rows are kept
  * but anonymized (user_id → null, migration-011) so vendors' revenue totals
  * don't silently change. Irreversible.
+ *
+ * Dual-role guard (migration-035): a vendor-linked account keeps its auth user
+ * (and with it the terminal login) — only the student side goes. Deleting the
+ * profiles row directly triggers the same cascades the auth-user delete would
+ * (balances, codes, snapshots; transactions anonymize), minus vendor_staff.
  */
 router.post('/delete', async (req, res, next) => {
   try {
     await forgetPushSubscriptions(req.user.id);
+
+    const { count, error: staffErr } = await supabaseAdmin
+      .from('vendor_staff')
+      .select('vendor_id', { count: 'exact', head: true })
+      .eq('user_id', req.user.id);
+    if (staffErr) throw staffErr;
+
+    if (count) {
+      const { error } = await supabaseAdmin
+        .from('profiles')
+        .delete()
+        .eq('user_id', req.user.id);
+      if (error) throw error;
+      return res.json({ ok: true, keptVendorLogin: true });
+    }
+
     const { error } = await supabaseAdmin.auth.admin.deleteUser(req.user.id);
     if (error) throw error;
     res.json({ ok: true });

@@ -984,6 +984,10 @@ function renderQuickAwards() {
   wrap.innerHTML = '';
   const usable = tiers.filter((t) => tierAmount(t) > 0);
   wrap.hidden = usable.length === 0;
+  // Quick buttons are optional (a vendor can delete every row in Settings), so
+  // also collapse the wrapper — otherwise an empty flex child leaves a stray
+  // gap above the keypad.
+  wrap.closest('.pad-shortcut-wrapper')?.classList.toggle('is-empty', usable.length === 0);
   usable.forEach((t) => {
     const amt = tierAmount(t);
     const pts = Math.floor(Math.floor(amt * config.pointsPerDollar) * currentMultiplier); // match server flooring
@@ -1092,9 +1096,17 @@ async function onPinKey(e) {
         // the detour never changed `mode`, so land back on that mode's screen
         // first — otherwise the action's result flood would close over a
         // stranded, empty PIN pad.
+        //
+        // Settings is special: its deferred action is a replayed save, and
+        // enterModeScreen would call loadSettings, wiping the vendor's edits
+        // from the (hidden but intact) form and racing the replayed PATCH.
+        // Just re-show the screen; the replay carries its own captured body,
+        // and a failed replay then looks like any failed save (error banner
+        // over the still-edited form) instead of a silent reset.
         const fn = pinAction;
         pinAction = null;
-        enterModeScreen(mode);
+        if (mode === 'settings') show('screen-settings');
+        else enterModeScreen(mode);
         fn();
       } else {
         enterModeScreen(pinTarget);
@@ -2314,16 +2326,27 @@ function guardDiscardAndLeave() {
 // Save & leave: persist, then navigate once the save succeeds. A failed save
 // keeps the vendor on Settings (with the error shown) rather than losing edits.
 async function guardSaveAndLeave() {
+  // Another request is mid-flight: saveSettings would silently no-op, but the
+  // overlay would already be gone — the tap would neither save nor navigate.
+  // Keep the guard up instead so the next tap goes through.
+  if (busy) return;
   const target = pendingMode;
   $('settings-guard').hidden = true;
   pendingMode = null;
   await saveSettings(target);
 }
 
+// Generation counter: a slow GET must never clobber the form with pre-save
+// data after a PATCH has already succeeded (the vendor would see old values
+// marked clean, and the next Save would silently revert the server).
+let settingsLoadSeq = 0;
+
 async function loadSettings() {
+  const seq = ++settingsLoadSeq;
   try {
     const res = await authFetch('/api/vendor/settings');
     const data = await res.json().catch(() => ({}));
+    if (seq !== settingsLoadSeq) return;   // superseded by a newer load or a completed save
     if (handlePinRequired(res, data)) return;
     if (res.ok) { loadedSettings = data; renderSettings(data); }
   } catch { /* keep whatever's on screen */ }
@@ -2500,6 +2523,16 @@ async function saveSettings(afterTarget) {
   const pin = $('set-pin').value.trim();
   if (pin) body.pin = pin;
 
+  await pushSettings(body, afterTarget);
+}
+
+// The PATCH itself, split from the form read above: a save that hits an expired
+// PIN session replays THIS with the already-captured body once the PIN is back.
+// (The unlock path re-enters Settings and re-renders from the server, so
+// re-reading the form at that point would submit the wiped fields — the edits
+// the vendor just asked to save.)
+async function pushSettings(body, afterTarget) {
+  if (busy) return;
   busy = true;
   $('settings-save').disabled = true;
   try {
@@ -2508,13 +2541,19 @@ async function saveSettings(afterTarget) {
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    if (handlePinRequired(res, data)) return;
+    // Arm the replay only while the vendor is still ON Settings. If they
+    // already discarded the edits and left (the guard's Discard while this
+    // request was in flight), a late 401 must not hijack the next PIN entry
+    // into committing a body the vendor threw away.
+    const retry = mode === 'settings' ? () => pushSettings(body, afterTarget) : null;
+    if (handlePinRequired(res, data, retry)) return;
     if (!res.ok) {
       $('settings-error').textContent = data.message || 'Couldn’t save settings.';
       $('settings-error').hidden = false;
       return;
     }
 
+    settingsLoadSeq++;   // the PATCH response is now authoritative; void any in-flight GET
     loadedSettings = data;
     // Everything's persisted now — re-baseline so the leave-guard (and the flood's
     // navigation callbacks) see a clean form and don't re-prompt.

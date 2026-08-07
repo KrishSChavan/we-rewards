@@ -86,6 +86,17 @@
             </svg>
             Continue with Google
           </button>
+          <!-- Vendors share one account across both apps (same email): the
+               terminal login's password works here too. Collapsed behind a
+               text link so the student path stays one obvious button. -->
+          <button id="vendor-signin-toggle" class="vendor-signin-toggle" type="button">
+            Vendor? Sign in with your terminal email and password
+          </button>
+          <form id="vendor-signin" class="vendor-signin" hidden>
+            <input id="vendor-signin-email" type="email" autocomplete="email" placeholder="you@example.com" aria-label="Email" required />
+            <input id="vendor-signin-password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" required />
+            <button id="vendor-signin-go" class="vendor-signin-go" type="submit">Sign in</button>
+          </form>
           <p id="auth-error" class="auth-error" hidden></p>
           <p class="fine">Free for students · works right in your browser</p>
           <p class="fine vendor-invite">Run a spot near campus? <a href="/join" target="_blank" rel="noopener">Join the WeRewards community!</a></p>

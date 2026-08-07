@@ -10,6 +10,7 @@ import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WIN
 import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupVendorAnalytics } from '../lib/analytics.js';
+import { validReward, validRatio } from '../lib/rewards.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
@@ -365,33 +366,8 @@ router.get('/rewards', async (req, res, next) => {
   }
 });
 
-// A price is: a positive integer, or null meaning "not sold in this currency".
-// Blank string counts as null so an emptied form field clears the price.
-function validPrice(raw, label, max) {
-  if (raw == null || raw === '') return { value: null };
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1 || n > max) {
-    return { error: `${label} must be a whole number from 1 to ${max}.` };
-  }
-  return { value: n };
-}
-
-// Mirrors the DB's rewards_has_a_price CHECK (migration-029): points, visits,
-// or both, but never neither.
-function validReward(title, cost, visits, emoji) {
-  const t = String(title ?? '').trim();
-  const e = String(emoji ?? '🎁').trim().slice(0, 16) || '🎁'; // emoji can be multi-codepoint
-  if (!t || t.length > 60) return { error: 'Give the item a name (up to 60 characters).' };
-
-  const p = validPrice(cost, 'Point cost', 100000);
-  if (p.error) return { error: p.error };
-  const v = validPrice(visits, 'Visit cost', 50);
-  if (v.error) return { error: v.error };
-  if (p.value == null && v.value == null) {
-    return { error: 'Set a point cost, a visit cost, or both.' };
-  }
-  return { title: t, cost: p.value, visits: v.value, emoji: e };
-}
+// validPrice / validReward moved to src/lib/rewards.js (shared with the admin
+// routes, which can now edit the same fields from the operator dashboard).
 
 /** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji } */
 router.post('/rewards', requirePin, async (req, res, next) => {
@@ -981,14 +957,15 @@ router.delete('/campaigns/:id', requirePin, async (req, res, next) => {
 });
 
 /* ---------- vendor self-service settings ---------- */
+/* RATIO_MIN / RATIO_MAX now come from src/lib/rewards.js (shared with admin). */
 
-const RATIO_MIN = 0.5;
-const RATIO_MAX = 1000;
-
-/** Validate quick-amount buttons: 1–8 rows, each a label + a fixed dollar amount. */
+/** Validate quick-amount buttons: 0–8 rows, each a label + a fixed dollar amount.
+ *  An empty list is valid — quick buttons are optional, and the terminal falls
+ *  back to the exact-amount keypad (setupExactEntry forces it on when there are
+ *  no buttons, regardless of the allowExactEntry switch). */
 function validTiers(raw) {
-  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 8) {
-    return { error: 'Add between 1 and 8 quick-amount buttons.' };
+  if (!Array.isArray(raw) || raw.length > 8) {
+    return { error: 'Add up to 8 quick-amount buttons.' };
   }
   const tiers = [];
   for (const row of raw) {
@@ -1011,11 +988,9 @@ function validSettings(body) {
   let pin = null;
 
   if (body?.pointsPerDollar != null) {
-    const r = Number(body.pointsPerDollar);
-    if (!Number.isFinite(r) || r < RATIO_MIN || r > RATIO_MAX) {
-      return { error: `Points per dollar must be between ${RATIO_MIN} and ${RATIO_MAX}.` };
-    }
-    updates.points_per_dollar = Math.round(r * 100) / 100; // column is numeric(6,2)
+    const r = validRatio(body.pointsPerDollar);
+    if (r.error) return { error: r.error };
+    updates.points_per_dollar = r.value; // column is numeric(6,2)
   }
 
   if (body?.allowExactEntry != null) {

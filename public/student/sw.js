@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v46';   // v46: server-without-push-keys gets an honest fail note (was "reload and try again"); subscribePush guards the null key
+const CACHE = 'werewards-v47';   // v47: vendor email+password sign-in on the landing page (dual-role accounts, migration-035)
+// v46: server-without-push-keys gets an honest fail note (was "reload and try again"); subscribePush guards the null key
 // v45: app icons redrawn in Archivo — REWARDS in accent under the WE, thin accent border, no rule
 // v44: app icons redrawn — REWARDS set under the WE
 // v43: no silent enable failures (key-fetch retries, vapid-null note, sw-ready timeout, PATCH checked); load no longer re-subscribes an opted-out student

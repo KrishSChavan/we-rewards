@@ -43,8 +43,16 @@ const $ = (id) => document.getElementById(id);
   $('reset-modal').addEventListener('click', (e) => {
     if (e.target === $('reset-modal')) closeResetModal();    // backdrop only, not the card
   });
+  $('vendor-edit-close').addEventListener('click', closeVendorModal);
+  $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
+  $('vendor-reward-add').addEventListener('click', addRewardDraft);
+  $('vendor-modal').addEventListener('click', (e) => {
+    if (e.target === $('vendor-modal')) closeVendorModal();  // backdrop only, not the card
+  });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('reset-modal').hidden) closeResetModal();
+    if (e.key !== 'Escape') return;
+    if (!$('reset-modal').hidden) closeResetModal();
+    if (!$('vendor-modal').hidden) closeVendorModal();
   });
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
@@ -90,7 +98,11 @@ async function signOut() {
 // non-approved account is bounced back to the login screen by denyAccess().
 function render(session) {
   if (!session) {
-    closePushModal();   // a sign-out (even from another tab) must not leave the popup over the login card
+    // A sign-out (even from another tab) must not leave any overlay over the
+    // login card — closeResetModal also wipes a live reset code out of the DOM.
+    closePushModal();
+    closeResetModal();
+    closeVendorModal();
     $('dash').hidden = true;
     $('login').hidden = false;
     return;
@@ -263,6 +275,12 @@ function showVendorError() {
   el.hidden = false;
 }
 
+// One row's name + meta line, shared by renderVendors and the Edit modal's
+// ratio save (which repaints the meta in place so the roster shows the new rate).
+const vendorInfoHtml = (v) =>
+  `<span class="vendor-name">${escapeHtml(v.name)}</span>` +
+  `<span class="vendor-meta">${escapeHtml(v.slug)} · ${num(v.points_per_dollar)} pts/$</span>`;
+
 function renderVendors() {
   const wrap = $('vendor-list');
   const countEl = $('vendors-count');
@@ -284,9 +302,7 @@ function renderVendors() {
 
     const info = document.createElement('div');
     info.className = 'vendor-info';
-    info.innerHTML =
-      `<span class="vendor-name">${escapeHtml(v.name)}</span>` +
-      `<span class="vendor-meta">${escapeHtml(v.slug)} · ${num(v.points_per_dollar)} pts/$</span>`;
+    info.innerHTML = vendorInfoHtml(v);
 
     // role=switch with the vendor name as its accessible name; aria-checked
     // carries the on/off state (SR reads e.g. "Local Eats, switch, on").
@@ -297,6 +313,14 @@ function renderVendors() {
     toggle.innerHTML = `<span class="vt-track"><span class="vt-knob"></span></span><span class="vt-label"></span>`;
     paintVendorRow(row, toggle, v);
     toggle.addEventListener('click', () => toggleVendor(v, toggle, row));
+
+    // Drill into the pricing editor: points-per-dollar + reward items.
+    const edit = document.createElement('button');
+    edit.className = 'vendor-edit';
+    edit.type = 'button';
+    edit.textContent = 'Edit';
+    edit.setAttribute('aria-label', `Edit ${v.name}`);
+    edit.addEventListener('click', () => openVendorModal(v, info));
 
     // Mint a one-time password-reset code to read to the vendor.
     //
@@ -322,7 +346,7 @@ function renderVendors() {
 
     const actions = document.createElement('div');
     actions.className = 'vendor-actions';
-    actions.append(toggle, reset, del);
+    actions.append(toggle, edit, reset, del);
 
     top.append(info, actions);
 
@@ -600,6 +624,231 @@ async function copyResetCode() {
   setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
 }
 
+/* ---------- vendor pricing editor (Edit modal) ----------
+   Drill-in for one vendor: the points-per-dollar rate and the reward-item
+   catalog, both normally managed from the vendor's own terminal. The server
+   routes (/api/admin/vendors/:id...) reuse the terminal's validators, so
+   messages here match what the vendor would see saving the same thing. */
+
+let editVendor = null;   // { v, infoEl } while the dialog is open
+
+// Paint a small inline status note: 'ok' | 'err' | null (neutral).
+function setNote(el, text, kind) {
+  el.textContent = text;
+  el.classList.toggle('is-ok', kind === 'ok');
+  el.classList.toggle('is-err', kind === 'err');
+}
+
+function openVendorModal(v, infoEl) {
+  editVendor = { v, infoEl };
+  $('vendor-edit-title').textContent = `Edit: ${v.name}`;
+  $('vendor-edit-ratio').value = Number(v.points_per_dollar);
+  setNote($('vendor-ratio-note'), '', null);
+  $('vendor-edit-error').hidden = true;
+  $('vendor-reward-list').innerHTML = '';
+  showRewardsMsg('Loading items…');
+  $('vendor-modal').hidden = false;
+  $('vendor-edit-ratio').focus();
+  loadVendorRewards(v.id);
+}
+
+function closeVendorModal() {
+  $('vendor-modal').hidden = true;
+  editVendor = null;
+}
+
+function showRewardsMsg(text) {
+  const el = $('vendor-rewards-msg');
+  el.textContent = text || '';
+  el.hidden = !text;
+}
+
+async function saveVendorRatio() {
+  if (!editVendor) return;
+  const btn = $('vendor-ratio-save');
+  const note = $('vendor-ratio-note');
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ pointsPerDollar: Number($('vendor-edit-ratio').value) }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    Object.assign(editVendor.v, data);           // keep the in-memory roster in sync
+    editVendor.infoEl.innerHTML = vendorInfoHtml(editVendor.v);  // roster meta shows the new rate
+    $('vendor-edit-ratio').value = Number(editVendor.v.points_per_dollar);
+    setNote(note, 'Saved', 'ok');
+    btn.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
+async function loadVendorRewards(vendorId) {
+  try {
+    const res = await authFetch(`/api/admin/vendors/${vendorId}/rewards`);
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) return showRewardsMsg('Couldn’t load the items. Close and try again.');
+    const items = await res.json();
+    // The modal may have been closed (or reopened on another vendor) meanwhile.
+    if (!editVendor || editVendor.v.id !== vendorId) return;
+    showRewardsMsg(items.length ? '' : 'No items yet. Add the first one below.');
+    const list = $('vendor-reward-list');
+    list.innerHTML = '';
+    items.forEach((r) => list.appendChild(buildRewardRow(r)));
+  } catch {
+    showRewardsMsg('No connection. Close and try again.');
+  }
+}
+
+function addRewardDraft() {
+  showRewardsMsg('');
+  const row = buildRewardRow(null);
+  $('vendor-reward-list').appendChild(row);
+  row.querySelector('.vr-title').focus();
+}
+
+// One editable item row. `r` is the rewards row, or null for an unsaved draft
+// (Save creates it; Cancel just removes the row). Reward titles are vendor
+// text, so everything renders via DOM APIs / value assignment, never innerHTML.
+function buildRewardRow(r) {
+  const row = document.createElement('div');
+  row.className = 'vr-row';
+
+  const emoji = document.createElement('input');
+  emoji.className = 'vr-emoji';
+  emoji.maxLength = 16;
+  emoji.value = r?.emoji ?? '🎁';
+  emoji.setAttribute('aria-label', 'Emoji');
+
+  const title = document.createElement('input');
+  title.className = 'vr-title';
+  title.maxLength = 60;
+  title.placeholder = 'Item name';
+  title.value = r?.title ?? '';
+  title.setAttribute('aria-label', 'Item name');
+
+  const pts = document.createElement('input');
+  pts.className = 'vr-pts';
+  pts.type = 'number';
+  pts.min = '1';
+  pts.max = '100000';
+  pts.placeholder = 'pts';
+  pts.title = 'Point cost (blank: not sold for points)';
+  pts.value = r?.cost_in_points ?? '';
+  pts.setAttribute('aria-label', 'Point cost');
+
+  const visits = document.createElement('input');
+  visits.className = 'vr-visits';
+  visits.type = 'number';
+  visits.min = '1';
+  visits.max = '50';
+  visits.placeholder = 'visits';
+  visits.title = 'Visit cost (blank: no punch price)';
+  visits.value = r?.cost_in_visits ?? '';
+  visits.setAttribute('aria-label', 'Visit cost');
+
+  const actions = document.createElement('div');
+  actions.className = 'vr-actions';
+  const note = document.createElement('span');
+  note.className = 'vr-note';
+  const save = document.createElement('button');
+  save.className = 'vr-save';
+  save.type = 'button';
+  save.textContent = r ? 'Save' : 'Add item';
+  save.addEventListener('click', () => saveReward(r, { emoji, title, pts, visits }, save, note, row));
+
+  if (r) {
+    // Same switch chrome as the roster's on/off toggle; saves immediately.
+    const toggle = document.createElement('button');
+    toggle.className = 'vendor-toggle';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-label', `${r.title} shown to students`);
+    toggle.innerHTML = `<span class="vt-track"><span class="vt-knob"></span></span><span class="vt-label"></span>`;
+    paintRewardToggle(toggle, row, r);
+    toggle.addEventListener('click', () => toggleReward(r, toggle, row, note));
+    actions.append(note, toggle, save);
+  } else {
+    const cancel = document.createElement('button');
+    cancel.className = 'vr-cancel';
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => row.remove());
+    actions.append(note, cancel, save);
+  }
+
+  row.append(emoji, title, pts, visits, actions);
+  return row;
+}
+
+function paintRewardToggle(toggle, row, r) {
+  toggle.classList.toggle('is-on', r.active);
+  toggle.setAttribute('aria-checked', r.active ? 'true' : 'false');
+  const label = toggle.querySelector('.vt-label');
+  if (label) label.textContent = r.active ? 'ON' : 'OFF';
+  row.classList.toggle('is-off', !r.active);
+}
+
+async function toggleReward(r, toggle, row, note) {
+  if (!editVendor) return;
+  toggle.disabled = true;
+  setNote(note, '', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}/rewards/${r.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ active: !r.active }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); toggle.disabled = false; return; }
+    Object.assign(r, data);
+    paintRewardToggle(toggle, row, r);
+    toggle.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    toggle.disabled = false;
+  }
+}
+
+async function saveReward(r, fields, save, note, row) {
+  if (!editVendor) return;
+  // Number inputs report '' for a cleared (or unparseable) value; the server
+  // reads '' as "no price in this currency", which is the clearing semantics
+  // the hint text promises.
+  const body = {
+    title: fields.title.value,
+    costInPoints: fields.pts.value.trim(),
+    costInVisits: fields.visits.value.trim(),
+    emoji: fields.emoji.value,
+  };
+  save.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const path = r
+      ? `/api/admin/vendors/${editVendor.v.id}/rewards/${r.id}`
+      : `/api/admin/vendors/${editVendor.v.id}/rewards`;
+    const res = await authFetch(path, { method: r ? 'PATCH' : 'POST', body: JSON.stringify(body) });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); save.disabled = false; return; }
+    if (r) {
+      Object.assign(r, data);
+      setNote(note, 'Saved', 'ok');
+      save.disabled = false;
+    } else {
+      // The created item gets a real row (with the ON/OFF switch) in place of the draft.
+      row.replaceWith(buildRewardRow(data));
+    }
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    save.disabled = false;
+  }
+}
+
 // Single-series revenue bars for the last 14 days (mirrors the vendor terminal).
 function buildChart(daily) {
   const wrap = $('chart');
@@ -762,16 +1011,26 @@ async function acceptApplication(a, row, accept, reject, err) {
   try {
     const res = await authFetch(`/api/admin/applications/${a.id}/accept`, { method: 'POST' });
     if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      let msg = 'Accept failed, try again.';
-      try { msg = (await res.json())?.message || msg; } catch { /* keep generic */ }
       // 404 = another admin (or a double-click) already handled it — reload the list.
       if (res.status === 404) { removeApplicationRow(a, row); return; }
-      err.textContent = msg;
+      err.textContent = data?.message || 'Accept failed, try again.';
       err.hidden = false;
       accept.disabled = false;
       reject.disabled = false;
       return;
+    }
+    // The email already had a WeRewards account (usually a student), so the
+    // server linked it as the vendor login instead of creating a new one.
+    // Tell the operator, since "the password from their application" does NOT
+    // apply in this case.
+    if (data?.linkedExisting) {
+      alert(
+        `${a.email} already had a WeRewards account, so that account is now this vendor's login. ` +
+        `Its password was not changed: they sign in with their usual password (or Google). ` +
+        `If they need a terminal password, use Reset password on the vendor row.`
+      );
     }
     removeApplicationRow(a, row);
     // The new vendor should show up in the roster + totals without a manual refresh.

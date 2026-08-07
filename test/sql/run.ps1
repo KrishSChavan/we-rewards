@@ -41,7 +41,10 @@ param(
 # server is still booting) and Stop turns each of those into a fatal error.
 # Failures are checked explicitly instead, via $LASTEXITCODE and Fail().
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$supa = Join-Path (Split-Path -Parent (Split-Path -Parent $here)) 'supabase'
+# The SQL now lives in supabase\migrations\ with the CLI's numeric prefixes
+# (00000000000001_schema.sql, 00000000000029_migration-029.sql, ...). The
+# numeric prefix makes plain name sorting the application order, schema first.
+$supa = Join-Path (Split-Path -Parent (Split-Path -Parent $here)) 'supabase\migrations'
 $name = 'pgtest-migrations'
 
 function Drop { if (docker ps -a --filter "name=^/$name$" --format '{{.Names}}') { docker rm -f $name | Out-Null } }
@@ -68,16 +71,23 @@ $psql = { param($f) docker exec $name psql -U postgres -d t -q -v ON_ERROR_STOP=
 
 & $psql 'bootstrap.sql'; if ($LASTEXITCODE -ne 0) { Fail 'bootstrap (Supabase stubs)' }
 
-# schema.sql is the baseline; migrations are numbered from 002 with no gaps.
-$all = Get-ChildItem "$supa\migration-*.sql" | Sort-Object Name | Select-Object -ExpandProperty Name
-if ($all -notcontains $Migration) { Fail "no such migration: $Migration" }
+# -Migration still takes the short 'migration-NNN.sql' form; resolve it to the
+# prefixed on-disk name. (A full prefixed name is accepted too.)
+$all = Get-ChildItem "$supa\*.sql" | Sort-Object Name | Select-Object -ExpandProperty Name
+if ($all -notcontains $Migration) {
+  $resolved = @($all | Where-Object { $_ -like "*_$Migration" })
+  if ($resolved.Count -ne 1) { Fail "no such migration: $Migration" }
+  $Migration = $resolved[0]
+}
+# Everything that sorts before the migration under test — the numbered schema
+# baseline included — is the pre-migration world.
 $before = $all | Where-Object { $_ -lt $Migration }
 
-foreach ($f in @('schema.sql') + $before) {
+foreach ($f in $before) {
   & $psql $f
   if ($LASTEXITCODE -ne 0) { Fail "applying $f" }
 }
-Write-Output "applied schema.sql + $($before.Count) migrations (up to but not including $Migration)"
+Write-Output "applied $($before.Count) files (schema + migrations up to but not including $Migration)"
 
 # Populate the PRE-migration world, so the migration runs against real data.
 & $psql $Seed; if ($LASTEXITCODE -ne 0) { Fail "seeding ($Seed)" }
