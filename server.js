@@ -355,6 +355,19 @@ function needsLegacyCapable(ua) {
 const CAPABLE_SLOT = '<!--APPLE-CAPABLE-->';
 const CAPABLE_META = '<meta name="apple-mobile-web-app-capable" content="yes" />';
 
+// The one case where an install must give the tag up even though needsLegacyCapable
+// says keep it. Before iOS 14.3 the legacy WebClip container has no getUserMedia at
+// all, so the tag costs the terminal its SCANNER, not just the layout bug above.
+// UA sniffing cannot catch this: iPadOS 13+ sends a desktop-class Mac UA carrying no
+// OS version, so every iPad lands in needsLegacyCapable's "can't date it" branch and
+// keeps the tag. The device itself is the only thing that knows, so the page sets
+// this cookie the first time the scanner finds the API missing while running
+// chrome-less (see STANDALONE_CAM_COOKIE in public/vendor/terminal.js) and clears it
+// again if the camera ever does start there. Withholding the tag makes the next
+// launch open in Safari, which has the camera. That trades the URL bar for a working
+// scanner, and on a point-of-sale terminal the scanner is the app.
+const NO_STANDALONE_CAM = /(?:^|;\s*)wr_no_standalone_cam=1(?:\s*;|\s*$)/;
+
 // Non-production shells carry two marks. `data-app-env` on <html> is a hook for
 // any later CSS or script that wants to shout "this is the test app" — nothing
 // uses it yet on purpose, because a fixed banner has to be fitted around the
@@ -372,7 +385,8 @@ const renderedShells = new Map();   // "<index.html path>|<variant>" -> versione
 function serveShell(mount, root) {
   const htmlPath = path.join(root, 'index.html');
   return (req, res) => {
-    const legacy = needsLegacyCapable(req.get('user-agent'));
+    const legacy = needsLegacyCapable(req.get('user-agent'))
+      && !NO_STANDALONE_CAM.test(req.get('cookie') || '');
     const key = `${htmlPath}|${legacy ? 'legacy' : 'modern'}`;
     let html = renderedShells.get(key);
     if (html == null) {
@@ -383,6 +397,7 @@ function serveShell(mount, root) {
     }
     res.set('Cache-Control', 'no-cache');   // always revalidate so new ?v= tags are seen
     res.vary('User-Agent');                 // ...and never hand one device's variant to another
+    res.vary('Cookie');                     // ...including the chrome-less opt-out above
     res.type('html').send(html);
   };
 }

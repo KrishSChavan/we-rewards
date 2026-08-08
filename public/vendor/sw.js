@@ -44,9 +44,20 @@
 // collapses); Save & leave no longer swallows a tap while a request is in
 // flight; a save that hits an expired PIN session replays after the unlock
 // instead of losing the edits.
+// v19: the counter iPad again, and this time it is CSS, not syntax. Every
+// `aspect-ratio` in terminal.css was silently dropped (it is Safari 15, these
+// iPads are iOS 13/14), so the QR viewfinder fell back to the <video>'s
+// intrinsic 300x150 and rendered as a letterbox slot, its targeting square
+// stretched to the full frame height, and the keypad/PIN keys collapsed to
+// twelve 47px slivers. Ratios are now carried by custom properties and spent on
+// both axes instead. Also: an install that finds getUserMedia missing while
+// running chrome-less now flags itself so server.js stops sending
+// apple-mobile-web-app-capable, which is what puts it in the pre-14.3 WebClip
+// container that has no camera at all (terminal.js + terminal.css + server.js).
+//
 // v18: bundles lowered to ES2017 so an older counter iPad can parse them at all;
 // supabase-js self-hosted off the CDN; boot guard added.
-const CACHE = 'werewards-terminal-v18';
+const CACHE = 'werewards-terminal-v19';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

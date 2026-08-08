@@ -48,24 +48,8 @@ config — the terminal never sends a point value.
 
 ## Setup
 
-1. Create a Supabase project, then apply the schema with the Supabase CLI:
-   ```
-   npx supabase link --project-ref <your-project-ref>
-   npx supabase db push
-   ```
-   `supabase/migrations/` holds the schema and every migration in applied order
-   (`00000000000001_schema.sql` … `00000000000034_migration-034.sql`), and
-   `db push` applies only the ones that project is missing. Never paste these
-   into the SQL editor by hand — the CLI is what keeps a database's history
-   honest about what has run.
-
-   *Adopting the CLI on a database that was built by hand?* Tell it the history
-   is already there before the first push, or it will try to recreate objects
-   that exist: `npx supabase migration repair --status applied <version>` for
-   each of the 34 versions, then confirm `npx supabase migration list` shows
-   nothing pending.
-
-   What the migrations do:
+1. Create a Supabase project → SQL Editor → run `supabase/schema.sql`, then
+   `supabase/migration-002.sql` through `supabase/migration-021.sql` in order.
    (migration-007 locks down the RPCs and adds the PIN-session table — required;
    migration-010 adds the void/refund RPC; migration-011 lets account deletion
    anonymize a student's transactions instead of being blocked by them;
@@ -308,19 +292,16 @@ npx supabase init                 # once — creates supabase/config.toml
 npx supabase start                # boots local Postgres + auth + REST; prints keys
 ```
 
-`supabase start` applies everything in `supabase/migrations/` to the local stack
-on its own, so the database is ready as soon as it prints the keys. Run the suite
-against that URL + those keys:
-
-> **If every query comes back permission-denied**, the tables exist but aren't
-> exposed to the Data API roles. `schema.sql` grants nothing at table level — it
-> was written when hosted Supabase exposed new `public` tables automatically, and
-> that default has since flipped (see `auto_expose_new_tables` in
-> `supabase/config.toml`). Fix locally by setting that field to `true`, or by
-> granting `anon`/`authenticated`/`service_role` on the tables. The same applies
-> to any **freshly created** hosted project, including staging.
+Apply the schema + every migration to the local DB (they aren't in the CLI's
+`migrations/` layout, so pipe them in order), then run the suite against the URL
++ keys `supabase start` printed:
 
 ```bash
+# schema first, then migration-002 … migration-013, e.g. via:
+#   docker exec -i supabase_db_<project> psql -U postgres -d postgres < supabase/schema.sql
+# (local-only: also GRANT table privileges to anon/authenticated/service_role,
+#  which hosted Supabase does automatically)
+
 TEST_SUPABASE_URL=http://127.0.0.1:54321 \
 TEST_SUPABASE_ANON_KEY=<local anon key> \
 TEST_SUPABASE_SERVICE_ROLE_KEY=<local service_role key> \
