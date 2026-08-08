@@ -302,9 +302,9 @@
 
                 <!-- The other way in: you already paid and walked off without
                      showing the code, so the paper receipt becomes the proof.
-                     UI ONLY — nothing is wired up behind this yet.
-                     Hidden for now until the feature is ready. -->
-                <button id="scan-receipt-btn" class="scan-receipt-btn" type="button" style="display: none;">
+                     Opens the receipt sheet: photo → server OCR → points. -->
+                <button id="scan-receipt-btn" class="scan-receipt-btn" type="button"
+                        aria-haspopup="dialog" aria-expanded="false" aria-controls="receipt-modal">
                   <span class="srb-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <!-- receipt with the torn bottom edge, two lines of print -->
@@ -988,6 +988,40 @@
         <p id="move-confirm-status" class="detail-status"></p>
         <button id="move-confirm" class="btn-redeem">Move my points</button>
         <button id="move-back" class="detail-textbtn" type="button">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scan-a-receipt sheet (migration-038). One card, two views: pick/preview
+       the photo, then the success view naming the points. The photo is
+       downscaled on-canvas here and OCR'd on the server, which reads the spot,
+       total, and printed time itself — nothing typed, nothing to fake. The
+       file input has no `capture` attribute on purpose: iOS then offers
+       "Take Photo" AND the photo library, matching paid-then-walked-off. -->
+  <div id="receipt-modal" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <button id="receipt-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="detail-emoji">🧾</p>
+      <h2 class="detail-title">Scan a receipt</h2>
+
+      <!-- view 1: pick / preview / claim -->
+      <div id="receipt-pick-view" class="receipt-view">
+        <p class="detail-desc">Already paid? Snap the paper receipt and the points still
+          count. Get the spot's name, the <strong>TOTAL</strong>, and the printed date &amp; time
+          in the shot. Receipts work for 7 days, up to 3 a day.</p>
+        <input id="receipt-file" type="file" accept="image/*" hidden>
+        <img id="receipt-preview" class="receipt-preview" alt="Your receipt photo" hidden>
+        <p id="receipt-status" class="detail-status"></p>
+        <button id="receipt-pick" class="btn-redeem" type="button">Take or choose a photo</button>
+        <button id="receipt-submit" class="btn-redeem" type="button" hidden>Claim my points</button>
+        <button id="receipt-retake" class="detail-textbtn" type="button" hidden>Use a different photo</button>
+      </div>
+
+      <!-- view 2: success. The balance itself updates over the socket push,
+           same as a counter award — this view just says what landed. -->
+      <div id="receipt-success-view" class="receipt-view" hidden>
+        <p id="receipt-success-line" class="detail-desc"></p>
+        <button id="receipt-done" class="btn-redeem" type="button">Done</button>
       </div>
     </div>
   </div>

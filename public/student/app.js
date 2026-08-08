@@ -301,6 +301,20 @@ const Splash = (() => {
     // while we were away.
     if (!document.hidden && dealsLoaded) loadDeals();
   });
+  // receipt: photo → server OCR → points. The hidden file input is the actual
+  // picker; "take or choose" and "use a different photo" both just click it.
+  $('scan-receipt-btn').addEventListener('click', openReceiptSheet);
+  $('receipt-close').addEventListener('click', closeReceiptSheet);
+  $('receipt-modal').addEventListener('click', (e) => { if (e.target === $('receipt-modal')) closeReceiptSheet(); });
+  $('receipt-pick').addEventListener('click', () => $('receipt-file').click());
+  $('receipt-retake').addEventListener('click', () => $('receipt-file').click());
+  $('receipt-file').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';            // re-picking the same file must re-fire change
+    onReceiptFile(file);
+  });
+  $('receipt-submit').addEventListener('click', submitReceipt);
+  $('receipt-done').addEventListener('click', closeReceiptSheet);
   // earn code: the home button opens the full-screen sheet; ✕ / drag / Esc close it
   $('show-code-btn').addEventListener('click', openEarnSheet);
   $('earn-close').addEventListener('click', closeEarnSheet);
@@ -318,6 +332,7 @@ const Splash = (() => {
     // even see, and they'd come back to Home with the hub collapsed.
     if (!$('map-modal').hidden) { onMapEscape(); return; }
     closeEarnSheet();
+    closeReceiptSheet();
     closeDealsSheet();
     closeMoveSheet();
     closePunchScanSheet();
@@ -456,6 +471,7 @@ function render(session) {
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
     dropHub();                  // same
     dropMoveSheet();            // same
+    dropReceiptSheet();         // same, and it may hold a photo preview the next student must not see
     dropPunchScanSheet();       // same (and it holds the camera)
     dropPunchModal();           // same
     dropDealsSheet();           // same, and the next student must not read these
@@ -1971,6 +1987,145 @@ function dropMoveSheet() {
   ov.classList.remove('is-open');
   ov.hidden = true;
   $('community-card').setAttribute('aria-expanded', 'false');
+}
+
+/* ---------- home → the scan-a-receipt sheet (migration-038) ---------- */
+
+// Downscaled before upload: OCR gains nothing above ~1600px, and the server's
+// 8MB body cap is headroom for THIS output, not for 12MP originals.
+const RECEIPT_MAX_EDGE = 1600;
+const RECEIPT_JPEG_QUALITY = 0.72;
+let receiptDataUrl = null;
+let receiptBusy = false;
+
+function openReceiptSheet() {
+  const ov = $('receipt-modal');
+  if (ov.classList.contains('is-open')) return;
+  resetReceiptSheet();
+  ov.hidden = false;
+  void ov.offsetWidth;              // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('scan-receipt-btn').setAttribute('aria-expanded', 'true');
+  $('receipt-close').focus({ preventScroll: true });
+}
+
+// Closing mid-upload is allowed on purpose: the request finishes server-side
+// either way, and the balance push repaints the card whether the sheet is up
+// or not. Blocking the ✕ to babysit a fetch would just trap the student.
+function closeReceiptSheet() {
+  const ov = $('receipt-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  const btn = $('scan-receipt-btn');
+  btn.setAttribute('aria-expanded', 'false');
+  if (ov.contains(document.activeElement)) btn.focus({ preventScroll: true });
+  setTimeout(() => { if (!ov.classList.contains('is-open')) ov.hidden = true; }, 360);
+}
+
+// Hard reset, no animation — for sign-out, same reason as dropEarnSheet().
+function dropReceiptSheet() {
+  const ov = $('receipt-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('scan-receipt-btn').setAttribute('aria-expanded', 'false');
+  resetReceiptSheet();
+}
+
+function resetReceiptSheet() {
+  receiptDataUrl = null;
+  receiptBusy = false;
+  $('receipt-file').value = '';
+  const img = $('receipt-preview');
+  img.hidden = true;
+  img.removeAttribute('src');
+  setReceiptStatus('');
+  $('receipt-pick').hidden = false;
+  $('receipt-submit').hidden = true;
+  $('receipt-submit').disabled = false;
+  $('receipt-retake').hidden = true;
+  $('receipt-retake').disabled = false;
+  $('receipt-pick-view').hidden = false;
+  $('receipt-success-view').hidden = true;
+}
+
+function setReceiptStatus(msg, ok) {
+  const el = $('receipt-status');
+  el.textContent = msg;
+  el.className = ok ? 'detail-status ok' : 'detail-status locked';
+}
+
+// Same createImageBitmap-then-<img> ladder as the vendor-logo picker in
+// public/join/join.js — big phone photos decoded off the main thread where
+// possible, EXIF orientation respected. Neither path reads HEIC.
+async function decodeReceiptImage(file) {
+  if ('createImageBitmap' in window) {
+    try { return await createImageBitmap(file); } catch { /* fall through to <img> */ }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+    img.src = url;
+  });
+}
+
+async function onReceiptFile(file) {
+  if (!file) return;
+  try {
+    const src = await decodeReceiptImage(file);
+    const scale = Math.min(1, RECEIPT_MAX_EDGE / Math.max(src.width, src.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(src.width * scale));
+    canvas.height = Math.max(1, Math.round(src.height * scale));
+    canvas.getContext('2d').drawImage(src, 0, 0, canvas.width, canvas.height);
+    src.close?.();                  // release the ImageBitmap if that's what we got
+    receiptDataUrl = canvas.toDataURL('image/jpeg', RECEIPT_JPEG_QUALITY);
+  } catch {
+    // Library HEICs, mostly. The camera option always yields something readable.
+    setReceiptStatus('That photo format isn’t supported here — try the camera option instead.');
+    return;
+  }
+  const img = $('receipt-preview');
+  img.src = receiptDataUrl;
+  img.hidden = false;
+  setReceiptStatus('');
+  $('receipt-pick').hidden = true;
+  $('receipt-submit').hidden = false;
+  $('receipt-retake').hidden = false;
+}
+
+async function submitReceipt() {
+  if (receiptBusy || !receiptDataUrl) return;
+  receiptBusy = true;
+  $('receipt-submit').disabled = true;
+  $('receipt-retake').disabled = true;
+  setReceiptStatus('Reading your receipt… this can take ~10 seconds.', true);
+  try {
+    const res = await authFetch('/api/me/receipt', {
+      method: 'POST',
+      body: JSON.stringify({ image: receiptDataUrl }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON body → generic copy below */ }
+    if (!res.ok) {
+      setReceiptStatus(data?.message || 'Something went wrong. Try again.');
+      return;
+    }
+    // The card/meter/tier/history repaint arrives over the socket push, same
+    // as a counter award — this view just says what landed.
+    $('receipt-success-line').textContent =
+      `+${data.awarded} pts at ${data.vendorName} on your $${Number(data.total).toFixed(2)} receipt 🎉`;
+    $('receipt-pick-view').hidden = true;
+    $('receipt-success-view').hidden = false;
+    $('receipt-done').focus({ preventScroll: true });
+  } catch {
+    setReceiptStatus('No connection — your photo wasn’t sent. Try again.');
+  } finally {
+    receiptBusy = false;
+    $('receipt-submit').disabled = false;
+    $('receipt-retake').disabled = false;
+  }
 }
 
 // Every active vendor that takes inbound transfers, the student's existing

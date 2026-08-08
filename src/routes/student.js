@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { computeTierProfile } from '../lib/tiers.js';
+import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireUser, requireConsent } from '../middleware/auth.js';
 import { emitBalance, emitPunch } from '../lib/realtime.js';
+import { ocrBusy, recognizeReceipt } from '../lib/ocr.js';
+import { matchVendor, extractTotal, extractDateTime } from '../lib/receipt.js';
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
 import { getVapidPublicKey } from '../lib/push.js';
@@ -260,6 +262,108 @@ router.post('/punch', requireConsent, async (req, res, next) => {
 
     const { data: vendorRow } = await supabaseAdmin.from('vendors').select('name').eq('id', vendorId).maybeSingle();
     res.json({ ...payload, vendorName: vendorRow?.name ?? 'this spot' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Receipt scanning (migration-038) ----
+// The photo arrives as a base64 data-URL in JSON (house style — vendor logos
+// travel the same way), is OCR'd in memory, and is gone when this request
+// ends: never written to disk, the DB, or a log line. Everything the claim
+// depends on (vendor, total, printed time) is parsed server-side from the OCR
+// text — a client-supplied value would be minted points for anyone with curl.
+const RECEIPT_DATA_URL = /^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/;
+const RECEIPT_MAX_CHARS = 6_000_000; // ~4.5MB decoded; the client sends ~0.3-1MB
+const RECEIPT_MAX_DOLLARS = 200;     // mirror of MAX_AWARD_DOLLARS (routes/vendor.js)
+
+/**
+ * POST /api/me/receipt  { image }
+ * Claim points for a paper receipt. claim_receipt() is one atomic transaction:
+ * freshness window, 3/day cap, the counter double-dip check, the UNIQUE
+ * (vendor, printed time, total) insert — first scanner wins — and the award
+ * itself via award_points (same tier math as a terminal award).
+ */
+router.post('/receipt', requireConsent, async (req, res, next) => {
+  try {
+    // Saturation first: 503 before decoding a single byte of base64.
+    if (ocrBusy()) throw new Error('RECEIPT_BUSY');
+
+    const image = req.body?.image;
+    const m = (typeof image === 'string' && image.length <= RECEIPT_MAX_CHARS)
+      ? RECEIPT_DATA_URL.exec(image)
+      : null;
+    if (!m) throw new Error('RECEIPT_IMAGE_INVALID');
+
+    let text;
+    const buf = Buffer.from(m[1], 'base64');
+    try {
+      text = await recognizeReceipt(buf);
+    } finally {
+      buf.fill(0); // the image's only server-side copy dies with this request
+    }
+    if (!text || text.trim().length < 12) throw new Error('RECEIPT_UNREADABLE');
+
+    const { data: vendors, error: vErr } = await supabaseAdmin
+      .from('vendors')
+      .select('id, name, points_per_dollar')
+      .eq('active', true);
+    if (vErr) throw vErr;
+
+    const hit = matchVendor(text, vendors ?? []);
+    if (!hit) throw new Error('RECEIPT_VENDOR_UNKNOWN');
+
+    const total = extractTotal(text);
+    if (total == null || total <= 0) throw new Error('RECEIPT_TOTAL_MISSING');
+    if (total > RECEIPT_MAX_DOLLARS) throw new Error('RECEIPT_TOTAL_TOO_LARGE');
+
+    const dt = extractDateTime(text);
+    if (!dt) throw new Error('RECEIPT_DATETIME_MISSING');
+    // Impossible calendar dates (an OCR'd "02/31") map to a clean error here;
+    // the SQL timestamp cast would turn them into a 500 instead.
+    const probe = new Date(dt.y, dt.m - 1, dt.d);
+    if (probe.getMonth() !== dt.m - 1 || probe.getDate() !== dt.d) {
+      throw new Error('RECEIPT_DATETIME_MISSING');
+    }
+
+    // Same formula as POST /api/vendor/award: ratio → floor, then the tier
+    // multiplier (computed BEFORE this award lands) → floor.
+    const basePoints = Math.floor(total * Number(hit.vendor.points_per_dollar));
+    if (basePoints < 1) throw new Error('RECEIPT_TOTAL_MISSING');
+    const tierProfile = await computeTierProfile(req.user.id);
+    const points = Math.floor(basePoints * tierProfile.multiplier);
+
+    const pad = (n) => String(n).padStart(2, '0');
+    const receiptLocal = `${dt.y}-${pad(dt.m)}-${pad(dt.d)} ${pad(dt.hh)}:${pad(dt.mm)}:00`;
+
+    const { data, error } = await supabaseAdmin.rpc('claim_receipt', {
+      p_user_id: req.user.id,
+      p_vendor_id: hit.vendor.id,
+      p_receipt_local: receiptLocal,
+      p_timezone: punchTimezone(),
+      p_total: total,
+      p_points: points,
+    });
+    if (error) throw error;
+
+    const row = data?.[0] ?? {};
+    // Same live push as a terminal award — an open app updates its card,
+    // meter, tier, and history without a reload.
+    emitBalance(req.user.id, { vendorId: hit.vendor.id, balance: row.new_balance, community: row.new_community });
+    persistTierSnapshot(req.user.id, tierProfile).catch(() => {});
+
+    res.json({
+      awarded: points,
+      basePoints,
+      bonusPoints: points - basePoints,
+      tier: tierProfile.tier,
+      multiplier: tierProfile.multiplier,
+      vendorId: hit.vendor.id,
+      vendorName: hit.vendor.name,
+      total,
+      receiptAt: receiptLocal,
+      newBalance: row.new_balance,
+    });
   } catch (err) {
     next(err);
   }

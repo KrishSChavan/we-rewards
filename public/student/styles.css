@@ -1208,6 +1208,16 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .srb-arrow { flex: 0 0 auto; color: var(--muted); display: flex; }
 .srb-arrow svg { width: 1.15rem; height: 1.15rem; display: block; }
 
+/* The receipt sheet reuses the detail-card furniture wholesale; the preview is
+   its only new piece. object-fit keeps a tall thermal receipt readable without
+   letting it shove the buttons off a short phone. */
+.receipt-preview {
+  width: 100%; max-height: 40vh; object-fit: contain;
+  border: 2px solid var(--edge); border-radius: 0.8rem;
+  background: var(--bg);
+}
+.receipt-view { display: flex; flex-direction: column; align-items: center; gap: 0.7rem; width: 100%; }
+
 /* ---------- home: filter the spots ----------
    A pill on the heading's row, in the same sticker language as everything else
    here but without the hard shadow: it is a field, not a thing you press.

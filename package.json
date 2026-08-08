@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
+    "@tesseract.js-data/eng": "^1.0.0",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5",
     "esbuild": "^0.28.1",
@@ -27,6 +28,7 @@
     "leaflet": "^1.9.4",
     "qrcode-generator": "^2.0.4",
     "socket.io": "^4.8.3",
+    "tesseract.js": "^7.0.0",
     "web-push": "^3.6.7"
   },
   "description": "Per-vendor points rewards for local eateries. Student PWA + vendor terminal, one Express app.",

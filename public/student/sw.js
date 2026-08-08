@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v49';   // v49: each spot shows its earn rate (card, spot screen, map pin); browser tab favicon
+const CACHE = 'werewards-v50';   // v50: scan a receipt — photo → server OCR → points, dedup'd so a receipt claims once
+// v49: each spot shows its earn rate (card, spot screen, map pin); browser tab favicon
 // v48: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the CDN; boot guard added
 // v47: vendor email+password sign-in on the landing page (dual-role accounts, migration-035)
 // v46: server-without-push-keys gets an honest fail note (was "reload and try again"); subscribePush guards the null key

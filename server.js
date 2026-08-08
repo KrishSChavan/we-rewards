@@ -22,6 +22,7 @@ import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { requireJson } from './src/middleware/require-json.js';
+import { warmOcr } from './src/lib/ocr.js';
 import { buildClientAssets, buildRoot, ensureFresh } from './scripts/build-client.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 import {
@@ -92,10 +93,29 @@ app.use(helmet({
 // XML parser, so this is belt-and-suspenders that fails closed. See require-json.js.
 app.use(requireJson);
 
+// Receipt photos are the ONE deliberately large JSON body (a base64 JPEG,
+// client-downscaled to ≲1600px, typically well under 1MB). Its limiter mounts
+// FIRST so a hammering IP is 429'd before 8MB gets parsed, then a route-scoped
+// parser; the global 600kb parser below skips bodies this one already parsed
+// (body-parser sets req._body). requireJson above still applies unchanged —
+// the payload is ordinary application/json. Defined here, not in the limiter
+// block below, because mount order against the parsers is what makes it work.
+const receiptLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30, // OCR is CPU-heavy, but the real fences are the 3/day cap in
+           // claim_receipt and the in-process queue (RECEIPT_BUSY). This is
+           // per-IP DoS hygiene, sized for a NAT'd campus network.
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many receipt scans from this connection, try again in a few minutes.' },
+});
+app.use('/api/me/receipt', receiptLimiter, express.json({ limit: '8mb' }));
+
 // Bodies are tiny everywhere except a vendor saving a logo, which arrives as a
 // base64 data-URL (resized client-side to ~128px, so tens of KB). 600kb gives
 // that headroom; still small enough that the requireJson gate + rate limits keep
-// the large-body DoS surface negligible.
+// the large-body DoS surface negligible. (The receipt route above is the one
+// carve-out, with its own limiter + 8mb parser.)
 app.use(express.json({ limit: '600kb' }));
 
 // ---- Rate limiting ----
@@ -772,6 +792,21 @@ app.use((err, req, res, _next) => {
     CAMPAIGN_BODY_INVALID: [400, 'Write the message (up to 140 characters).'],
     CAMPAIGN_KIND_INVALID: [400, 'Pick a valid deal type.'],
     CAMPAIGN_AUDIENCE_INVALID: [400, 'Pick a valid audience.'],
+    // Receipt claims (migration-038). Same substring-scan caveat as above:
+    // checked, none of these contains or is contained by another key (the
+    // TOTAL_ pair share only a prefix; nothing else in this map says RECEIPT).
+    RECEIPT_IMAGE_INVALID: [400, 'That photo didn’t come through. Try again with a JPEG or PNG.'],
+    RECEIPT_UNREADABLE: [400, 'Couldn’t read that receipt. Lay it flat, fill the frame, and try again in good light.'],
+    RECEIPT_VENDOR_UNKNOWN: [404, 'Couldn’t match this receipt to a participating spot.'],
+    RECEIPT_TOTAL_MISSING: [400, 'Couldn’t read the total on this receipt. Make sure the TOTAL line is visible.'],
+    RECEIPT_TOTAL_TOO_LARGE: [400, 'That total is over the $200 per-receipt limit.'],
+    RECEIPT_DATETIME_MISSING: [400, 'Couldn’t read the date and time printed on this receipt — both need to be visible.'],
+    RECEIPT_TOO_OLD: [400, 'Receipts only count for 7 days. This one is too old.'],
+    RECEIPT_IN_FUTURE: [400, 'That receipt is dated in the future — that can’t be right.'],
+    RECEIPT_CLAIMED: [409, 'This receipt has already been claimed.'],
+    RECEIPT_ALREADY_EARNED: [409, 'Looks like you already earned points for this purchase at the counter.'],
+    RECEIPT_DAILY_LIMIT: [429, 'You’ve claimed 3 receipts today — come back tomorrow.'],
+    RECEIPT_BUSY: [503, 'Receipt scanning is busy right now, try again in a minute.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {
@@ -838,6 +873,11 @@ const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import
 if (isMain) {
   const port = process.env.PORT || 3000;
   server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));
+
+  // Pre-build the OCR worker (receipt scanning) so the first student's scan
+  // doesn't also pay the ~2-4s wasm init. Best-effort — a failure here just
+  // means the first real scan builds it instead.
+  warmOcr();
 
   // Vendor campaign delivery (migration-032). Started only when run directly,
   // so importing `app` in a test never spins up a background loop. No-op
