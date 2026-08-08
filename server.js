@@ -422,6 +422,12 @@ const shells = [
   { mount: '/terminal', dir: 'vendor'  },
   { mount: '/admin',    dir: 'admin'   },
   { mount: '/join',     dir: 'join'    },
+  // Fallback POS screen for a device too old for /terminal (built for an iPad
+  // mini on iOS 12.5.7). No manifest/sw.js on purpose — see public/scan/README
+  // note in scan.js: it must never run inside an installed home-screen icon,
+  // since iOS gave getUserMedia to that container only from 14.3, and this
+  // device is far below that. Opened as a plain Safari tab, the camera works.
+  { mount: '/scan',     dir: 'scan'    },
 ].map((shell) => ({ ...shell, root: buildRoot(shell.dir) }));
 
 // Dev-only: re-lower one asset if its source changed since boot. See the static

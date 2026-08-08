@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<!-- COPY RULE: no em dashes in user-visible text. Use a period, comma, colon,
+     or parentheses instead. Comments, logs, CLI output exempt. Full rule:
+     public/student/index.html. -->
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <!-- FIRST script on the page, before anything that could fail — see the note
+       in public/vendor/index.html. Source: public/shared/boot-guard.js. -->
+  <script src="/scan/boot-guard.js"></script>
+  <script src="/scan/no-zoom.js"></script>
+  <title>Scan · WeRewards</title>
+  <meta name="description" content="WeRewards fallback scanner: award points and redeem rewards on devices too old for the full terminal." />
+  <meta name="theme-color" content="#12294b" />
+  <!-- Deliberately NOT installable: no manifest, no apple-mobile-web-app-capable.
+       This page exists BECAUSE the counter iPad it targets is below iOS 14.3,
+       where a home-screen web app has no getUserMedia at all (see the long
+       comment on STANDALONE_CAM_COOKIE in public/vendor/terminal.js — the same
+       physics apply here, and this app has no cookie dance to work around it).
+       A plain Safari tab has had the camera since iOS 11, so this is meant to
+       stay a bookmark, never an "Add to Home Screen" icon. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/scan/scan.css" />
+</head>
+<body>
+
+  <!-- ===== LOGIN (shown once per device) ===== -->
+  <section id="screen-login" class="screen" hidden>
+    <div class="login-card">
+      <p class="brand">WEREWARDS</p>
+      <h1>Scanner sign-in</h1>
+      <p class="login-note login-note-top">Same email and password as the terminal.</p>
+      <label>Email
+        <input id="login-email" type="email" autocomplete="username" inputmode="email" />
+      </label>
+      <label>Password
+        <input id="login-password" type="password" autocomplete="current-password" />
+      </label>
+      <p id="login-error" class="field-error" hidden></p>
+      <p id="login-success" class="field-success" hidden></p>
+      <button id="login-btn" class="btn-primary">Sign in</button>
+      <p class="login-note">Sign in stays saved on this device.</p>
+      <button id="login-forgot" class="btn-ghost" type="button">Forgot password?</button>
+    </div>
+  </section>
+
+  <!-- ===== FORGOT PASSWORD ===== -->
+  <section id="screen-recover" class="screen" hidden>
+    <div class="login-card">
+      <p class="brand">WEREWARDS</p>
+      <h1>Reset your password</h1>
+      <p class="login-note">
+        Call or text the WeRewards team and ask for a reset code. We’ll read you
+        an 8-character code. Type it below with a new password. Codes last 30
+        minutes and work once.
+      </p>
+      <label>Email
+        <input id="recover-email" type="email" autocomplete="username" inputmode="email" />
+      </label>
+      <label>Reset code
+        <input id="recover-code" type="text" autocomplete="one-time-code" autocapitalize="characters"
+               spellcheck="false" maxlength="12" placeholder="e.g. K7M2-NP94" />
+      </label>
+      <label>New password
+        <input id="recover-password" type="password" autocomplete="new-password"
+               minlength="8" maxlength="72" placeholder="at least 8 characters" />
+      </label>
+      <label>Confirm new password
+        <input id="recover-confirm" type="password" autocomplete="new-password"
+               minlength="8" maxlength="72" placeholder="re-type it" />
+      </label>
+      <p id="recover-error" class="field-error" hidden></p>
+      <p id="recover-success" class="field-success" hidden></p>
+      <button id="recover-btn" class="btn-primary">Set new password</button>
+      <button id="recover-back" class="btn-ghost" type="button">Back to sign in</button>
+    </div>
+  </section>
+
+  <!-- ===== APP SHELL: one screen, no tabs ===== -->
+  <div id="shell" hidden>
+    <header id="topbar">
+      <span id="vendor-name" class="vendor-name"></span>
+      <button id="signout-btn" class="btn-ghost btn-compact" type="button">Sign out</button>
+    </header>
+
+    <main id="main">
+
+      <!-- ===== SCAN: ONE CAMERA FOR AWARD AND REDEEM ===== -->
+      <section id="screen-scan" class="screen scan-screen" hidden>
+        <h2 class="scan-title">SCAN TO AWARD <br />OR REDEEM</h2>
+
+        <div id="scan-area" class="qr-area">
+          <div id="scan-qr-frame" class="qr-frame">
+            <video id="scan-qr-video" class="qr-video" autoplay muted playsinline></video>
+            <div class="qr-target" aria-hidden="true"></div>
+            <button id="scan-qr-flip" class="qr-flip" type="button" hidden aria-label="Switch camera">↻</button>
+          </div>
+          <p id="scan-qr-status" class="qr-status">Point the camera at the QR code in the customer’s WeRewards app.</p>
+          <button id="scan-manual-btn" class="btn-ghost" type="button">Enter code manually</button>
+        </div>
+
+        <div id="scan-manual-area" class="manual-area" hidden>
+        <p id="scan-camera-msg" class="field-error qr-camera-msg" hidden></p>
+        <div class="code-pad-layout">
+          <div class="code-pad-left">
+            <form id="scan-code-form" class="code-entry">
+              <input id="scan-code-input" class="code-input" type="text" inputmode="numeric"
+                     autocomplete="off" spellcheck="false"
+                     maxlength="6" placeholder="123456"
+                     aria-label="Customer's 6-digit code, or a 4-digit redemption code" />
+              <button type="submit" class="btn-primary code-submit">Continue</button>
+            </form>
+            <p class="code-hint">6 digits to award points. 4 digits to redeem an item.</p>
+          </div>
+          <div class="keypad code-keypad" id="scan-keypad" aria-label="Number pad">
+            <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+            <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+            <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+            <button type="button" data-k="clear" class="key-dim">Clear</button><button type="button" data-k="0">0</button><button type="button" data-k="back" class="key-dim">⌫</button>
+          </div>
+        </div>
+        <button id="scan-camera-btn" class="btn-ghost" type="button">Scan QR code instead</button>
+        </div>
+
+        <p id="last-activity" class="last-activity"></p>
+        <button id="undo-last" class="undo-last" type="button" hidden>Undo last</button>
+      </section>
+
+      <!-- ===== AWARD: CUSTOMER + EXACT AMOUNT ===== -->
+      <section id="screen-pad" class="screen pad-screen" hidden>
+        <div class="customer-head pad-head">
+          <div>
+            <p class="eyebrow">CUSTOMER</p>
+            <h2 id="customer-name"></h2>
+          </div>
+          <div class="head-chips">
+            <div id="customer-tier" class="tier-chip">1x</div>
+            <div class="balance-chip">
+              <span id="customer-balance">0</span>
+              <span class="chip-label">pts</span>
+            </div>
+          </div>
+        </div>
+       <div class="pad-inner">
+          <div class="pad-shortcut-wrapper">
+            <div id="quick-awards" class="quick-awards" hidden></div>
+          </div>
+          <div class="pad-exact-wrapper">
+            <div id="exact-entry" class="exact-entry">
+              <div class="pad-readout">
+                <p class="pad-amount">$<span id="pad-amount">0.00</span></p>
+                <p class="pad-points">= <strong id="pad-points">0</strong> pts <span id="pad-mult" class="pad-mult" hidden></span></p>
+              </div>
+              <div class="keypad" id="amount-keypad">
+                <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+                <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+                <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+                <button data-k="." class="key-dim">.</button><button data-k="0">0</button><button data-k="back" class="key-dim">⌫</button>
+              </div>
+            </div>
+            <div class="pad-actions">
+              <button id="pad-cancel" class="btn-ghost">Cancel</button>
+              <button id="pad-award" class="btn-primary" disabled>Award points</button>
+            </div>
+          </div>
+       </div>
+      </section>
+
+      <!-- ===== REDEEM: PIN GATE ===== -->
+      <section id="screen-pin" class="screen pin-screen" hidden>
+        <h2 class="scan-title">STAFF PIN</h2>
+        <div class="pin-dots" id="pin-dots"><i></i><i></i><i></i><i></i></div>
+        <p id="pin-error" class="field-error" hidden>Incorrect PIN, try again.</p>
+        <div class="keypad keypad-pin" id="pin-keypad">
+          <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+          <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+          <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+          <button data-k="cancel" class="key-dim">Cancel</button><button data-k="0">0</button><button data-k="back" class="key-dim">⌫</button>
+        </div>
+      </section>
+
+      <!-- ===== REDEEM: CONFIRM ("is this the user?") ===== -->
+      <section id="screen-redeem-confirm" class="screen customer-screen" hidden>
+        <div class="customer-head">
+          <div>
+            <p class="eyebrow eyebrow-redeem">REDEEM FOR</p>
+            <h2 id="redeem-name"></h2>
+          </div>
+          <div class="balance-chip">
+            <span id="redeem-balance">0</span>
+            <span class="chip-label">pts</span>
+          </div>
+        </div>
+        <div class="confirm-box">
+          <p class="confirm-emoji" id="redeem-emoji">🎁</p>
+          <p class="confirm-item" id="redeem-item"></p>
+          <p class="confirm-cost" id="redeem-cost"></p>
+        </div>
+        <div class="pad-actions confirm-actions">
+          <button id="redeem-cancel" class="btn-ghost">Cancel</button>
+          <button id="redeem-confirm" class="btn-confirm">Confirm and deduct points</button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ===== SIGN-OUT CONFIRM ===== -->
+  <div id="signout-confirm" class="overlay" hidden>
+    <div class="form-card">
+      <h2>Sign out?</h2>
+      <p class="manage-note">Staff will need the email and password to sign back in on this device.</p>
+      <div class="pad-actions guard-actions">
+        <button id="signout-cancel" class="btn-ghost" type="button">Cancel</button>
+        <button id="signout-go" class="btn-danger btn-compact" type="button">Sign out</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen-reader announcement for the result flood. -->
+  <div id="a11y-status" class="sr-only" role="status" aria-live="assertive" aria-atomic="true"></div>
+
+  <!-- ===== FULL-SCREEN RESULT FLOOD ===== -->
+  <div id="flood" class="flood" hidden>
+    <p id="flood-icon" class="flood-icon">✓</p>
+    <p id="flood-big" class="flood-big"></p>
+    <p id="flood-small" class="flood-small"></p>
+    <div class="flood-bar">
+      <div class="flood-progress"><div id="flood-progress-fill" class="flood-progress-fill"></div></div>
+      <button id="flood-close" class="flood-close" aria-label="Close now">✕</button>
+    </div>
+  </div>
+
+  <!-- No supabase.js here on purpose: scan.js talks to Supabase Auth's REST
+       endpoints directly with fetch, because the UMD SDK bundle cannot be
+       lowered to run on this device (see scripts/build-client.js). -->
+  <script src="/scan/jsQR.js"></script>
+  <script src="/scan/scan.js"></script>
+</body>
+</html>

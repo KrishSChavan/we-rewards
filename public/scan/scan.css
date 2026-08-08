@@ -1,0 +1,1444 @@
+/* =====================================================
+   WeRewards — fallback scanner (public/scan)
+   Design intent: legible from arm's length, tappable with
+   a thumb mid-rush, state readable from across the counter.
+   Ink navy on cool paper; color floods announce results.
+
+   Copied whole from public/vendor/terminal.css rather than hand-trimmed: this
+   file carries a long list of hard-won, device-specific fixes (no
+   aspect-ratio, no dvh, the flex-gap fallback hook, the [hidden] companions,
+   the safe-area body-color trick) that this app needs for the exact same
+   screens (login, scan, award pad, PIN, redeem confirm, flood, overlay). Rather
+   than re-derive or risk dropping one while trimming, everything for the
+   screens public/scan/index.html does NOT have (ITEMS/DEALS/STATS/SETTINGS/
+   PUNCH, the tab bar) is simply unused dead weight here — no such elements
+   exist in this app's markup, so those selectors never match anything.
+   ===================================================== */
+
+:root {
+  --ink: #101d33;          /* near-navy text */
+  --paper: #eef1f6;        /* cool light background */
+  --card: #ffffff;
+  --navy: #12294b;         /* PSU navy — primary actions */
+  --navy-press: #0b1c36;
+  --sky: #d7e5f5;          /* chips, tier cards */
+  --sky-line: #a9c4e4;
+  --success: #157a43;
+  --redeem: #a56a14;       /* amber = redeem mode marker */
+  --error: #a93226;
+  --muted: #5a6678;
+  font-size: 16px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; }
+
+/* No zoom (see no-zoom.js for the full story). `pan-x pan-y` keeps scrolling
+   but drops pinch- and double-tap-to-zoom — the latter matters on the keypad,
+   where two quick taps on the same digit must enter "11", not zoom. */
+html {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  font-family: "Archivo", system-ui, -apple-system, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+  user-select: none;
+}
+
+button { font-family: inherit; border: none; cursor: pointer; }
+
+/* ---------- shell ---------- */
+
+#shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 0.6rem;
+  padding: 0.9rem 1.4rem;
+  background: var(--card);
+  border-bottom: 3px solid var(--ink);
+}
+
+.vendor-name { font-weight: 900; letter-spacing: 0.04em; font-size: 1.15rem; text-transform: uppercase; }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+.tab {
+  font-size: 1.1rem; font-weight: 900; letter-spacing: 0.06em;
+  padding: 0.8rem 1.35rem; border-radius: 0.6rem;
+  background: transparent; color: var(--ink);
+  border: 3px solid var(--ink);
+}
+.tab.is-active { background: var(--navy); border-color: var(--navy); color: #fff; }
+
+#main { flex: 1; display: flex; min-height: 0; }
+
+.screen {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: safe center;
+  padding: 1.5rem; gap: 1.25rem;
+  overflow-y: auto;   /* never clip content — scroll on very short screens */
+}
+.screen[hidden] { display: none; }
+
+/* ---------- login ---------- */
+
+/* The recover card is the login card with more fields, so it shares every rule
+   below — it only needs the same full-height centring. */
+#screen-login, #screen-recover { min-height: 100vh; }
+
+/* The reset code is dictated over the phone and typed character by character;
+   monospace + tracking makes it checkable against what was read out. */
+#recover-code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  letter-spacing: 0.18em; text-transform: uppercase;
+}
+
+.login-card {
+  width: min(30rem, 92vw); background: var(--card);
+  border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 2.2rem; display: flex; flex-direction: column; gap: 1.1rem;
+}
+.brand { font-weight: 900; letter-spacing: 0.18em; font-size: 0.8rem; color: var(--navy); }
+.login-card h1 { font-size: 1.6rem; font-weight: 900; }
+.login-card label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; font-size: 1rem; }
+.login-card input {
+  font: inherit; font-size: 1.25rem; padding: 0.9rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+}
+.login-note { color: var(--muted); font-size: 0.95rem; }
+
+/* ---------- shared buttons ---------- */
+
+.btn-primary {
+  background: var(--navy); color: #fff;
+  font-size: 1.5rem; font-weight: 900; letter-spacing: 0.03em;
+  padding: 1.2rem 2rem; border-radius: 0.8rem;
+}
+.btn-primary:active { background: var(--navy-press); }
+.btn-primary:disabled { opacity: 0.35; }
+
+.btn-secondary {
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--ink);
+  font-size: 1.35rem; font-weight: 700;
+  padding: 1.1rem 1.8rem; border-radius: 0.8rem;
+}
+
+.btn-ghost {
+  background: transparent; color: var(--muted);
+  font-size: 1.2rem; font-weight: 700;
+  padding: 1.1rem 1.5rem; text-decoration: underline;
+}
+
+/* destructive action (sign out) — primary's shape in error red, so it never
+   reads as "the button you press to continue" at a glance */
+.btn-danger {
+  background: var(--error); color: #fff;
+  font-size: 1.5rem; font-weight: 900; letter-spacing: 0.03em;
+  padding: 1.2rem 2rem; border-radius: 0.8rem;
+}
+.btn-danger:active { filter: brightness(0.85); }
+.btn-danger:disabled { opacity: 0.35; }
+
+.field-error { color: var(--error); font-weight: 700; font-size: 1.05rem; }
+.field-success { color: var(--success); font-weight: 700; font-size: 1.05rem; }
+
+/* ---------- scan screen ---------- */
+
+.scan-title {
+  font-size: clamp(2.2rem, 6vw, 3.6rem);
+  font-weight: 900; line-height: 1.02; text-align: center; letter-spacing: 0.02em;
+}
+
+/* Customer / redemption code entry — the typed fallback behind the QR camera
+   scanner (revealed by "Enter code manually" or when the camera fails). */
+.code-entry {
+  width: min(26rem, 86vw);
+  display: flex; flex-direction: column; gap: 1rem; align-items: stretch;
+}
+.code-input {
+  width: 100%; text-align: center; font-family: inherit;
+  font-size: clamp(2.4rem, 9vw, 3.4rem); font-weight: 900;
+  letter-spacing: 0.3em; text-indent: 0.3em;   /* keep glyphs visually centered */
+  text-transform: uppercase; color: var(--ink);
+  padding: 1rem 0.5rem; border-radius: 1rem;
+  border: 3px solid var(--sky-line); background: var(--card);
+}
+.code-input:focus { outline: none; border-color: var(--navy); }
+.code-input::placeholder { color: var(--sky-line); letter-spacing: 0.3em; }
+.code-submit { width: 100%; }
+.code-hint { color: var(--muted); font-weight: 500; font-size: 1.05rem; text-align: center; }
+
+.last-activity { color: var(--muted); font-weight: 500; font-size: 1.05rem; min-height: 1.4em; text-align: center; }
+
+/* Code field (left) + on-screen number pad (right), spaced neatly. Wraps to a
+   stacked column on narrow screens (see the media query below). */
+.code-pad-layout {
+  display: flex; flex-direction: row; flex-wrap: wrap;
+  /* top-align so the code field lines up with the pad's top row, rather than
+     floating centered against the taller pad */
+  align-items: flex-start; justify-content: center;
+  gap: clamp(1.5rem, 4vw, 3rem);
+  width: 100%;
+}
+.code-pad-left {
+  display: flex; flex-direction: column; gap: 1rem; align-items: stretch;
+  width: min(24rem, 86vw);
+}
+.code-pad-left .code-entry { width: 100%; }
+.code-pad-left .code-hint,
+.code-pad-left .last-activity { margin: 0; }
+/* .code-keypad reuses the shared .keypad grid; nothing extra needed here. */
+
+/* ---------- QR camera scanner (primary input on the scan screen) ---------- */
+
+.qr-area {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 1rem;
+}
+.qr-area[hidden] { display: none; }
+
+/* Wraps the typed-code fallback so it shows/hides as one unit while keeping the
+   original keypad markup (and its JS) untouched. */
+.manual-area {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center; gap: 1.25rem;
+}
+.manual-area[hidden] { display: none; }
+
+/* NO `aspect-ratio` ANYWHERE IN THIS FILE. It is Safari 15, and the counter
+   iPads run iOS 13/14 (that is why scripts/build-client.js exists at all).
+   Where it is unsupported the declaration is simply dropped, and the result is
+   not a near-miss: this box fell back to the <video>'s intrinsic 300x150, so
+   the viewfinder rendered 416x156 - a letterbox slot - instead of 416x312.
+   So every ratio here is carried by a custom property and spent twice, once on
+   each axis. Custom properties are Safari 9.1 and calc() is Safari 6.1, so this
+   computes on every device the app supports. Same rule for .keypad below. */
+.qr-frame {
+  --frame-w: min(26rem, 86vw);
+  --target-w: min(14rem, 53.3vw);   /* 62% of --frame-w, capped */
+  position: relative; width: var(--frame-w); height: calc(var(--frame-w) * 3 / 4);
+  border: 3px solid var(--ink); border-radius: 1.2rem; overflow: hidden;
+  background: #0b1220;   /* dark while the camera warms up */
+}
+.qr-video { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* centered targeting square; the huge box-shadow dims everything outside it.
+   --target-w is spent on both axes: with only a width it kept `inset: 0` plus
+   `margin: auto` and height:auto, which for an absolutely positioned box means
+   "solve for height" - so it stretched to the full height of the frame. */
+.qr-target {
+  position: absolute; inset: 0; margin: auto;
+  width: var(--target-w); height: var(--target-w);
+  border: 3px solid rgba(255, 255, 255, 0.92); border-radius: 1rem;
+  box-shadow: 0 0 0 200vmax rgba(16, 29, 51, 0.35);
+  pointer-events: none;
+}
+
+/* brief confirmation flash on a successful read */
+.qr-frame.is-hit { border-color: var(--success); box-shadow: 0 0 0 4px var(--success); }
+.qr-frame.is-hit .qr-target { border-color: var(--success); }
+
+/* cycle-through-cameras button, floating in the viewfinder corner */
+.qr-flip {
+  position: absolute; right: 0.6rem; bottom: 0.6rem; z-index: 2;
+  width: 3.2rem; height: 3.2rem; border-radius: 50%;
+  border: 2.5px solid #fff; background: rgba(16, 29, 51, 0.55); color: #fff;
+  font-size: 1.5rem; font-weight: 900; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.qr-flip[hidden] { display: none; }
+.qr-flip:active { background: rgba(16, 29, 51, 0.8); }
+
+.qr-status { color: var(--muted); font-weight: 500; font-size: 1.05rem; text-align: center; min-height: 1.4em; }
+.qr-status.is-error { color: var(--error); font-weight: 700; }
+
+/* The "right QR, wrong screen" banner lived here. It went with the second scan
+   screen: one viewfinder takes both code kinds, so there is no wrong screen to
+   send anyone to. A foreign QR just flashes .qr-status.is-error and scanning
+   carries on. */
+
+/* camera-failure note above the fallback keypad */
+.qr-camera-msg { width: min(30rem, 90vw); text-align: center; }
+
+/* ---------- customer + tiers ---------- */
+
+.customer-screen { justify-content: flex-start; padding-top: 2rem; }
+
+.customer-head {
+  width: min(60rem, 100%);
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+}
+.eyebrow { font-size: 0.85rem; font-weight: 900; letter-spacing: 0.2em; color: var(--muted); }
+#customer-name { font-size: clamp(1.9rem, 5vw, 3rem); font-weight: 900; }
+
+.balance-chip {
+  background: var(--sky); border: 3px solid var(--sky-line); border-radius: 1rem;
+  padding: 0.7rem 1.4rem; display: flex; align-items: baseline; gap: 0.45rem;
+}
+/* hidden on the redeem-confirm screen when the code is a punch card (nothing
+   is deducted) — the display:flex above would otherwise defeat [hidden] */
+.balance-chip[hidden] { display: none; }
+.balance-chip span:first-child { font-size: 2.2rem; font-weight: 900; }
+.chip-label { font-weight: 700; color: var(--navy); }
+
+/* customer's earn multiplier from their 30-day tier (next to the balance) */
+.head-chips { display: flex; align-items: stretch; gap: 0.6rem; }
+.tier-chip {
+  display: flex; align-items: center;
+  border: 3px solid var(--sky-line); border-radius: 1rem;
+  padding: 0.7rem 1rem; font-size: 1.5rem; font-weight: 900; color: var(--muted);
+}
+.tier-chip.is-boosted { background: #ffd76e; border-color: #e0ad33; color: #5b4200; }
+.pad-mult { font-weight: 900; color: #a67c00; }
+
+.tier-grid {
+  width: min(60rem, 100%); flex: 1;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+  min-height: 0;
+}
+
+.tier-btn {
+  background: var(--card); border: 3.5px solid var(--ink); border-radius: 1.1rem;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.15rem;
+  padding: 1rem; min-height: 8.5rem;
+}
+.tier-btn:active { background: var(--sky); transform: scale(0.985); }
+.tier-label { font-size: 1.4rem; font-weight: 700; }
+.tier-range { font-size: 1rem; font-weight: 500; color: var(--muted); }
+.tier-points { font-size: clamp(2.4rem, 5.5vw, 3.4rem); font-weight: 900; color: var(--navy); line-height: 1; }
+.tier-points small { font-size: 0.4em; font-weight: 700; letter-spacing: 0.05em; }
+
+.customer-actions { width: min(60rem, 100%); display: flex; justify-content: space-between; gap: 1rem; }
+
+/* ---------- quick-award buttons + undo-last ---------- */
+
+.quick-awards {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  gap: clamp(0.4rem, 1.2vh, 0.75rem); width: min(30rem, 100%);
+}
+.quick-awards[hidden] { display: none; }
+/* No quick buttons at all: collapse the wrapper too, or its empty flex child
+   leaves a stray gap above the keypad (see renderQuickAwards). */
+.pad-shortcut-wrapper.is-empty { display: none; }
+.exact-entry[hidden] { display: none; }
+.quick-award {
+  display: flex; flex-direction: column; align-items: center; gap: 0.1rem;
+  padding: clamp(0.6rem, 1.6vh, 1rem) 0.6rem; border-radius: 0.9rem;
+  border: 3px solid var(--ink); background: var(--card); color: var(--ink);
+}
+.quick-award:active { background: var(--sky); transform: scale(0.985); }
+.qa-label { font-weight: 900; font-size: 1.15rem; line-height: 1.1; }
+.qa-amt { font-weight: 700; color: var(--navy); }
+.qa-pts { font-size: 0.9rem; font-weight: 700; color: var(--muted); }
+
+.undo-last {
+  align-self: center; font-weight: 900; letter-spacing: 0.04em;
+  padding: 0.5rem 1.2rem; border-radius: 0.6rem;
+  border: 2.5px solid var(--sky-line); background: var(--card); color: var(--muted);
+}
+.undo-last[hidden] { display: none; }
+.undo-last.is-armed { background: var(--error); border-color: var(--error); color: #fff; }
+
+.pad-inner {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-around;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+/* ---------- keypads ---------- */
+
+.pad-readout { text-align: center; margin-bottom: 0.6rem; }
+.pad-amount { font-size: clamp(2.4rem, 6.5vh, 4.8rem); font-weight: 900; line-height: 1; }
+.pad-points { font-size: clamp(1.05rem, 2.4vh, 1.5rem); font-weight: 700; color: var(--navy); margin-top: 0.3rem; }
+
+/* Key SHAPE is set on the grid, not on the button: --key-w drives the column
+   track and --key-ratio divides it into the row height, so one number moves
+   both axes together. `aspect-ratio: 1.25` on the button used to do this, but
+   it is Safari 15 (see .qr-frame) - dropped, the keys collapsed to their text
+   height and the pad rendered as twelve wide, 47px-tall slivers. A breakpoint
+   that wants a different key shape overrides these two properties. */
+.keypad {
+  display: grid;
+  /* Keys scale with viewport HEIGHT (and are capped by width) so the whole pad
+     shrinks to fit short screens instead of pushing the buttons off the bottom. */
+  --key-w: min(7.5rem, 16vh, 26vw);
+  --key-ratio: 1.25;
+  grid-template-columns: repeat(3, var(--key-w));
+  grid-auto-rows: calc(var(--key-w) / var(--key-ratio));
+  gap: clamp(0.35rem, 1.1vh, 0.8rem);
+}
+.keypad button {
+  font-size: clamp(1.2rem, 3vh, 2rem); font-weight: 900;
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--ink); border-radius: 0.9rem;
+}
+.keypad button:active { background: var(--sky); }
+.key-dim { background: var(--paper) !important; color: var(--muted) !important; font-size: 1.4rem !important; }
+
+.pad-actions { display: flex; gap: 1.2rem; margin-top: 0.8rem; }
+
+/* ---------- pin ---------- */
+
+.pin-dots { display: flex; gap: 1.1rem; }
+.pin-dots i {
+  width: 1.4rem; height: 1.4rem; border-radius: 50%;
+  border: 3px solid var(--ink); background: transparent;
+}
+.pin-dots i.filled { background: var(--ink); }
+
+/* Visually hidden, but read by screen readers (live-region announcements). */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---------- result flood ---------- */
+
+.flood {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0.8rem; padding: 2rem 2rem 5.5rem; text-align: center; color: #fff;
+  opacity: 0; transition: opacity 300ms ease;   /* clean fade in/out (< 1s) */
+}
+.flood[hidden] { display: none; }
+.flood.is-visible { opacity: 1; }
+.flood.success { background: var(--success); }
+.flood.error   { background: var(--error); }
+
+.flood-icon { font-size: clamp(4rem, 12vw, 7rem); line-height: 1; font-weight: 900; }
+.flood-big  { font-size: clamp(2.4rem, 7vw, 4.5rem); font-weight: 900; line-height: 1.05; }
+.flood-small { font-size: 1.4rem; font-weight: 700; opacity: 0.9; }
+
+/* auto-close timer bar + early-close button, pinned to the bottom */
+.flood-bar {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 1rem;
+  padding: 1.1rem clamp(1rem, 3vw, 2rem);
+}
+.flood-progress {
+  flex: 1; height: 0.55rem; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28); overflow: hidden;
+}
+/* JS drives width 100% → 0% over the auto-close duration (smooth linear). */
+.flood-progress-fill { height: 100%; width: 100%; background: #fff; border-radius: 999px; }
+.flood-close {
+  flex: 0 0 auto;
+  width: 3rem; height: 3rem; border-radius: 50%;
+  border: 3px solid #fff; background: transparent; color: #fff;
+  font-size: 1.35rem; font-weight: 900; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.flood-close:active { background: rgba(255, 255, 255, 0.22); }
+
+@media (prefers-reduced-motion: reduce) {
+  .flood { transition: none; }
+}
+
+/* ---------- narrow screens ---------- */
+
+@media (max-width: 640px) {
+  .tier-grid { grid-template-columns: 1fr; }
+  .customer-head { flex-direction: column; align-items: flex-start; }
+  .manage-head { flex-direction: column; align-items: flex-start; gap: 0.8rem; }
+  /* stack the code field above the number pad on phones (re-center now that
+     the cross axis is horizontal) */
+  .code-pad-layout { flex-direction: column; align-items: center; }
+}
+
+/* ---------- quick-redeem buttons ---------- */
+
+.eyebrow-redeem { color: var(--redeem); }
+.hint-text { color: var(--muted); font-size: 1.05rem; font-weight: 500; align-self: center; }
+
+/* ---------- award pad with customer header ---------- */
+
+.pad-head { margin-bottom: 0.2rem; }
+.pad-screen { padding: clamp(0.6rem, 1.5vh, 1.6rem) 1.25rem; gap: clamp(0.4rem, 1.2vh, 1rem); }
+/* Scale the action buttons down on short screens too, so they always fit. */
+.pad-screen .btn-primary,
+.pad-screen .btn-ghost {
+  font-size: clamp(1.05rem, 2.6vh, 1.5rem);
+  padding: clamp(0.7rem, 1.7vh, 1.2rem) 1.6rem;
+}
+
+/* ---------- redeem confirm screen ---------- */
+
+.confirm-box {
+  width: min(60rem, 100%); flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.6rem;
+  background: var(--card); border: 3.5px solid var(--redeem); border-radius: 1.2rem;
+  padding: 2rem; text-align: center;
+}
+.confirm-item { font-size: clamp(2.2rem, 6vw, 3.6rem); font-weight: 900; line-height: 1.05; }
+.confirm-cost { font-size: 1.4rem; font-weight: 700; color: var(--redeem); }
+
+.confirm-actions { width: min(60rem, 100%); justify-content: space-between; }
+
+.btn-confirm {
+  background: var(--redeem); color: #fff;
+  font-size: 1.5rem; font-weight: 900; letter-spacing: 0.02em;
+  padding: 1.2rem 2rem; border-radius: 0.8rem;
+}
+.btn-confirm:active { filter: brightness(0.85); }
+.btn-confirm:disabled { opacity: 0.4; }
+
+.redeem-btn {
+  background: var(--card); border: 3.5px solid var(--redeem); border-radius: 1.1rem;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.3rem;
+  padding: 1rem; min-height: 8.5rem;
+}
+.redeem-btn:active { transform: scale(0.985); }
+.redeem-title { font-size: clamp(1.6rem, 3.5vw, 2.2rem); font-weight: 900; line-height: 1.1; }
+.redeem-cost { font-size: 1.2rem; font-weight: 700; color: var(--redeem); }
+
+.redeem-btn:disabled { border-color: #cfd6e0; opacity: 0.55; }
+.redeem-btn:disabled .redeem-cost { color: var(--muted); }
+.redeem-cost .short { font-weight: 500; }
+
+.redeem-btn.confirming {
+  background: var(--redeem); border-color: var(--redeem); color: #fff;
+}
+.redeem-btn.confirming .redeem-cost { color: #fff; }
+
+/* ---------- items / manage ---------- */
+
+.manage-screen { justify-content: flex-start; padding-top: 2rem; overflow-y: auto; }
+
+.manage-head {
+  width: min(50rem, 100%);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.manage-head h2 { font-size: 2rem; font-weight: 900; }
+.manage-note { width: min(50rem, 100%); color: var(--muted); font-size: 1rem; font-weight: 500; }
+.btn-compact { font-size: 1.2rem; padding: 0.9rem 1.4rem; }
+
+.reward-list { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 0.8rem; }
+
+.reward-row {
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1rem;
+  display: flex; align-items: center; gap: 1rem; padding: 1rem 1.2rem;
+}
+.reward-row.is-off { opacity: 0.55; border-style: dashed; }
+.reward-info { flex: 1; text-align: left; background: none; border: none; padding: 0; }
+.reward-info .redeem-title { font-size: 1.4rem; display: block; }
+.reward-info .redeem-cost { font-size: 1.05rem; }
+.reward-toggle {
+  min-width: 6.5rem; font-size: 1.1rem; font-weight: 900; letter-spacing: 0.06em;
+  padding: 0.8rem 1rem; border-radius: 0.7rem;
+  border: 3px solid var(--ink); background: var(--card); color: var(--muted);
+}
+.reward-toggle.is-on { background: var(--success); border-color: var(--success); color: #fff; }
+
+.reward-list-empty { color: var(--muted); font-weight: 700; font-size: 1.2rem; padding: 2rem 0; text-align: center; }
+
+/* ---------- stats (analytics) ---------- */
+
+.stats-screen { justify-content: flex-start; padding-top: 1.5rem; overflow-y: auto; align-items: center; }
+.stats-inner { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 1rem; }
+
+.stats-head { display: flex; align-items: center; justify-content: space-between; }
+.stats-head h2 { font-size: 2rem; font-weight: 900; }
+.stats-refresh {
+  width: 3rem; height: 3rem; border-radius: 0.7rem; font-size: 1.5rem; line-height: 1;
+  background: var(--card); border: 3px solid var(--ink); color: var(--ink);
+}
+.stats-refresh:active { background: var(--sky); }
+
+.stat-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.7rem; }
+.stat-tile {
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 1rem 0.8rem; display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start;
+}
+.stat-num { font-size: 1.9rem; font-weight: 900; line-height: 1.05; }
+.stat-label { font-size: 0.85rem; font-weight: 700; color: var(--muted); letter-spacing: 0.02em; }
+
+.stats-card {
+  background: var(--card); border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.8rem;
+}
+.stats-card h3 { font-size: 1.15rem; font-weight: 900; letter-spacing: 0.02em; }
+.stats-card-head { display: flex; align-items: baseline; justify-content: space-between; }
+.chart-max { font-size: 0.9rem; font-weight: 700; color: var(--muted); }
+
+/* single-series bar chart: bars grow from a shared baseline */
+.stats-chart { display: flex; align-items: flex-end; gap: 2px; height: 8rem; }
+.chart-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.3rem; height: 100%; }
+.chart-bar-wrap { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; min-height: 0; }
+.chart-bar {
+  width: 100%; background: var(--navy); border-radius: 4px 4px 0 0; min-height: 2px;
+}
+.chart-bar.zero { background: var(--sky-line); min-height: 2px; }   /* faint stub for $0 days */
+.chart-tick { font-size: 0.72rem; font-weight: 700; color: var(--muted); height: 0.9rem; }
+
+.stats-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.stats-list { list-style: none; display: flex; flex-direction: column; gap: 0.45rem; }
+.stats-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.stats-list span { color: var(--muted); font-weight: 600; font-size: 0.98rem; }
+.stats-list strong { font-size: 1.15rem; font-weight: 900; }
+
+.stats-top { display: flex; flex-direction: column; gap: 0.6rem; }
+/* The title track was capped at a flat 10rem, so on a 705px-wide card every
+   reward name over 160px was ellipsised while the bar beside it kept ~400px it
+   had no use for. The cap is now proportional: it still holds the bars roughly
+   in line across rows on a narrow card, and lets the names have the room on a
+   wide one. .top-title keeps its ellipsis as the last resort. */
+.top-row { display: grid; grid-template-columns: minmax(6rem, min(18rem, 45%)) 1fr auto; align-items: center; gap: 0.7rem; }
+.top-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-bar-wrap { background: var(--sky); border-radius: 999px; height: 0.7rem; overflow: hidden; }
+.top-bar { display: block; height: 100%; background: var(--navy); border-radius: 999px; }
+.top-count { font-weight: 900; min-width: 2ch; text-align: right; }
+.stats-empty { color: var(--muted); font-weight: 700; }
+
+/* recent activity + undo */
+/* height:auto, NOT a fixed pane. This used to be `height: 500px` with the
+   phone breakpoint below relaxing it, on the reasoning that a fixed pane inside
+   an already-scrolling screen is a trap. It is the same trap on a tablet, which
+   is the device the terminal actually runs on: /api recent returns 20 rows, and
+   a 500px window showed six of them behind a second scrollbar with the seventh
+   sliced by the card's border. `overflow-y: auto` stays because the phone rule
+   still caps the height and needs something to scroll; with no cap it is inert. */
+.recent-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; overflow-y: auto; height: auto; }
+.recent-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.8rem;
+  padding: 0.7rem 0.9rem; border: 2.5px solid var(--sky-line); border-radius: 0.8rem;
+  background: var(--card);
+}
+.recent-row.is-voided { opacity: 0.55; border-style: dashed; }
+.recent-info { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.recent-what { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-meta { color: var(--muted); font-weight: 600; font-size: 0.95rem; }
+.recent-undo {
+  flex: none; font-weight: 900; letter-spacing: 0.04em; white-space: nowrap;
+  padding: 0.55rem 0.9rem; border-radius: 0.6rem;
+  border: 2.5px solid var(--ink); background: var(--card); color: var(--ink);
+}
+.recent-undo:active { background: var(--sky); }
+.recent-undo.is-armed { background: var(--error); border-color: var(--error); color: #fff; }
+.recent-tag { flex: none; color: var(--muted); font-weight: 800; font-size: 0.9rem; letter-spacing: 0.04em; }
+
+/* ---------- deals (campaigns) ---------- */
+
+.tab-deals.is-active { background: var(--redeem); border-color: var(--redeem); }
+
+.deals-screen { justify-content: flex-start; padding-top: 1.5rem; overflow-y: auto; align-items: center; }
+.deals-inner { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 1rem; }
+
+/* The weekly allowance sits in the header, not buried in help text: it is the
+   number that decides whether a vendor spends a send on this idea or the next
+   one, and scarcity is what keeps students subscribed. */
+.deals-quota { font-size: 1.05rem; font-weight: 800; color: var(--muted); }
+.deals-quota.is-spent { color: var(--error); }
+
+/* display + direction are restated, not inherited from .stats-card, so that the
+   flex-gap fallback generator in scripts/build-client.js can see them. It walks
+   rules grouped by EXACT selector text, so a `.deals-compose` block that only
+   revised `gap` never registered as a flex container at all and was dropped from
+   the fallback entirely - leaving this the one gap on the DEALS screen with no
+   margin standing in for it below Safari 14.1. */
+.deals-compose { display: flex; flex-direction: column; gap: 1.1rem; }
+
+.deal-field { display: flex; flex-direction: column; gap: 0.4rem; position: relative; }
+.deal-label { font-size: 1rem; font-weight: 800; letter-spacing: 0.02em; }
+.deal-field input,
+.deal-field textarea {
+  font: inherit; font-size: 1.25rem; padding: 0.8rem 0.9rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+  background: var(--card); color: var(--ink); resize: none;
+}
+.deal-field input:focus,
+.deal-field textarea:focus { outline: none; border-color: var(--navy); }
+.deal-count { align-self: flex-end; font-size: 0.85rem; font-weight: 700; color: var(--muted); }
+
+.deal-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.deal-chip {
+  font: inherit; font-size: 1.02rem; font-weight: 800;
+  padding: 0.65rem 0.95rem; border-radius: 0.6rem;
+  border: 2.5px solid var(--ink); background: var(--card); color: var(--ink);
+}
+.deal-chip.is-active { background: var(--navy); border-color: var(--navy); color: #fff; }
+
+.deal-reach { font-size: 1.05rem; font-weight: 800; color: var(--navy); }
+
+/* Two-tap confirm: the armed state reads as a warning, because the send cannot
+   be recalled once it is queued. */
+#deal-send.is-armed { background: var(--error); border-color: var(--error); }
+#deal-send:disabled { opacity: 0.45; }
+
+.deals-note { font-size: 0.95rem; font-weight: 600; color: var(--muted); line-height: 1.35; }
+
+.deal-history { display: flex; flex-direction: column; gap: 0.7rem; }
+/* A column now: the title/stats line, then the edit + take-down controls, then
+   the editor itself when it is open. */
+.deal-row {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding-bottom: 0.7rem; border-bottom: 2px solid var(--sky);
+}
+.deal-row-top {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+}
+.deal-row:last-child { border-bottom: none; padding-bottom: 0; }
+/* Ended and taken-down deals stay legible but read as past. */
+.deal-row.is-over .deal-row-top { opacity: 0.6; }
+.deal-row-main { min-width: 0; }
+
+.deal-row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* Both of these are toggled by the `hidden` property from openDealEdit /
+   closeDealEdit, and the display:flex above would otherwise defeat it — same
+   trap as .balance-chip. */
+.deal-row-actions[hidden] { display: none; }
+.deal-act {
+  font: inherit; font-size: 0.95rem; font-weight: 800;
+  padding: 0.5rem 0.85rem; border-radius: 0.55rem;
+  border: 2.5px solid var(--ink); background: var(--card); color: var(--ink);
+}
+.deal-act:disabled { opacity: 0.45; }
+.deal-act-go { background: var(--navy); border-color: var(--navy); color: #fff; }
+.deal-act-danger { border-color: var(--error); color: var(--error); }
+/* Armed reads as a warning, matching #deal-send.is-armed. */
+.deal-act-danger.is-armed { background: var(--error); border-color: var(--error); color: #fff; }
+
+.deal-edit { display: flex; flex-direction: column; gap: 0.6rem; }
+.deal-edit[hidden] { display: none; }
+.deal-edit input,
+.deal-edit textarea {
+  font: inherit; font-size: 1.05rem; font-weight: 700;
+  width: 100%; padding: 0.6rem 0.7rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+  background: var(--card); color: var(--ink); resize: none;
+}
+.deal-edit input:focus,
+.deal-edit textarea:focus { outline: none; border-color: var(--navy); }
+.deal-row-title { font-size: 1.1rem; font-weight: 900; }
+.deal-row-body { font-size: 0.95rem; font-weight: 600; color: var(--muted); }
+.deal-row-stats { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 0.15rem; }
+.deal-stat { font-size: 0.9rem; font-weight: 600; color: var(--muted); }
+.deal-stat b { font-size: 1.05rem; font-weight: 900; color: var(--ink); }
+.deal-when { font-size: 0.82rem; font-weight: 700; color: var(--muted); }
+
+/* ---------- settings ---------- */
+
+.tab-settings.is-active { background: var(--ink); border-color: var(--ink); }
+
+.settings-screen { justify-content: flex-start; padding-top: 1.5rem; overflow-y: auto; align-items: center; }
+.settings-inner { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 1rem; }
+
+.settings-field { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; }
+.settings-field input {
+  font: inherit; font-size: 1.35rem; padding: 0.8rem 0.9rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem; background: var(--card); color: var(--ink);
+}
+.settings-field input:focus { outline: none; border-color: var(--navy); }
+.settings-actions { justify-content: flex-end; }
+
+/* unsaved-changes cue: an amber note above the actions + a dot on the tab, plus
+   a ring on Save so the way out of the state is obvious. */
+.settings-dirty { color: var(--redeem); font-weight: 800; font-size: 1.05rem; text-align: right; }
+#settings-save.is-dirty { box-shadow: 0 0 0 3px var(--redeem); }
+.tab-settings.is-dirty::after {
+  content: ""; display: inline-block; vertical-align: middle;
+  width: 0.55rem; height: 0.55rem; margin-left: 0.45rem;
+  border-radius: 50%; background: var(--redeem);
+}
+.tab-settings.is-active.is-dirty::after { background: #f0c060; }
+/* the specific section(s) holding unsaved edits get an amber border too */
+.settings-screen .stats-card.is-edited { border-color: var(--redeem); box-shadow: 0 0 0 2px var(--redeem); }
+
+/* logo picker: a square preview beside choose/remove buttons */
+.logo-field { display: flex; align-items: center; gap: 1rem; }
+.logo-preview {
+  width: 5rem; height: 5rem; flex: none; border-radius: 0.9rem;
+  border: 2.5px solid var(--ink); background: var(--card);
+  background-size: contain; background-repeat: no-repeat; background-position: center;
+}
+.logo-preview.is-empty {
+  border-style: dashed; border-color: var(--sky-line);
+  background-image: none;
+}
+.logo-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.logo-pick { cursor: pointer; }   /* it's a <label> wrapping a hidden file input */
+.field-warn { color: var(--redeem); font-weight: 700; font-size: 1.05rem; }
+
+/* on/off switch (matches the student app's affordance) */
+.switch {
+  position: relative; width: 3.6rem; height: 2.1rem; flex: none;
+  border-radius: 999px; border: 2.5px solid var(--sky-line); background: var(--paper);
+  transition: background 0.15s, border-color 0.15s;
+}
+.switch-knob {
+  position: absolute; top: 0.2rem; left: 0.2rem; width: 1.4rem; height: 1.4rem;
+  border-radius: 50%; background: var(--muted); transition: transform 0.15s, background 0.15s;
+}
+.switch[aria-checked="true"] { background: var(--success); border-color: var(--success); }
+.switch[aria-checked="true"] .switch-knob { transform: translateX(1.5rem); background: #fff; }
+
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.setting-label { display: flex; flex-direction: column; gap: 0.15rem; }
+.setting-name { font-weight: 800; }
+.setting-desc { color: var(--muted); font-weight: 500; font-size: 0.98rem; }
+
+/* quick-amount button editor rows: label · $ · amount · remove */
+.tier-editor { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.6rem 0; }
+.tier-row { display: grid; grid-template-columns: 1fr auto 6rem auto; align-items: center; gap: 0.5rem; }
+.tier-row input {
+  font: inherit; font-size: 1.05rem; padding: 0.55rem 0.6rem; min-width: 0;
+  border: 2.5px solid var(--sky-line); border-radius: 0.5rem; background: var(--card); color: var(--ink);
+}
+.tier-row input:focus { outline: none; border-color: var(--navy); }
+.tier-money { color: var(--muted); font-weight: 900; }
+.tier-dash { color: var(--muted); font-weight: 900; text-align: center; }
+.tier-remove {
+  flex: none; width: 2.4rem; height: 2.4rem; border-radius: 0.5rem; font-weight: 900;
+  border: 2.5px solid var(--sky-line); background: var(--card); color: var(--muted);
+}
+.tier-remove:active { background: var(--sky); }
+
+@media (max-width: 34rem) {
+  .stat-tiles { grid-template-columns: repeat(2, 1fr); }
+  .stats-2col { grid-template-columns: 1fr; }
+}
+
+/* ---------- overlay form ---------- */
+
+.overlay {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(16, 29, 51, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 1.5rem;
+}
+.overlay[hidden] { display: none; }
+
+.form-card {
+  width: min(30rem, 92vw); background: var(--card);
+  border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 2rem; display: flex; flex-direction: column; gap: 1rem;
+}
+.form-card h2 { font-size: 1.6rem; font-weight: 900; }
+.form-card label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; }
+.form-card input {
+  font: inherit; font-size: 1.35rem; padding: 0.9rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+}
+.form-card .pad-actions { justify-content: flex-end; }
+
+/* unsaved-changes guard: Discard / Save split, "Keep editing" quietly below */
+.guard-actions { justify-content: space-between; }
+.guard-stay {
+  align-self: center; padding: 0.3rem 0.6rem;
+  background: transparent; color: var(--muted);
+  font-weight: 700; font-size: 1.05rem;
+}
+
+/* ---------- emoji picker ---------- */
+
+.emoji-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem;
+}
+.emoji-grid button {
+  font-size: 1.7rem; padding: 0.5rem 0;
+  background: var(--paper); border: 2.5px solid transparent; border-radius: 0.7rem;
+}
+.emoji-grid button.selected {
+  border-color: var(--navy); background: var(--sky);
+}
+
+.reward-emoji { font-size: 1.7rem; margin-right: 0.6rem; }
+.confirm-emoji { font-size: clamp(3rem, 8vw, 4.5rem); line-height: 1; }
+
+/* ---------- punch tab (rotating punch-in code) ---------- */
+
+.tab-punch.is-active { background: var(--success); border-color: var(--success); }
+
+.punch-screen { justify-content: safe center; }
+
+.punch-stage {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 0.9rem; text-align: center;
+  width: 100%;
+}
+
+.punch-title { margin-bottom: 0.1rem; }
+
+.punch-reward-line {
+  font-size: clamp(1.15rem, 2.6vw, 1.6rem); font-weight: 900;
+  color: var(--success); letter-spacing: 0.02em;
+  min-height: 1.4em;   /* reserve the line so the QR doesn't jump when it fills */
+}
+
+/* The QR sits on its own white card so it scans against any screen theme. */
+.punch-qr-wrap { position: relative; display: inline-block; }
+.qr-card-terminal {
+  background: #fff; border: 3px solid var(--ink); border-radius: 1rem;
+  padding: 0.9rem; line-height: 0;
+}
+.punch-qr { display: block; }
+
+/* "Reconnecting…" cover: the stale code must not look scannable. */
+.punch-qr-cover {
+  position: absolute; inset: 0; border-radius: 1rem;
+  background: rgba(238, 241, 246, 0.94);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 1.15rem; color: var(--muted);
+  padding: 1rem; text-align: center;
+}
+.punch-qr-cover[hidden] { display: none; }
+
+/* 30-second countdown: a bar draining left, refilled on every new code. */
+.punch-timer {
+  width: min(20rem, 70vw); height: 0.55rem;
+  border-radius: 999px; background: var(--sky);
+  border: 2px solid var(--sky-line); overflow: hidden;
+}
+.punch-timer-fill {
+  height: 100%; width: 100%; border-radius: 999px;
+  background: var(--success);
+  transition: width 0.25s linear;
+}
+
+.punch-hint { color: var(--muted); font-weight: 700; font-size: 1rem; max-width: 34rem; }
+
+.punch-actions { display: flex; gap: 0.6rem; }
+
+/* Exit button for kiosk mode — floats over the fullscreen stage. */
+.punch-exit-fs {
+  position: absolute; top: 0.9rem; right: 0.9rem;
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--ink); border-radius: 0.6rem;
+  font-size: 1rem; font-weight: 900; padding: 0.6rem 0.9rem;
+}
+
+/* Kiosk fullscreen: the stage takes the whole viewport (works even where the
+   Fullscreen API doesn't, e.g. iPhone Safari). */
+body.punch-fs .punch-stage {
+  position: fixed; inset: 0; z-index: 60;
+  background: var(--paper);
+  justify-content: center; padding: 2rem;
+}
+body.punch-fs .punch-stage .punch-actions { display: none; }
+
+/* Settings: dim the card-shape fields while the feature is off. */
+#punch-fields { display: flex; flex-direction: column; gap: 0.9rem; margin-top: 0.9rem; }
+#punch-fields.is-off { opacity: 0.45; }
+
+/* An author `display:` beats the UA sheet's `[hidden] { display: none }`, so
+   every element the JS toggles with the property needs a companion rule.
+
+   #shell is display:flex, so `$('shell').hidden = true` never took it out of
+   flow: a full second viewport of empty terminal chrome sat below the sign-in
+   card, out of reach only because body is overflow:hidden. On the phone
+   layout that stops being harmless — .tabs is position:fixed, and a fixed
+   child of a not-really-hidden parent paints the bottom bar over the login.
+
+   `.form-card label` is display:flex, which was likewise swallowing
+   openRewardForm's `$('reward-visits-label').hidden = !config.punchEnabled` —
+   the visits price box showed even for vendors with visits turned off. */
+#shell[hidden] { display: none; }
+.form-card label[hidden] { display: none; }
+
+
+/* =====================================================
+   PHONE  (portrait handsets, <= 34.5rem / 552px)
+
+   The terminal was drawn for a counter-top tablet. On a phone the same
+   markup takes a different shape, and nothing below changes an id, a
+   class or a JS hook — it is layout only:
+
+     - the tab row leaves the header and becomes a fixed bottom bar, so
+       SCAN is always under the thumb and the header stops eating three
+       rows of a 844px screen
+     - the viewfinder turns portrait and grows into the space left over,
+       because on this screen the camera IS the instruction
+     - every side-by-side pair (quick awards + keypad, Cancel + Confirm,
+       Reset + Save) stacks; at 390px they overflowed the screen
+     - the thing you press last sits lowest: Continue below the number
+       pad, Confirm below Cancel
+   ===================================================== */
+
+@media (max-width: 34.5rem) {
+
+  :root { --nav-h: 4.15rem; }
+
+  /* ---------- header: vendor name only ---------- */
+
+  #topbar {
+    justify-content: center; gap: 0;
+    padding: 0.5rem 0.9rem;
+    padding-top: calc(0.5rem + env(safe-area-inset-top));
+    border-bottom-width: 2.5px;
+  }
+  .vendor-name { font-size: 0.95rem; letter-spacing: 0.1em; }
+
+  /* ---------- tabs: fixed bottom bar ----------
+     z-index 30 keeps it under .overlay (40), .flood (50) and the punch
+     kiosk stage (60), all of which must still cover the whole screen. */
+  .tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    flex-wrap: nowrap; gap: 0;
+    background: var(--card); border-top: 3px solid var(--ink);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tab {
+    flex: 1 1 0; min-width: 0; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    height: var(--nav-h); padding: 0.2rem 0.12rem;
+    font-size: 0.63rem; letter-spacing: 0.02em;
+    border: none; border-radius: 0;
+    /* reserved, so lighting a tab doesn't shift the labels */
+    border-top: 0.35rem solid transparent;
+    background: transparent; color: var(--muted);
+  }
+  /* display:flex above would beat the UA [hidden] rule, and VISITS is shown
+     and hidden with the property (syncPunchTab). */
+  .tab[hidden] { display: none; }
+
+  .tab.is-active          { background: var(--sky); color: var(--navy); border-top-color: var(--navy); }
+  .tab-punch.is-active    { background: #d9f0e3; color: var(--success); border-top-color: var(--success); }
+  .tab-deals.is-active    { background: #f7e8cd; color: var(--redeem); border-top-color: var(--redeem); }
+  .tab-settings.is-active { background: var(--sky); color: var(--ink); border-top-color: var(--ink); }
+
+  /* the unsaved-changes dot can't sit inline in a 65px-wide tab */
+  .tab-settings.is-dirty::after {
+    position: absolute; top: 0.55rem; left: 50%;
+    margin-left: 1.15rem; width: 0.5rem; height: 0.5rem;
+  }
+  .tab-settings.is-active.is-dirty::after { background: var(--redeem); }
+
+  /* public/scan has no tab bar (single screen flow, no .tabs element at all),
+     so unlike terminal.css there is nothing fixed at the bottom to clear —
+     just the safe area itself. */
+  #main { padding-bottom: env(safe-area-inset-bottom); }
+
+  /* ---------- safe areas ----------
+
+     With viewport-fit=cover the page owns the home-indicator strip, and the
+     bar's own padding-bottom fills it. WITHOUT it (an old cached shell, or a
+     browser that ignores the meta) iOS keeps the whole layout viewport out of
+     that strip and paints it itself, using the background propagated from
+     <body> — and nothing the page draws can reach it, not even
+     `position: fixed; inset: 0`. That is why a gap can appear under the tab
+     bar AND under an open modal at the same time.
+
+     So: <body> carries the colour of whatever meets the bottom edge, and the
+     paper background moves onto the scrolling area. Under cover these are all
+     no-ops; without it the strip reads as part of the bar above it instead of
+     as a gap. */
+  body { background: var(--card); }
+  #main { background: var(--paper); }
+  #screen-login, #screen-recover { background: var(--paper); }
+  /* the scrim colour, pre-blended: rgba(16,29,51,.55) over --paper */
+  body:has(.overlay:not([hidden])) { background: #747c8b; }
+  body:has(#flood.success:not([hidden])) { background: var(--success); }
+  body:has(#flood.error:not([hidden])) { background: var(--error); }
+
+  /* ---------- shared sizing ---------- */
+
+  .screen { padding: 0.9rem 0.9rem 1rem; gap: 0.8rem; }
+
+  .btn-primary, .btn-danger, .btn-confirm {
+    font-size: 1.2rem; padding: 1rem 1.1rem; border-radius: 0.7rem;
+  }
+  .btn-ghost { font-size: 1.05rem; padding: 0.9rem; }
+  .btn-compact { font-size: 1rem; padding: 0.7rem 0.9rem; }
+
+  /* Every button pair stacks by default; the screens that genuinely fit two
+     across re-opt-in below. */
+  .pad-actions { display: grid; grid-template-columns: 1fr; gap: 0.55rem; width: 100%; margin-top: 0.5rem; }
+
+  /* Ghost buttons are underlined links on the tablet. At arm's length that
+     reads fine; on a phone, next to a filled primary, it reads as
+     unavailable — so the paired ones get a real outline. */
+  #scan-manual-btn, #scan-camera-btn, #redeem-cancel, #pad-cancel, #settings-reset {
+    text-decoration: none; color: var(--navy); background: var(--card);
+    border: 2.5px solid var(--sky-line); border-radius: 0.7rem;
+  }
+
+  /* ---------- login / recover ---------- */
+
+  #screen-login, #screen-recover { min-height: 100vh; min-height: 100dvh; }
+  .login-card { width: 100%; padding: 1.4rem; gap: 0.85rem; }
+  .login-card h1 { font-size: 1.35rem; }
+  .login-card input { font-size: 1.1rem; padding: 0.8rem; }
+  .login-card label { font-size: 0.95rem; }
+  .login-note { font-size: 0.9rem; }
+
+  /* ---------- SCAN: camera ---------- */
+
+  .scan-title { font-size: 1.3rem; letter-spacing: 0.05em; line-height: 1.15; }
+  .scan-title br { display: none; }   /* markup keeps a space before it */
+
+  /* The viewfinder takes whatever the copy above and below leaves, and goes
+     portrait: a phone's rear camera is portrait, and a 4:3 landscape box
+     wasted half the screen. object-fit:cover means the shorter box on a
+     small phone crops rather than distorts. */
+  /* Takes the leftover space, and gives it back when there isn't any: the
+     status line and the fallback button are at their min-content size, so
+     .qr-frame below is the one thing that can shrink, down to its min-height. */
+  .qr-area { flex: 1 1 auto; min-height: 0; justify-content: center; gap: 0.7rem; }
+  /* --frame-w mirrors what `width: 100%; max-width: 24rem` actually resolves to
+     here (.screen pads 0.9rem a side), because the height has to be computed
+     from it by hand - see the note on .qr-frame. flex: 0 1 auto still lets the
+     frame shrink below that height on a short phone. */
+  .qr-frame {
+    --frame-w: min(24rem, 100vw - 1.8rem);
+    --target-w: min(13rem, 66vw - 1.2rem);   /* 66% of --frame-w, capped */
+    width: 100%; max-width: 24rem; flex: 0 1 auto;
+    height: calc(var(--frame-w) * 4 / 3); min-height: 12rem; border-radius: 1rem;
+  }
+  .qr-status { font-size: 0.95rem; min-height: 2.7em; }   /* reserve 2 lines: no jump when it wraps */
+  #scan-manual-btn, #scan-camera-btn { width: 100%; max-width: 24rem; font-size: 1.05rem; }
+
+  .last-activity { font-size: 0.88rem; }
+  .undo-last { font-size: 0.9rem; padding: 0.65rem 1.2rem; }
+
+  /* ---------- SCAN: typed fallback ----------
+     Reordered so the pad sits between the readout and Continue: the pad is
+     what gets pressed six times, Continue once, and Continue belongs
+     nearest the thumb. display:contents flattens the two wrappers so the
+     input, hint, pad and submit become siblings that `order` can move. */
+
+  /* Nothing here can usefully shrink, so it keeps its content height and the
+     screen scrolls instead. */
+  .manual-area { flex: 0 0 auto; justify-content: flex-start; gap: 0.8rem; }
+  .code-pad-layout {
+    flex-direction: column; align-items: stretch; gap: 0.7rem;
+    width: 100%; max-width: 22rem; margin: 0 auto;
+  }
+  .code-pad-left, .code-pad-left .code-entry { display: contents; }
+  .code-input   { order: 1; font-size: 2.4rem; padding: 0.7rem 0.5rem; border-radius: 0.8rem; }
+  .code-hint    { order: 2; font-size: 0.9rem; }
+  .code-keypad  { order: 3; align-self: center; }
+  .code-submit  { order: 4; }
+  .qr-camera-msg { width: 100%; font-size: 0.95rem; }
+
+  /* ---------- keypads ---------- */
+
+  /* Wider keys, shallower rows: 3 across the full width beats the tablet's
+     fixed 7.5rem squares, and the flatter ratio buys back the height the
+     bottom bar takes. */
+  /* Columns stay 1fr so the pad fills the width exactly; --key-w restates that
+     same width in absolute terms only so the row height can be derived from it. */
+  .keypad {
+    width: 100%; max-width: 22rem; margin: 0 auto;
+    --key-w: calc((min(22rem, 100vw - 1.8rem) - 1rem) / 3);   /* less two 0.5rem gaps */
+    --key-ratio: 1.55;
+    grid-template-columns: repeat(3, 1fr); gap: 0.5rem;
+  }
+  .keypad button { font-size: 1.5rem; border-width: 2.5px; border-radius: 0.7rem; }
+  .key-dim { font-size: 1.15rem !important; }
+
+  /* PIN: prompt at the top, pad against the bottom edge, rather than the whole
+     thing floating in the middle of a tall screen. */
+  .pin-screen { justify-content: flex-start; padding-top: 2.5rem; }
+  .pin-dots { gap: 1rem; }
+  /* Narrower than the other pads, so it has to restate --key-w against its own
+     cap or the rows would be sized for a 22rem pad and come out square-ish. */
+  .keypad-pin {
+    max-width: 20rem; margin-top: auto;
+    --key-w: calc((min(20rem, 100vw - 1.8rem) - 1rem) / 3);
+  }
+
+  /* ---------- AWARD pad ---------- */
+
+  /* The tablet stands the quick buttons beside the keypad; at 390px that
+     overflowed off the right edge. */
+  .pad-inner { flex-direction: column; align-items: stretch; gap: 0.7rem; }
+  .pad-shortcut-wrapper, .pad-exact-wrapper {
+    width: 100%; display: flex; flex-direction: column; align-items: center; gap: 0.7rem;
+  }
+  .quick-awards { width: 100%; gap: 0.5rem; }
+  .quick-award { padding: 0.6rem 0.4rem; border-width: 2.5px; }
+  .qa-label { font-size: 1rem; }
+  .qa-amt { font-size: 0.95rem; }
+  .qa-pts { font-size: 0.8rem; }
+  .exact-entry { width: 100%; }
+
+  .pad-readout { margin-bottom: 0.2rem; }
+  .pad-amount { font-size: 2.5rem; }
+  .pad-points { font-size: 1rem; margin-top: 0.15rem; }
+
+  .pad-screen { padding: 0.8rem 0.9rem 1rem; gap: 0.55rem; }
+  .pad-screen .btn-primary { font-size: 1.15rem; padding: 0.95rem 1rem; }
+  .pad-screen .btn-ghost { font-size: 1.05rem; padding: 0.95rem 1.1rem; }
+  /* flex, not grid: #pad-award is hidden outright when the vendor turns exact
+     entry off, and Cancel should then keep its own width. */
+  .pad-screen .pad-actions { display: flex; gap: 0.6rem; }
+  #pad-cancel { flex: 0 0 auto; }
+  #pad-award { flex: 1 1 auto; }
+
+  /* ---------- customer header (award + redeem) ---------- */
+
+  /* The <= 640px rule stacks name over chips, which costs a whole row for
+     nothing: the name and the balance fit side by side at 390px. */
+  .customer-head {
+    flex-direction: row; align-items: center; gap: 0.6rem; flex-wrap: nowrap;
+  }
+  .customer-head > div:first-child { min-width: 0; }
+  .customer-screen { padding-top: 1rem; }
+  .eyebrow { font-size: 0.7rem; letter-spacing: 0.16em; }
+  #customer-name, #redeem-name {
+    font-size: 1.35rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .head-chips { gap: 0.4rem; flex: none; }
+  .balance-chip { padding: 0.45rem 0.75rem; border-width: 2.5px; border-radius: 0.7rem; gap: 0.3rem; }
+  .balance-chip span:first-child { font-size: 1.35rem; }
+  .chip-label { font-size: 0.85rem; }
+  .tier-chip { padding: 0.45rem 0.6rem; font-size: 1.1rem; border-width: 2.5px; border-radius: 0.7rem; }
+
+  /* ---------- REDEEM confirm ---------- */
+
+  /* Let the amber box take the slack so Confirm lands at the bottom of the
+     screen rather than halfway up it. */
+  .confirm-box { flex: 1 1 auto; padding: 1.3rem 1rem; border-width: 3px; gap: 0.4rem; }
+  .confirm-emoji { font-size: 3rem; }
+  .confirm-item { font-size: 1.9rem; }
+  .confirm-cost { font-size: 1.1rem; }
+  /* Cancel above, Confirm at the bottom where the thumb lands. */
+  .confirm-actions { grid-template-columns: 1fr; }
+  #redeem-cancel { font-size: 1.05rem; padding: 0.85rem; }
+  .btn-confirm { font-size: 1.2rem; }
+
+  /* ---------- VISITS (punch) ---------- */
+
+  .punch-screen { padding-top: 0.8rem; }
+  .punch-stage { gap: 0.7rem; }
+  .punch-title { font-size: 1.3rem; }
+  .punch-title br { display: none; }   /* markup keeps a space before it */
+  .punch-reward-line { font-size: 1.05rem; }
+  /* punchQrSize() draws up to (viewport width - 64px); trim the card so the
+     frame around it still fits. */
+  .qr-card-terminal { padding: 0.6rem; }
+  .punch-hint { font-size: 0.88rem; }
+  .punch-exit-fs { top: calc(0.9rem + env(safe-area-inset-top)); }
+
+  /* ---------- ITEMS ---------- */
+
+  .manage-screen { padding-top: 1rem; }
+  .manage-head { flex-direction: row; align-items: center; gap: 0.6rem; }
+  .manage-head h2 { font-size: 1.4rem; }
+  .manage-note { font-size: 0.9rem; }
+  .reward-row { padding: 0.75rem 0.85rem; gap: 0.6rem; border-width: 2.5px; }
+  .reward-emoji { font-size: 1.5rem; margin-right: 0; }
+  .reward-info { min-width: 0; min-height: 2.75rem; }
+  .reward-info .redeem-title { font-size: 1.1rem; }
+  .reward-info .redeem-cost { font-size: 0.9rem; }
+  .reward-toggle { min-width: 4.3rem; font-size: 0.9rem; padding: 0.6rem 0.5rem; border-width: 2.5px; }
+
+  /* ---------- DEALS ---------- */
+
+  .deals-screen { padding-top: 1rem; }
+  /* "Send a deal" was wrapping to two lines to make room for the quota. */
+  .deals-inner .stats-head { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+  .deals-quota { font-size: 0.95rem; }
+  .deal-field input, .deal-field textarea { font-size: 1.05rem; padding: 0.7rem 0.75rem; }
+  .deal-chip { font-size: 0.95rem; padding: 0.6rem 0.8rem; }
+  .deal-act { padding: 0.6rem 0.85rem; }
+  .deal-row-top { flex-direction: column; gap: 0.35rem; }
+  .deal-row-stats { flex-direction: row; align-items: baseline; gap: 0.9rem; }
+
+  /* ---------- STATS ---------- */
+
+  .stats-screen { padding-top: 1rem; }
+  .stats-head h2 { font-size: 1.45rem; }
+  .stats-card { padding: 0.9rem 0.95rem; }
+  .stats-card h3 { font-size: 1.02rem; }
+  .stat-tile { padding: 0.8rem 0.7rem; border-width: 2.5px; }
+  .stat-num { font-size: 1.5rem; }
+  .stat-label { font-size: 0.8rem; }
+  .stats-chart { height: 6.5rem; }
+  .top-row { grid-template-columns: minmax(4.5rem, 8rem) 1fr auto; gap: 0.5rem; }
+  /* A fixed 500px pane inside an already-scrolling screen is a trap on a
+     phone: two nested scrollers, one of them taller than the viewport. */
+  .recent-list { height: auto; max-height: 22rem; }
+  .recent-what { font-size: 0.95rem; }
+  .recent-meta { font-size: 0.85rem; }
+  .recent-undo { font-size: 0.85rem; padding: 0.65rem 0.8rem; }
+
+  /* ---------- SETTINGS ---------- */
+
+  .settings-screen { padding-top: 1rem; }
+  .settings-field input { font-size: 1.15rem; padding: 0.7rem 0.75rem; }
+  .settings-actions { grid-template-columns: auto 1fr; }
+  .settings-screen .btn-primary { font-size: 1.15rem; padding: 0.95rem 1rem; }
+  .settings-screen .btn-ghost { font-size: 1.05rem; padding: 0.95rem 1.1rem; }
+  .setting-row { align-items: flex-start; gap: 0.8rem; }
+  .setting-desc { font-size: 0.9rem; }
+  /* The switch stays the size it looks best at; the hit area grows past it,
+     since 58x34 is well under a thumb. */
+  .switch::after { content: ""; position: absolute; inset: -0.6rem -0.4rem; }
+  .tier-row { grid-template-columns: 1fr auto 4.6rem auto; gap: 0.4rem; }
+  .tier-remove { width: 2.75rem; height: 2.75rem; }
+  .logo-preview { width: 4rem; height: 4rem; }
+  .settings-dirty { font-size: 0.95rem; text-align: left; }
+
+  /* ---------- overlays ---------- */
+
+  /* `safe center` keeps a short dialog centred but falls back to the top edge
+     once the card is taller than the screen — plain `center` would push the
+     card's head above the scroll origin, out of reach. */
+  .overlay { align-items: safe center; overflow-y: auto; padding: 1rem 0.9rem; }
+  .form-card { width: 100%; padding: 1.2rem; gap: 0.75rem; }
+  .form-card h2 { font-size: 1.3rem; }
+  .form-card label { font-size: 0.95rem; }
+  .form-card input { font-size: 1.1rem; padding: 0.75rem; }
+  .form-card .pad-actions { grid-template-columns: 1fr 1fr; }
+  .guard-actions { grid-template-columns: 1fr 1fr; }
+  .guard-stay { padding: 0.7rem 1rem; }
+  .emoji-grid { grid-template-columns: repeat(6, 1fr); gap: 0.35rem; }
+  .emoji-grid button { font-size: 1.35rem; padding: 0.5rem 0; border-width: 2px; }
+
+  /* ---------- result flood ---------- */
+
+  .flood { padding: 1.5rem 1.2rem 5rem; }
+  .flood-small { font-size: 1.02rem; }
+}
+
+
+/* ---------------------------------------------------------------
+   SHORT PHONES (iPhone SE and friends, <= 44rem / 704px tall)
+
+   Same layout, squeezed. The target is the award pad: on a 667px
+   screen the default phone sizes put "Award points" ~140px below
+   the fold, and the one button staff press all shift should never
+   need a scroll. Flatter keys give back most of it.
+   --------------------------------------------------------------- */
+
+@media (max-width: 34.5rem) and (max-height: 44rem) {
+
+  :root { --nav-h: 3.6rem; }
+
+  .tab { font-size: 0.6rem; border-top-width: 0.3rem; }
+  .screen { padding: 0.65rem 0.8rem 0.8rem; gap: 0.55rem; }
+  .scan-title, .punch-title { font-size: 1.15rem; }
+
+  .keypad {
+    gap: 0.4rem;
+    --key-w: calc((min(22rem, 100vw - 1.6rem) - 0.8rem) / 3);   /* .screen pads 0.8rem here */
+    --key-ratio: 1.95;
+  }
+  /* Same 20rem cap as the phone block, restated because that block's .keypad-pin
+     rule has the same specificity as the .keypad rule just above and loses to it
+     on source order. */
+  .keypad-pin { --key-w: calc((min(20rem, 100vw - 1.6rem) - 0.8rem) / 3); }
+  .keypad button { font-size: 1.35rem; }
+  .key-dim { font-size: 1.05rem !important; }
+
+  .code-input { font-size: 2rem; padding: 0.5rem; }
+  .code-hint { font-size: 0.85rem; }
+  .qr-status { font-size: 0.9rem; }
+
+  .pad-screen { padding: 0.6rem 0.8rem 0.8rem; gap: 0.35rem; }
+  .pad-screen .keypad { --key-ratio: 2.15; }
+  .pad-amount { font-size: 2rem; }
+  .pad-points { font-size: 0.92rem; }
+  .quick-awards { gap: 0.4rem; }
+  .quick-award { padding: 0.35rem 0.4rem; }
+  .qa-label { font-size: 0.92rem; }
+  .qa-amt { font-size: 0.88rem; }
+  .qa-pts { font-size: 0.75rem; }
+  .pad-screen .btn-primary { font-size: 1.05rem; padding: 0.8rem 1rem; }
+  .pad-screen .btn-ghost { font-size: 1rem; padding: 0.8rem 1rem; }
+  .pad-actions { margin-top: 0.3rem; }
+
+  #customer-name, #redeem-name { font-size: 1.2rem; }
+  .balance-chip span:first-child { font-size: 1.2rem; }
+  .tier-chip { font-size: 1rem; }
+
+  .confirm-emoji { font-size: 2.4rem; }
+  .confirm-item { font-size: 1.6rem; }
+  .punch-hint { font-size: 0.82rem; }
+}
+
+
+/* =====================================================
+   PHONE, LANDSCAPE (or any very short screen)
+
+   Too short for a bottom bar to be worth 4rem, so the tabs stay in the
+   header and everything just gets compact. The scan screen turns
+   side-by-side, which is the one shape that fits 390px of height.
+   ===================================================== */
+
+@media (max-height: 30rem) and (orientation: landscape) {
+
+  #topbar { padding: 0.35rem 0.8rem; gap: 0.4rem; border-bottom-width: 2.5px; }
+  .vendor-name { font-size: 0.85rem; }
+  .tabs { gap: 0.35rem; }
+  .tab { font-size: 0.78rem; padding: 0.55rem 0.7rem; border-width: 2.5px; border-radius: 0.45rem; }
+
+  .screen { padding: 0.6rem 1rem 0.7rem; gap: 0.55rem; }
+  .scan-title { font-size: 1.1rem; }
+  .scan-title br { display: none; }
+  .punch-title { font-size: 1.1rem; }
+  .punch-title br { display: none; }
+
+  .btn-primary, .btn-danger, .btn-confirm { font-size: 1.05rem; padding: 0.7rem 1rem; }
+  .btn-ghost { font-size: 0.95rem; padding: 0.6rem 0.8rem; }
+
+  /* viewfinder left, copy + fallback button right */
+  .qr-area { flex-direction: row; align-items: center; justify-content: center; gap: 1.2rem; }
+  /* Height leads here (it is the scarce axis) and the width follows it, which is
+     the reverse of every other breakpoint - so both are stated outright. */
+  .qr-frame {
+    --frame-w: min(20rem, 82.6vh);          /* = height * 4/3 */
+    --target-w: min(9rem, 51.2vh);          /* 62% of --frame-w, capped */
+    width: var(--frame-w); height: min(15rem, 62vh);
+  }
+  .qr-status { max-width: 18rem; }
+  /* it's a row item now, so stop it being squeezed to two wrapped words */
+  #scan-manual-btn, #scan-camera-btn {
+    flex: 0 0 auto; white-space: nowrap; text-decoration: none;
+    color: var(--navy); background: var(--card);
+    border: 2.5px solid var(--sky-line); border-radius: 0.6rem;
+  }
+
+  /* code field left, pad right — the tablet shape, just smaller */
+  .code-pad-layout { flex-direction: row; align-items: center; gap: 1.5rem; }
+  .code-pad-left { width: min(16rem, 45vw); }
+  .code-input { font-size: 1.9rem; padding: 0.5rem; }
+  .code-hint { font-size: 0.85rem; }
+  .keypad {
+    --key-w: min(4.4rem, 18vh); --key-ratio: 1.5;
+    grid-template-columns: repeat(3, var(--key-w)); gap: 0.35rem;
+  }
+  .keypad button { font-size: 1.1rem; border-width: 2.5px; }
+  .key-dim { font-size: 0.95rem !important; }
+
+  .pad-readout { margin-bottom: 0.2rem; }
+  .pad-amount { font-size: 1.7rem; }
+  .pad-points { font-size: 0.9rem; }
+  .pad-actions { margin-top: 0.3rem; }
+  /* the award pad stacks header + readout + pad + actions, which is the one
+     screen that still runs past 390px of height */
+  .pad-screen { padding: 0.5rem 1rem 0.6rem; gap: 0.35rem; }
+  .pad-screen .keypad { --key-w: min(3.9rem, 15vh); --key-ratio: 1.65; }
+  .pad-screen .keypad button { font-size: 1rem; }
+  .quick-award { padding: 0.4rem 0.5rem; }
+  .qa-label { font-size: 0.95rem; }
+  .qa-pts { font-size: 0.78rem; }
+  .customer-head { flex-direction: row; align-items: center; }
+  #customer-name, #redeem-name { font-size: 1.3rem; }
+  .balance-chip { padding: 0.4rem 0.8rem; }
+  .balance-chip span:first-child { font-size: 1.3rem; }
+
+  .confirm-box { padding: 0.9rem; }
+  .confirm-emoji { font-size: 2.2rem; }
+  .confirm-item { font-size: 1.6rem; }
+  .confirm-cost { font-size: 1rem; }
+
+  .punch-stage { gap: 0.5rem; }
+  .punch-hint { font-size: 0.82rem; }
+  .qr-card-terminal { padding: 0.6rem; }
+
+  .overlay { align-items: safe center; overflow-y: auto; padding: 0.8rem; }
+  .form-card { padding: 1.1rem; gap: 0.6rem; }
+  .emoji-grid { grid-template-columns: repeat(10, 1fr); }
+  .emoji-grid button { font-size: 1.2rem; padding: 0.25rem 0; }
+}

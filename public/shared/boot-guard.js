@@ -96,10 +96,13 @@
 
   // Which app this is, from the URL rather than a data- attribute or an inline
   // script (the CSP forbids inline scripts, which is why theme-init.js is a file
-  // too). Must match the CLIENT_ERROR_SOURCES set in server.js.
+  // too). Must match the CLIENT_ERROR_SOURCES set in server.js. /scan reports as
+  // 'vendor' too — it's the same vendor-facing app, just a second entry point,
+  // and reusing the value avoids widening the server-side allowlist for it.
   function appSource() {
     var p = window.location.pathname;
     if (p.indexOf('/terminal') === 0) { return 'vendor'; }
+    if (p.indexOf('/scan') === 0) { return 'vendor'; }
     if (p.indexOf('/admin') === 0) { return 'admin'; }
     return 'student';
   }

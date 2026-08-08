@@ -52,19 +52,41 @@ const ROOT = path.join(__dirname, '..');
 // runtime is harmless.
 export const JS_TARGET = ['es2017'];
 
+// public/scan is the fallback POS screen for a device even older than the
+// es2017 floor above (built Aug 2026 for an iPad mini stuck on iOS 12.5.7,
+// below the iOS 13.4-14.2 floor [[browser-support-floor]] testing had already
+// established for /terminal). Unlike JS_TARGET this is a real BROWSER VERSION,
+// which buys genuine lowering of optional chaining / nullish coalescing /
+// logical assignment / spread into code Safari 12 can run, not just "leave the
+// syntax alone and hope the edition covers it". The one thing esbuild refuses
+// outright at this target is destructuring ("Transforming destructuring to the
+// configured target environment is not supported yet") — confirmed by probing
+// esbuild directly, not assumed — so public/scan/scan.js must never use
+// `const {a} = b` / `const [a] = b`, including destructured function params.
+// That is also why scan.js cannot load supabase-js: the vendored UMD bundle
+// fails this same target with 209 destructuring errors, checked the same way.
+// It talks to Supabase Auth's REST endpoints directly with fetch instead (see
+// scan.js) — the same email+password grant supabase-js itself wraps, so the
+// login method is unchanged, just not routed through a library that can't
+// parse on this device.
+export const SCAN_JS_TARGET = ['safari12'];
+
 // CSS has to be targeted by browser version — an ECMAScript edition means
 // nothing to the CSS lowerer. This is what rewrites `inset: 0` into the four
 // longhands (Safari only understood the shorthand from 14.1), which is the bug
 // that left the student app's boot splash shrink-wrapped in the top-left corner.
 // Unlike the JS path this can't hard-fail: esbuild lowers what it knows and
-// leaves the rest alone.
+// leaves the rest alone. safari11 is already below the safari12 JS floor above,
+// so public/scan reuses it rather than needing a third constant.
 export const CSS_TARGET = ['safari11'];
 
 export const BUILD_DIR = path.join(ROOT, '.build');
 
 // Source dir -> build dir, keyed by the app folder name under public/.
-// Keep in step with the `shells` list in server.js.
-const APPS = ['student', 'vendor', 'admin', 'join'];
+// Keep in step with the `shells` list in server.js. 'scan' gets SCAN_JS_TARGET
+// instead of JS_TARGET — see the constant above.
+const APPS = ['student', 'vendor', 'admin', 'join', 'scan'];
+const SCAN_APP = 'scan';
 
 // supabase-js used to come from jsDelivr pinned with an SRI hash. It is now
 // copied out of node_modules and lowered like everything else, which is both the
@@ -77,15 +99,21 @@ const APPS = ['student', 'vendor', 'admin', 'join'];
 // all keep working exactly as they do for the QR libraries already vendored this
 // way into both public/student and public/vendor.
 const SUPABASE_SRC = path.join(ROOT, 'node_modules/@supabase/supabase-js/dist/umd/supabase.js');
+// Deliberately NOT 'scan': the UMD bundle cannot be lowered to SCAN_JS_TARGET
+// at all (209 destructuring errors), which is exactly why scan.js talks to
+// Supabase Auth's REST API directly instead of loading this file.
 const SUPABASE_APPS = ['student', 'vendor', 'admin'];
 const SUPABASE_FILE = 'supabase.js';
 
-// The boot guard is fanned out the same way, from a single source, so the three
-// apps can't drift. It is the screen a device too old even for the lowered
-// bundles gets instead of a white page. public/shared is not an app root and is
-// never served directly; it exists only to feed this copy.
+// The boot guard is fanned out the same way, from a single source, so the apps
+// can't drift. It is the screen a device too old even for the lowered bundles
+// gets instead of a white page. public/shared is not an app root and is never
+// served directly; it exists only to feed this copy. 'scan' is included even
+// though it targets an older browser than the others — boot-guard.js is ES5,
+// so it runs there too, and it's the only way to see a parse failure on a
+// device we have no way to test against directly.
 const GUARD_SRC = path.join(ROOT, 'public/shared/boot-guard.js');
-const GUARD_APPS = ['student', 'vendor', 'admin'];
+const GUARD_APPS = ['student', 'vendor', 'admin', 'scan'];
 const GUARD_FILE = 'boot-guard.js';
 
 const LOADERS = { '.js': 'js', '.css': 'css' };
@@ -312,12 +340,12 @@ function withFlexGapFallbacks(css) {
   return `${css}\n/* flex-gap fallbacks for browsers below Safari 14.1 (see scripts/build-client.js) */\n${rules.join('\n')}\n`;
 }
 
-function transpile(code, loader, label) {
+function transpile(code, loader, label, jsTarget) {
   let out;
   try {
     out = esbuild.transformSync(code, {
       loader,
-      target: loader === 'css' ? CSS_TARGET : JS_TARGET,
+      target: loader === 'css' ? CSS_TARGET : (jsTarget || JS_TARGET),
       // Keep it readable in devtools; see the header note.
       minify: false,
       legalComments: 'inline',
@@ -331,7 +359,7 @@ function transpile(code, loader, label) {
   return loader === 'css' ? withFlexGapFallbacks(out) : stripDynamicImports(out, label);
 }
 
-function buildFile(srcFile, outFile) {
+function buildFile(srcFile, outFile, jsTarget) {
   const ext = path.extname(srcFile).toLowerCase();
   const loader = LOADERS[ext];
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
@@ -340,15 +368,15 @@ function buildFile(srcFile, outFile) {
     return;
   }
   const code = fs.readFileSync(srcFile, 'utf8');
-  fs.writeFileSync(outFile, transpile(code, loader, path.relative(ROOT, srcFile)), 'utf8');
+  fs.writeFileSync(outFile, transpile(code, loader, path.relative(ROOT, srcFile), jsTarget), 'utf8');
 }
 
-function mirrorDir(srcDir, outDir) {
+function mirrorDir(srcDir, outDir, jsTarget) {
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     const src = path.join(srcDir, entry.name);
     const out = path.join(outDir, entry.name);
-    if (entry.isDirectory()) mirrorDir(src, out);
-    else buildFile(src, out);
+    if (entry.isDirectory()) mirrorDir(src, out, jsTarget);
+    else buildFile(src, out, jsTarget);
   }
 }
 
@@ -385,7 +413,7 @@ export function buildClientAssets({ log = () => {} } = {}) {
   for (const app of APPS) {
     const srcDir = path.join(ROOT, 'public', app);
     if (!fs.existsSync(srcDir)) continue;
-    mirrorDir(srcDir, buildRoot(app));
+    mirrorDir(srcDir, buildRoot(app), app === SCAN_APP ? SCAN_JS_TARGET : undefined);
   }
 
   if (!fs.existsSync(SUPABASE_SRC)) {
@@ -399,7 +427,8 @@ export function buildClientAssets({ log = () => {} } = {}) {
   fanOut(GUARD_SRC, GUARD_APPS, GUARD_FILE, path.relative(ROOT, GUARD_SRC));
 
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
-  log(`client build: ${APPS.length} apps lowered to ${JS_TARGET.join(',')}/${CSS_TARGET.join(',')} in ${ms.toFixed(0)}ms`);
+  log(`client build: ${APPS.length} apps lowered to ${JS_TARGET.join(',')}/${CSS_TARGET.join(',')} ` +
+    `(scan: ${SCAN_JS_TARGET.join(',')}) in ${ms.toFixed(0)}ms`);
 }
 
 /**
@@ -429,5 +458,5 @@ export function ensureFresh(app, relPath) {
   try { outStat = fs.statSync(outFile); } catch { /* not built yet */ }
   if (outStat && outStat.mtimeMs >= srcStat.mtimeMs) return;
 
-  buildFile(srcFile, outFile);
+  buildFile(srcFile, outFile, app === SCAN_APP ? SCAN_JS_TARGET : undefined);
 }
