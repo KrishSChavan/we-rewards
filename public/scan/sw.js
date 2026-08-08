@@ -14,7 +14,8 @@
 // the manifest/apple-touch-icon/apple-mobile-web-app-capable additions here
 // only ship together with client-side detection that drops back to a plain
 // Safari tab on a device where the camera would otherwise go dark).
-const CACHE = 'werewards-scan-v1';
+// v2: browser tab favicon (index.html).
+const CACHE = 'werewards-scan-v2';
 const SHELL = [
   '/scan/', '/scan/boot-guard.js', '/scan/scan.css', '/scan/scan.js',
   '/scan/jsQR.js', '/scan/no-zoom.js', '/scan/manifest.json',

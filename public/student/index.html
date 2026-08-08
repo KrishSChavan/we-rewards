@@ -37,6 +37,15 @@
   <script src="/no-zoom.js"></script>
   <link rel="manifest" href="/manifest.json" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <!-- Browser tab / bookmark icon. Points at the SAME 192px PNG the home-screen
+       icon uses rather than a purpose-built 16 or 32: the file is already on
+       disk, already in sw.js's SHELL precache, and browsers downscale it
+       themselves. 192 is an exact 6x of 32 and 12x of 16, so that downscale is a
+       clean integer box filter and a hand-generated small copy would look no
+       better. Note versionAssets() only stamps ?v= on .js/.css, so this URL is
+       unhashed like the apple-touch-icon above: replacing the artwork means a
+       new FILENAME, not new bytes at the same one. -->
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
@@ -373,6 +382,7 @@
                     <span class="vskel-body">
                       <span class="skel vskel-name"></span>
                       <span class="skel vskel-num"></span>
+                      <span class="skel vskel-rate"></span>
                       <span class="skel vskel-addr"></span>
                     </span>
                     <span class="skel vskel-map"></span>
@@ -381,6 +391,7 @@
                     <span class="vskel-body">
                       <span class="skel vskel-name"></span>
                       <span class="skel vskel-num"></span>
+                      <span class="skel vskel-rate"></span>
                       <span class="skel vskel-addr"></span>
                     </span>
                     <span class="skel vskel-map"></span>
@@ -420,6 +431,16 @@
             </header>
 
             <main class="app-main">
+              <!-- What a dollar spent here earns, BEFORE the tier multiplier
+                   (award is floor(floor(dollars * rate) * multiplier), so a
+                   tier 2 student at a 10-point spot earns 15). Written by
+                   renderVendorRate,
+                   and it sits ABOVE the visit counter on purpose: #punch-block
+                   and #punch-scan-btn below are both hidden for a vendor with
+                   punch cards off, so anything under them would move around
+                   depending on the vendor. Ships [hidden] because a payload
+                   without a rate has to leave nothing behind, not an empty line. -->
+              <p id="vendor-rate" class="vendor-rate" hidden></p>
               <!-- Visit counter (migration-029): shown only when this vendor has
                    punch cards on. Tapping it opens #punch-modal, which is
                    progress-only — redeeming happens on the reward itself, since
@@ -1131,6 +1152,7 @@
             </div>
           </div>
           <p id="map-pin-address" class="map-pin-address"></p>
+          <p id="map-pin-rate" class="map-pin-rate" hidden></p>
           <div class="map-pin-actions">
             <button id="map-pin-open" class="map-pin-btn map-pin-btn-primary" type="button">View rewards</button>
             <button id="map-pin-dir" class="map-pin-btn" type="button">Directions</button>

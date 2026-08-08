@@ -22,6 +22,9 @@
   <!-- Installable PWA (scoped to /admin) so operators can add it to a phone. -->
   <link rel="manifest" href="/admin/manifest.json" />
   <link rel="apple-touch-icon" href="/admin/icons/icon-192.png" />
+  <!-- Browser tab icon; reuses the home-screen artwork. See the fuller note in
+       public/student/index.html for why 192 rather than a purpose-built 32. -->
+  <link rel="icon" type="image/png" sizes="192x192" href="/admin/icons/icon-192.png" />
   <!-- apple-mobile-web-app-capable goes in the slot below, emitted by server.js
        only for iOS < 16.4. Same reasoning as public/vendor/index.html, which is
        where this bit us: the tag opts a Home Screen icon into the legacy WebClip

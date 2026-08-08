@@ -160,7 +160,7 @@ router.get('/balances', requireConsent, async (req, res, next) => {
   try {
     const [{ data: vendors, error: vErr }, { data: balances, error: bErr }, { data: cards, error: cErr }] = await Promise.all([
       // Newest vendors first so they land at the start (left) of the home carousel.
-      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
+      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
       supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
       // Visit counters (migration-029): exactly one row per (student, vendor).
       supabaseAdmin.from('punch_cards').select('vendor_id, punches').eq('user_id', req.user.id),
@@ -182,6 +182,11 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           longitude: v.longitude ?? null,
           hasLogo: Boolean(v.has_logo),
           balance: balanceMap[v.id] ?? 0,
+          // Earn rate (vendors.points_per_dollar, numeric(6,2) not null default
+          // 10), so the app can tell a student what a dollar is worth here
+          // instead of leaving them to infer it from a balance. Number() matches
+          // how the vendor API hands the same column out (src/routes/vendor.js).
+          pointsPerDollar: Number(v.points_per_dollar),
           // Feeds the Move-points picker (community-points.md step 5). Advisory
           // only — the transfer RPC re-checks eligibility server-side.
           acceptsCommunity: Boolean(v.accepts_community_points),

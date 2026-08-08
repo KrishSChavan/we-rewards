@@ -531,6 +531,19 @@ for (const { mount, dir, root } of shells) {
   app.use(mount, express.static(root, { index: false }));
 }
 
+// Every page above declares its own <link rel="icon">, but a browser still asks
+// for /favicon.ico unprompted for any document that does NOT — the 404 page, an
+// /api URL opened in a tab, a link-preview crawler — and that was a 404 until
+// now. Redirect rather than ship a second copy of the artwork: the student icon
+// is already on disk and already precached, and serving it under its real name
+// keeps the image/png content type. That last part matters, because helmet sets
+// X-Content-Type-Options: nosniff and express.static would type a file named
+// .ico as image/x-icon no matter what bytes were inside it.
+// 302, not 301: a permanent redirect is cached by the browser indefinitely with
+// no way to bust it, and the target filename is exactly the thing that changes
+// if the artwork is ever redrawn (see the icon note in student/index.html).
+app.get('/favicon.ico', (_req, res) => res.redirect(302, '/icons/icon-192.png'));
+
 // Legal documents. The consent modal links these with target="_blank", and the
 // Terms/Privacy Policy both promise the current version is available in the app,
 // so they must be reachable by URL.

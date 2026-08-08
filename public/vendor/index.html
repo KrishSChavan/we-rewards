@@ -30,6 +30,9 @@
   <!-- Installable PWA (scoped to /terminal) so a vendor can add it to a device. -->
   <link rel="manifest" href="/terminal/manifest.json" />
   <link rel="apple-touch-icon" href="/terminal/icons/icon-192.png" />
+  <!-- Browser tab icon; reuses the home-screen artwork. See the fuller note in
+       public/student/index.html for why 192 rather than a purpose-built 32. -->
+  <link rel="icon" type="image/png" sizes="192x192" href="/terminal/icons/icon-192.png" />
   <!-- apple-mobile-web-app-capable goes in the slot below, and server.js decides
        whether to emit it: for iOS older than 16.4, UNLESS this install has told us
        it is older than 14.3 by failing to find a camera while running chrome-less

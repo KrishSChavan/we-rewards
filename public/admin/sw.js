@@ -19,7 +19,8 @@
 // link an existing account as the vendor login (dual-role, migration-035).
 // v8: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the
 // CDN (and therefore precachable now); boot guard added.
-const CACHE = 'werewards-admin-v8';
+// v9: browser tab favicon (index.html).
+const CACHE = 'werewards-admin-v9';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

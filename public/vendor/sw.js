@@ -57,7 +57,8 @@
 //
 // v18: bundles lowered to ES2017 so an older counter iPad can parse them at all;
 // supabase-js self-hosted off the CDN; boot guard added.
-const CACHE = 'werewards-terminal-v19';
+// v20: browser tab favicon (index.html).
+const CACHE = 'werewards-terminal-v20';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

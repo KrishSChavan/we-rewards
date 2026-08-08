@@ -2127,7 +2127,7 @@ async function loadVendors() {
 
     if (vendor && !$('vendor').hidden) {
       const v = allVendors.find((x) => x.vendorId === vendor.vendorId);
-      if (v) { vendor = v; renderItems(); renderPunchUi(); applyBalance(v.balance ?? 0); }
+      if (v) { vendor = v; renderVendorRate(v); renderItems(); renderPunchUi(); applyBalance(v.balance ?? 0); }
     }
   } catch {
     // The placeholders have to come down here too, or a student with no
@@ -2186,6 +2186,43 @@ function openMaps(address) {
   if (!win) location.href = url;   // popup blocked / custom scheme → navigate directly
 }
 
+// A vendor's earn rate, worded for a student. points_per_dollar crosses the
+// wire as a JSON number, so 10.00 has already parsed to 10 by the time it gets
+// here; toLocaleString is what keeps that "10" rather than toFixed(2)'s "10.00",
+// while still printing 2.5 as "2.5" and 1000 as "1,000".
+//
+// This is the BASE rate and every caller below says so. The award path is
+// floor(floor(dollars * points_per_dollar) * multiplier) (routes/vendor.js), so
+// a tier 2 student at a 10-point spot actually earns 15. The home screen already
+// shows their multiplier as "1.5x at every spot", and an unqualified "10 pts per
+// $1" next to that chip would contradict it.
+//
+// A missing or nonsense rate renders NOTHING rather than a number. Number(null)
+// is 0, and "0 pts per $1" is both a lie and outside the 0.5-1000 range the
+// vendor settings enforce, so an old cached payload with no rate in it must go
+// quiet instead of promising a student they earn nothing here.
+function earnRateText(n) {
+  const r = Number(n);
+  if (!isFinite(r) || r <= 0) return '';
+  // "1 pts" reads as a typo, and a vendor setting exactly 1 is inside the
+  // 0.5-1000 range their Settings tab allows, so it is a rate a student will see.
+  const unit = r === 1 ? 'pt' : 'pts';
+  return `${r.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${unit} per $1`;
+}
+
+// The rate line on the vendor screen. Kept beside the card's copy of the same
+// idea rather than down with openVendor, so a change to the wording lands on
+// both surfaces at once.
+function renderVendorRate(v) {
+  const el = $('vendor-rate');
+  if (!el) return;
+  const text = earnRateText(v?.pointsPerDollar);
+  // The one surface with room for the whole truth, so it names the multiplier
+  // rather than just hinting at it with the word "base".
+  el.textContent = text ? `Base rate: ${text}. Your tier multiplier applies on top.` : '';
+  el.hidden = !text;
+}
+
 function buildVendorCard(v) {
   const card = document.createElement('button');
   card.className = 'vendor-card';
@@ -2193,6 +2230,9 @@ function buildVendorCard(v) {
   const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
   if (!map) card.classList.add('no-map');   // shrink to content + centre in the row (styles.css)
   const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
+  // What a dollar spent here is worth, right under the balance it feeds. Empty
+  // string when the rate is missing, so the line disappears rather than lying.
+  const rate = earnRateText(v.pointsPerDollar);
   // Logo (if any) loads from the cacheable endpoint, sized to the name+points height.
   const logo = v.hasLogo
     ? `<span class="vc-logo" role="img" aria-label="${escapeHtml(v.name)} logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
@@ -2205,6 +2245,7 @@ function buildVendorCard(v) {
         <span class="vc-title">
           <span class="vc-name">${escapeHtml(v.name)}</span>
           <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
+          ${rate ? `<span class="vc-rate">Base rate: ${rate}</span>` : ''}
         </span>
       </span>
       ${address}
@@ -2217,8 +2258,12 @@ function buildVendorCard(v) {
 // vendor, so this is what decides "reuse it" vs "build it again". Balances move
 // constantly and are patched in place below — deliberately NOT part of the
 // signature, or every socket push would throw the map tiles away and refetch.
+// pointsPerDollar IS in it: a vendor can change the rate from their Settings
+// tab, and without it here the card would keep rendering the old one forever,
+// since syncVendorCards only ever patches .vc-num on a reused card. That costs
+// a rebuild on a ratio change, which is a rare edit and worth the correctness.
 function vendorCardSig(v) {
-  return JSON.stringify([v.name, v.address ?? '', v.latitude ?? null, v.longitude ?? null, !!v.hasLogo]);
+  return JSON.stringify([v.name, v.address ?? '', v.latitude ?? null, v.longitude ?? null, !!v.hasLogo, v.pointsPerDollar ?? null]);
 }
 
 // Bring the card pool in line with allVendors — build what's new, patch what
@@ -2982,6 +3027,10 @@ function openPinSheet(vendorId, pan) {
   const addr = $('map-pin-address');
   addr.textContent = v.address ? `📍 ${v.address}` : '';
   addr.hidden = !v.address;
+  const rate = $('map-pin-rate');
+  const rateText = earnRateText(v.pointsPerDollar);
+  rate.textContent = rateText ? `Base rate: ${rateText}` : '';
+  rate.hidden = !rateText;
   // Directions need an address to hand to the platform's maps app; a vendor
   // pinned from coordinates alone gets the rewards button on its own.
   $('map-pin-dir').hidden = !v.address;
@@ -3245,6 +3294,7 @@ function openVendor(vendorId) {
   vendor = v;
   balanceReady = false;                       // paint the number instantly, no ticker
   $('pb-vendor').textContent = v.name.toUpperCase();
+  renderVendorRate(v);
   renderItems();
   applyBalance(v.balance ?? 0);
   slidePanes($('vendor'), $('home'), 1);      // vendor screen in from the right, home out left

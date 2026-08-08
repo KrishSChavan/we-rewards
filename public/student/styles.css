@@ -420,6 +420,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .vskel-name { width: 62%; height: 1.68rem; }              /* .vc-name: 1.5rem x 1.12 */
 .vskel-num { width: 45%; height: 3rem; }                  /* .vc-num */
+.vskel-rate { width: 55%; height: 1rem; border-radius: 0.3rem; }   /* .vc-rate: 0.8rem x 1.25 */
 .vskel-addr { width: 82%; height: 0.82rem; margin-top: 0.6rem; border-radius: 0.3rem; }
 .vskel-map { flex: 0 0 150px; border-radius: 0; border-top: 2px solid var(--edge); }
 
@@ -1430,6 +1431,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vc-points { display: flex; align-items: baseline; gap: 0.3rem; flex-wrap: nowrap; }   /* points sit below the name */
 .vc-num { font-size: 3rem; font-weight: 900; line-height: 1; color: var(--brand); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vc-points small { font-size: 1rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
+/* the earn rate, directly under the balance it explains. `anywhere` for the same
+   reason .vc-name has it: it drops the element's min-content size to one
+   character, so this line can never be what .vendor-card's min-width resolves
+   to. Do NOT give it white-space: nowrap, and do not move it inside .vc-points
+   (that row is flex-wrap: nowrap and DOES feed the card's min-width, so every
+   card in the carousel would widen to fit "1,000 pts per $1"). */
+.vc-rate { font-size: 0.8rem; font-weight: 600; color: var(--muted); line-height: 1.25; overflow-wrap: anywhere; }
 /* tappable address line (opens the maps app, like the map itself) */
 .vc-address {
   margin-top: 0.6rem;                /* extra breathing room below the points */
@@ -1523,6 +1531,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .points-toast.lose { background: var(--warn); }
 
 .app-main { padding: 1.3rem 1.3rem 3rem; }
+
+/* earn rate at the top of a spot's own screen, under the points bar */
+.vendor-rate { margin-bottom: 1rem; font-size: 0.9rem; font-weight: 700; color: var(--muted); line-height: 1.3; }
 
 .my-code {
   width: 100%; text-align: center;
@@ -2542,6 +2553,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .map-pin-points small { font-size: 0.75rem; font-weight: 700; color: var(--muted); }
 .map-pin-address { font-size: 0.84rem; font-weight: 600; color: var(--muted); line-height: 1.3; }
 .map-pin-address[hidden] { display: none; }
+.map-pin-rate { margin-top: 0.3rem; font-size: 0.84rem; font-weight: 700; color: var(--muted); line-height: 1.3; }
+.map-pin-rate[hidden] { display: none; }
 
 .map-pin-actions { display: flex; gap: 0.6rem; margin-top: 0.1rem; }
 .map-pin-btn {
