@@ -13,13 +13,23 @@
   <title>Scan · WeRewards</title>
   <meta name="description" content="WeRewards fallback scanner: award points and redeem rewards on devices too old for the full terminal." />
   <meta name="theme-color" content="#12294b" />
-  <!-- Deliberately NOT installable: no manifest, no apple-mobile-web-app-capable.
-       This page exists BECAUSE the counter iPad it targets is below iOS 14.3,
-       where a home-screen web app has no getUserMedia at all (see the long
-       comment on STANDALONE_CAM_COOKIE in public/vendor/terminal.js — the same
-       physics apply here, and this app has no cookie dance to work around it).
-       A plain Safari tab has had the camera since iOS 11, so this is meant to
-       stay a bookmark, never an "Add to Home Screen" icon. -->
+  <!-- Installable PWA (scoped to /scan) so a vendor can add it to a device.
+       apple-mobile-web-app-capable goes in the slot below, and server.js decides
+       whether to emit it: for iOS older than 16.4, UNLESS this install has told
+       us it is older than 14.3 by failing to find a camera while running
+       chrome-less (see NO_STANDALONE_CAM in server.js and
+       STANDALONE_CAM_COOKIE in scan.js — that container has no getUserMedia at
+       all, so the tag would cost this app the one thing it exists for). Same
+       mechanism public/vendor/terminal.js already ships and has been confirmed
+       on real hardware; see needsLegacyCapable() in server.js for the full
+       reasoning. Short version: below 16.4 the tag is the only thing keeping a
+       counter iPad's icon out of Safari's chrome, so a fresh install keeps it —
+       and drops it, on the NEXT launch, the first time the camera turns out to
+       be missing because of it. -->
+  <link rel="manifest" href="/scan/manifest.json" />
+  <link rel="apple-touch-icon" href="/scan/icons/icon-192.png" />
+  <!--APPLE-CAPABLE-->
+  <meta name="apple-mobile-web-app-title" content="WR Scan" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />

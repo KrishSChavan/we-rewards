@@ -197,6 +197,12 @@ function show(id) {
   var token = await getAccessToken();
   if (token) await enterApp();
   else show('screen-login');
+
+  // Register the PWA service worker (scope /scan/) so the app is installable
+  // to a device and its shell works offline. Best-effort.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/scan/sw.js').catch(function () {});
+  }
 })();
 
 function wireEvents() {
@@ -414,14 +420,7 @@ function onCodeKey(e, inputId, normalize) {
    Same decode strategy as terminal.js: native BarcodeDetector where it
    advertises qr_code support, jsQR joins in after a grace period (some
    builds exist yet silently never match), and jsQR runs from the start where
-   BarcodeDetector is missing entirely (iPad Safari, and this device).
-
-   No STANDALONE_CAM_COOKIE dance here. That exists in terminal.js because an
-   installed /terminal icon opts into the legacy WebClip container (via
-   apple-mobile-web-app-capable), which has no getUserMedia at all below iOS
-   14.3. This page ships no manifest and no apple-mobile-web-app-capable meta
-   at all, so even a manual "Add to Home Screen" opens it in plain Safari,
-   camera included — see the note in index.html. */
+   BarcodeDetector is missing entirely (iPad Safari, and this device). */
 
 var CAMERA_KEY = 'wrw-scan-camera';   // preferred camera deviceId (localStorage)
 var SCAN_DEBOUNCE_MS = 3000;
@@ -431,6 +430,43 @@ var DETECTOR_GRACE_MS = 3000;
 
 var DEFAULT_SCAN_STATUS = 'Point the camera at the QR code in the customer’s WeRewards app.';
 var scanUi = { manual: false, cameraMsgText: null, scanner: null, statusTimer: null };
+
+/* ---------- the installed-app camera blackout ----------
+   Same mechanism as STANDALONE_CAM_COOKIE in public/vendor/terminal.js,
+   confirmed working there on real hardware, now that this app is installable
+   too. iOS only gave getUserMedia to home-screen web apps in 14.3. Below
+   that, `navigator.mediaDevices` is undefined inside the icon's web view and
+   present in a Safari tab on the SAME device and the SAME URL. Nothing here
+   can recover it directly — there is no legacy alias to fall back on, and the
+   API is absent rather than blocked, so it is not a permission we can re-ask
+   for. The only lever is to stop launching chrome-less: the page tells the
+   server, with a cookie, that THIS install has to give up the standalone
+   container; serveShell (server.js) then withholds apple-mobile-web-app-capable
+   and the next launch opens in Safari, where the camera works. iOS re-reads
+   the tag at launch, so a force-quit is enough; the icon does not have to be
+   deleted and re-added. The cookie expires so a device that later takes an
+   iOS update re-tests instead of being held in Safari forever. Scoped to
+   Path=/scan so it never collides with (or is collided into by) the same
+   cookie name terminal.js sets scoped to Path=/terminal. */
+var STANDALONE_CAM_COOKIE = 'wr_no_standalone_cam';
+var STANDALONE_CAM_DAYS = 180;
+
+function isStandaloneLaunch() {
+  if (navigator.standalone === true) return true;
+  try { return window.matchMedia('(display-mode: standalone)').matches; } catch (e) { return false; }
+}
+
+function setStandaloneCamCookie(on) {
+  var age = on ? STANDALONE_CAM_DAYS * 86400 : 0;
+  var secure = location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = STANDALONE_CAM_COOKIE + '=' + (on ? '1' : '') + '; Max-Age=' + age + '; Path=/scan; SameSite=Lax' + secure;
+}
+
+var STANDALONE_CAM_MSG =
+  'This iPad’s iOS is too old to use the camera inside an installed app. '
+  + 'Close the app fully (swipe it away in the app switcher) and open it again: '
+  + 'it will reopen showing Safari’s address bar, and the scanner will work. '
+  + 'Until then, enter codes manually.';
 
 function parseQrPayload(raw) {
   var s = String(raw == null ? '' : raw).trim();
@@ -523,6 +559,13 @@ function createScanner(opts) {
       return onFail('The camera needs a secure (https) connection. Enter codes manually.');
     }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      // Missing because we are in the pre-14.3 home-screen container, not
+      // because this browser has no camera support at all. Say which, and set
+      // the flag that gets the next launch out of that container.
+      if (isStandaloneLaunch()) {
+        setStandaloneCamCookie(true);
+        return onFail(STANDALONE_CAM_MSG);
+      }
       return onFail('This browser can’t use the camera. Enter codes manually.');
     }
     var s;
@@ -543,6 +586,10 @@ function createScanner(opts) {
       return onFail('The camera started but sent no picture. Enter codes manually.');
     }
     running = true;
+    // Frames are arriving from inside the home-screen container, so this device
+    // does not need the chrome-less opt-out (it was updated past 14.3, or never
+    // needed it). Clear the flag so the icon can go chrome-less again.
+    if (isStandaloneLaunch()) setStandaloneCamCookie(false);
     if (lastPayload) lastPayloadAt = Date.now();
     refreshDeviceList();
     startDecoders(my);
