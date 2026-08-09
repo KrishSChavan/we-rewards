@@ -2,11 +2,17 @@
 // No I/O — everything here is unit-tested against noisy OCR fixtures in
 // test/receipt.test.js (same split as scoreProfile in tiers.js).
 //
-// The inputs are tesseract output: thermal print photographed at an angle, so
-// expect dropped characters, l/1 and S/5 swaps, and stray punctuation. The
-// design leans on two things OCR noise can't easily break: the vendor list is
-// tiny and KNOWN (fuzzy match against it, never freeform), and money amounts
-// have a rigid ..dd shape.
+// The inputs are worst-case tesseract output: thermal print photographed at an
+// angle, so expect dropped characters, l/1 and S/5 swaps, and stray
+// punctuation. The design leans on two things OCR noise can't easily break: the
+// vendor list is tiny and KNOWN (fuzzy match against it, never freeform), and
+// money amounts have a rigid ..dd shape.
+//
+// These parsers still run when the AI reader (lib/gemini-receipt.js) handled
+// the scan: it returns a transcription alongside its structured fields, and the
+// route falls back to parsing that text for any single field the model left
+// null. So this module stays the floor under both readers, not the tesseract
+// branch's private code.
 
 /** Lowercase, de-accent, collapse every non-alphanumeric run to one space. */
 export function normalizeName(s) {
@@ -235,4 +241,24 @@ export function extractDateTime(text) {
     if (date && time) break;
   }
   return date && time ? { ...date, ...time } : null;
+}
+
+/**
+ * The same { y, m, d, hh, mm } shape, built from the separate date and time
+ * strings the AI reader returns (lib/gemini-receipt.js) instead of from OCR
+ * text. Returns null when either side is missing or out of range, which is the
+ * caller's cue to fall back to extractDateTime() over the transcription.
+ *
+ * Strict on the date on purpose — this is model output, and a hallucinated
+ * "2026-13-45" must die here rather than reach the SQL timestamp cast. The time
+ * goes through the same parseTime() as OCR text, so a model that answers
+ * "1:22 PM" despite being told 24-hour still parses.
+ */
+export function parseIsoDateTime(dateStr, timeStr) {
+  const m = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$/.exec(String(dateStr ?? ''));
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (!validDate(y, mo, d)) return null;
+  const time = parseTime(String(timeStr ?? ''));
+  return time ? { y, m: mo, d, ...time } : null;
 }

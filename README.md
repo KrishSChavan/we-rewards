@@ -97,6 +97,14 @@ config — the terminal never sends a point value.
    (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`), then click
    **🔔 Notify** in the `/admin` topbar and allow notifications. With no keys
    set, push is silently disabled and everything else works.
+8. (Recommended) Receipt forgery checking: get a key at
+   [aistudio.google.com/apikey](https://aistudio.google.com/apikey), put it in
+   `.env` as `GEMINI_API_KEY`, then verify it before you rely on it:
+   ```
+   npm run check:gemini                 # key + model + endpoint round trip
+   npm run check:gemini -- receipt.jpg  # ...and read an actual receipt photo
+   ```
+   See **Receipt scanning** below for what this does and doesn't change.
 
 ## Point math
 
@@ -138,6 +146,57 @@ components, visit + spend aggregates) so analytics can read scores straight
 from the DB. `profiles.revisits` is a lifetime counter: +1 the first time a
 student earns at a vendor on a new day after a previous visit — incremented
 inside `award_points` atomically, backfilled by migration-005.
+
+## Receipt scanning
+
+`POST /api/me/receipt` takes a photo of a paper receipt and awards the same
+points a counter award would. Everything the claim depends on — which vendor,
+how much, when — is decided **server-side**; nothing the client sends is
+trusted, or the endpoint would be a points printer for anyone with `curl`.
+
+Two readers, tried in order:
+
+| | Reader | Reads text | Detects forgery |
+|---|---|---|---|
+| 1 | **Gemini** (`src/lib/gemini-receipt.js`), when `GEMINI_API_KEY` is set | ✅ structured fields + a transcription | ✅ |
+| 2 | **tesseract** (`src/lib/ocr.js`), in-process wasm | ✅ transcription only | ❌ |
+
+Reader 2 runs **only** when reader 1 couldn't be reached at all: no key, quota
+exhausted (`429`), timeout, network error, or a response that didn't parse.
+Those all resolve to `null`, which is the route's cue to fall through.
+
+A **forgery verdict is not a failure** and is never retried through tesseract —
+that would launder the rejection, since tesseract cannot tell a photographed
+receipt from a photographed screen and would simply pay out. It rejects with
+`RECEIPT_NOT_GENUINE`, and only above a confidence threshold
+(`RECEIPT_FAKE_MIN_CONFIDENCE`, 0.7): real receipts are creased, faded, and
+badly lit, and calling an honest student a forger is the worse error.
+
+Field by field, the route takes Gemini's structured value and falls back to
+regexing its transcription (`src/lib/receipt.js`) for anything it left null — so
+a model that reads four fields and fluffs the fifth still lands the claim.
+**The vendor is the exception**: Gemini's `vendor_name` is only ever a hint fed
+into `matchVendor()` against the active-vendor table, so a hallucinated or
+attacker-planted name can fail to match but can never mint a match.
+
+Two failure modes worth knowing about, because both are otherwise invisible:
+
+- **A bad key or model id fails silently.** Receipts keep scanning via
+  tesseract; the only thing lost is the forgery check. Run
+  `npm run check:gemini` to confirm the round trip, and watch the boot log line
+  that names the active reader.
+- **Exhausted quota would cost every upload the full timeout** before falling
+  back, so a `429` opens a 5-minute circuit breaker and later scans skip
+  straight to tesseract. Breaker transitions log `[gemini] pausing…` — never the
+  image or the text.
+
+The whole request is budgeted under Heroku's 30s H12 cutoff
+(`RECEIPT_DEADLINE_MS`): whatever the AI pass doesn't spend is handed to
+tesseract as its job timeout, so a slow AI call plus a fallback still answers.
+
+Privacy: the photo is held in memory for one request and never written to disk,
+the DB, or a log. With a key set it is POSTed to Google for that request —
+disclosed in Privacy Policy §2.10 and §4.
 
 ## Vendor analytics
 

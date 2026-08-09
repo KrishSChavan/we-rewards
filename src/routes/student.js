@@ -4,7 +4,8 @@ import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireUser, requireConsent } from '../middleware/auth.js';
 import { emitBalance, emitPunch } from '../lib/realtime.js';
 import { ocrBusy, recognizeReceipt } from '../lib/ocr.js';
-import { matchVendor, extractTotal, extractDateTime } from '../lib/receipt.js';
+import { geminiReady, readReceiptWithGemini } from '../lib/gemini-receipt.js';
+import { matchVendor, extractTotal, extractDateTime, parseIsoDateTime } from '../lib/receipt.js';
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
 import { getVapidPublicKey } from '../lib/push.js';
@@ -269,13 +270,35 @@ router.post('/punch', requireConsent, async (req, res, next) => {
 
 // ---- Receipt scanning (migration-038) ----
 // The photo arrives as a base64 data-URL in JSON (house style — vendor logos
-// travel the same way), is OCR'd in memory, and is gone when this request
-// ends: never written to disk, the DB, or a log line. Everything the claim
-// depends on (vendor, total, printed time) is parsed server-side from the OCR
-// text — a client-supplied value would be minted points for anyone with curl.
-const RECEIPT_DATA_URL = /^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/;
+// travel the same way) and is gone when this request ends: never written to
+// disk, the DB, or a log line. Everything the claim depends on (vendor, total,
+// printed time) is decided server-side — a client-supplied value would be
+// minted points for anyone with curl.
+//
+// Two readers, in order:
+//   1. lib/gemini-receipt.js (Google Gemini) when GEMINI_API_KEY is set. It
+//      both judges whether the photo is a genuine printed receipt and returns
+//      the fields directly. This is the ONLY forgery check in the system.
+//   2. lib/ocr.js (tesseract, in-process) when that call couldn't be made at
+//      all. Text only, no authenticity judgement.
+// A fraud verdict from (1) is final and never retried through (2) — tesseract
+// would happily read a photographed screen and pay out on it.
+//
+// PRIVACY: with a key set, the image is POSTed to Google for the life of this
+// request (Privacy Policy §4). It is still never persisted by us, and the
+// transcription is never logged.
+const RECEIPT_DATA_URL = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/;
 const RECEIPT_MAX_CHARS = 6_000_000; // ~4.5MB decoded; the client sends ~0.3-1MB
 const RECEIPT_MAX_DOLLARS = 200;     // mirror of MAX_AWARD_DOLLARS (routes/vendor.js)
+// Whole-request budget, kept under Heroku's 30s H12 cutoff so a slow AI call
+// followed by a tesseract fallback still answers the student instead of dying
+// mid-connection. Whatever the AI pass doesn't spend, tesseract gets.
+const RECEIPT_DEADLINE_MS = 27_000;
+// Only reject as fake when the model is actually sure. Below this a "false"
+// verdict is treated as "couldn't tell" and the claim proceeds on its merits:
+// a creased, badly-lit, genuine receipt must not be called a forgery, and the
+// $200 cap plus the (vendor, time, total) dedup key still bound the damage.
+const RECEIPT_FAKE_MIN_CONFIDENCE = 0.7;
 
 /**
  * POST /api/me/receipt  { image }
@@ -286,23 +309,49 @@ const RECEIPT_MAX_DOLLARS = 200;     // mirror of MAX_AWARD_DOLLARS (routes/vend
  */
 router.post('/receipt', requireConsent, async (req, res, next) => {
   try {
-    // Saturation first: 503 before decoding a single byte of base64.
-    if (ocrBusy()) throw new Error('RECEIPT_BUSY');
+    const startedAt = Date.now();
+    // Saturation first: 503 before decoding a single byte of base64. Only when
+    // tesseract is the primary reader, though — with the AI reader up, the wasm
+    // worker is the fallback, and 503-ing a scan because IT is busy would
+    // refuse a request that was never going to touch it.
+    if (!geminiReady() && ocrBusy()) throw new Error('RECEIPT_BUSY');
 
     const image = req.body?.image;
     const m = (typeof image === 'string' && image.length <= RECEIPT_MAX_CHARS)
       ? RECEIPT_DATA_URL.exec(image)
       : null;
     if (!m) throw new Error('RECEIPT_IMAGE_INVALID');
+    const [, mimeType, base64] = m;
 
-    let text;
-    const buf = Buffer.from(m[1], 'base64');
-    try {
-      text = await recognizeReceipt(buf);
-    } finally {
-      buf.fill(0); // the image's only server-side copy dies with this request
+    // Reader 1. Resolves null on any infrastructure failure — no key, quota
+    // gone, timeout, outage — which is the cue to fall through to tesseract.
+    const ai = await readReceiptWithGemini(base64, mimeType);
+
+    // A confident forgery verdict ends the claim here. Note what is NOT done:
+    // no retry through tesseract, which cannot see a screen bezel or a cloned
+    // total and would simply pay out.
+    if (ai && !ai.isReceipt && ai.confidence >= RECEIPT_FAKE_MIN_CONFIDENCE) {
+      throw new Error('RECEIPT_NOT_GENUINE');
     }
-    if (!text || text.trim().length < 12) throw new Error('RECEIPT_UNREADABLE');
+
+    // Reader 2, only if reader 1 never got an answer. It gets whatever is left
+    // of the request budget, since the AI attempt already spent some of it.
+    let text = ai?.rawText ?? '';
+    if (!ai) {
+      const buf = Buffer.from(base64, 'base64');
+      try {
+        text = await recognizeReceipt(buf, RECEIPT_DEADLINE_MS - (Date.now() - startedAt));
+      } finally {
+        buf.fill(0); // the image's only server-side copy dies with this request
+      }
+      if (!text || text.trim().length < 12) throw new Error('RECEIPT_UNREADABLE');
+    }
+    // The AI answered but read nothing off the image (out of focus, thumb over
+    // the header). Say "unreadable" rather than letting an empty transcription
+    // fall through to the vendor matcher and come back as "no such spot".
+    if (ai && !ai.vendorName && ai.total == null && text.trim().length < 12) {
+      throw new Error('RECEIPT_UNREADABLE');
+    }
 
     const { data: vendors, error: vErr } = await supabaseAdmin
       .from('vendors')
@@ -310,14 +359,22 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
       .eq('active', true);
     if (vErr) throw vErr;
 
-    const hit = matchVendor(text, vendors ?? []);
+    // The AI's vendor_name is a HINT, never an identity: the vendor id still
+    // comes from matchVendor against the active-vendor table, so a hallucinated
+    // or attacker-planted name can only fail to match — it can't mint one.
+    let hit = ai?.vendorName ? matchVendor(ai.vendorName, vendors ?? []) : null;
+    if (!hit) hit = matchVendor(text, vendors ?? []);
     if (!hit) throw new Error('RECEIPT_VENDOR_UNKNOWN');
 
-    const total = extractTotal(text);
+    // Per field: take the AI's structured value, else parse the transcription.
+    // A model that reads four fields and fluffs the fifth still gets the claim
+    // through, instead of costing the student a retake.
+    let total = Number.isFinite(ai?.total) ? ai.total : extractTotal(text);
     if (total == null || total <= 0) throw new Error('RECEIPT_TOTAL_MISSING');
+    total = Math.round(total * 100) / 100; // cents, not float dust
     if (total > RECEIPT_MAX_DOLLARS) throw new Error('RECEIPT_TOTAL_TOO_LARGE');
 
-    const dt = extractDateTime(text);
+    const dt = (ai ? parseIsoDateTime(ai.date, ai.time) : null) ?? extractDateTime(text);
     if (!dt) throw new Error('RECEIPT_DATETIME_MISSING');
     // Impossible calendar dates (an OCR'd "02/31") map to a clean error here;
     // the SQL timestamp cast would turn them into a 500 instead.

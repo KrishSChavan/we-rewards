@@ -10,6 +10,7 @@ import {
   matchVendor,
   extractTotal,
   extractDateTime,
+  parseIsoDateTime,
 } from '../src/lib/receipt.js';
 
 const VENDORS = [
@@ -150,4 +151,49 @@ test('extractDateTime: missing either part means null', () => {
   assert.equal(extractDateTime('08/03/26\nTOTAL 12.19'), null); // no time
   assert.equal(extractDateTime('6:42 PM\nTOTAL 12.19'), null); // no date
   assert.equal(extractDateTime('08/03/26 25:99'), null); // nonsense time only
+});
+
+// ---- parseIsoDateTime: the AI reader's structured date/time ----
+// Same output shape as extractDateTime, but the input is model output rather
+// than OCR text, so the failure mode to defend against is confident nonsense.
+
+test('parseIsoDateTime: the documented shape parses', () => {
+  assert.deepEqual(
+    parseIsoDateTime('2026-08-09', '13:22'),
+    { y: 2026, m: 8, d: 9, hh: 13, mm: 22 },
+  );
+});
+
+test('parseIsoDateTime: unpadded parts and surrounding space are fine', () => {
+  assert.deepEqual(
+    parseIsoDateTime(' 2026-8-9 ', '09:05'),
+    { y: 2026, m: 8, d: 9, hh: 9, mm: 5 },
+  );
+});
+
+test('parseIsoDateTime: a model that ignores "24-hour" is still understood', () => {
+  // Told HH:MM, answered 1:22 PM. Rejecting that would cost a valid claim.
+  assert.deepEqual(
+    parseIsoDateTime('2026-08-09', '1:22 PM'),
+    { y: 2026, m: 8, d: 9, hh: 13, mm: 22 },
+  );
+  assert.deepEqual(
+    parseIsoDateTime('2026-08-09', '12:05 AM'),
+    { y: 2026, m: 8, d: 9, hh: 0, mm: 5 },
+  );
+});
+
+test('parseIsoDateTime: an impossible date dies here, not at the SQL cast', () => {
+  assert.equal(parseIsoDateTime('2026-13-01', '10:00'), null);
+  assert.equal(parseIsoDateTime('2026-08-32', '10:00'), null);
+  assert.equal(parseIsoDateTime('1899-08-09', '10:00'), null);
+  assert.equal(parseIsoDateTime('2026-08-09', '25:00'), null);
+});
+
+test('parseIsoDateTime: a missing or non-ISO half means null, so the route falls back to the text', () => {
+  assert.equal(parseIsoDateTime(null, '13:22'), null);
+  assert.equal(parseIsoDateTime('2026-08-09', null), null);
+  assert.equal(parseIsoDateTime('08/09/2026', '13:22'), null); // not ISO — don't guess the order
+  assert.equal(parseIsoDateTime('2026-08-09', 'lunchtime'), null);
+  assert.equal(parseIsoDateTime(undefined, undefined), null);
 });

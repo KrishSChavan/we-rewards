@@ -10,6 +10,7 @@
     "nodemon": "nodemon server.js",
     "start": "node server.js",
     "onboard": "node scripts/onboard-vendor.js",
+    "check:gemini": "node scripts/check-gemini.js",
     "test": "node --import ./test/setup.js --test test/*.test.js test/integration/*.test.js",
     "test:unit": "node --import ./test/setup.js --test test/*.test.js",
     "test:integration": "node --import ./test/setup.js --test test/integration/*.test.js",

@@ -2100,7 +2100,9 @@ async function submitReceipt() {
   receiptBusy = true;
   $('receipt-submit').disabled = true;
   $('receipt-retake').disabled = true;
-  setReceiptStatus('Reading your receipt… this can take ~10 seconds.', true);
+  // No fixed number any more: the AI reader answers in a few seconds and the
+  // tesseract fallback in ~10, so promising either one misreads as a hang.
+  setReceiptStatus('Checking your receipt… this can take a few seconds.', true);
   try {
     const res = await authFetch('/api/me/receipt', {
       method: 'POST',

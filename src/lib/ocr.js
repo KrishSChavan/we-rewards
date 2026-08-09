@@ -3,11 +3,19 @@
 // OCR is the only CPU-heavy thing this app does, and a 512MB dyno will OOM
 // before it multitasks wasm workers.
 //
-// Privacy contract (see POST /api/me/receipt): the image exists only as an
-// in-memory Buffer for the duration of recognize(). Nothing in this module may
-// write it to disk (cacheMethod 'none' below), log it, or log the recognized
-// text. The traineddata ships inside the slug via @tesseract.js-data/eng, so a
-// fresh dyno never fetches anything at boot either.
+// This is the FALLBACK reader. With GEMINI_API_KEY set, lib/gemini-receipt.js
+// handles the scan and this module only runs when that call couldn't be made
+// (no key, quota gone, timeout, outage) — so it has to keep working unattended
+// for however long Google is unreachable. It reads text and nothing more: it
+// cannot tell a photographed receipt from a photographed screen, which is why
+// the route never falls back to it after an AI fraud verdict.
+//
+// Privacy contract (see POST /api/me/receipt): here the image never leaves the
+// process — it exists only as an in-memory Buffer for the duration of
+// recognize(). Nothing in this module may write it to disk (cacheMethod 'none'
+// below), log it, or log the recognized text. The traineddata ships inside the
+// slug via @tesseract.js-data/eng, so a fresh dyno never fetches anything at
+// boot either.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,8 +35,13 @@ const LANG_PATH = path.join(ROOT, 'node_modules', '@tesseract.js-data', 'eng', '
 // the honest answer is 503 RECEIPT_BUSY, not a minute-long queue.
 const MAX_IN_FLIGHT = 3;
 // Heroku's router kills the request at 30s (H12); fail our way first so the
-// student gets the readable error, not a dead connection.
+// student gets the readable error, not a dead connection. Callers may pass a
+// smaller budget — the receipt route does, because when it lands here it has
+// already spent part of that 30s waiting on the AI reader.
 const JOB_TIMEOUT_MS = 25_000;
+// Below this there isn't time to recognize anything, so a shorter budget would
+// just guarantee a timeout after burning a worker slot.
+const MIN_TIMEOUT_MS = 5_000;
 
 let workerPromise = null;
 let inFlight = 0;
@@ -71,10 +84,18 @@ export function ocrBusy() {
  * RECEIPT_BUSY (cap), or RECEIPT_UNREADABLE (timeout — the hung worker is
  * terminated and lazily rebuilt, since a wasm worker that stalled once isn't
  * trustworthy). The caller owns the buffer and zeroes it afterwards.
+ *
+ * `timeoutMs` lets a caller that has already spent part of the request's 30s
+ * hand over only what's left; it's clamped to [MIN_TIMEOUT_MS, JOB_TIMEOUT_MS].
  */
-export function recognizeReceipt(buffer) {
+export function recognizeReceipt(buffer, timeoutMs = JOB_TIMEOUT_MS) {
   if (ocrBusy()) return Promise.reject(new Error('RECEIPT_BUSY'));
   inFlight += 1;
+
+  const budget = Math.min(
+    JOB_TIMEOUT_MS,
+    Math.max(MIN_TIMEOUT_MS, Number(timeoutMs) || JOB_TIMEOUT_MS),
+  );
 
   const job = chain.then(async () => {
     const worker = await getWorker();
@@ -83,7 +104,7 @@ export function recognizeReceipt(buffer) {
       const result = await Promise.race([
         worker.recognize(buffer),
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('OCR_TIMEOUT')), JOB_TIMEOUT_MS);
+          timer = setTimeout(() => reject(new Error('OCR_TIMEOUT')), budget);
         }),
       ]);
       return result?.data?.text ?? '';

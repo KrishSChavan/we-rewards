@@ -135,13 +135,25 @@
   </ul>
   <p>Declining, or never tapping the button at all, leaves the map completely usable. This is the only feature in WeRewards that touches your location, and it does nothing until you ask it to.</p>
 
-  <h3>2.10 Information We Do NOT Collect</h3>
+  <h3>2.10 Receipt Photos</h3>
+  <p>You can claim points by photographing a paper receipt from a participating spot. Taking that photo is entirely up to you — you can always earn at the counter instead, and nothing here happens unless you tap submit.</p>
+  <p>When you submit a receipt photo:</p>
   <ul>
-    <li>Payment card numbers or bank account information</li>
+    <li>It is sent to our server and held <strong>only in memory</strong> for the few seconds it takes to read. It is <strong>never written to disk, never saved in our database, and never written to a log</strong>. Nobody at WeRewards can look at it, then or later.</li>
+    <li>It is passed to <strong>Google's Gemini API</strong>, which reads the printed text and checks that the image is a photograph of a real printed receipt rather than a screenshot or an edited image. Google receives the photo itself. It is processed for that one request; see Section 4 for their policy, and note that Google's terms for free-of-charge API use allow them to use submitted content to improve their models.</li>
+    <li>If that service is unavailable, the photo is read instead by an offline text-recognition engine running inside our own server, and does not leave it.</li>
+    <li>Once we have read it, the photo is discarded. What we keep is only what any counter purchase would record: the spot, the dollar amount, the date and time printed on the receipt, and the points awarded (Section 2.2). We also keep those three values together as a fingerprint so the same receipt cannot be claimed twice.</li>
+  </ul>
+  <p>A receipt photo may incidentally include whatever else is in the frame — the table, your hand, the card type printed on the receipt. Please photograph just the receipt. We never look for anything beyond the business name, the total, and the printed date and time.</p>
+
+  <h3>2.11 Information We Do NOT Collect</h3>
+  <ul>
+    <li>Payment card numbers or bank account information. (A receipt often prints the last four digits of a card; we do not read, extract, or store them.)</li>
     <li>Precise GPS location. The map can draw your position on your own screen if you tap the locate button and allow it, but that reading stays inside your browser and never reaches us. See Section 2.9.</li>
     <li>Penn State student ID numbers or academic records</li>
     <li>Biometric data</li>
-    <li>Contacts, photos, or files from your device</li>
+    <li>Contacts, or files from your device</li>
+    <li>Your photo library. The receipt scanner reads the single image you choose to submit and keeps none of it (Section 2.10); it has no access to any other photo on your device.</li>
   </ul>
 
   <!-- ══════════════════════════════════════════════════════════ -->
@@ -158,6 +170,7 @@
       <tr><td>Show your activity history</td><td>Transaction data, vendor names, rewards</td></tr>
       <tr><td>Provide data export on request</td><td>All data associated with your account</td></tr>
       <tr><td>Detect and prevent fraud or abuse</td><td>User ID, transaction data, error logs</td></tr>
+      <tr><td>Award points for a receipt you photograph, and check the receipt is genuine and not already claimed</td><td>The receipt photo (read, then discarded — see Section 2.10), and the business, total, and printed date and time read from it</td></tr>
       <tr><td>Debug and fix platform errors</td><td>Error logs, user agent, user ID</td></tr>
       <tr><td>Operate platform analytics (admin-only)</td><td>Aggregated/anonymized transaction data</td></tr>
       <tr><td>Select who receives a vendor's deal</td><td>User ID, transaction history at that vendor, balance at that vendor</td></tr>
@@ -197,6 +210,12 @@
         <td>Typeface delivery</td>
         <td>Your browser IP and user agent on page load</td>
         <td>policies.google.com/privacy</td>
+      </tr>
+      <tr>
+        <td><strong>Google Gemini API</strong><br>(generativelanguage.googleapis.com)</td>
+        <td>Reading the printed text on a receipt you submit, and checking that it is a photograph of a real printed receipt rather than a screenshot or an edited image</td>
+        <td>The receipt photo itself, sent from our server at the moment you submit it and not stored by us. No name, email, or user identifier is sent with it. Google's terms for free-of-charge API use permit them to use submitted content to improve their models; paid API use does not</td>
+        <td>policies.google.com/privacy · ai.google.dev/gemini-api/terms</td>
       </tr>
       <tr>
         <td><strong>OpenStreetMap</strong><br>(openstreetmap.org, tile.openstreetmap.org)</td>
@@ -250,6 +269,8 @@
       <tr><td>Engagement score snapshots</td><td>Until you delete your account</td></tr>
       <tr><td>Consent records (including IP)</td><td>Until you delete your account</td></tr>
       <tr><td>Earn and redemption codes</td><td>Automatically deleted upon use or expiration (minutes)</td></tr>
+      <tr><td>Receipt photos</td><td>Never stored. Held in memory only while being read (seconds), then discarded — see Section 2.10</td></tr>
+      <tr><td>Receipt fingerprints (business, printed date and time, total)</td><td>Kept while your account exists, so the same receipt cannot be claimed twice</td></tr>
       <tr><td>Error logs</td><td>90 days, then automatically purged — including any that reference a since-deleted account (see Section 6)</td></tr>
       <tr><td>Push subscriptions</td><td>Until you turn deal alerts off, revoke notification permission, delete your account, or the push service reports the subscription is dead</td></tr>
       <tr><td>Deal delivery records and frequency counters</td><td>About 30 days after the deal expires; deleted immediately if you delete your account</td></tr>

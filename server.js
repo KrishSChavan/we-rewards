@@ -23,6 +23,7 @@ import { isUuid } from './src/lib/ids.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
+import { geminiConfigured, geminiModel } from './src/lib/gemini-receipt.js';
 import { buildClientAssets, buildRoot, ensureFresh } from './scripts/build-client.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 import {
@@ -797,6 +798,10 @@ app.use((err, req, res, _next) => {
     // TOTAL_ pair share only a prefix; nothing else in this map says RECEIPT).
     RECEIPT_IMAGE_INVALID: [400, 'That photo didn’t come through. Try again with a JPEG or PNG.'],
     RECEIPT_UNREADABLE: [400, 'Couldn’t read that receipt. Lay it flat, fill the frame, and try again in good light.'],
+    // Only reachable with the AI reader configured (lib/gemini-receipt.js) —
+    // tesseract can't judge authenticity, so with no GEMINI_API_KEY set this
+    // code is simply never thrown.
+    RECEIPT_NOT_GENUINE: [400, 'That doesn’t look like a photo of an original printed receipt. Photograph the paper receipt itself — screenshots and photos of a screen don’t count.'],
     RECEIPT_VENDOR_UNKNOWN: [404, 'Couldn’t match this receipt to a participating spot.'],
     RECEIPT_TOTAL_MISSING: [400, 'Couldn’t read the total on this receipt. Make sure the TOTAL line is visible.'],
     RECEIPT_TOTAL_TOO_LARGE: [400, 'That total is over the $200 per-receipt limit.'],
@@ -874,8 +879,17 @@ if (isMain) {
   const port = process.env.PORT || 3000;
   server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));
 
+  // Say which receipt reader is live. Worth a line: with no key set the app
+  // still scans receipts perfectly well, it just can't spot a forged one, and
+  // that difference is invisible from the outside.
+  console.log(geminiConfigured()
+    ? `Receipt reading: ${geminiModel()} (AI + forgery check), tesseract fallback`
+    : 'Receipt reading: tesseract only — set GEMINI_API_KEY to enable the forgery check');
+
   // Pre-build the OCR worker (receipt scanning) so the first student's scan
-  // doesn't also pay the ~2-4s wasm init. Best-effort — a failure here just
+  // doesn't also pay the ~2-4s wasm init. Still worth warming when the AI
+  // reader is configured: tesseract is exactly the thing that has to be ready
+  // the instant Google stops answering. Best-effort — a failure here just
   // means the first real scan builds it instead.
   warmOcr();
 
