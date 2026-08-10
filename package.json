@@ -25,6 +25,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.1",
     "helmet": "^8.0.0",
+    "jose": "^6.2.8",
     "jsqr": "^1.4.0",
     "leaflet": "^1.9.4",
     "qrcode-generator": "^2.0.4",

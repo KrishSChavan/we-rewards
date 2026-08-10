@@ -14,7 +14,8 @@ import vendorRoutes from './src/routes/vendor.js';
 import vendorRecoverRoutes from './src/routes/vendor-recover.js';
 import adminRoutes from './src/routes/admin.js';
 import applyRoutes from './src/routes/apply.js';
-import { supabaseAuth, supabaseAdmin } from './src/lib/supabase.js';
+import { supabaseAdmin } from './src/lib/supabase.js';
+import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
@@ -624,8 +625,11 @@ app.post('/api/client-error', async (req, res) => {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (token) {
     try {
-      const { data } = await supabaseAuth.auth.getUser(token);
-      userId = data?.user?.id ?? null;
+      // Local verification matters more here than on the gated routes: this
+      // endpoint is unauthenticated, so a token check that reached out to GoTrue
+      // would let anyone turn a flood of junk tokens into a flood of outbound
+      // auth calls. A bad token is now rejected without leaving the dyno.
+      userId = (await resolveUserFromToken(token))?.id ?? null;
     } catch { /* anonymous client error — fine */ }
   }
   await logError({
@@ -661,8 +665,7 @@ app.post('/api/client-event', async (req, res) => {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (token) {
     try {
-      const { data } = await supabaseAuth.auth.getUser(token);
-      userId = data?.user?.id ?? null;
+      userId = (await resolveUserFromToken(token))?.id ?? null;
     } catch { /* anonymous event (e.g. pwa_launched pre-login) — fine */ }
   }
   await logEvent({
@@ -841,13 +844,16 @@ const io = new Server(server);
 
 // Authenticate each socket with the student's Supabase access token, then drop
 // them into a room keyed by their user id so awards/redeems can target them.
+//
+// Verified locally (src/lib/jwt.js) — a hundred students arriving at lunch used
+// to mean a hundred GoTrue calls from one campus IP, on top of their HTTP ones.
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('NO_TOKEN'));
-    const { data, error } = await supabaseAuth.auth.getUser(token);
-    if (error || !data?.user) return next(new Error('BAD_TOKEN'));
-    socket.data.userId = data.user.id;
+    const user = await resolveUserFromToken(token);
+    if (!user) return next(new Error('BAD_TOKEN'));
+    socket.data.userId = user.id;
     next();
   } catch {
     next(new Error('AUTH_ERROR'));
@@ -878,6 +884,11 @@ const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import
 if (isMain) {
   const port = process.env.PORT || 3000;
   server.listen(port, () => console.log(`WeRewards running on http://localhost:${port}`));
+
+  // How access tokens are being checked. Worth a line: if this ever reads
+  // "GoTrue getUser on every request", every authenticated call is paying a
+  // network round-trip again and the campus-Wi-Fi rate-limit ceiling is back.
+  console.log(`Auth: ${authVerificationMode()}`);
 
   // Say which receipt reader is live. Worth a line: with no key set the app
   // still scans receipts perfectly well, it just can't spot a forged one, and

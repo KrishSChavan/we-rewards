@@ -1,28 +1,44 @@
-import { supabaseAuth, supabaseAdmin } from '../lib/supabase.js';
+import { supabaseAdmin } from '../lib/supabase.js';
+import { resolveUserFromToken } from '../lib/jwt.js';
 import { TERMS_VERSION } from '../lib/terms.js';
 
 /**
+ * Reads `Authorization: Bearer <jwt>` and resolves it to a user, attaching
+ * req.user = { id, email, name }.
+ *
+ * Returns null when the request may proceed, or the {status, body} to reject
+ * with. Written as a plain function rather than middleware so the gates below
+ * can compose it with `await` instead of nesting callbacks — the old nesting
+ * passed its own error channel in as the downstream `next`, so an unexpected
+ * throw during verification ran the downstream gate with no req.user.
+ *
+ * The token is checked locally against the project's signing key (see
+ * lib/jwt.js); `strict` forces the authoritative GoTrue round-trip instead,
+ * which additionally catches a session revoked before its token expired.
+ */
+async function authenticate(req, { strict = false } = {}) {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!token) {
+    return { status: 401, body: { error: 'NO_TOKEN', message: 'Sign in required.' } };
+  }
+
+  const user = await resolveUserFromToken(token, { strict });
+  if (!user) {
+    return { status: 401, body: { error: 'BAD_TOKEN', message: 'Session expired. Sign in again.' } };
+  }
+
+  req.user = user;
+  return null;
+}
+
+/**
  * Verifies the Supabase access token from `Authorization: Bearer <jwt>`.
- * Attaches req.user = { id, email }.
+ * Attaches req.user = { id, email, name }.
  */
 export async function requireUser(req, res, next) {
   try {
-    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    if (!token) return res.status(401).json({ error: 'NO_TOKEN', message: 'Sign in required.' });
-
-    const { data, error } = await supabaseAuth.auth.getUser(token);
-    if (error || !data?.user) {
-      return res.status(401).json({ error: 'BAD_TOKEN', message: 'Session expired. Sign in again.' });
-    }
-    // `name` mirrors what schema.sql's handle_new_user trigger used to read
-    // (raw_user_meta_data->>'full_name'); POST /api/me/accept-terms now creates
-    // the profile, so it needs the same Google display name the trigger had.
-    const meta = data.user.user_metadata ?? {};
-    req.user = {
-      id: data.user.id,
-      email: data.user.email,
-      name: meta.full_name ?? meta.name ?? null,
-    };
+    const rejection = await authenticate(req);
+    if (rejection) return res.status(rejection.status).json(rejection.body);
     next();
   } catch (err) {
     next(err);
@@ -34,8 +50,8 @@ export async function requireUser(req, res, next) {
  * Attaches req.profile.
  *
  * MOUNT AFTER requireUser — it reads req.user and does not re-verify the token
- * (getUser is a network round-trip to Supabase; doing it twice per request
- * would tax every student call).
+ * (verification already happened once for this request; there is nothing a
+ * second check could learn).
  *
  * This is the real consent gate. The sign-in modal is a UI affordance and can be
  * dismissed with devtools; this cannot. Since migration-022 dropped the
@@ -113,15 +129,26 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
  * requireUser + confirms the signed-in user is a platform operator (their email
  * is in ADMIN_EMAILS). Gates the /api/admin/* analytics + error-log routes. The
  * gate is server-side: the static /admin page is public, but its data isn't.
+ *
+ * Authenticates in `strict` mode — the one gate that still pays for a GoTrue
+ * round-trip per request. These routes read every student's activity and the
+ * error log, there is exactly one operator hitting them, and strict mode means
+ * signing out actually ends the admin session immediately rather than at the
+ * token's next expiry. Nowhere near a hot path, so the latency is free.
  */
 export async function requireAdmin(req, res, next) {
-  requireUser(req, res, () => {
+  try {
+    const rejection = await authenticate(req, { strict: true });
+    if (rejection) return res.status(rejection.status).json(rejection.body);
+
     const email = (req.user?.email || '').toLowerCase();
     if (!email || !ADMIN_EMAILS.includes(email)) {
       return res.status(403).json({ error: 'NOT_ADMIN', message: 'Admin access only.' });
     }
     next();
-  });
+  } catch (err) {
+    next(err);
+  }
 }
 
 /**
@@ -134,53 +161,54 @@ export async function requireAdmin(req, res, next) {
  * `X-Vendor-Id` header (validated against membership), else it's ambiguous.
  */
 export async function requireVendor(req, res, next) {
-  requireUser(req, res, async () => {
-    try {
-      const { data: staff, error } = await supabaseAdmin
-        .from('vendor_staff')
-        .select('vendor_id, vendors(*)')
-        .eq('user_id', req.user.id);
+  try {
+    const rejection = await authenticate(req);
+    if (rejection) return res.status(rejection.status).json(rejection.body);
 
-      if (error) throw error;
+    const { data: staff, error } = await supabaseAdmin
+      .from('vendor_staff')
+      .select('vendor_id, vendors(*)')
+      .eq('user_id', req.user.id);
 
-      const links = (staff ?? []).filter((s) => s.vendors);
-      if (!links.length) {
-        return res.status(403).json({ error: 'NOT_VENDOR', message: 'This account is not linked to a vendor.' });
-      }
+    if (error) throw error;
 
-      let chosen;
-      if (links.length === 1) {
-        chosen = links[0];
-      } else {
-        const requested = req.headers['x-vendor-id'];
-        chosen = requested ? links.find((s) => s.vendor_id === requested) : null;
-        if (!chosen) {
-          return res.status(400).json({
-            error: 'VENDOR_AMBIGUOUS',
-            message: 'This account manages multiple vendors, specify which one.',
-          });
-        }
-      }
+    const links = (staff ?? []).filter((s) => s.vendors);
+    if (!links.length) {
+      return res.status(403).json({ error: 'NOT_VENDOR', message: 'This account is not linked to a vendor.' });
+    }
 
-      // Operator kill-switch: a vendor toggled off in the admin portal is fully
-      // cut off. Every /api/vendor/* route runs through here, so a single gate
-      // stops the terminal cold — no config, scan, award, redeem, or manage —
-      // the same way active=true hides the vendor from students. Data is
-      // preserved (balances/rewards untouched), so flipping it back on restores
-      // everything.
-      if (chosen.vendors.active === false) {
-        return res.status(403).json({
-          error: 'VENDOR_DISABLED',
-          message: 'This vendor has been deactivated. Contact the WeRewards team.',
+    let chosen;
+    if (links.length === 1) {
+      chosen = links[0];
+    } else {
+      const requested = req.headers['x-vendor-id'];
+      chosen = requested ? links.find((s) => s.vendor_id === requested) : null;
+      if (!chosen) {
+        return res.status(400).json({
+          error: 'VENDOR_AMBIGUOUS',
+          message: 'This account manages multiple vendors, specify which one.',
         });
       }
-
-      req.vendor = chosen.vendors;
-      next();
-    } catch (err) {
-      next(err);
     }
-  });
+
+    // Operator kill-switch: a vendor toggled off in the admin portal is fully
+    // cut off. Every /api/vendor/* route runs through here, so a single gate
+    // stops the terminal cold — no config, scan, award, redeem, or manage —
+    // the same way active=true hides the vendor from students. Data is
+    // preserved (balances/rewards untouched), so flipping it back on restores
+    // everything.
+    if (chosen.vendors.active === false) {
+      return res.status(403).json({
+        error: 'VENDOR_DISABLED',
+        message: 'This vendor has been deactivated. Contact the WeRewards team.',
+      });
+    }
+
+    req.vendor = chosen.vendors;
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 // A PIN session also drops after this many minutes of inactivity, so an
