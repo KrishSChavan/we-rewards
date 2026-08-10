@@ -19,3 +19,6 @@ coverage/
 
 .DS_Store
 Thumbs.db
+
+# Planning docs, never committed
+/mds/
