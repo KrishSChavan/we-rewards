@@ -15,10 +15,58 @@ router.use(requireAdmin);
 const DAY = 86_400_000;
 const ADDRESS_MAX = 300;   // keep a pasted essay out of the column and the geocoder
 
+// Keep in sync with src/routes/apply.js — the operator's "Add vendor" form is
+// the same onboarding as an accepted /join application, so what one accepts the
+// other must accept too (and the logo caps must match src/routes/vendor.js,
+// since all three run the same client-side shrink-to-128px pipeline).
+const NAME_MAX = 80;
+const EMAIL_MAX = 254;
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 72;   // bcrypt reads 72 bytes; refuse longer, never truncate
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const LOGO_MAX_CHARS = 500_000;
+const LOGO_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+
 // How long a minted password-reset code stays usable. Long enough to finish the
 // phone call and walk to the terminal, short enough that a code read out and
 // forgotten about doesn't sit there for the rest of the day.
 const RESET_TTL_MINUTES = 30;
+
+/** Trimmed vendor display name → { value } or { error }. Shared by create + rename. */
+export function validVendorName(raw) {
+  const name = String(raw ?? '').trim();
+  if (!name || name.length > NAME_MAX) {
+    return { error: `Business name is required (max ${NAME_MAX} characters).` };
+  }
+  return { value: name };
+}
+
+/**
+ * Validate POST /vendors → the fields onboardVendor needs, or { error } to 400.
+ * Deliberately the same rules as validApplication in src/routes/apply.js, minus
+ * the fields that only exist to help the operator judge an application (contact
+ * name, phone, message) and have nowhere to live on a vendors row.
+ */
+export function validNewVendor(body) {
+  const b = body ?? {};
+  const n = validVendorName(b.name);
+  if (n.error) return { error: n.error };
+
+  const email = String(b.email ?? '').trim().toLowerCase();
+  const password = typeof b.password === 'string' ? b.password : '';
+  const address = String(b.address ?? '').trim();
+  const logo = b.logo == null || b.logo === '' ? null : String(b.logo);
+
+  if (!EMAIL_RE.test(email) || email.length > EMAIL_MAX) return { error: 'Enter a valid email address.' };
+  if (password.length < PASSWORD_MIN) return { error: `Password must be at least ${PASSWORD_MIN} characters.` };
+  if (password.length > PASSWORD_MAX) return { error: `Password must be ${PASSWORD_MAX} characters or fewer.` };
+  if (address.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
+  if (logo !== null && (logo.length > LOGO_MAX_CHARS || !LOGO_DATA_URL.test(logo))) {
+    return { error: 'Logo image looks invalid, try re-picking it.' };
+  }
+
+  return { name: n.value, email, password, address: address || null, logo };
+}
 
 /**
  * GET /api/admin/overview
@@ -150,6 +198,153 @@ router.get('/vendors', async (req, res, next) => {
   }
 });
 
+/* ---------- creating a vendor ----------
+   One code path onboards a vendor, whichever door it came in by: the operator's
+   own "Add vendor" form (POST /vendors, below) and accepting a /join application
+   (POST /applications/:id/accept) both call onboardVendor. Keeping them on one
+   implementation is what stops the two from drifting into subtly different
+   vendors depending on who filled the form in. */
+
+/** vendors.slug from a business name: lowercase, alnum runs joined by '-'. */
+function slugify(name) {
+  const s = String(name).toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+    .replace(/-+$/, '');
+  return s || 'vendor';
+}
+
+/**
+ * Onboard a vendor: auth login → vendors row → vendor_staff link, the same three
+ * steps as scripts/onboard-vendor.js. `passwordHash` (an application's stored
+ * bcrypt hash) and `password` (plaintext the operator just typed) are the two
+ * ways to set the login's credential; pass exactly one. Ratio/tiers stay at
+ * table defaults and pin_hash stays null (redeem is ungated until the vendor
+ * sets a PIN in terminal Settings).
+ *
+ * Dual-role accounts (migration-035): when the email already has an account
+ * (typically a student who wants to run a vendor under the same login), that
+ * EXISTING account is linked as the vendor login instead of failing, and its
+ * password is deliberately left untouched — neither door verifies that whoever
+ * supplied the address owns the inbox, so applying a new password to a
+ * pre-existing account would let anyone hijack it by naming a stranger's email.
+ * Callers get `linkedExisting: true` so they can say so.
+ *
+ * Each later step unwinds the earlier ones on failure, so a failed onboard
+ * leaves a clean slate to retry from. Returns { vendor, linkedExisting }, or
+ * { conflict: true } when the taken email's account vanished mid-flight.
+ */
+async function onboardVendor({ name, email, password, passwordHash, address, logo }) {
+  let userId;
+  let linkedExisting = false;
+
+  const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.createUser({
+    email,
+    ...(passwordHash ? { password_hash: passwordHash } : { password }),
+    email_confirm: true,
+  });
+  if (userErr) {
+    if (userErr.code === 'email_exists' || userErr.status === 422) {
+      const { data: existingId, error: lookupErr } = await supabaseAdmin
+        .rpc('auth_user_id_by_email', { p_email: email });
+      if (lookupErr) throw lookupErr;
+      // createUser said taken but the lookup finds nothing — the account went
+      // away between the two calls. Let the caller answer 409; nothing was made.
+      if (!existingId) return { conflict: true };
+      userId = existingId;
+      linkedExisting = true;
+    } else {
+      throw userErr;
+    }
+  } else {
+    userId = userData.user.id;
+  }
+
+  // A geocode miss is never fatal (matches onboard-vendor.js / PATCH vendors):
+  // the address is kept, the student card just shows no map until it's edited.
+  const coords = address ? await geocode(address) : null;
+
+  // Slug collisions get a numeric suffix (local-eats, local-eats-2, …). Bounded
+  // so a pathological name can't loop forever; on exhaustion or any other
+  // failure, unwind so a retry starts clean.
+  const base = slugify(name);
+  let vendor = null;
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const { data, error } = await supabaseAdmin
+        .from('vendors')
+        .insert({
+          name,
+          slug: attempt ? `${base}-${attempt + 1}` : base,
+          address: address ?? null,
+          latitude: coords?.lat ?? null,
+          longitude: coords?.lng ?? null,
+          logo: logo ?? null,
+        })
+        .select('id, name, slug')
+        .single();
+      if (!error) { vendor = data; break; }
+      if (error.code !== '23505') throw error;
+    }
+    if (!vendor) throw new Error('SLUG_EXHAUSTED');
+
+    const { error: staffErr } = await supabaseAdmin
+      .from('vendor_staff')
+      .insert({ vendor_id: vendor.id, user_id: userId, role: 'owner' });
+    if (staffErr) throw staffErr;
+  } catch (err) {
+    if (vendor) await supabaseAdmin.from('vendors').delete().eq('id', vendor.id).then(() => {}, () => {});
+    // Unwind only a login WE created. A linked pre-existing account (a
+    // student's, possibly) must survive a failed onboard untouched.
+    if (!linkedExisting) await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    throw err;
+  }
+
+  return { vendor, linkedExisting };
+}
+
+/**
+ * POST /api/admin/vendors  { name, email, password, address?, logo? }
+ * Add a vendor from the operator's side: /join without the queue, for a vendor
+ * signed up in person, over the phone, or at a demo. It runs the identical
+ * onboarding an accepted application does, so the vendor can sign in to the
+ * terminal immediately with the email and password set here.
+ *
+ * Only the fields a vendors row actually holds are collected. An application
+ * also carries a contact name, phone and free-text message, but those exist to
+ * help the operator DECIDE — an operator adding a vendor by hand has already
+ * decided, and there is nowhere to store them.
+ *
+ * The response mirrors accept's, including `linkedExisting` for the case where
+ * the email already had an account and was linked rather than created (the
+ * typed password does not apply then — see onboardVendor).
+ */
+router.post('/vendors', async (req, res, next) => {
+  try {
+    const v = validNewVendor(req.body);
+    if (v.error) return res.status(400).json({ error: 'BAD_VENDOR', message: v.error });
+
+    const result = await onboardVendor({
+      name: v.name,
+      email: v.email,
+      password: v.password,
+      address: v.address,
+      logo: v.logo,
+    });
+    if (result.conflict) {
+      return res.status(409).json({
+        error: 'EMAIL_EXISTS',
+        message: 'This email’s account changed mid-save. Try again.',
+      });
+    }
+
+    res.status(201).json({ ok: true, vendor: result.vendor, linkedExisting: result.linkedExisting });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * POST /api/admin/vendors/:id/reset-code   { userId? }
  * Mint a one-time password-reset code for one of this vendor's logins, for the
@@ -257,8 +452,15 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
 });
 
 /**
- * PATCH /api/admin/vendors/:id  { active?: boolean, address?: string, pointsPerDollar?: number }
+ * PATCH /api/admin/vendors/:id  { name?, active?, address?, pointsPerDollar? }
  * Operator edits for one vendor. Independent updates:
+ *  - `name` is the vendor's display name, everywhere it appears: the student
+ *    app's card, its transaction history, the terminal header, and the operator
+ *    roster. The vendor has no way to change this itself, so a rebrand or a typo
+ *    at onboarding is fixed here. `slug` is deliberately NOT regenerated: it's
+ *    the vendor's stable internal id (unique column, shown in the roster meta),
+ *    and nothing user-facing reads it, so churning it on a rename would buy
+ *    nothing and risk a collision.
  *  - `active` is the kill-switch. Off = fully cut off: hidden from students
  *    (active=true filters) and its terminal is blocked at requireVendor.
  *    Non-destructive — balances, rewards, and history are preserved, so
@@ -282,6 +484,12 @@ router.patch('/vendors/:id', async (req, res, next) => {
     const body = req.body ?? {};
     const updates = {};
 
+    if (body.name != null) {
+      const n = validVendorName(body.name);
+      if (n.error) return res.status(400).json({ error: 'BAD_REQUEST', message: n.error });
+      updates.name = n.value;
+    }
+
     if (body.active != null) {
       if (typeof body.active !== 'boolean') {
         return res.status(400).json({ error: 'BAD_REQUEST', message: 'active must be true or false.' });
@@ -304,7 +512,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
     }
 
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send active, address, and/or pointsPerDollar).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, and/or pointsPerDollar).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -527,16 +735,6 @@ router.delete('/vendors/:id', async (req, res, next) => {
 
 /* ---------- vendor applications (public /join queue) ---------- */
 
-/** vendors.slug from a business name: lowercase, alnum runs joined by '-'. */
-function slugify(name) {
-  const s = String(name).toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60)
-    .replace(/-+$/, '');
-  return s || 'vendor';
-}
-
 /**
  * GET /api/admin/applications
  * Every pending vendor application, oldest first (a FIFO review queue — the
@@ -558,26 +756,16 @@ router.get('/applications', async (req, res, next) => {
 
 /**
  * POST /api/admin/applications/:id/accept
- * Onboard the applicant — the same three steps as scripts/onboard-vendor.js:
- * auth login → vendors row → vendor_staff link — then delete the application.
- * The login is created from the stored bcrypt hash (password_hash), so the
- * vendor signs in with the password they chose when applying. Ratio/tiers stay at
- * table defaults and pin_hash stays null (redeem is ungated until the vendor
- * sets a PIN in terminal Settings — existing behavior).
+ * Onboard the applicant through the shared onboardVendor path (auth login →
+ * vendors row → vendor_staff link), then delete the application. The login is
+ * created from the stored bcrypt hash (password_hash), so the vendor signs in
+ * with the password they chose when applying — unless the email already had an
+ * account, which is linked instead and keeps its own password (`linkedExisting`
+ * tells the dashboard to say so; see onboardVendor).
  *
- * Dual-role accounts (migration-035): when the email already has an account
- * (typically a student who wants to run a vendor under the same login), that
- * EXISTING account is linked as the vendor login instead of failing. Its
- * password is deliberately left untouched — /join never verifies the applicant
- * owns the inbox, so applying the application's password to a pre-existing
- * account would let anyone hijack it by applying with a stranger's email. The
- * account keeps its current password / Google sign-in; if the vendor needs a
- * terminal password, mint one through the Reset password channel. The response
- * carries `linkedExisting: true` so the dashboard can tell the operator.
- *
- * Each later step unwinds the earlier ones on failure, and the application row
- * is only deleted at the very end — so any failed accept leaves a clean slate
- * and the application still in the queue to retry.
+ * The application row is only deleted at the very end, and onboardVendor unwinds
+ * itself on failure — so any failed accept leaves a clean slate and the
+ * application still in the queue to retry.
  */
 router.post('/applications/:id/accept', async (req, res, next) => {
   try {
@@ -595,75 +783,20 @@ router.post('/applications/:id/accept', async (req, res, next) => {
     // Already accepted/rejected (double-click, or a second admin got there first).
     if (!app) return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
 
-    let userId;
-    let linkedExisting = false;
-    const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.createUser({
+    const { vendor, linkedExisting, conflict } = await onboardVendor({
+      name: app.business_name,
       email: app.email,
-      password_hash: app.password_hash,
-      email_confirm: true,
+      passwordHash: app.password_hash,
+      address: app.address,
+      logo: app.logo,
     });
-    if (userErr) {
-      if (userErr.code === 'email_exists' || userErr.status === 422) {
-        // The email already has an account — link it as the vendor login (see
-        // the route comment for why its password is left alone).
-        const { data: existingId, error: lookupErr } = await supabaseAdmin
-          .rpc('auth_user_id_by_email', { p_email: app.email });
-        if (lookupErr) throw lookupErr;
-        if (!existingId) {
-          // createUser said taken but the lookup finds nothing — the account
-          // vanished between the two calls. Leave the application queued.
-          return res.status(409).json({
-            error: 'EMAIL_EXISTS',
-            message: 'This email’s account changed mid-accept. Reload and try again.',
-          });
-        }
-        userId = existingId;
-        linkedExisting = true;
-      } else {
-        throw userErr;
-      }
-    } else {
-      userId = userData.user.id;
-    }
-
-    // A geocode miss is never fatal (matches onboard-vendor.js / PATCH vendors):
-    // the address is kept, the student card just shows no map until it's edited.
-    const coords = app.address ? await geocode(app.address) : null;
-
-    // Slug collisions get a numeric suffix (local-eats, local-eats-2, …). Bounded
-    // so a pathological name can't loop forever; on exhaustion or any other
-    // failure, unwind the auth user so a retry of accept starts clean.
-    const base = slugify(app.business_name);
-    let vendor = null;
-    try {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const { data, error } = await supabaseAdmin
-          .from('vendors')
-          .insert({
-            name: app.business_name,
-            slug: attempt ? `${base}-${attempt + 1}` : base,
-            address: app.address,
-            latitude: coords?.lat ?? null,
-            longitude: coords?.lng ?? null,
-            logo: app.logo,
-          })
-          .select('id, name, slug')
-          .single();
-        if (!error) { vendor = data; break; }
-        if (error.code !== '23505') throw error;
-      }
-      if (!vendor) throw new Error('SLUG_EXHAUSTED');
-
-      const { error: staffErr } = await supabaseAdmin
-        .from('vendor_staff')
-        .insert({ vendor_id: vendor.id, user_id: userId, role: 'owner' });
-      if (staffErr) throw staffErr;
-    } catch (err) {
-      if (vendor) await supabaseAdmin.from('vendors').delete().eq('id', vendor.id).then(() => {}, () => {});
-      // Unwind only a login WE created. A linked pre-existing account (a
-      // student's, possibly) must survive a failed accept untouched.
-      if (!linkedExisting) await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
-      throw err;
+    // The taken email's account vanished mid-accept. Nothing was created, so
+    // leave the application queued for a retry.
+    if (conflict) {
+      return res.status(409).json({
+        error: 'EMAIL_EXISTS',
+        message: 'This email’s account changed mid-accept. Reload and try again.',
+      });
     }
 
     const { error: delErr } = await supabaseAdmin

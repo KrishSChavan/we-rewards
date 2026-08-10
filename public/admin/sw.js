@@ -20,7 +20,9 @@
 // v8: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the
 // CDN (and therefore precachable now); boot guard added.
 // v9: browser tab favicon (index.html).
-const CACHE = 'werewards-admin-v9';
+// v10: vendor rename in the Edit modal + "Add vendor" dialog (index.html +
+// admin.js + admin.css).
+const CACHE = 'werewards-admin-v10';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

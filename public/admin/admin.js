@@ -48,15 +48,27 @@ const $ = (id) => document.getElementById(id);
     if (e.target === $('reset-modal')) closeResetModal();    // backdrop only, not the card
   });
   $('vendor-edit-close').addEventListener('click', closeVendorModal);
+  $('vendor-name-save').addEventListener('click', saveVendorName);
   $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
   $('vendor-reward-add').addEventListener('click', addRewardDraft);
   $('vendor-modal').addEventListener('click', (e) => {
     if (e.target === $('vendor-modal')) closeVendorModal();  // backdrop only, not the card
   });
+  $('vendor-add-btn').addEventListener('click', openNewVendorModal);
+  $('new-vendor-close').addEventListener('click', closeNewVendorModal);
+  $('new-vendor-form').addEventListener('submit', createVendor);
+  $('nv-password-show').addEventListener('click', toggleNewVendorPassword);
+  $('nv-logo-pick').addEventListener('click', () => $('nv-logo-file').click());
+  $('nv-logo-file').addEventListener('change', onNewVendorLogoPick);
+  $('nv-logo-remove').addEventListener('click', () => setNewVendorLogo(null));
+  $('new-vendor-modal').addEventListener('click', (e) => {
+    if (e.target === $('new-vendor-modal')) closeNewVendorModal();  // backdrop only, not the card
+  });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('reset-modal').hidden) closeResetModal();
     if (!$('vendor-modal').hidden) closeVendorModal();
+    if (!$('new-vendor-modal').hidden) closeNewVendorModal();
   });
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
@@ -103,10 +115,12 @@ async function signOut() {
 function render(session) {
   if (!session) {
     // A sign-out (even from another tab) must not leave any overlay over the
-    // login card — closeResetModal also wipes a live reset code out of the DOM.
+    // login card — closeResetModal also wipes a live reset code out of the DOM,
+    // and closeNewVendorModal wipes a half-typed vendor password out of it.
     closePushModal();
     closeResetModal();
     closeVendorModal();
+    closeNewVendorModal();
     $('dash').hidden = true;
     $('login').hidden = false;
     return;
@@ -628,11 +642,13 @@ async function copyResetCode() {
   setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
 }
 
-/* ---------- vendor pricing editor (Edit modal) ----------
-   Drill-in for one vendor: the points-per-dollar rate and the reward-item
-   catalog, both normally managed from the vendor's own terminal. The server
-   routes (/api/admin/vendors/:id...) reuse the terminal's validators, so
-   messages here match what the vendor would see saving the same thing. */
+/* ---------- vendor editor (Edit modal) ----------
+   Drill-in for one vendor: its display name, the points-per-dollar rate and the
+   reward-item catalog. The last two are normally managed from the vendor's own
+   terminal, and the server routes (/api/admin/vendors/:id...) reuse the
+   terminal's validators, so messages here match what the vendor would see saving
+   the same thing. The NAME has no terminal-side editor at all — this is the only
+   place it can be changed. */
 
 let editVendor = null;   // { v, infoEl } while the dialog is open
 
@@ -646,6 +662,8 @@ function setNote(el, text, kind) {
 function openVendorModal(v, infoEl) {
   editVendor = { v, infoEl };
   $('vendor-edit-title').textContent = `Edit: ${v.name}`;
+  $('vendor-edit-name').value = v.name ?? '';
+  setNote($('vendor-name-note'), '', null);
   $('vendor-edit-ratio').value = Number(v.points_per_dollar);
   setNote($('vendor-ratio-note'), '', null);
   $('vendor-edit-error').hidden = true;
@@ -665,6 +683,56 @@ function showRewardsMsg(text) {
   const el = $('vendor-rewards-msg');
   el.textContent = text || '';
   el.hidden = !text;
+}
+
+// Rename the vendor everywhere it appears (student cards and history, terminal
+// header, this roster). The slug is NOT regenerated server-side, so the roster's
+// meta line keeps showing the original short id — that's deliberate, and the
+// hint under the field says so.
+async function saveVendorName() {
+  if (!editVendor) return;
+  const btn = $('vendor-name-save');
+  const note = $('vendor-name-note');
+  const name = $('vendor-edit-name').value.trim();
+  if (!name) { setNote(note, 'Enter a name.', 'err'); return; }
+
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    Object.assign(editVendor.v, data);                             // keep the in-memory roster in sync
+    editVendor.infoEl.innerHTML = vendorInfoHtml(editVendor.v);    // roster row shows the new name
+    $('vendor-edit-name').value = editVendor.v.name;
+    $('vendor-edit-title').textContent = `Edit: ${editVendor.v.name}`;
+    repaintVendorLabels(editVendor.v, editVendor.infoEl);
+    setNote(note, 'Saved', 'ok');
+    btn.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
+// The row's buttons and switch carry the vendor name in their accessible names
+// ("Delete Local Eats"), so a rename has to reach those too or a screen reader
+// keeps announcing the old one. The visible label is repainted by the caller.
+function repaintVendorLabels(v, infoEl) {
+  const row = infoEl.closest('.vendor-row');
+  if (!row) return;
+  const label = (sel, text) => {
+    const el = row.querySelector(sel);
+    if (el) el.setAttribute('aria-label', text);
+  };
+  label('.vendor-toggle', v.name);
+  label('.vendor-edit', `Edit ${v.name}`);
+  label('.vendor-reset', `Reset password for ${v.name}`);
+  label('.vendor-delete', `Delete ${v.name}`);
 }
 
 async function saveVendorRatio() {
@@ -850,6 +918,177 @@ async function saveReward(r, fields, save, note, row) {
   } catch {
     setNote(note, 'No connection.', 'err');
     save.disabled = false;
+  }
+}
+
+/* ---------- add vendor (the /join form, operator side) ----------
+   Onboards a vendor without the application queue, for one signed up in person
+   or over the phone. POST /api/admin/vendors runs the same server code accepting
+   an application does, so what this creates is indistinguishable from an accepted
+   /join: the email and password below are a working terminal login immediately.
+
+   The logo goes through the same shrink-to-128px pipeline as /join and the
+   terminal's Settings — a copy rather than a shared module, matching how those
+   two already carry their own (each app root is built and cached separately). */
+
+let newVendorLogo = null;   // data-URL or null
+
+const LOGO_MAX_PX = 128;                 // stored icon size
+const LOGO_MAX_FILE = 8 * 1024 * 1024;   // reject huge source files up front
+
+function openNewVendorModal() {
+  closeNewVendorModal();          // always open on a clean, empty form
+  $('new-vendor-modal').hidden = false;
+  $('nv-name').focus();
+}
+
+function closeNewVendorModal() {
+  $('new-vendor-modal').hidden = true;
+  // reset() also wipes the typed password out of the DOM, which matters here for
+  // the same reason it does on the reset dialog: this dashboard sits open on a desk.
+  $('new-vendor-form').reset();
+  setNewVendorLogo(null);
+  setNewVendorPasswordVisible(false);
+  $('new-vendor-error').hidden = true;
+  $('nv-submit').disabled = false;
+  $('nv-submit').textContent = 'Create vendor';
+}
+
+function showNewVendorError(msg) {
+  const el = $('new-vendor-error');
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+// The operator has to read this password to the vendor, so let them see what
+// they typed rather than confirm it blind in a second field.
+function toggleNewVendorPassword() {
+  setNewVendorPasswordVisible($('nv-password').type === 'password');
+}
+
+function setNewVendorPasswordVisible(show) {
+  $('nv-password').type = show ? 'text' : 'password';
+  $('nv-password-show').textContent = show ? 'Hide' : 'Show';
+  $('nv-password-show').setAttribute('aria-pressed', show ? 'true' : 'false');
+}
+
+function setNewVendorLogo(dataUrl) {
+  newVendorLogo = dataUrl;
+  const box = $('nv-logo-preview');
+  box.style.backgroundImage = dataUrl ? `url('${dataUrl}')` : 'none';
+  box.classList.toggle('is-empty', !dataUrl);
+  $('nv-logo-remove').hidden = !dataUrl;
+  $('nv-logo-error').hidden = true;
+}
+
+function showNewVendorLogoError(msg) {
+  $('nv-logo-error').textContent = msg;
+  $('nv-logo-error').hidden = false;
+}
+
+async function onNewVendorLogoPick(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';                   // let the same file be re-picked later
+  if (!file) return;
+  if (file.size > LOGO_MAX_FILE) {
+    showNewVendorLogoError('That image is too large. Pick one under 8 MB.');
+    return;
+  }
+  try {
+    const { dataUrl } = await shrinkImage(file, LOGO_MAX_PX);
+    setNewVendorLogo(dataUrl);
+  } catch {
+    showNewVendorLogoError('Couldn’t read that image. Try a PNG or JPG, since HEIC and PDF files aren’t supported.');
+  }
+}
+
+// Decode a picked File into something drawable. createImageBitmap is the most
+// robust path (large images, EXIF orientation, off the main thread); fall back
+// to an <img> where it's missing. Neither reads HEIC/PDF — clear error above.
+async function decodeImage(file) {
+  if ('createImageBitmap' in window) {
+    try { return await createImageBitmap(file); } catch { /* fall through to <img> */ }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+    img.src = url;
+  });
+}
+
+// Shrink the image to fit maxPx and return a PNG data-URL (keeps transparency).
+async function shrinkImage(file, maxPx) {
+  const src = await decodeImage(file);
+  const scale = Math.min(1, maxPx / Math.max(src.width, src.height));
+  const w = Math.max(1, Math.round(src.width * scale));
+  const h = Math.max(1, Math.round(src.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext('2d').drawImage(src, 0, 0, w, h);
+  src.close?.();   // release the ImageBitmap if that's what we got
+  return { dataUrl: canvas.toDataURL('image/png') };
+}
+
+// Client-side pre-checks mirror the server's rules (validNewVendor) so most
+// mistakes are caught before the round-trip; the server re-validates regardless.
+function firstNewVendorProblem() {
+  if (!$('nv-name').value.trim()) return 'Enter the business name.';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test($('nv-email').value.trim())) return 'Enter a valid email address.';
+  if ($('nv-password').value.length < 8) return 'Password must be at least 8 characters.';
+  if ($('nv-password').value.length > 72) return 'Password must be 72 characters or fewer.';
+  return null;
+}
+
+async function createVendor(e) {
+  e.preventDefault();
+  $('new-vendor-error').hidden = true;
+
+  const problem = firstNewVendorProblem();
+  if (problem) { showNewVendorError(problem); return; }
+
+  const email = $('nv-email').value.trim();
+  const btn = $('nv-submit');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  try {
+    const res = await authFetch('/api/admin/vendors', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: $('nv-name').value.trim(),
+        email,
+        password: $('nv-password').value,
+        address: $('nv-address').value.trim(),
+        logo: newVendorLogo,
+      }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showNewVendorError(data.message || 'Couldn’t create that vendor. Try again.');
+      btn.disabled = false;
+      btn.textContent = 'Create vendor';
+      return;
+    }
+    closeNewVendorModal();
+    // Same warning the accept flow gives: the email already had an account, so
+    // it was LINKED as the login and the password just typed does not apply.
+    if (data?.linkedExisting) {
+      alert(
+        `${email} already had a WeRewards account, so that account is now this vendor's login. ` +
+        `The password you typed was not applied: they sign in with their usual password (or Google). ` +
+        `If they need a terminal password, use Reset password on the vendor row.`
+      );
+    }
+    // The new vendor should show up in the roster + totals without a manual refresh.
+    loadVendors();
+    loadOverview();
+  } catch {
+    showNewVendorError('No connection, try again.');
+    btn.disabled = false;
+    btn.textContent = 'Create vendor';
   }
 }
 

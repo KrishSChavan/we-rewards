@@ -115,6 +115,8 @@ h1, h3 { margin: 0; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 1.1rem; }
 .card h3 { font-size: 1rem; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+/* Count + action button share the right-hand end of a card head. */
+.card-head-actions { display: flex; align-items: center; gap: 0.6rem; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
 
 .stat-list { list-style: none; margin: 0.75rem 0 0; padding: 0; display: grid; gap: 0.4rem; }
@@ -283,6 +285,9 @@ h1, h3 { margin: 0; }
 .vendor-edit-input:focus-visible, .vr-emoji:focus-visible, .vr-title:focus-visible,
 .vr-pts:focus-visible, .vr-visits:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .vendor-edit-input { width: 7rem; }
+/* The name shares the ratio row's layout but holds prose, not a 4-character
+   number, so it takes the slack instead of the fixed 7rem above. */
+.vendor-edit-name { width: auto; flex: 1 1 auto; min-width: 0; }
 
 .vendor-edit-note { font-size: 0.75rem; color: var(--muted); }
 .vendor-edit-note.is-ok { color: var(--good); }
@@ -315,6 +320,34 @@ h1, h3 { margin: 0; }
 .vr-save:not(:disabled):hover, .vr-cancel:not(:disabled):hover { background: var(--panel-2); }
 .vr-save:disabled, .vr-cancel:disabled { opacity: 0.6; cursor: default; }
 .vr-save:focus-visible, .vr-cancel:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- add-vendor dialog ---------- */
+/* Reuses the Edit dialog's card, labels and hints; only the stacked form layout
+   is new. Fields run full width because these are typed once, at onboarding,
+   rather than nudged like the pricing controls above. */
+.nv-field { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 1.1rem; }
+.nv-field .vendor-edit-label { margin: 0; }
+.nv-field .vendor-edit-hint { margin: 0.1rem 0 0; }
+.nv-opt { color: var(--muted); font-style: normal; font-weight: 700; text-transform: none; letter-spacing: 0; }
+.nv-input {
+  width: 100%; font: inherit; font-size: 0.85rem; padding: 0.5rem 0.6rem; border-radius: 8px;
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+}
+.nv-input::placeholder { color: var(--muted); }
+.nv-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The operator has to read this password down a phone line, so it can be
+   unmasked on demand rather than typed blind twice. */
+.nv-password-row { display: flex; align-items: center; gap: 0.4rem; }
+.nv-password-row .nv-input { flex: 1 1 auto; min-width: 0; }
+
+.nv-logo-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.15rem; }
+.nv-logo-actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.nv-logo-preview {
+  width: 52px; height: 52px; flex: none; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--panel-2) center / contain no-repeat;
+}
+.nv-logo-preview.is-empty { border-style: dashed; }
+#new-vendor-error { margin-top: 1rem; }
 
 /* ---------- vendor applications ---------- */
 .app-list { display: grid; gap: 0.6rem; margin-top: 0.85rem; }
@@ -427,4 +460,10 @@ h1, h3 { margin: 0; }
   .two-col { grid-template-columns: 1fr; }
   .topv-row { grid-template-columns: 90px 1fr auto; }
   .admin-email { display: none; }
+  /* On a phone the business name would be sharing a ~340px row with its Save
+     button, which leaves too little to read a long name in. Give it the whole
+     width and let the button drop under it. The ratio input is 7rem and still
+     fits beside its own button, so it is unaffected by the wrap. */
+  .vendor-ratio-row { flex-wrap: wrap; }
+  .vendor-edit-name { flex-basis: 100%; }
 }
