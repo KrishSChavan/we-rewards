@@ -4356,7 +4356,7 @@ function renderDealsList(focusId) {
     const li = document.createElement('li');
     if (!d.read) li.className = 'is-unread';
     const logo = d.hasLogo
-      ? `<span class="deal-logo" style="background-image:url('/api/vendor-logo/${d.vendorId}')"></span>`
+      ? `<span class="deal-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(d.vendorId)}')"></span>`
       : '<span class="deal-logo">🏷️</span>';
     li.innerHTML = `
       ${logo}

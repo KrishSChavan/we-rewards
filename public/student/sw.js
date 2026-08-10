@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v51';   // v51: receipt scans go through the AI reader (forgery check + extraction), tesseract as fallback
+const CACHE = 'werewards-v52';   // v52: deal-list logo URL encodes its vendor id, like every other vendor-logo call (no behaviour change)
+// v51: receipt scans go through the AI reader (forgery check + extraction), tesseract as fallback
 // v49: each spot shows its earn rate (card, spot screen, map pin); browser tab favicon
 // v48: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the CDN; boot guard added
 // v47: vendor email+password sign-in on the landing page (dual-role accounts, migration-035)
