@@ -13,7 +13,22 @@
 // that we send students no push notifications, and promised to update it and
 // provide an opt-out before that changed (Privacy Policy §7.4). That is a
 // material change to what students agreed to, so it re-prompts.
-export const TERMS_VERSION = '2026-08-01';
+//
+// 2026-08-10: promotions (ToS §4.7, Policy §2.11-2.12). Two things here are
+// material rather than cosmetic. First, an invite links TWO accounts and one
+// student's purchase is what causes a payment to the other, which is a
+// disclosure about someone else's data that the prior Policy did not make.
+// Second, a signup promotion treats the email domain already on the account as
+// a qualifying attribute. Both re-prompt.
+//
+// ⚠ A BUMP IS A PAYOUT SURFACE NOW. Re-accepting runs POST /api/me/accept-terms
+// for every existing student, which is where the signup bonus is evaluated. It
+// is safe — the payout is keyed to the student in community_grants so it can
+// only happen once ever, and the program's starts_at is checked against
+// profiles.created_at, which for an existing student is long past. Both guards
+// are covered by test/sql/behavior-040.sql and the e2e. Do not remove either
+// one on the assumption that accept-terms only runs for new accounts.
+export const TERMS_VERSION = '2026-08-10';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

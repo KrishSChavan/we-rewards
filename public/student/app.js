@@ -151,6 +151,7 @@ const Splash = (() => {
   installErrorReporter();
   Splash.armBackstop();            // nothing below this may leave the splash up forever
   capturePunchLink();              // stash a camera-scanned ?punch= link BEFORE anything can navigate it away
+  captureReferralLink();           // same, for a friend's ?ref= invite link
   pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
   InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
@@ -167,6 +168,7 @@ const Splash = (() => {
   // the token for a 10-minute hold right away (no auth needed), then claim it
   // once the session is ready. Fire-and-forget; claiming retries the pieces.
   syncPendingPunchNote();
+  showSignupBonusNote(pub.signupBonus);   // must be read BEFORE the account chooser opens
   void securePendingPunchHold();
 
   document.querySelectorAll('[data-signin]').forEach((b) => b.addEventListener('click', signInWithGoogle));
@@ -177,6 +179,7 @@ const Splash = (() => {
     if (!form.hidden) $('vendor-signin-email').focus();
   });
   $('vendor-signin').addEventListener('submit', signInWithPassword);
+  $('invite-btn').addEventListener('click', shareInvite);
   $('account-signout').addEventListener('click', async () => {
     await sb.auth.signOut();
     render(null);
@@ -515,6 +518,7 @@ function render(session) {
   startMyCode();
   connectSocket();
   void claimPendingPunch();   // a camera-scanned punch waiting through sign-in lands now
+  void claimPendingReferral().then(loadReferral);   // an invite link that waited through sign-in, then the share card
 
   // A notification tap that had to go through sign-in first opens its sheet
   // once the list has actually loaded, so it never flashes the empty state on
@@ -1288,7 +1292,37 @@ function dropHistory() {
   $('history-empty').hidden = true;
 }
 
+/** How a community-point grant reads in History, by the ledger's `kind`. */
+const GRANT_TITLES = {
+  referral_friend: 'Invite bonus',
+  referral_referrer: 'A friend you invited started earning',
+  signup_domain: 'Signup bonus',
+};
+
 function historyRow(tx) {
+  // A community-point grant (migration-039): an incentive payout, or points an
+  // operator gave by hand. It has no vendor and is not a transaction at all —
+  // the server shapes it into this envelope so the day-grouped list doesn't
+  // have to interleave two feeds. Handled before everything below because none
+  // of the vendor/reward logic applies to it.
+  if (tx.type === 'grant') {
+    const gtime = new Date(tx.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const gtitle = GRANT_TITLES[tx.grant_kind] ?? 'Bonus points';
+    // The operator's own note on a manual grant is the only honest explanation
+    // of why it happened, so it wins over the generic "added by WeRewards".
+    const gsub = [tx.reason || 'added by WeRewards', gtime].filter(Boolean).join(' · ');
+    const grow = document.createElement('div');
+    grow.className = 'history-row transfer';
+    grow.innerHTML = `
+      <span class="hr-icon">🎉</span>
+      <span class="hr-body">
+        <span class="hr-title">${escapeHtml(gtitle)}</span>
+        <span class="hr-sub">${escapeHtml(gsub)}</span>
+      </span>
+      <span class="hr-points">+${Number(tx.community_points) || 0}<small>community</small></span>`;
+    return grow;
+  }
+
   const earn = tx.type === 'earn';
   // A community transfer (migration-027): the student moved pool points INTO
   // this vendor's balance. Without its own branch it would fall into the
@@ -3994,6 +4028,183 @@ function capturePunchLink() {
     history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
     writePendingPunch({ token, at: Date.now() });
   } catch { /* malformed URL — nothing to capture */ }
+}
+
+/* ---------- referrals (migration-039) ----------
+   A friend's invite link is `/?ref=<code>`. The code is stashed at boot, claimed
+   once a session exists, and the same button that shares it doubles as the
+   status line for the ones already sent.
+
+   localStorage, not sessionStorage (which is what capturePunchLink uses): a
+   punch token dies in ninety seconds, but an invite link is routinely opened on
+   Monday and acted on when the app is finally installed on Thursday. The code
+   is not a secret and the server decides whether it is still claimable, so
+   there is nothing to protect by letting it die with the tab. */
+const PENDING_REF_KEY = 'wr-pending-ref';
+// A stashed code the server would refuse anyway (the signup window is far
+// shorter than this). Purely so a code can't sit in storage forever.
+const PENDING_REF_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+let referralState = null;   // last /api/me/referral payload, or null
+
+function readPendingRef() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PENDING_REF_KEY) || 'null');
+    if (!raw?.code) return null;
+    if (Date.now() - (raw.at ?? 0) > PENDING_REF_TTL_MS) return null;
+    return raw.code;
+  } catch { return null; }
+}
+
+function clearPendingRef() {
+  try { localStorage.removeItem(PENDING_REF_KEY); } catch { /* private mode */ }
+}
+
+// Runs at boot, before anything can navigate: pull ?ref= out of the URL and
+// stash it. Stripping the query matters twice over — a reload must not look
+// like a second claim, and the OAuth redirect has to leave from a clean origin
+// URL, because Google sends the browser back WITHOUT the query string. That
+// round trip is the entire reason this is stored rather than read on demand.
+function captureReferralLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const code = params.get('ref');
+    if (!code) return;
+    params.delete('ref');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+    localStorage.setItem(PENDING_REF_KEY, JSON.stringify({ code, at: Date.now() }));
+  } catch { /* malformed URL or private mode — nothing to capture */ }
+}
+
+// Claim a stashed code, once, after sign-in. Every outcome except a network
+// failure clears the stash: "you already used a code", "that code doesn't
+// exist" and "too late" are all final answers, and retrying them on every app
+// open would mean a toast every time. A network failure keeps it for next time.
+async function claimPendingReferral() {
+  const code = readPendingRef();
+  if (!code) return;
+  try {
+    const res = await authFetch('/api/me/referral', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+    let body = {};
+    try { body = await res.json(); } catch { /* non-JSON body → generic copy below */ }
+    clearPendingRef();
+
+    if (res.ok) {
+      if (body.friendPoints > 0) {
+        punchToast(`Invite accepted, +${body.friendPoints} community points!`);
+        loadCommunity();
+      } else {
+        punchToast('Invite accepted!');
+      }
+      return;
+    }
+    // Silent on the two that aren't the student's doing and aren't news: no
+    // program running, and a code they already used. Everything else gets the
+    // server's own sentence.
+    if (body.error === 'REFERRAL_INACTIVE' || body.error === 'REFERRAL_ALREADY_SET') return;
+    punchToast(body.message || 'That invite code didn’t work.', false);
+  } catch {
+    /* offline — keep the stash and try again next launch */
+  }
+}
+
+// The invite button's label and visibility. `program: null` means nothing is
+// running, and the button stays hidden rather than promising a bonus that
+// wouldn't be paid.
+async function loadReferral() {
+  try {
+    const res = await authFetch('/api/me/referral');
+    if (!res.ok) return;
+    referralState = await res.json();
+  } catch {
+    return;   // offline — leave the button as it is
+  }
+
+  const btn = $('invite-btn');
+  if (!btn) return;
+  if (!referralState?.program || !referralState.shareUrl) {
+    btn.hidden = true;
+    return;
+  }
+
+  const { program, joined, waiting, earned } = referralState;
+  let sub;
+  if (!joined) {
+    sub = program.friendPoints > 0
+      ? `They get ${program.friendPoints}, you get ${program.referrerPoints}`
+      : `Get ${program.referrerPoints} points when they buy something`;
+  } else if (waiting) {
+    // Naming the condition is the point: "waiting" with no reason reads as a
+    // bug, and the student can actually do something about this one.
+    sub = `${joined} joined · ${waiting} yet to buy anything`;
+  } else {
+    sub = `${joined} joined · ${earned} points earned`;
+  }
+  $('invite-sub').textContent = sub;
+  btn.hidden = false;
+}
+
+// Hand the link to the OS share sheet where there is one (every iOS and Android
+// browser this app targets), and fall back to the clipboard where there isn't —
+// desktop Chrome and Firefox. A cancelled share sheet throws AbortError, which
+// is a decision, not a failure, so it must not fall through to the clipboard.
+async function shareInvite() {
+  const url = referralState?.shareUrl;
+  if (!url) return;
+
+  const text = referralState.program?.friendPoints > 0
+    ? `Join me on WeRewards and get ${referralState.program.friendPoints} community points to start.`
+    : 'Join me on WeRewards.';
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'WeRewards', text, url });
+      return;
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+      /* share unavailable in this context → clipboard below */
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    punchToast('Invite link copied!');
+  } catch {
+    // No share sheet and no clipboard permission: show the code itself, which
+    // is short enough to read aloud and is all the link really carries.
+    punchToast(`Your invite code: ${referralState.code}`);
+  }
+}
+
+/**
+ * Landing-page nudge for the signup bonus (migration-040), shown above the
+ * Google button and only while a program is actually running.
+ *
+ * The timing is the whole point. The bonus is decided by the email address the
+ * student arrives with, and once they have picked a Google account there is no
+ * way to change which address WeRewards sees short of deleting the account. So
+ * this has to be readable BEFORE the chooser opens — which is why it is drawn
+ * from /api/public-config during boot rather than after sign-in.
+ */
+function showSignupBonusNote(bonus) {
+  const el = $('signup-bonus-note');
+  if (!el) return;
+  const points = Number(bonus?.points) || 0;
+  const domains = Array.isArray(bonus?.domains) ? bonus.domains.filter(Boolean) : [];
+  if (!points || !domains.length) { el.hidden = true; return; }
+
+  // "@psu.edu" for the usual single-domain case; "@psu.edu or @alumni.psu.edu"
+  // when an operator has listed more than one.
+  const list = domains.map((d) => `@${d}`);
+  const which = list.length === 1
+    ? list[0]
+    : `${list.slice(0, -1).join(', ')} or ${list[list.length - 1]}`;
+
+  el.textContent = `🎓 Sign in with your ${which} email and start with ${points} community points.`;
+  el.hidden = false;
 }
 
 // Landing-page nudge: "sign in and the punch lands".

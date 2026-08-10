@@ -1208,6 +1208,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .srb-arrow { flex: 0 0 auto; color: var(--muted); display: flex; }
 .srb-arrow svg { width: 1.15rem; height: 1.15rem; display: block; }
 
+/* "Invite a friend" — the third earn path, and structurally the receipt button
+   again (it carries both classes, so everything above applies). The only change
+   is the icon tile: --accent rather than the flatter --sky, so the one row in
+   the stack whose points come from the platform rather than from a purchase
+   reads as its own thing without breaking the row's shape. */
+.invite-btn .srb-icon { background: var(--accent); color: var(--navy); }
+
 /* The receipt sheet reuses the detail-card furniture wholesale; the preview is
    its only new piece. object-fit keeps a tall thermal receipt readable without
    letting it shove the buttons off a short phone. */
@@ -2191,6 +2198,16 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   margin: 0.9rem 0 0.2rem;
   padding: 0.8rem 1rem;
   border: 2.5px solid var(--edge); border-radius: 0.9rem;
+  background: var(--card);
+  font-weight: 700; font-size: 0.95rem;
+}
+/* Same note treatment as the punch nudge above it — this sits in the same slot
+   above the Google button and the two are never shown together in practice, so
+   matching them keeps that spot visually stable. */
+.signup-bonus-note {
+  margin: 0.9rem 0 0.2rem;
+  padding: 0.8rem 1rem;
+  border: 2.5px solid var(--accent); border-radius: 0.9rem;
   background: var(--card);
   font-weight: 700; font-size: 0.95rem;
 }

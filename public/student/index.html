@@ -93,6 +93,12 @@
           <p id="pending-punch-note" class="pending-punch-note" hidden>
             🎟️ Visit spotted! Sign in and it gets counted.
           </p>
+          <!-- Signup bonus (migration-040). Directly ABOVE the Google button on
+               purpose: the bonus is decided by the address the student arrives
+               with, so this has to be read before the account chooser opens,
+               not after. app.js fills and unhides it only when a program is
+               actually running (see /api/public-config). -->
+          <p id="signup-bonus-note" class="signup-bonus-note" hidden></p>
           <button class="google-btn" data-signin>
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
               <path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.66-.22-2.45H12v4.64h6.45a5.52 5.52 0 0 1-2.39 3.62v3h3.86c2.26-2.08 3.58-5.15 3.58-8.81z"/>
@@ -315,6 +321,31 @@
                   <span class="srb-text">
                     <span class="srb-title">Scan a receipt</span>
                     <span class="srb-sub">Already paid? Snap it for points</span>
+                  </span>
+                  <span class="srb-arrow" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M9.5 6 15.5 12l-6 6" />
+                    </svg>
+                  </span>
+                </button>
+
+                <!-- The third way to earn: bring someone. Hidden unless a
+                     referral program is actually running (loadReferral decides),
+                     because a button promising a bonus nobody will be paid is
+                     worse than no button. Tapping it hands the share link to the
+                     OS share sheet, or copies it where there isn't one. -->
+                <button id="invite-btn" class="scan-receipt-btn invite-btn" type="button" hidden>
+                  <span class="srb-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <!-- one person, plus a second being added -->
+                      <path d="M9.5 11.4a3.6 3.6 0 1 0 0-7.2 3.6 3.6 0 0 0 0 7.2z" />
+                      <path d="M2.9 20.1a6.6 6.6 0 0 1 13.2 0" />
+                      <path d="M18.6 8.2v5.2M21.2 10.8H16" />
+                    </svg>
+                  </span>
+                  <span class="srb-text">
+                    <span class="srb-title">Invite a friend</span>
+                    <span id="invite-sub" class="srb-sub">You both get points</span>
                   </span>
                   <span class="srb-arrow" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">

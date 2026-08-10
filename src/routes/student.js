@@ -10,6 +10,8 @@ import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
 import { getVapidPublicKey } from '../lib/push.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
+import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
+import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
 
 const router = Router();
 
@@ -84,12 +86,16 @@ router.post('/accept-terms', async (req, res, next) => {
 
     // Upsert, not insert: re-accepting after a terms revision hits an existing
     // row, and a double-submit (double-tap, retry) must not 500.
-    const { error: upsertErr } = await supabaseAdmin
+    const { data: profile, error: upsertErr } = await supabaseAdmin
       .from('profiles')
       .upsert(
         { user_id: userId, email, name, terms_accepted_at: now, terms_version: TERMS_VERSION },
         { onConflict: 'user_id' }
-      );
+      )
+      // created_at decides whether a signup bonus applies: it is the signup
+      // moment, since this upsert is what creates the profile (migration-022).
+      .select('created_at')
+      .single();
     if (upsertErr) throw upsertErr;
 
     // Append-only evidence trail. Best-effort: if this insert fails we do NOT
@@ -103,7 +109,17 @@ router.post('/accept-terms', async (req, res, next) => {
     });
     if (logErr) console.error('terms_acceptances insert failed:', logErr.message);
 
-    res.json({ ok: true, termsVersion: TERMS_VERSION, acceptedAt: now });
+    // Signup bonus (migration-040). This is the signup moment, so it is where
+    // the bonus is decided. maybeAwardSignupBonus never throws — consent must
+    // succeed whether or not a bonus does — and is idempotent per account, so a
+    // student re-accepting a revised TERMS_VERSION is not paid a second time.
+    const signupBonus = await maybeAwardSignupBonus({
+      userId,
+      email,
+      profileCreatedAt: profile?.created_at,
+    });
+
+    res.json({ ok: true, termsVersion: TERMS_VERSION, acceptedAt: now, signupBonus });
   } catch (err) {
     next(err);
   }
@@ -585,7 +601,94 @@ router.post('/community-transfer', requireConsent, async (req, res, next) => {
   }
 });
 
-/** GET /api/me/history — the student's transactions over the last 30 days */
+/**
+ * GET /api/me/referral — this student's share code and how it is doing.
+ * `program` is null when no referral program is running, which the card uses to
+ * hide itself rather than advertise a bonus nobody will be paid.
+ */
+router.get('/referral', requireConsent, async (req, res, next) => {
+  try {
+    const [{ data: profile, error: pErr }, program] = await Promise.all([
+      supabaseAdmin.from('profiles').select('referral_code').eq('user_id', req.user.id).maybeSingle(),
+      activeReferralProgram(),
+    ]);
+    if (pErr) throw pErr;
+
+    // Every profile gets a code from a trigger at signup (migration-039), so a
+    // missing one means a row that predates the migration's backfill somehow.
+    // Report it as "no code" rather than 500 — the rest of the card still works.
+    const code = profile?.referral_code ?? null;
+    const origin = process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+
+    const { data: mine, error: mErr } = await supabaseAdmin
+      .from('referrals')
+      .select('status, referrer_points')
+      .eq('referrer_id', req.user.id);
+    if (mErr) throw mErr;
+
+    const rows = mine ?? [];
+    const cfg = { ...REFERRAL_DEFAULTS, ...(program?.config ?? {}) };
+
+    res.json({
+      code,
+      shareUrl: code ? `${origin}/?ref=${code}` : null,
+      joined: rows.length,
+      // "Waiting" is the honest word: the friend signed up but hasn't bought
+      // anything yet, and the card says exactly that.
+      waiting: rows.filter((r) => r.status === 'pending').length,
+      earned: rows.filter((r) => r.status === 'paid').reduce((n, r) => n + r.referrer_points, 0),
+      program: program
+        ? { referrerPoints: cfg.referrerPoints, friendPoints: cfg.friendPoints }
+        : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/referral  { code }
+ * Claim a friend's code. Called once, by the app, right after a signed-in
+ * student is seen to be carrying a `?ref=` code (see public/student/app.js) —
+ * the code survives the OAuth round trip in localStorage, because the redirect
+ * back from Google drops the query string.
+ *
+ * Everything that decides whether this is allowed lives in attributeReferral,
+ * and the one rule that must never bend — a student is referred once, ever —
+ * is a UNIQUE index underneath it.
+ */
+router.post('/referral', requireConsent, async (req, res, next) => {
+  try {
+    const result = await attributeReferral(req.user.id, req.body?.code);
+    // The friend's signup bonus lands immediately, so push it the same way an
+    // award does and their counter moves while they're still on the screen.
+    if (result.friendPoints > 0) {
+      const { data } = await supabaseAdmin
+        .from('community_balances')
+        .select('balance')
+        .eq('user_id', req.user.id)
+        .maybeSingle();
+      emitBalance(req.user.id, { community: data?.balance ?? 0 });
+    }
+    res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/me/history — the student's last 30 days.
+ *
+ * Two sources merged, because community points arrive two different ways: the
+ * 10% that rides on an `earn` row (migration-026), and an incentive payout,
+ * which has no vendor and therefore cannot be a transaction at all
+ * (community_grants, migration-039). A referral bonus that never appeared here
+ * would look to a student like points from nowhere.
+ *
+ * Grants are shaped into the same envelope the client's historyRow() already
+ * reads rather than shipped as a second list: the tab groups strictly by day,
+ * so two lists would have to be interleaved on the client anyway.
+ */
 router.get('/history', requireConsent, async (req, res, next) => {
   try {
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -603,7 +706,36 @@ router.get('/history', requireConsent, async (req, res, next) => {
       .order('created_at', { ascending: false })
       .limit(200);
     if (error) throw error;
-    res.json(data);
+
+    const { data: grants, error: gErr } = await supabaseAdmin
+      .from('community_grants')
+      .select('id, points, kind, reason, created_at')
+      .eq('user_id', req.user.id)
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (gErr) throw gErr;
+
+    // type 'grant' is a CLIENT-SIDE label, not a transactions.type — nothing
+    // here is written back, and transactions_type_check knows nothing about it.
+    // points carries the amount so the row's chip works unchanged; grant_kind
+    // is what the client uses to choose the wording.
+    const asRows = (grants ?? []).map((g) => ({
+      id: g.id,
+      type: 'grant',
+      grant_kind: g.kind,
+      reason: g.reason,
+      points: 0,                    // no vendor balance moved
+      community_points: g.points,
+      vendor_id: null,
+      created_at: g.created_at,
+    }));
+
+    const merged = [...(data ?? []), ...asRows]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 200);
+
+    res.json(merged);
   } catch (err) {
     next(err);
   }
@@ -831,8 +963,8 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, community, transactions, scores, deals, notify] = await Promise.all([
-      supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at').eq('user_id', uid).maybeSingle(),
+    const [profile, balances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed] = await Promise.all([
+      supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at, referral_code').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
       // The community pool is a balance we hold, so the export promises it too.
       supabaseAdmin.from('community_balances').select('balance, lifetime_earned, updated_at').eq('user_id', uid).maybeSingle(),
@@ -851,8 +983,37 @@ router.get('/export', async (req, res, next) => {
         .select('campaign_id, status, pushed_at, read_at, opened_at, vendor_campaigns(title, body, kind, created_at, vendors(name))')
         .eq('user_id', uid),
       supabaseAdmin.from('student_notify_state').select('push_opt_in, last_push_at').eq('user_id', uid).maybeSingle(),
+      // Community points we GAVE them and why (migration-039/040). Not a
+      // transaction, so the history above misses it entirely — and "points that
+      // appeared from nowhere" is exactly what an export exists to explain.
+      supabaseAdmin
+        .from('community_grants')
+        .select('id, points, kind, reason, created_at')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false }),
+      // Both sides of the referral link. Deliberately two reads rather than an
+      // OR: referrals has two FKs to profiles, and keeping them apart is what
+      // lets the payload label who invited whom without the reader guessing.
+      // NOTE the absence of friend_id. An export must return the requester's
+      // data, not another data subject's, and the referrer never held that
+      // identifier: the app only ever shows them counts. "You invited someone
+      // on this date, they qualified, you were paid N" is the whole of their
+      // own record. (The reverse read below does keep `code`, because that is
+      // a value the student typed in themselves.)
+      supabaseAdmin
+        .from('referrals')
+        .select('id, status, referrer_points, qualified_at, paid_at, created_at')
+        .eq('referrer_id', uid)
+        .order('created_at', { ascending: false }),
+      supabaseAdmin
+        .from('referrals')
+        .select('id, code, status, friend_points, created_at')
+        .eq('friend_id', uid)
+        .maybeSingle(),
     ]);
-    for (const r of [profile, balances, community, transactions, scores, deals, notify]) if (r.error) throw r.error;
+    for (const r of [profile, balances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed]) {
+      if (r.error) throw r.error;
+    }
 
     res.setHeader('Content-Disposition', 'attachment; filename="werewards-data.json"');
     res.json({
@@ -865,6 +1026,14 @@ router.get('/export', async (req, res, next) => {
       scores: scores.data,
       deals: deals.data ?? [],
       notifications: notify.data ?? { push_opt_in: true, last_push_at: null },
+      // Bonus points from an incentive or an operator, and the referral links
+      // we hold about this student.
+      bonusPoints: grants.data ?? [],
+      referrals: {
+        code: profile.data?.referral_code ?? null,
+        invitesSent: invitesSent.data ?? [],
+        inviteUsed: inviteUsed.data ?? null,
+      },
     });
   } catch (err) {
     next(err);

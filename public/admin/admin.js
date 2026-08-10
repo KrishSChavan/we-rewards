@@ -11,6 +11,9 @@ let sb = null;
 let errorSource = '';   // '' = all sources; else server|student|vendor|admin
 let vendors = [];       // full roster (active + inactive) for the on/off panel
 let applications = [];  // pending vendor applications (the Applications tab)
+let incentives = [];    // operator-created deals (the Incentives tab)
+let referrals = [];     // newest referrals, both sides named
+let grants = [];        // the community-point payout ledger
 let vapidKey = null;    // server's public VAPID key; null = push disabled
 let pushInitDone = false;
 const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now" is tapped
@@ -33,6 +36,15 @@ const $ = (id) => document.getElementById(id);
   $('clear-errors-btn').addEventListener('click', clearErrors);
   $('tab-dashboard').addEventListener('click', () => setView('dashboard'));
   $('tab-applications').addEventListener('click', () => setView('applications'));
+  $('tab-incentives').addEventListener('click', () => setView('incentives'));
+  $('inc-form').addEventListener('submit', saveIncentive);
+  $('inc-toggle').addEventListener('click', toggleIncentive);
+  $('inc-delete').addEventListener('click', deleteIncentive);
+  $('sb-form').addEventListener('submit', saveSignup);
+  $('sb-toggle').addEventListener('click', toggleSignup);
+  $('sb-delete').addEventListener('click', deleteSignupIncentive);
+  $('ref-settle-btn').addEventListener('click', settleReferrals);
+  $('grant-form').addEventListener('submit', giveGrant);
   $('push-btn').addEventListener('click', enablePush);
   // Popup: "Turn on alerts" runs the SAME enable flow directly on the click so the
   // requestPermission() gesture is preserved; "Not now"/backdrop just dismiss.
@@ -162,21 +174,27 @@ async function loadAll() {
   // Overview is the access check: only load the rest once it confirms admin.
   const ok = await loadOverview();
   if (ok) {
-    await Promise.all([loadVendors(), loadErrors(), loadApplications()]);
+    await Promise.all([
+      loadVendors(), loadErrors(), loadApplications(),
+      loadIncentives(), loadReferrals(), loadGrants(),
+    ]);
     initPush();   // best-effort, runs once — after admin access is confirmed
   }
 }
 
 /* ---------- view tabs ---------- */
 
-// Two mutually exclusive views under one topbar; `hidden` is the source of
-// truth (same convention as the #login/#dash panels).
+// Mutually exclusive views under one topbar; `hidden` is the source of truth
+// (same convention as the #login/#dash panels). Driven off one list so adding a
+// tab is adding its name here plus the matching #tab-/#view- ids in the markup.
+const VIEWS = ['dashboard', 'applications', 'incentives'];
+
 function setView(view) {
-  const apps = view === 'applications';
-  $('view-dashboard').hidden = apps;
-  $('view-applications').hidden = !apps;
-  $('tab-dashboard').classList.toggle('is-active', !apps);
-  $('tab-applications').classList.toggle('is-active', apps);
+  const target = VIEWS.includes(view) ? view : 'dashboard';
+  VIEWS.forEach((v) => {
+    $(`view-${v}`).hidden = v !== target;
+    $(`tab-${v}`).classList.toggle('is-active', v === target);
+  });
 }
 
 async function loadOverview() {
@@ -1313,6 +1331,539 @@ async function rejectApplication(a, row, accept, reject, err) {
     accept.disabled = false;
     reject.disabled = false;
   }
+}
+
+/* ---------- incentives (migration-039) ----------
+   Operator-created deals that pay COMMUNITY points — the cross-vendor pool, so
+   the platform funds them rather than a vendor honoring a promise it never
+   made. Four panels: the referral program editor, the referrals it has
+   produced, a manual grant form, and the payout ledger underneath everything.
+
+   Every list here is built with DOM APIs rather than innerHTML: the rows carry
+   student and operator email addresses, which are user-controlled text. Same
+   rule as renderVendors and renderApplications. */
+
+// Mirrors REFERRAL_DEFAULTS / SIGNUP_DEFAULTS in src/lib/referrals.js and
+// src/lib/signup-bonus.js. Only used to pre-fill an empty form; the server is
+// the authority on what a saved program actually holds.
+const REFERRAL_DEFAULTS = {
+  referrerPoints: 10,
+  friendPoints: 10,
+  maxPerReferrer: 10,
+  signupWindowDays: 14,
+};
+
+const SIGNUP_DEFAULTS = { points: 10, domains: ['psu.edu'] };
+
+async function loadIncentives() {
+  const res = await authFetch('/api/admin/incentives');
+  if (res.status === 403) return denyAccess();
+  if (!res.ok) return;
+  incentives = await res.json();
+  renderIncentives();
+}
+
+async function loadReferrals() {
+  const res = await authFetch('/api/admin/referrals');
+  if (res.status === 403) return denyAccess();
+  if (!res.ok) return;
+  referrals = await res.json();
+  renderReferrals();
+}
+
+async function loadGrants() {
+  const res = await authFetch('/api/admin/grants');
+  if (res.status === 403) return denyAccess();
+  if (!res.ok) return;
+  grants = await res.json();
+  renderGrants();
+}
+
+/** The program panel for a kind shows the ACTIVE one if there is one, else the
+    most recently created one — because a program is created switched off, and
+    the panel that just saved it has to keep editing it rather than reset to a
+    blank form and create a duplicate on the next save. The server orders
+    active-first then newest-first, so the first match is the right one. */
+function currentIncentive(kind) {
+  const of = incentives.filter((i) => i.kind === kind);
+  return of.find((i) => i.active) ?? of[0];
+}
+
+/** Everything of that kind the panel is NOT currently editing. */
+function pastIncentives(kind) {
+  const cur = currentIncentive(kind);
+  return incentives.filter((i) => i.kind === kind && i.id !== cur?.id);
+}
+
+// <input type="datetime-local"> wants "YYYY-MM-DDTHH:mm" in LOCAL time, and an
+// ISO string from the server is UTC. Shifting by the offset before slicing is
+// what keeps a program that starts at 9am local from displaying as 1pm.
+function toLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+/** How much of a program's budget is gone, in words. */
+function budgetLine(p) {
+  return p.budget_points
+    ? `${num(p.spent_points)} of ${num(p.budget_points)} points paid out`
+    : `${num(p.spent_points)} points paid out, no budget cap`;
+}
+
+/**
+ * The chrome every program panel shares: the Running/Off chip, the primary
+ * button's verb, and which of turn-on/off and delete are offered.
+ *
+ * Creating a program does NOT switch it on (see POST /api/admin/incentives), so
+ * "Off" is the normal state of a brand new one and the chip has to distinguish
+ * it from "Not created" or an operator can't tell whether their save worked.
+ */
+function paintProgram(prefix, program) {
+  const running = !!program?.active;
+  const state = $(`${prefix}-state`);
+  state.textContent = program ? (running ? 'Running' : 'Off') : 'Not set up';
+  state.classList.toggle('is-live', running);
+
+  $(`${prefix}-save`).textContent = program ? 'Save changes' : 'Create program';
+
+  const toggle = $(`${prefix}-toggle`);
+  toggle.hidden = !program;
+  toggle.textContent = running ? 'Turn off' : 'Turn on';
+  toggle.classList.toggle('btn-primary', !running);
+  toggle.classList.toggle('btn-ghost', running);
+
+  // A program that has paid points out is the record of why they moved, so it
+  // can only be turned off. The server refuses the delete either way; hiding
+  // the button means an operator is never offered an action that will fail.
+  $(`${prefix}-delete`).hidden = !program || program.spent_points > 0;
+}
+
+function renderIncentives() {
+  renderReferralPanel();
+  renderSignupPanel();
+  renderPastIncentives();
+}
+
+/* ---------- panel 1: refer a friend ---------- */
+
+function renderReferralPanel() {
+  const p = currentIncentive('referral');
+  const cfg = { ...REFERRAL_DEFAULTS, ...(p?.config ?? {}) };
+
+  $('inc-name').value = p?.name ?? 'Refer a friend';
+  $('inc-referrer-points').value = cfg.referrerPoints;
+  $('inc-friend-points').value = cfg.friendPoints;
+  $('inc-max-per').value = cfg.maxPerReferrer ?? '';
+  $('inc-window').value = cfg.signupWindowDays;
+  $('inc-budget').value = p?.budget_points ?? '';
+  $('inc-starts').value = toLocalInput(p?.starts_at);
+  $('inc-ends').value = toLocalInput(p?.ends_at);
+
+  paintProgram('inc', p);
+
+  const note = $('inc-note');
+  if (p) {
+    const r = p.referrals ?? {};
+    note.textContent = `${budgetLine(p)}. ${num(r.paid ?? 0)} referrals paid, ${num(r.pending ?? 0)} waiting on a first purchase.`;
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+}
+
+/** The referral form's fields as the API's body shape. Numbers stay strings
+    where blank means "unlimited" — the server tells blank from zero, so this
+    must not coerce one into the other. */
+function incentiveBody() {
+  const val = (id) => $(id).value.trim();
+  return {
+    kind: 'referral',
+    name: val('inc-name'),
+    budgetPoints: val('inc-budget'),
+    startsAt: val('inc-starts'),
+    endsAt: val('inc-ends'),
+    config: {
+      referrerPoints: val('inc-referrer-points'),
+      friendPoints: val('inc-friend-points'),
+      maxPerReferrer: val('inc-max-per'),
+      signupWindowDays: val('inc-window'),
+    },
+  };
+}
+
+/* ---------- panel 2: signup bonus ---------- */
+
+function renderSignupPanel() {
+  const p = currentIncentive('signup_domain');
+  const cfg = { ...SIGNUP_DEFAULTS, ...(p?.config ?? {}) };
+
+  $('sb-name').value = p?.name ?? 'PSU email signup bonus';
+  $('sb-points').value = cfg.points;
+  $('sb-domains').value = (cfg.domains ?? []).join(', ');
+  $('sb-budget').value = p?.budget_points ?? '';
+  $('sb-starts').value = toLocalInput(p?.starts_at);
+  $('sb-ends').value = toLocalInput(p?.ends_at);
+
+  paintProgram('sb', p);
+
+  const note = $('sb-note');
+  if (p) {
+    note.textContent = `${budgetLine(p)}. ${num(p.payouts ?? 0)} students paid.`;
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+}
+
+function signupBody() {
+  const val = (id) => $(id).value.trim();
+  return {
+    kind: 'signup_domain',
+    name: val('sb-name'),
+    budgetPoints: val('sb-budget'),
+    startsAt: val('sb-starts'),
+    endsAt: val('sb-ends'),
+    config: { points: val('sb-points'), domains: val('sb-domains') },
+  };
+}
+
+/* ---------- previous programs (both kinds) ---------- */
+
+function renderPastIncentives() {
+  const past = [...pastIncentives('referral'), ...pastIncentives('signup_domain')];
+  const wrap = $('inc-past-list');
+  $('inc-past').hidden = past.length === 0;
+  wrap.innerHTML = '';
+
+  const KIND_LABEL = { referral: 'Refer a friend', signup_domain: 'Signup bonus' };
+
+  past.forEach((p) => {
+    const row = document.createElement('div');
+    row.className = 'inc-past-row';
+
+    const info = document.createElement('div');
+    info.className = 'inc-past-info';
+    const name = document.createElement('span');
+    name.className = 'inc-past-name';
+    name.textContent = p.name;
+    const meta = document.createElement('span');
+    meta.className = 'app-meta';
+    meta.textContent = `${KIND_LABEL[p.kind] ?? p.kind} · ${num(p.spent_points)} points paid · ${num(p.payouts ?? 0)} students`;
+    info.append(name, meta);
+
+    const on = document.createElement('button');
+    on.className = 'app-accept';
+    on.type = 'button';
+    on.textContent = 'Turn on';
+    on.addEventListener('click', () => patchIncentive(p.id, { active: true }));
+
+    row.append(info, on);
+
+    if (p.spent_points === 0) {
+      const del = document.createElement('button');
+      del.className = 'app-reject';
+      del.type = 'button';
+      del.textContent = 'Delete';
+      del.addEventListener('click', () => deletePastIncentive(p));
+      row.appendChild(del);
+    }
+
+    wrap.appendChild(row);
+  });
+}
+
+/* ---------- saving, switching, deleting ---------- */
+
+function showIncError(prefix, msg) {
+  const el = $(`${prefix}-error`);
+  el.textContent = msg || 'Couldn’t save that. Check your connection and try again.';
+  el.hidden = false;
+}
+
+// One save path for both panels: `prefix` picks the form's element ids, `kind`
+// picks which program the panel is editing. Creating leaves the program OFF —
+// switching it on is the separate, deliberate button beside this one.
+async function saveProgram(prefix, kind, body) {
+  const p = currentIncentive(kind);
+  $(`${prefix}-error`).hidden = true;
+  $(`${prefix}-save`).disabled = true;
+  try {
+    const res = await authFetch(
+      p ? `/api/admin/incentives/${p.id}` : '/api/admin/incentives',
+      { method: p ? 'PATCH' : 'POST', body: JSON.stringify(body) }
+    );
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) return showIncError(prefix, out.message);
+    await loadIncentives();
+  } catch {
+    showIncError(prefix, 'No connection, try again.');
+  } finally {
+    $(`${prefix}-save`).disabled = false;
+  }
+}
+
+function saveIncentive(e) { e.preventDefault(); saveProgram('inc', 'referral', incentiveBody()); }
+function saveSignup(e) { e.preventDefault(); saveProgram('sb', 'signup_domain', signupBody()); }
+
+async function patchIncentive(id, patch, prefix = 'inc') {
+  $(`${prefix}-error`).hidden = true;
+  try {
+    const res = await authFetch(`/api/admin/incentives/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) return showIncError(prefix, out.message);
+    await loadIncentives();
+  } catch {
+    showIncError(prefix, 'No connection, try again.');
+  }
+}
+
+// Turning a program off stops NEW attributions. Referrals already recorded keep
+// their snapshotted payout and still settle when the friend buys something —
+// which is the honest behavior, and worth saying out loud in the confirm.
+function toggleIncentive() {
+  const p = currentIncentive('referral');
+  if (!p) return;
+  if (!p.active) {
+    if (!confirm(`Turn on “${p.name}”?\n\nInvite codes start working immediately and points start being paid out.`)) return;
+    return patchIncentive(p.id, { active: true });
+  }
+  const waiting = p.referrals?.pending ?? 0;
+  const tail = waiting
+    ? `\n\n${waiting} referral${waiting === 1 ? '' : 's'} already recorded will still be paid when those students make their first purchase.`
+    : '';
+  if (!confirm(`Turn off “${p.name}”?\n\nNo new invite codes will be accepted.${tail}`)) return;
+  patchIncentive(p.id, { active: false });
+}
+
+function toggleSignup() {
+  const p = currentIncentive('signup_domain');
+  if (!p) return;
+  if (!p.active) {
+    const when = p.starts_at ? new Date(p.starts_at).toLocaleString() : 'its start date';
+    if (!confirm(`Turn on “${p.name}”?\n\nStudents who sign up with a matching email address after ${when} will be paid automatically.`)) return;
+    return patchIncentive(p.id, { active: true }, 'sb');
+  }
+  if (!confirm(`Turn off “${p.name}”?\n\nNew signups stop being paid. Nobody already paid is affected.`)) return;
+  patchIncentive(p.id, { active: false }, 'sb');
+}
+
+function deleteCurrent(prefix, kind) {
+  const p = currentIncentive(kind);
+  if (!p) return;
+  if (!confirm(`Delete “${p.name}”?\n\nIt has never paid anything out, so there is nothing to keep. This can’t be undone.`)) return;
+  removeIncentive(p.id, prefix);
+}
+
+function deleteIncentive() { deleteCurrent('inc', 'referral'); }
+function deleteSignupIncentive() { deleteCurrent('sb', 'signup_domain'); }
+
+function deletePastIncentive(p) {
+  if (!confirm(`Delete “${p.name}”?\n\nThis can’t be undone.`)) return;
+  removeIncentive(p.id);
+}
+
+async function removeIncentive(id, prefix = 'inc') {
+  $(`${prefix}-error`).hidden = true;
+  try {
+    const res = await authFetch(`/api/admin/incentives/${id}`, { method: 'DELETE' });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) return showIncError(prefix, out.message);
+    await loadIncentives();
+  } catch {
+    showIncError(prefix, 'No connection, try again.');
+  }
+}
+
+/* ---------- referrals ---------- */
+
+const REFERRAL_STATUS = {
+  pending: ['Waiting', 'is-waiting'],
+  paid: ['Paid', 'is-paid'],
+  void: ['Void', 'is-void'],
+};
+
+function renderReferrals() {
+  const wrap = $('referral-list');
+  $('ref-error').hidden = true;
+  wrap.innerHTML = '';
+  $('ref-count').textContent = referrals.length ? `${referrals.length} shown` : '';
+
+  if (!referrals.length) {
+    wrap.innerHTML = `<p class="muted">No referrals yet. They appear here as soon as a student uses someone's invite link.</p>`;
+    return;
+  }
+
+  referrals.forEach((r) => {
+    const row = document.createElement('div');
+    row.className = 'referral-row';
+
+    const [label, cls] = REFERRAL_STATUS[r.status] ?? ['Unknown', ''];
+    const badge = document.createElement('span');
+    badge.className = `referral-status ${cls}`;
+    badge.textContent = label;
+
+    const info = document.createElement('div');
+    info.className = 'referral-info';
+
+    const line = document.createElement('span');
+    line.className = 'referral-people';
+    // Built as three nodes rather than one string so neither address can be
+    // read as markup, and so the arrow can be styled apart from the emails.
+    const from = document.createElement('strong');
+    from.textContent = r.referrer;
+    const arrow = document.createElement('span');
+    arrow.className = 'referral-arrow';
+    arrow.textContent = ' invited ';
+    const to = document.createElement('strong');
+    to.textContent = r.friend;
+    line.append(from, arrow, to);
+
+    const meta = document.createElement('span');
+    meta.className = 'app-meta';
+    const bits = [`code ${r.code}`];
+    bits.push(r.status === 'paid'
+      ? `referrer paid ${num(r.referrerPoints)}`
+      : `referrer owed ${num(r.referrerPoints)}`);
+    // friendPoints is what they were promised; friendPaid is whether the ledger
+    // actually has it. They differ exactly when a budget ran out mid-program.
+    if (r.friendPoints > 0) {
+      bits.push(r.friendPaid ? `friend paid ${num(r.friendPoints)}` : `friend bonus unpaid`);
+    }
+    meta.textContent = bits.join(' · ');
+
+    info.append(line, meta);
+
+    const when = document.createElement('span');
+    when.className = 'app-when';
+    when.textContent = new Date(r.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+    row.append(badge, info, when);
+    wrap.appendChild(row);
+  });
+}
+
+// The worker sweeps on its own timer; this is only so an operator watching the
+// screen doesn't have to wait for it. The sweep is idempotent, so a double-tap
+// costs a round trip and nothing else.
+async function settleReferrals() {
+  const btn = $('ref-settle-btn');
+  $('ref-error').hidden = true;
+  btn.disabled = true;
+  btn.textContent = 'Settling…';
+  try {
+    const res = await authFetch('/api/admin/referrals/settle', { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const el = $('ref-error');
+      el.textContent = body.message || 'Couldn’t settle right now, try again.';
+      el.hidden = false;
+      return;
+    }
+    await Promise.all([loadReferrals(), loadIncentives(), loadGrants()]);
+  } catch {
+    const el = $('ref-error');
+    el.textContent = 'No connection, try again.';
+    el.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Settle now';
+  }
+}
+
+/* ---------- manual grants + the payout ledger ---------- */
+
+async function giveGrant(e) {
+  e.preventDefault();
+  const email = $('grant-email').value.trim();
+  const points = $('grant-points').value.trim();
+  const reason = $('grant-reason').value.trim();
+  const err = $('grant-error');
+  const ok = $('grant-ok');
+  err.hidden = true;
+  ok.hidden = true;
+
+  if (!email || !points || !reason) {
+    err.textContent = 'Fill in the email, the points, and what it is for.';
+    err.hidden = false;
+    return;
+  }
+  if (!confirm(`Give ${points} community points to ${email}?\n\nThis is immediate and there is no undo — you would have to work out a correction by hand.`)) return;
+
+  $('grant-submit').disabled = true;
+  try {
+    const res = await authFetch('/api/admin/grants', {
+      method: 'POST',
+      body: JSON.stringify({ email, points: Number(points), reason }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      err.textContent = body.message || 'Couldn’t give those points.';
+      err.hidden = false;
+      return;
+    }
+    ok.textContent = `Gave ${num(body.points)} points to ${body.student}. Their balance is now ${num(body.newBalance)}.`;
+    ok.hidden = false;
+    $('grant-email').value = '';
+    $('grant-points').value = '';
+    $('grant-reason').value = '';
+    await loadGrants();
+  } catch {
+    err.textContent = 'No connection, try again.';
+    err.hidden = false;
+  } finally {
+    $('grant-submit').disabled = false;
+  }
+}
+
+const GRANT_KINDS = {
+  manual: 'By hand',
+  referral_friend: 'Referral · friend',
+  referral_referrer: 'Referral · referrer',
+};
+
+function renderGrants() {
+  const wrap = $('grant-list');
+  wrap.innerHTML = '';
+  $('grants-count').textContent = grants.length ? `${grants.length} shown` : '';
+
+  if (!grants.length) {
+    wrap.innerHTML = `<p class="muted">Nothing paid out yet.</p>`;
+    return;
+  }
+
+  grants.forEach((g) => {
+    const row = document.createElement('div');
+    row.className = 'grant-row';
+
+    const pts = document.createElement('span');
+    pts.className = 'grant-points';
+    pts.textContent = `+${num(g.points)}`;
+
+    const info = document.createElement('div');
+    info.className = 'grant-info';
+    const who = document.createElement('span');
+    who.className = 'grant-student';
+    who.textContent = g.student;
+    const meta = document.createElement('span');
+    meta.className = 'app-meta';
+    const bits = [GRANT_KINDS[g.kind] ?? g.kind];
+    if (g.reason) bits.push(g.reason);
+    bits.push(g.grantedBy === 'system' ? 'automatic' : (g.grantedBy ?? 'unknown'));
+    meta.textContent = bits.join(' · ');
+    info.append(who, meta);
+
+    const when = document.createElement('span');
+    when.className = 'app-when';
+    when.textContent = new Date(g.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+    row.append(pts, info, when);
+    wrap.appendChild(row);
+  });
 }
 
 /* ---------- web-push: new-application alerts ---------- */

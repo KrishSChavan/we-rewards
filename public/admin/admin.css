@@ -389,6 +389,81 @@ h1, h3 { margin: 0; }
 .app-accept:disabled, .app-reject:disabled { opacity: 0.6; cursor: default; }
 .app-error { color: var(--bad); font-size: 0.78rem; font-weight: 700; flex: 1; text-align: left; }
 
+/* ---------- incentives (migration-039) ---------- */
+/* The program editor is a two-column grid of short numeric fields; .inc-field-wide
+   spans both for the free-text ones. It collapses to one column on a phone in
+   the media query at the foot of this file. */
+.inc-form {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem 1rem;
+  margin-top: 0.9rem;
+}
+.inc-field { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.inc-field-wide { grid-column: 1 / -1; }
+.inc-field .vendor-edit-label { margin: 0; }
+.inc-field .vendor-edit-hint { margin: 0.1rem 0 0; }
+/* The error, note and actions rows are full-width regardless of the grid. */
+.inc-form > .field-error, .inc-form > .inc-note, .inc-form > .inc-actions { grid-column: 1 / -1; }
+.inc-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+/* .btn-primary/.btn-ghost are shaped for the login card, where they are the only
+   thing on screen: margin-top:1rem and width:100%. In a row of three actions
+   that stacks them full-bleed down the card, so undo both and let each button be
+   its own width (same margin fix as .push-actions, plus the width). */
+.inc-actions .btn-primary, .inc-actions .btn-ghost { margin-top: 0; width: auto; }
+.inc-danger { color: var(--bad); border-color: var(--line); }
+.inc-danger:hover { background: var(--bad); color: #fff; border-color: var(--bad); }
+
+.inc-state {
+  font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
+  padding: 0.2rem 0.6rem; white-space: nowrap;
+}
+.inc-state.is-live { color: #06281a; background: var(--good); border-color: var(--good); }
+
+.inc-note {
+  margin: 0; padding: 0.5rem 0.65rem; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--muted); font-size: 0.8rem;
+}
+.inc-ok {
+  margin: 0; padding: 0.5rem 0.65rem; border-radius: 8px;
+  background: rgba(52, 211, 153, 0.12); border: 1px solid var(--good);
+  color: var(--good); font-size: 0.82rem; font-weight: 700;
+}
+
+.inc-past { margin-top: 1.4rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.inc-past-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.6rem 0.75rem; margin-top: 0.5rem;
+}
+.inc-past-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.inc-past-name { font-weight: 800; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- referrals + the payout ledger ---------- */
+.referral-list, .grant-list { display: grid; gap: 0.5rem; margin-top: 0.85rem; }
+.referral-row, .grant-row {
+  display: flex; align-items: center; gap: 0.7rem;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+}
+.referral-info, .grant-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+/* Emails are long and arbitrary; wrap them rather than let one push the date
+   off the row. */
+.referral-people, .grant-student { font-size: 0.85rem; overflow-wrap: anywhere; }
+.referral-arrow { color: var(--muted); font-weight: 400; }
+.referral-status {
+  flex: none; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.04em;
+  text-transform: uppercase; border-radius: 999px; padding: 0.22rem 0.55rem;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.referral-status.is-paid { color: #06281a; background: var(--good); border-color: var(--good); }
+.referral-status.is-waiting { color: var(--warn); border-color: var(--warn); }
+.referral-status.is-void { color: var(--bad); border-color: var(--bad); }
+.grant-points {
+  flex: none; font-weight: 900; font-size: 0.9rem; color: var(--good);
+  min-width: 3.5rem; text-align: right; font-variant-numeric: tabular-nums;
+}
+
 /* ---------- errors ---------- */
 .err-filters { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 .err-filter { font: inherit; font-size: 0.75rem; padding: 0.3rem 0.6rem; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
@@ -466,4 +541,10 @@ h1, h3 { margin: 0; }
      fits beside its own button, so it is unaffected by the wrap. */
   .vendor-ratio-row { flex-wrap: wrap; }
   .vendor-edit-name { flex-basis: 100%; }
+  /* Two columns of number fields is already tight at 640px and unreadable
+     below it once the hints wrap. One column, full width. */
+  .inc-form { grid-template-columns: 1fr; }
+  /* The date column would otherwise squeeze the emails to a couple of
+     characters. The row order still reads newest-first without it. */
+  .referral-row .app-when, .grant-row .app-when { display: none; }
 }

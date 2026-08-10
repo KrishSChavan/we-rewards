@@ -22,7 +22,11 @@
 // v9: browser tab favicon (index.html).
 // v10: vendor rename in the Edit modal + "Add vendor" dialog (index.html +
 // admin.js + admin.css).
-const CACHE = 'werewards-admin-v10';
+// v11: Incentives tab — referral program editor, referrals list, manual
+// community-point grants and the payout log (migration-039).
+// v12: second incentive kind, the signup bonus (migration-040); programs are
+// now created switched OFF and turned on as a separate step.
+const CACHE = 'werewards-admin-v12';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

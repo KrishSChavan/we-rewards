@@ -79,6 +79,7 @@
     <nav class="tabs" aria-label="View">
       <button id="tab-dashboard" class="tab is-active" type="button">Dashboard</button>
       <button id="tab-applications" class="tab" type="button">Applications<span id="apps-badge" class="tab-badge" hidden>0</span></button>
+      <button id="tab-incentives" class="tab" type="button">Incentives</button>
     </nav>
 
     <main>
@@ -167,6 +168,193 @@
         <p class="muted">Applications from the public page at <strong>/join</strong>, oldest first. <strong>Accept</strong> onboards the vendor on the spot, so their terminal login works immediately with the password they chose. <strong>Reject</strong> permanently deletes the application and everything in it.</p>
         <p id="apps-error" class="field-error" role="alert" hidden></p>
         <div id="app-list" class="app-list"></div>
+      </div>
+    </div>
+
+    <!-- ===== INCENTIVES TAB ===== -->
+    <!-- Operator-created deals that pay COMMUNITY points (migration-039), the
+         cross-vendor pool from migration-026. That currency choice is the whole
+         reason this tab can exist: community points are the only balance in
+         WeRewards not keyed to a vendor, so the platform can hand them out
+         without a vendor giving away product for a promise they never made. -->
+    <div id="view-incentives" class="wrap" hidden>
+
+      <!-- referral program -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Refer a friend</h3>
+          <span id="inc-state" class="inc-state"></span>
+        </div>
+        <p class="muted">Every student has a share code. A friend who opens their link, signs up, and then <strong>actually buys something</strong> at any spot pays the referrer a community-point bonus. The friend's own bonus lands the moment they sign up. Paying on a purchase rather than a signup is deliberate: a Google account is free and takes thirty seconds, a purchase at a real counter can't be faked.</p>
+
+        <form id="inc-form" class="inc-form" novalidate>
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="inc-name">Program name</label>
+            <input id="inc-name" class="nv-input" type="text" maxlength="80" autocomplete="off" required />
+            <span class="vendor-edit-hint">Only you see this. It labels the payouts in the log below.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="inc-referrer-points">Referrer gets</label>
+            <input id="inc-referrer-points" class="nv-input" type="number" inputmode="numeric" min="0" max="5000" step="1" />
+            <span class="vendor-edit-hint">Paid when their friend first earns points anywhere.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="inc-friend-points">Friend gets</label>
+            <input id="inc-friend-points" class="nv-input" type="number" inputmode="numeric" min="0" max="5000" step="1" />
+            <span class="vendor-edit-hint">Paid at signup, the moment they use the code.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="inc-max-per">Referrals per student</label>
+            <input id="inc-max-per" class="nv-input" type="number" inputmode="numeric" min="1" max="1000" step="1" placeholder="Unlimited" />
+            <span class="vendor-edit-hint">Blank for unlimited. A cap is your cheapest defence against one person farming it.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="inc-window">Signup window (days)</label>
+            <input id="inc-window" class="nv-input" type="number" inputmode="numeric" min="1" max="365" step="1" />
+            <span class="vendor-edit-hint">How long after signing up a student can still enter a code. Stops every existing student claiming one.</span>
+          </div>
+
+          <!-- Full width so the two date fields below pair up on one row rather
+               than leaving Ends stranded on a line of its own. -->
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="inc-budget">Total budget (points)</label>
+            <input id="inc-budget" class="nv-input" type="number" inputmode="numeric" min="1" step="1" placeholder="Unlimited" />
+            <span class="vendor-edit-hint">The hard stop. Once this much has been paid out, the program stops paying and says so.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="inc-starts">Starts <em class="nv-opt">(optional)</em></label>
+            <input id="inc-starts" class="nv-input" type="datetime-local" />
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="inc-ends">Ends <em class="nv-opt">(optional)</em></label>
+            <input id="inc-ends" class="nv-input" type="datetime-local" />
+          </div>
+
+          <p id="inc-error" class="field-error" role="alert" hidden></p>
+          <p id="inc-note" class="inc-note" hidden></p>
+
+          <div class="inc-actions">
+            <button id="inc-save" class="btn-primary" type="submit">Create program</button>
+            <button id="inc-toggle" class="btn-ghost" type="button" hidden>Turn off</button>
+            <button id="inc-delete" class="btn-ghost inc-danger" type="button" hidden>Delete</button>
+          </div>
+        </form>
+
+        <div id="inc-past" class="inc-past" hidden>
+          <p class="vendor-edit-label">Previous programs</p>
+          <div id="inc-past-list"></div>
+        </div>
+      </div>
+
+      <!-- signup bonus -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Signup bonus</h3>
+          <span id="sb-state" class="inc-state"></span>
+        </div>
+        <p class="muted">Students who sign up with a university email address inside the dates below start with community points. Penn State accounts sign in through Google, so the address arrives already verified: no code to email, nothing for the student to do.</p>
+        <p class="muted"><strong>Only students who sign up after the start date qualify.</strong> That's what stops the bonus paying out to everyone who already has an account. And it is paid once per account, ever.</p>
+
+        <form id="sb-form" class="inc-form" novalidate>
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="sb-name">Program name</label>
+            <input id="sb-name" class="nv-input" type="text" maxlength="80" autocomplete="off" required />
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="sb-points">Points</label>
+            <input id="sb-points" class="nv-input" type="number" inputmode="numeric" min="1" max="5000" step="1" />
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="sb-domains">Email domains</label>
+            <input id="sb-domains" class="nv-input" type="text" maxlength="200" autocomplete="off" placeholder="psu.edu" />
+            <span class="vendor-edit-hint">Comma-separated. Subdomains count too, so <strong>psu.edu</strong> also covers med.psu.edu.</span>
+          </div>
+
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="sb-budget">Total budget (points)</label>
+            <input id="sb-budget" class="nv-input" type="number" inputmode="numeric" min="1" step="1" placeholder="Unlimited" />
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="sb-starts">Starts <em class="nv-opt">(required)</em></label>
+            <input id="sb-starts" class="nv-input" type="datetime-local" required />
+            <span class="vendor-edit-hint">Only students who sign up after this moment are paid.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="sb-ends">Ends <em class="nv-opt">(optional)</em></label>
+            <input id="sb-ends" class="nv-input" type="datetime-local" />
+          </div>
+
+          <p id="sb-error" class="field-error" role="alert" hidden></p>
+          <p id="sb-note" class="inc-note" hidden></p>
+
+          <div class="inc-actions">
+            <button id="sb-save" class="btn-primary" type="submit">Create program</button>
+            <button id="sb-toggle" class="btn-ghost" type="button" hidden>Turn on</button>
+            <button id="sb-delete" class="btn-ghost inc-danger" type="button" hidden>Delete</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- referrals -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Referrals</h3>
+          <div class="card-head-actions">
+            <span id="ref-count" class="chart-max"></span>
+            <button id="ref-settle-btn" class="btn-ghost btn-compact" type="button">Settle now</button>
+          </div>
+        </div>
+        <p class="muted"><strong>Waiting</strong> means the friend signed up but hasn't bought anything yet, so the referrer hasn't been paid. Settlement runs by itself every 45 seconds; <strong>Settle now</strong> just doesn't make you wait for it.</p>
+        <p id="ref-error" class="field-error" role="alert" hidden></p>
+        <div id="referral-list" class="referral-list"></div>
+      </div>
+
+      <!-- manual grant -->
+      <div class="card">
+        <h3>Give community points</h3>
+        <p class="muted">Hand points to one student by hand: the "sorry about that" button, and the way to honor any deal that isn't automated yet. It goes through the same guarded path an automatic payout does, so it lands in the log below with your name on it.</p>
+        <!-- .inc-form for the two-column grid the program editor uses, so the
+             short Points field doesn't stretch across the whole card. -->
+        <form id="grant-form" class="inc-form grant-form" novalidate>
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="grant-email">Student email</label>
+            <input id="grant-email" class="nv-input" type="email" maxlength="254" inputmode="email" autocomplete="off" required />
+          </div>
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="grant-points">Points</label>
+            <input id="grant-points" class="nv-input" type="number" inputmode="numeric" min="1" max="100000" step="1" required />
+          </div>
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="grant-reason">What for</label>
+            <input id="grant-reason" class="nv-input" type="text" maxlength="200" autocomplete="off" required placeholder="Scavenger hunt winner, week 1" />
+            <span class="vendor-edit-hint">Required. An unexplained grant is indistinguishable from a mistake when someone reads this log in three months.</span>
+          </div>
+          <p id="grant-error" class="field-error" role="alert" hidden></p>
+          <p id="grant-ok" class="inc-ok" hidden></p>
+          <div class="inc-actions">
+            <button id="grant-submit" class="btn-primary" type="submit">Give points</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- payout log -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Payout log</h3>
+          <span id="grants-count" class="chart-max"></span>
+        </div>
+        <p class="muted">Every community point this system has handed out, newest first. Automatic referral payouts show as <strong>system</strong>.</p>
+        <div id="grant-list" class="grant-list"></div>
       </div>
     </div>
     </main>

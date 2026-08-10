@@ -22,6 +22,8 @@ import { logEvent } from './src/lib/events.js';
 import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
+import { startReferralWorker, stopReferralWorker } from './src/lib/referrals.js';
+import { publicSignupBonus } from './src/lib/signup-bonus.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
 import { geminiConfigured, geminiModel } from './src/lib/gemini-receipt.js';
@@ -243,6 +245,21 @@ const campaignLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
 });
+// Claiming a referral code (migration-039). Guessing was never the threat — six
+// characters of a 31-letter alphabet is ~887 million codes — so this is DoS
+// hygiene, sized the way punchLimiter is: generous per-IP, because campus wifi
+// NATs a whole building through one address and a signup table at an activities
+// fair is a dozen students claiming codes from the same one inside a minute.
+// GET is skipped entirely: that's the share card, which every student loads on
+// every app open and which decides nothing.
+const referralLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  skip: (req) => req.method !== 'POST',
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a few minutes and try again.' },
+});
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
 app.use('/api/vendor/recover', recoverLimiter);
@@ -262,6 +279,7 @@ app.use([
 ], redeemLimiter);
 app.use('/api/vendor/campaigns', campaignLimiter);
 app.use('/api/me/community-transfer', transferLimiter);
+app.use('/api/me/referral', referralLimiter);
 app.use('/api/me/punch', punchLimiter);
 app.use('/api/punch/hold', punchHoldLimiter);
 app.use('/api/client-error', clientErrorLimiter);
@@ -752,8 +770,17 @@ app.get('/api/vendor-logo/:id', async (req, res) => {
 });
 
 // Safe-to-expose config for browser clients (anon key is public by design; RLS protects data)
-app.get('/api/public-config', (_req, res) =>
-  res.json({ supabaseUrl: process.env.SUPABASE_URL, supabaseAnonKey: process.env.SUPABASE_ANON_KEY })
+// Unauthenticated, fetched by every app at boot. `signupBonus` rides along so
+// the SIGNED-OUT landing page can tell a student to use their university email
+// BEFORE they pick a Google account — after that choice it is too late, and the
+// bonus is decided by the address they arrive with. null when no program is
+// running, so the page never promises a bonus nobody will be paid.
+app.get('/api/public-config', async (_req, res) =>
+  res.json({
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
+    signupBonus: await publicSignupBonus(),
+  })
 );
 
 // Central error handler — routes call next(err)
@@ -815,6 +842,21 @@ app.use((err, req, res, _next) => {
     RECEIPT_ALREADY_EARNED: [409, 'Looks like you already earned points for this purchase at the counter.'],
     RECEIPT_DAILY_LIMIT: [429, 'You’ve claimed 3 receipts today — come back tomorrow.'],
     RECEIPT_BUSY: [503, 'Receipt scanning is busy right now, try again in a minute.'],
+    // Incentives + referrals (migration-039). Same substring-scan caveat as
+    // above, and it BIT here: the obvious name for the first one was
+    // REFERRAL_CODE_INVALID, which contains CODE_INVALID (declared far earlier)
+    // and would have shown a student "Ask the customer to refresh their code".
+    // Checked: none of the keys below contains, or is contained by, another.
+    REFERRAL_BAD_CODE: [404, 'That invite code doesn’t exist. Check it and try again.'],
+    REFERRAL_SELF: [400, 'That’s your own invite code. Share it with a friend instead!'],
+    REFERRAL_ALREADY_SET: [409, 'You’ve already used an invite code.'],
+    REFERRAL_TOO_LATE: [409, 'Invite codes only work on a new account, before you start earning.'],
+    REFERRAL_INACTIVE: [404, 'There’s no invite bonus running right now.'],
+    REFERRAL_LIMIT: [409, 'Your friend has already invited as many people as this bonus allows.'],
+    GRANT_POINTS_INVALID: [400, 'That isn’t a valid number of points.'],
+    GRANT_STUDENT_UNKNOWN: [404, 'No student account with that email.'],
+    GRANT_BUDGET_EXHAUSTED: [409, 'This incentive has paid out its whole budget. Raise the budget to keep it running.'],
+    GRANT_ALREADY_PAID: [409, 'That bonus has already been paid.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {
@@ -910,6 +952,12 @@ if (isMain) {
   // student's in-app list, they just never interrupt anyone.
   startCampaignWorker();
 
+  // Referral settlement (migration-039). Deliberately a background sweep rather
+  // than a hook on the award path: a referral payout must never be able to fail
+  // the transaction a cashier is standing over. Started only when run directly,
+  // for the same reason the campaign worker is.
+  startReferralWorker();
+
   // Graceful shutdown. Heroku sends SIGTERM on every deploy and cycles dynos
   // ~daily, then SIGKILLs after ~30s. Draining first lets in-flight awards /
   // redeems finish instead of being cut mid-request. io.close() disconnects the
@@ -922,6 +970,7 @@ if (isMain) {
     shuttingDown = true;
     console.log(`${signal} received — draining connections and shutting down`);
     stopCampaignWorker();   // don't claim a batch we won't live to deliver
+    stopReferralWorker();   // the sweep is idempotent; the next boot picks it up
     io.close(() => {
       console.log('server closed cleanly');
       process.exit(0);

@@ -8,6 +8,9 @@ import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
 import { validReward, validRatio } from '../lib/rewards.js';
+import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
+import { validSignupConfig } from '../lib/signup-bonus.js';
+import { emitBalance } from '../lib/realtime.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -831,6 +834,443 @@ router.delete('/applications/:id', async (req, res, next) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
     res.json({ ok: true, id: data.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- incentives (migration-039) ---------- */
+
+// Rows returned to the dashboard. spent_points is authoritative (the RPC keeps
+// it), so the tab never has to sum the ledger to draw a budget bar.
+const INCENTIVE_COLS = 'id, kind, name, active, starts_at, ends_at, budget_points, spent_points, config, created_by, created_at';
+
+/**
+ * Parse a date the operator typed (or cleared). Returns { value } with an ISO
+ * string or null, or { error }. A blank field is a deliberate "no bound", which
+ * is different from a bad date and has to stay different.
+ */
+function optionalDate(raw, label) {
+  if (raw === null || raw === undefined || raw === '') return { value: null };
+  const t = new Date(raw);
+  if (Number.isNaN(t.getTime())) return { error: `${label} isn’t a valid date.` };
+  return { value: t.toISOString() };
+}
+
+function optionalBudget(raw) {
+  if (raw === null || raw === undefined || raw === '') return { value: null };
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 10_000_000) {
+    return { error: 'Budget must be blank (unlimited) or a whole number of points from 1 to 10,000,000.' };
+  }
+  return { value: n };
+}
+
+/** kind -> its config validator. Adding a kind means adding a row here AND an
+    evaluator; anything not listed is refused before it can reach the CHECK
+    constraint, whose message is not something to show an operator. */
+const INCENTIVE_CONFIG_VALIDATORS = {
+  referral: validReferralConfig,
+  signup_domain: validSignupConfig,
+};
+
+/**
+ * Validate the whole incentive body.
+ *
+ * `existingKind` is passed on an edit: `kind` is fixed at creation (changing it
+ * would reinterpret every referral row already pointing at the incentive), so
+ * an edit validates against what the row already is rather than trusting a
+ * field the form may not even send.
+ */
+function validIncentive(body, { existingKind = null } = {}) {
+  const kind = existingKind ?? body?.kind;
+  const validateConfig = INCENTIVE_CONFIG_VALIDATORS[kind];
+  if (!validateConfig) return { error: 'Pick a valid incentive type.' };
+
+  const name = String(body?.name ?? '').trim().replace(/\s+/g, ' ');
+  if (name.length < 2 || name.length > 80) {
+    return { error: 'Give the incentive a name (2 to 80 characters).' };
+  }
+
+  const starts = optionalDate(body?.startsAt, 'Start date');
+  if (starts.error) return { error: starts.error };
+  const ends = optionalDate(body?.endsAt, 'End date');
+  if (ends.error) return { error: ends.error };
+  if (starts.value && ends.value && new Date(ends.value) <= new Date(starts.value)) {
+    return { error: 'The end date has to be after the start date.' };
+  }
+
+  // A signup bonus MUST have a start. Without one, every existing student with
+  // a matching address qualifies the moment they next re-accept revised terms —
+  // which is a campus-wide payout for a program meant to reward new signups.
+  // The evaluator checks profiles.created_at against this bound.
+  if (kind === 'signup_domain' && !starts.value) {
+    return { error: 'A signup bonus needs a start date: it only pays students who sign up after it.' };
+  }
+
+  const budget = optionalBudget(body?.budgetPoints);
+  if (budget.error) return { error: budget.error };
+
+  const cfg = validateConfig(body?.config);
+  if (cfg.error) return { error: cfg.error };
+
+  return {
+    row: {
+      kind,
+      name,
+      starts_at: starts.value,
+      ends_at: ends.value,
+      budget_points: budget.value,
+      config: cfg.config,
+    },
+  };
+}
+
+/**
+ * GET /api/admin/incentives
+ * Every incentive plus the counts the tab draws. Referral counts come from one
+ * grouped read rather than a per-row query, so this stays a fixed number of
+ * round-trips however many programs exist.
+ */
+router.get('/incentives', async (req, res, next) => {
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('incentives')
+      .select(INCENTIVE_COLS)
+      .order('active', { ascending: false })
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    const { data: refs, error: refErr } = await supabaseAdmin
+      .from('referrals')
+      .select('incentive_id, status');
+    if (refErr) throw refErr;
+
+    const stats = new Map();
+    for (const r of refs ?? []) {
+      const s = stats.get(r.incentive_id) ?? { pending: 0, paid: 0, void: 0 };
+      if (s[r.status] !== undefined) s[r.status] += 1;
+      stats.set(r.incentive_id, s);
+    }
+
+    // How many students a program has actually paid. For a referral program
+    // that is roughly its referral count; for a signup bonus it is the only
+    // count there is, since nothing else records one.
+    const { data: paid, error: pErr } = await supabaseAdmin
+      .from('community_grants')
+      .select('incentive_id');
+    if (pErr) throw pErr;
+    const payouts = new Map();
+    for (const g of paid ?? []) {
+      if (g.incentive_id) payouts.set(g.incentive_id, (payouts.get(g.incentive_id) ?? 0) + 1);
+    }
+
+    res.json((rows ?? []).map((row) => ({
+      ...row,
+      referrals: stats.get(row.id) ?? { pending: 0, paid: 0, void: 0 },
+      payouts: payouts.get(row.id) ?? 0,
+    })));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/incentives
+ * Create a deal, always SWITCHED OFF. Turning it on is a separate, deliberate
+ * action (PATCH { active: true }).
+ *
+ * Saving and launching used to be the same click, and that is the wrong shape
+ * for something that spends money: a typo in the budget, or a program the
+ * operator wanted to prepare for later, would go live the instant it was saved.
+ * It also means creating a program can never collide with the
+ * one-active-per-kind index, so the only place that 409 can arise is the
+ * turn-on, where it is exactly the right question to be asked.
+ */
+router.post('/incentives', async (req, res, next) => {
+  try {
+    const v = validIncentive(req.body ?? {});
+    if (v.error) return res.status(400).json({ error: 'BAD_REQUEST', message: v.error });
+
+    const { data, error } = await supabaseAdmin
+      .from('incentives')
+      .insert({ ...v.row, active: false, created_by: req.user?.email ?? null })
+      .select(INCENTIVE_COLS)
+      .single();
+    if (error) throw error;
+    res.status(201).json({ ...data, referrals: { pending: 0, paid: 0, void: 0 }, payouts: 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH /api/admin/incentives/:id
+ * Two shapes, deliberately separate: `{ active }` alone is the on/off switch,
+ * and a full body is an edit. Mixing them would let a save quietly flip a
+ * program live because the form happened to hold a stale checkbox.
+ *
+ * NOTE an edit changes what FUTURE referrals are worth. Live ones snapshot
+ * their payout at attribution (referrals.friend_points / referrer_points), so
+ * lowering a bonus never rewrites what a student was already promised.
+ */
+router.patch('/incentives/:id', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
+    }
+    const body = req.body ?? {};
+    const onlyActive = Object.keys(body).length === 1 && typeof body.active === 'boolean';
+
+    // The row's own kind, not the body's: kind is fixed at creation (changing it
+    // would reinterpret every referral row already pointing here), and it is
+    // what decides which config validator runs.
+    const { data: existing, error: exErr } = await supabaseAdmin
+      .from('incentives')
+      .select('kind')
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (exErr) throw exErr;
+    if (!existing) return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
+
+    let patch;
+    if (onlyActive) {
+      patch = { active: body.active };
+    } else {
+      const v = validIncentive(body, { existingKind: existing.kind });
+      if (v.error) return res.status(400).json({ error: 'BAD_REQUEST', message: v.error });
+      const { kind, ...rest } = v.row;
+      patch = rest;
+      if (typeof body.active === 'boolean') patch.active = body.active;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('incentives')
+      .update(patch)
+      .eq('id', req.params.id)
+      .select(INCENTIVE_COLS)
+      .maybeSingle();
+    if (error) {
+      // The one-active-per-kind index. Reachable only on a turn-on, which is
+      // where the question "you already have one running, which do you want?"
+      // is exactly the right thing to be asked.
+      if (error.code === '23505') {
+        return res.status(409).json({
+          error: 'INCENTIVE_ACTIVE_EXISTS',
+          message: 'Another program of this type is already running. Turn that one off first.',
+        });
+      }
+      throw error;
+    }
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/admin/incentives/:id
+ * Only ever allowed for a program that has never paid anything. Once points
+ * have moved, the row is the record of why — deleting it would leave grants
+ * pointing at nothing and a budget nobody can audit. A spent program is turned
+ * off, not deleted, and the dashboard says so.
+ */
+router.delete('/incentives/:id', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
+    }
+    const { count, error: cErr } = await supabaseAdmin
+      .from('community_grants')
+      .select('id', { count: 'exact', head: true })
+      .eq('incentive_id', req.params.id);
+    if (cErr) throw cErr;
+    if ((count ?? 0) > 0) {
+      return res.status(409).json({
+        error: 'INCENTIVE_HAS_PAYOUTS',
+        message: 'This program has already paid points out, so it can’t be deleted. Turn it off instead.',
+      });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('incentives')
+      .delete()
+      .eq('id', req.params.id)
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
+    res.json({ ok: true, id: data.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/referrals — the newest referrals with both sides named.
+ * Two follow-up reads rather than an embedded join: referrals has two FKs to
+ * profiles, so PostgREST can't tell which relationship an embed means without
+ * naming the constraint, and naming it here would couple this route to a
+ * constraint name the schema is free to change.
+ */
+router.get('/referrals', async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const { data: rows, error } = await supabaseAdmin
+      .from('referrals')
+      .select('id, referrer_id, friend_id, code, status, friend_points, referrer_points, qualified_at, paid_at, created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    if (!rows?.length) return res.json([]);
+
+    const ids = [...new Set(rows.flatMap((r) => [r.referrer_id, r.friend_id]))];
+    const { data: people, error: pErr } = await supabaseAdmin
+      .from('profiles')
+      .select('user_id, email, name')
+      .in('user_id', ids);
+    if (pErr) throw pErr;
+    const who = new Map((people ?? []).map((p) => [p.user_id, p]));
+
+    // Which friend bonuses actually landed. Derived from the ledger rather than
+    // a flag, for the same reason the sweep is: the ledger is the money.
+    const { data: paid, error: gErr } = await supabaseAdmin
+      .from('community_grants')
+      .select('ref_id')
+      .eq('kind', 'referral_friend')
+      .in('ref_id', rows.map((r) => r.id));
+    if (gErr) throw gErr;
+    const friendPaid = new Set((paid ?? []).map((g) => g.ref_id));
+
+    res.json(rows.map((r) => ({
+      id: r.id,
+      code: r.code,
+      status: r.status,
+      referrer: who.get(r.referrer_id)?.email ?? '(deleted)',
+      friend: who.get(r.friend_id)?.email ?? '(deleted)',
+      friendPoints: r.friend_points,
+      referrerPoints: r.referrer_points,
+      friendPaid: friendPaid.has(r.id),
+      qualifiedAt: r.qualified_at,
+      paidAt: r.paid_at,
+      createdAt: r.created_at,
+    })));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/referrals/settle
+ * Run a sweep now instead of waiting for the timer. Purely a convenience: the
+ * worker does this on its own every REFERRAL_SWEEP_SECONDS, and the sweep is
+ * idempotent, so pressing this twice is harmless.
+ */
+router.post('/referrals/settle', async (req, res, next) => {
+  try {
+    res.json(await runReferralSweep(200));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/grants — the community-point payout log, newest first.
+ * This is the answer to "where did these points come from", so it is deliberately
+ * the raw ledger rather than a per-student rollup.
+ */
+router.get('/grants', async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const { data: rows, error } = await supabaseAdmin
+      .from('community_grants')
+      .select('id, user_id, points, kind, reason, granted_by, created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    if (!rows?.length) return res.json([]);
+
+    // user_id is null for grants whose student has since deleted their account
+    // (ON DELETE SET NULL — the row outlives them so the budget still adds up).
+    const ids = [...new Set(rows.map((r) => r.user_id).filter(Boolean))];
+    const who = new Map();
+    if (ids.length) {
+      const { data: people, error: pErr } = await supabaseAdmin
+        .from('profiles')
+        .select('user_id, email')
+        .in('user_id', ids);
+      if (pErr) throw pErr;
+      for (const p of people ?? []) who.set(p.user_id, p.email);
+    }
+
+    res.json(rows.map((r) => ({
+      id: r.id,
+      points: r.points,
+      kind: r.kind,
+      reason: r.reason,
+      grantedBy: r.granted_by,
+      student: r.user_id ? (who.get(r.user_id) ?? '(unknown)') : '(deleted account)',
+      createdAt: r.created_at,
+    })));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/grants  { email, points, reason }
+ * Hand community points to one student by hand — the "sorry about that" button,
+ * and the manual fallback for any incentive that hasn't been automated yet.
+ * Looked up by email because that is what an operator has in front of them; the
+ * RPC is what actually moves the points, so the migration-025 guard, the ledger
+ * row and the ceiling all apply exactly as they do to an automated payout.
+ */
+router.post('/grants', async (req, res, next) => {
+  try {
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const points = Number(req.body?.points);
+    const reason = String(req.body?.reason ?? '').trim().slice(0, 200);
+
+    if (!EMAIL_RE.test(email) || email.length > EMAIL_MAX) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Enter the student’s email address.' });
+    }
+    if (!Number.isInteger(points) || points < 1 || points > 100_000) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Points must be a whole number from 1 to 100,000.' });
+    }
+    if (!reason) {
+      // Not bureaucracy: an unexplained grant is indistinguishable from a
+      // mistake or an abuse when someone reads this log in three months.
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Say what this grant is for.' });
+    }
+
+    const { data: profile, error: pErr } = await supabaseAdmin
+      .from('profiles')
+      .select('user_id, email')
+      .ilike('email', email)
+      .maybeSingle();
+    if (pErr) throw pErr;
+    if (!profile) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'No student account with that email.' });
+    }
+
+    const { data, error } = await supabaseAdmin.rpc('grant_community_points', {
+      p_user_id: profile.user_id,
+      p_points: points,
+      p_kind: 'manual',
+      p_reason: reason,
+      p_incentive_id: null,
+      p_ref_id: null,
+      p_granted_by: req.user?.email ?? 'admin',
+    });
+    if (error) throw error;
+
+    // Same event the award and transfer paths push, so an open student tab's
+    // community counter moves the moment an operator presses Give.
+    const newBalance = data?.[0]?.new_balance ?? 0;
+    emitBalance(profile.user_id, { community: newBalance });
+
+    res.status(201).json({ ok: true, student: profile.email, points, newBalance });
   } catch (err) {
     next(err);
   }
