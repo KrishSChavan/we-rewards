@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPair, exportJWK, SignJWT, UnsecuredJWT, createLocalJWKSet } from 'jose';
-import { createTokenVerifier, createUserResolver, secretMatchesAnonKey } from '../src/lib/jwt.js';
+import { createTokenVerifier, createUserResolver, secretMatchesAnonKey, userFromGoTrue } from '../src/lib/jwt.js';
 
 const ISSUER = 'http://127.0.0.1:54321/auth/v1';
 const SECRET_TEXT = 'super-secret-jwt-token-with-at-least-32-characters-long';
@@ -68,7 +68,14 @@ describe('a genuine Supabase access token', () => {
   test('an ES256 token signed by the published key is accepted', async () => {
     const r = await verify(await es256());
     assert.equal(r.ok, true, r.reason);
-    assert.deepEqual(r.user, { id: USER_ID, email: 'student@psu.edu', name: 'Real Student' });
+    assert.deepEqual(r.user, {
+      id: USER_ID,
+      email: 'student@psu.edu',
+      name: 'Real Student',
+      providers: ['google'],
+      emailVerified: true,
+      isAnonymous: false,
+    });
   });
 
   test('a legacy HS256 token signed with the project secret is accepted', async () => {
@@ -87,6 +94,75 @@ describe('a genuine Supabase access token', () => {
     const noMeta = await verify(await es256({ user_metadata: undefined, email: undefined }));
     assert.equal(noMeta.user.name, null);
     assert.equal(noMeta.user.email, null, 'email is null rather than undefined');
+  });
+});
+
+// How the account authenticates, which is what the /admin gate reads. The rule
+// both shapes must obey: report unknown as `[]` / `null`, never as "no provider"
+// / "not verified" — adminRejection allows unknowns so it can't lock the
+// operator out, so a shape that guessed `false` here would be a real denial.
+describe('identity provenance', () => {
+  test('providers come from app_metadata on a token', async () => {
+    const linked = await verify(await es256({ app_metadata: { provider: 'email', providers: ['email', 'google'] } }));
+    assert.deepEqual(linked.user.providers, ['email', 'google']);
+
+    const bare = await verify(await es256({ app_metadata: undefined }));
+    assert.deepEqual(bare.user.providers, [], 'absent metadata is unknown, not "none"');
+  });
+
+  test('providers are lower-cased and de-duplicated', async () => {
+    const r = await verify(await es256({ app_metadata: { provider: 'Google', providers: ['GOOGLE', 'google'] } }));
+    assert.deepEqual(r.user.providers, ['google']);
+  });
+
+  test('a token reports emailVerified true or unknown, never false', async () => {
+    const verified = await verify(await es256());
+    assert.equal(verified.user.emailVerified, true);
+
+    // A password account's token simply has no such claim. Reporting `false`
+    // would deny an operator whose token merely didn't mention it.
+    const silent = await verify(await es256({ user_metadata: { full_name: 'X' } }));
+    assert.equal(silent.user.emailVerified, null);
+
+    const explicit = await verify(await es256({ user_metadata: { email_verified: false } }));
+    assert.equal(explicit.user.emailVerified, null);
+  });
+
+  test('is_anonymous is carried through', async () => {
+    const anon = await verify(await es256({ is_anonymous: true }));
+    assert.equal(anon.user.isAnonymous, true);
+    const named = await verify(await es256());
+    assert.equal(named.user.isAnonymous, false);
+  });
+
+  test('the GoTrue shape unions app_metadata with identities[]', () => {
+    const u = userFromGoTrue({
+      id: USER_ID,
+      email: 'operator@example.com',
+      user_metadata: { full_name: 'The Operator' },
+      app_metadata: { provider: 'google', providers: ['google'] },
+      identities: [{ provider: 'google' }, { provider: 'email' }],
+      email_confirmed_at: '2026-08-10T00:00:00Z',
+    });
+    assert.deepEqual(u.providers, ['google', 'email']);
+    assert.equal(u.emailVerified, true);
+    assert.equal(u.isAnonymous, false);
+  });
+
+  test('the GoTrue shape reports an unconfirmed email as false, not unknown', () => {
+    // Unlike a token, the user object always carries the timestamp — so its
+    // absence here really does mean unconfirmed, and adminRejection denies it.
+    const u = userFromGoTrue({ id: USER_ID, email: 'x@y.z', app_metadata: { provider: 'email' } });
+    assert.equal(u.emailVerified, false);
+    assert.deepEqual(u.providers, ['email']);
+  });
+
+  test('the GoTrue shape survives a response with no metadata at all', () => {
+    const u = userFromGoTrue({ id: USER_ID });
+    assert.deepEqual(u.providers, []);
+    assert.equal(u.email, null);
+    assert.equal(u.name, null);
+    assert.equal(u.isAnonymous, false);
   });
 });
 

@@ -246,6 +246,18 @@ Privacy baseline in the student app's **Account** tab:
 must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
 `requireAdmin`, so the static page is public but its data is not):
 
+> The allow-list is not the whole gate. `requireAdmin` also requires the account
+> to carry a **Google identity** and a **confirmed email**, because the public
+> GoTrue signup endpoint will otherwise hand a confirmed session to anyone who
+> registers an operator address that doesn't exist yet — which would turn the
+> Supabase `mailer_autoconfirm` dashboard setting into a load-bearing security
+> control. Both checks deny only on a *positive* signal (`providers: ['email']`,
+> `emailVerified: false`); missing identity data is treated as unknown and
+> allowed, so the gate cannot lock you out of your own dashboard. Denials for an
+> allow-listed address are logged as `[admin] denied <email> — <reason>`; that
+> line is how you'd diagnose one. See `adminRejection` in
+> `src/middleware/auth.js` and `test/admin-gate.test.js`.
+
 - `GET /api/admin/overview` — platform analytics: lifetime totals (vendors,
   students, transactions), today / 7-day / 30-day activity (awards, redemptions,
   points, revenue, active + new customers), a 14-day revenue series, and top

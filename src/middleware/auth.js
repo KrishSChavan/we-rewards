@@ -4,7 +4,9 @@ import { TERMS_VERSION } from '../lib/terms.js';
 
 /**
  * Reads `Authorization: Bearer <jwt>` and resolves it to a user, attaching
- * req.user = { id, email, name }.
+ * req.user = { id, email, name, providers, emailVerified, isAnonymous } — the
+ * last three describe how the account authenticates and are only consulted by
+ * adminRejection below.
  *
  * Returns null when the request may proceed, or the {status, body} to reject
  * with. Written as a plain function rather than middleware so the gates below
@@ -125,25 +127,97 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
 
+// Identity providers accepted for /admin. The dashboard offers exactly one way
+// in — signInWithOAuth({ provider: 'google' }) in public/admin/admin.js — so a
+// real operator session always carries a Google identity.
+const ADMIN_PROVIDERS = ['google'];
+
+// One body for every denial. Which check failed is deliberately NOT visible to
+// the caller: a distinct code for "right email, wrong provider" would confirm
+// that an address is on the allowlist. The reason is logged instead.
+//
+// Frozen because every denial hands out this same object — a route that mutated
+// what it got back would rewrite the constant for every later request.
+const NOT_ADMIN_BODY = Object.freeze({ error: 'NOT_ADMIN', message: 'Admin access only.' });
+
 /**
- * requireUser + confirms the signed-in user is a platform operator (their email
- * is in ADMIN_EMAILS). Gates the /api/admin/* analytics + error-log routes. The
- * gate is server-side: the static /admin page is public, but its data isn't.
+ * @param {string} reason  for the server log, never the response
+ * @param {boolean} log    whether it's safe and useful to log — true only once
+ *   the email is known to be allowlisted, so no one can write chosen text into
+ *   the log by presenting a token for an address of their choosing.
+ */
+const deny = (reason, log) => ({ status: 403, body: NOT_ADMIN_BODY, reason, log });
+
+/**
+ * Decides whether an authenticated user may use /api/admin/*. Returns null to
+ * allow, or {status, body, reason} to deny. A pure function so every branch is
+ * testable without a token, a network, or an env var.
+ *
+ * The allowlist alone used to be the whole gate, which made it lean on a setting
+ * that lives in the Supabase dashboard rather than in this repo: with
+ * `mailer_autoconfirm` on, anyone can sign up through the public GoTrue endpoint
+ * with any email that isn't registered yet — including an operator address —
+ * and get a confirmed session carrying it. So we also require the account to
+ * have reached us through the provider the dashboard actually uses.
+ *
+ * DENIES ONLY ON A POSITIVE SIGNAL. `providers: []` and `emailVerified: null`
+ * both mean "GoTrue didn't tell us", and neither denies. That asymmetry is the
+ * point: an email/password account states `['email']` and an unconfirmed one
+ * states `false`, so the path this closes is caught by an affirmative answer,
+ * while missing data can never lock the operator out of their own dashboard.
+ *
+ * @param {object|null} user  req.user, as built by lib/jwt.js
+ */
+export function adminRejection(user, { allowlist = ADMIN_EMAILS, providers = ADMIN_PROVIDERS } = {}) {
+  const email = (user?.email || '').toLowerCase();
+  if (!email || !allowlist.includes(email)) {
+    return deny('email is not on the allowlist', false);
+  }
+
+  // Past this point the email matched, so it is one of our own configured
+  // values and `log: true` is safe.
+  if (user.isAnonymous === true) {
+    return deny('anonymous session', true);
+  }
+  if (user.emailVerified === false) {
+    return deny('email address is not confirmed', true);
+  }
+
+  const known = Array.isArray(user.providers) ? user.providers : [];
+  if (known.length && !known.some((p) => providers.includes(p))) {
+    return deny(`signed in via ${known.join('/')}, but /admin requires ${providers.join('/')}`, true);
+  }
+
+  return null;
+}
+
+/**
+ * requireUser + confirms the signed-in user is a platform operator (see
+ * adminRejection). Gates the /api/admin/* analytics + error-log routes. The gate
+ * is server-side: the static /admin page is public, but its data isn't.
  *
  * Authenticates in `strict` mode — the one gate that still pays for a GoTrue
  * round-trip per request. These routes read every student's activity and the
  * error log, there is exactly one operator hitting them, and strict mode means
  * signing out actually ends the admin session immediately rather than at the
- * token's next expiry. Nowhere near a hot path, so the latency is free.
+ * token's next expiry. Nowhere near a hot path, so the latency is free. It also
+ * means adminRejection sees the authoritative identity data — an access token
+ * carries no confirmation timestamp and no `identities[]`.
  */
 export async function requireAdmin(req, res, next) {
   try {
     const rejection = await authenticate(req, { strict: true });
     if (rejection) return res.status(rejection.status).json(rejection.body);
 
-    const email = (req.user?.email || '').toLowerCase();
-    if (!email || !ADMIN_EMAILS.includes(email)) {
-      return res.status(403).json({ error: 'NOT_ADMIN', message: 'Admin access only.' });
+    const denial = adminRejection(req.user);
+    if (denial) {
+      // denial.log is set only for allowlisted addresses, and that's the case
+      // worth seeing: either the operator is locked out and needs to know why,
+      // or someone reached an operator address by a route the dashboard doesn't
+      // offer. A wrong email is just noise, and logging it would let anyone
+      // write text of their choosing into the log.
+      if (denial.log) console.warn(`[admin] denied ${req.user.email} — ${denial.reason}`);
+      return res.status(denial.status).json(denial.body);
     }
     next();
   } catch (err) {

@@ -107,6 +107,30 @@ if (rawSecret) {
 // is invisible to students rather than an outage.
 const remoteJwks = baseUrl ? createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`)) : null;
 
+/**
+ * Every identity provider this account is known to carry, lower-cased.
+ *
+ * `app_metadata.provider` is the one used most recently, `app_metadata.providers`
+ * is the full linked set, and `identities[]` (present on a GoTrue user object,
+ * not in an access token) is authoritative. We union all three, so an account
+ * created with a password that later signed in with Google reports both.
+ *
+ * An EMPTY array means "this source didn't say" — never "this account has no
+ * provider". Callers must treat it as unknown; see adminRejection in
+ * middleware/auth.js, which is deliberately written not to deny on unknowns.
+ */
+function identityProviders(source) {
+  const app = source.app_metadata ?? {};
+  const out = new Set();
+  const add = (p) => { if (typeof p === 'string' && p) out.add(p.toLowerCase()); };
+
+  add(app.provider);
+  for (const p of Array.isArray(app.providers) ? app.providers : []) add(p);
+  for (const i of Array.isArray(source.identities) ? source.identities : []) add(i?.provider);
+
+  return [...out];
+}
+
 /** The `req.user` shape, built from verified JWT claims. */
 function userFromPayload(payload) {
   // `name` mirrors what schema.sql's handle_new_user trigger used to read
@@ -117,16 +141,27 @@ function userFromPayload(payload) {
     id: payload.sub,
     email: payload.email ?? null,
     name: meta.full_name ?? meta.name ?? null,
+    providers: identityProviders(payload),
+    // An access token carries no confirmation timestamp. Only OAuth providers
+    // populate user_metadata.email_verified, so a `false` here would be
+    // indistinguishable from "this claim was never set" — report null (unknown)
+    // and let the caller decide. The authoritative answer is on the GoTrue user
+    // object below, which is what `strict` mode fetches.
+    emailVerified: meta.email_verified === true ? true : null,
+    isAnonymous: payload.is_anonymous === true,
   };
 }
 
-/** Same shape, from a GoTrue user object (the fallback path). */
+/** Same shape, from a GoTrue user object (the fallback and `strict` paths). */
 export function userFromGoTrue(user) {
   const meta = user.user_metadata ?? {};
   return {
     id: user.id,
     email: user.email ?? null,
     name: meta.full_name ?? meta.name ?? null,
+    providers: identityProviders(user),
+    emailVerified: Boolean(user.email_confirmed_at || user.confirmed_at),
+    isAnonymous: user.is_anonymous === true,
   };
 }
 
