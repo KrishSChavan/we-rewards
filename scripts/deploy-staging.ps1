@@ -110,7 +110,7 @@ if (Test-TreeDirty) {
 # ---------- what this deploy carries ----------
 
 Write-Step 'What this deploy carries'
-& git log origin/staging..staging --oneline
+& git --no-pager log origin/staging..staging --oneline
 $migrations = Get-MigrationChanges -FromRef 'origin/staging' -ToRef 'staging'
 $hasMigrations = Show-MigrationWarning -Changes $migrations -Environment 'staging'
 

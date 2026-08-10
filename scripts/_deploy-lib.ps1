@@ -14,6 +14,17 @@
 # of those into a fatal error. Every step checks $LASTEXITCODE instead. Same
 # reasoning as test\sql\run.ps1.
 
+# NEVER let git open a pager. `git log` and `git diff` page when stdout is a
+# terminal, and a pager takes the keyboard: the next thing you type goes to
+# `less`, not to the script's prompt. That is not theoretical — typing APPLIED
+# at the production gate landed in less as a filename ("APPLIED: No such file or
+# directory"), and the deploy aborted.
+#
+# Belt and braces on purpose. GIT_PAGER covers every git call in these scripts,
+# including ones added later by someone who doesn't know this comment exists;
+# the explicit --no-pager on each display command says so at the call site.
+$env:GIT_PAGER = 'cat'
+
 $script:StagingApp = 'we-rewards-staging'
 $script:ProdApp    = 'we-rewards'
 $script:StagingUrl = 'https://we-rewards-staging-d6e9af355d07.herokuapp.com'
@@ -97,10 +108,15 @@ function Invoke-PreflightChecks {
     # cannot parse takes the whole app down at startup with a crashed dyno, and
     # `npm test` never touches public/ — so this is the only thing standing
     # between a typo in app.js and a white screen in production.
-    Write-Step 'Building client bundles (parse check for public/)'
-    & node -e "import('./scripts/build-client.js').then(m => m.buildClientAssets({ log: console.log })).catch(e => { console.error(e.message); process.exit(1); })"
-    if ($LASTEXITCODE -ne 0) { Fail 'Client build failed. Nothing was pushed.' }
-    Write-Ok 'Client bundles build cleanly'
+    #
+    # check-client.js, NOT buildClientAssets(): the real build deletes and
+    # rewrites .build/, which a running `npm run dev` also owns, and the two
+    # race into a bogus ENOENT. See the header of scripts\check-client.js. This
+    # transforms in memory and writes nothing.
+    Write-Step 'Checking public/ still compiles'
+    & node scripts/check-client.js
+    if ($LASTEXITCODE -ne 0) { Fail 'Client code will not build. Nothing was pushed.' }
+    Write-Ok 'Client code parses and lowers cleanly'
 }
 
 # Migration files this push would ADD, and any already-shipped ones it EDITS.
@@ -108,8 +124,8 @@ function Invoke-PreflightChecks {
 function Get-MigrationChanges {
     param([string]$FromRef, [string]$ToRef)
 
-    $added = @(& git diff --name-only --diff-filter=A $FromRef $ToRef -- supabase/migrations)
-    $edited = @(& git diff --name-only --diff-filter=M $FromRef $ToRef -- supabase/migrations)
+    $added = @(& git --no-pager diff --name-only --diff-filter=A $FromRef $ToRef -- supabase/migrations)
+    $edited = @(& git --no-pager diff --name-only --diff-filter=M $FromRef $ToRef -- supabase/migrations)
     return [pscustomobject]@{
         Added  = @($added | Where-Object { $_ -match '\.sql$' })
         Edited = @($edited | Where-Object { $_ -match '\.sql$' })

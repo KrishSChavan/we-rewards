@@ -62,9 +62,9 @@ if ([int]$pending.Trim() -eq 0) {
 # ---------- show exactly what ships ----------
 
 Write-Step "Promoting $($pending.Trim()) commit(s) to production"
-& git log origin/main..origin/staging --oneline
+& git --no-pager log origin/main..origin/staging --oneline
 Write-Host ''
-& git diff --stat origin/main origin/staging
+& git --no-pager diff --stat origin/main origin/staging
 
 # ---------- migrations: the thing that breaks production quietly ----------
 
@@ -90,8 +90,12 @@ if ($hasMigrations) {
     Write-Host ''
 
     if (-not $Yes) {
-        $typed = Read-Host 'Type APPLIED once every migration above is in the production database'
-        if ($typed -ne 'APPLIED') { Fail 'Cancelled. Apply the migrations, then run this again.' }
+        # Case- and whitespace-forgiving: the point is a deliberate act, not a
+        # typing test. Anything else still stops.
+        $typed = (Read-Host 'Type APPLIED once every migration above is in the production database').Trim()
+        if ($typed -notmatch '^(?i)applied$') {
+            Fail "Read '$typed', which is not APPLIED. Nothing was merged or pushed. Apply the migrations, then run this again."
+        }
     } else {
         Write-Warn '(-Yes) Assuming the migrations above are already applied to production.'
     }
