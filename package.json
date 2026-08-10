@@ -5,6 +5,7 @@
   "engines": {
     "node": "24.x"
   },
+  "_comment:test-concurrency": "--test-concurrency=1 in the test scripts is load-bearing, not tuning. node --test runs test FILES in parallel processes, and every file importing ../server.js runs buildClientAssets() at import, which rm -rf's and rewrites .build/. Two of those at once is ENOTEMPTY on Windows. Two files import it today: content-type.test.js and not-found.test.js. Same race scripts/_deploy-lib.ps1 sidesteps by running check-client.js instead of the real build, and the same reason a running `npm run dev` must be stopped before a deploy.",
   "scripts": {
     "dev": "node --watch server.js",
     "nodemon": "nodemon server.js",
@@ -15,9 +16,9 @@
     "ship": "powershell -ExecutionPolicy Bypass -File scripts/ship.ps1",
     "check:gemini": "node scripts/check-gemini.js",
     "check:client": "node scripts/check-client.js",
-    "test": "node --import ./test/setup.js --test test/*.test.js test/integration/*.test.js",
-    "test:unit": "node --import ./test/setup.js --test test/*.test.js",
-    "test:integration": "node --import ./test/setup.js --test test/integration/*.test.js",
+    "test": "node --import ./test/setup.js --test --test-concurrency=1 test/*.test.js test/integration/*.test.js",
+    "test:unit": "node --import ./test/setup.js --test --test-concurrency=1 test/*.test.js",
+    "test:integration": "node --import ./test/setup.js --test --test-concurrency=1 test/integration/*.test.js",
     "test:sql": "powershell -File test/sql/run.ps1"
   },
   "dependencies": {

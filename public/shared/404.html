@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<!-- COPY RULE: no em dashes in user-visible text (markup here, and any server
+     `message` shown verbatim). Use a period, comma, colon, or parentheses
+     instead. Comments, logs, CLI output and legal/ are exempt. Full rule:
+     public/student/index.html.
+
+     ===================================================================
+     WHY THIS FILE IS SELF-CONTAINED (inline CSS, no scripts, no assets)
+
+     server.js serves this document, unchanged, at whatever URL matched
+     nothing — so it has to render correctly from /, /terminal/typo, or
+     /some/deep/path/nobody/has. Two consequences:
+
+       • every URL it references must be ABSOLUTE. A relative href would
+         resolve against the bad path the visitor typed.
+       • it carries its own styles inline. A <link rel="stylesheet"> would
+         mean another mount, another asset hash, and another request that
+         can itself 404. The page CSP allows inline STYLE ('unsafe-inline'
+         in style-src) but not inline script, so there is no <script> here
+         and nothing on this page needs one.
+
+     It also sits OUTSIDE the client build (public/shared is not an app root,
+     see scripts/build-client.js), which means nothing lowers this CSS for
+     old Safari the way it lowers the app stylesheets. Written by hand for
+     the same floor instead: no `inset` shorthand, no flex `gap`, no
+     `clamp()`, and `100dvh` only ever as a second declaration behind a
+     `100vh` that older browsers keep. Keep it that way when editing.
+     =================================================================== -->
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Page not found · WeRewards</title>
+  <meta name="robots" content="noindex" />
+  <meta name="theme-color" content="#12294b" />
+  <!-- Absolute, like every other URL here. '/' serves .build/student/, so this
+       resolves to the student app's artwork no matter what path 404'd. -->
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    /* Same visual language as /join and the terminal login: ink navy on cool
+       paper, chunky borders, Archivo. */
+    :root {
+      --ink: #101d33;
+      --paper: #eef1f6;
+      --card: #ffffff;
+      --navy: #12294b;
+      --sky-line: #a9c4e4;
+      --muted: #5a6678;
+      --edge: #101d33;
+      font-size: 16px;
+    }
+
+    /* The student app defaults to dark and remembers the choice in
+       localStorage, which this page cannot read (no inline script under the
+       CSP, and one external file is not worth a mount for a page nobody
+       should reach twice). The OS preference is the honest approximation. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #e8eef7;
+        --paper: #0f1826;
+        --card: #1c2b45;
+        --navy: #8fbdf0;
+        --sky-line: #3a5074;
+        --muted: #94a3ba;
+        --edge: #35496a;
+      }
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      font-family: "Archivo", system-ui, -apple-system, sans-serif;
+      background: var(--paper);
+      background: radial-gradient(circle at 50% -10%, #ffffff, var(--paper) 60%);
+      background-attachment: fixed;
+      color: var(--ink);
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: radial-gradient(circle at 50% -10%, #1c2b45, var(--paper) 60%); }
+    }
+
+    /* The wordmark tiled as a faint watermark, same trick as join.css: no
+       standalone logo asset exists, so the mark is drawn as text inside an
+       inline SVG (covered by the CSP's `img-src data:`). Oversized and rotated
+       so the corners never go blank. */
+    body::before {
+      content: "";
+      position: fixed;
+      top: -50%; left: -50%; width: 200%; height: 200%;
+      background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='320'%20height='120'%3E%3Ctext%20x='16'%20y='44'%20font-family='Archivo,Arial,sans-serif'%20font-size='24'%20font-weight='800'%20fill='%2312294b'%3EWeRewards%3C/text%3E%3Ctext%20x='150'%20y='100'%20font-family='Archivo,Arial,sans-serif'%20font-size='24'%20font-weight='800'%20fill='%2312294b'%3EWeRewards%3C/text%3E%3C/svg%3E");
+      background-repeat: repeat;
+      transform: rotate(-22deg);
+      transform-origin: center;
+      opacity: 0.06;
+      pointer-events: none;
+      z-index: -1;
+    }
+    @media (prefers-color-scheme: dark) {
+      /* Navy on a navy page is invisible, so the mark is redrawn in the light
+         brand blue and dimmed further. */
+      body::before {
+        background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='320'%20height='120'%3E%3Ctext%20x='16'%20y='44'%20font-family='Archivo,Arial,sans-serif'%20font-size='24'%20font-weight='800'%20fill='%238fbdf0'%3EWeRewards%3C/text%3E%3Ctext%20x='150'%20y='100'%20font-family='Archivo,Arial,sans-serif'%20font-size='24'%20font-weight='800'%20fill='%238fbdf0'%3EWeRewards%3C/text%3E%3C/svg%3E");
+        opacity: 0.05;
+      }
+    }
+
+    .page {
+      min-height: 100vh;
+      min-height: 100dvh;   /* second declaration: older Safari keeps the vh above */
+      display: flex;
+      padding: 2rem 1rem;
+    }
+
+    /* `margin: auto` rather than align/justify-content: centers on both axes the
+       same way, but a card taller than the viewport overflows DOWNWARD instead
+       of having its top scrolled off where nothing can reach it. */
+    .card {
+      margin: auto;
+      width: 100%; max-width: 34rem;
+      background: var(--card);
+      border: 3px solid var(--edge); border-radius: 1rem;
+      padding: 2.2rem;
+      box-shadow: 0 18px 40px -24px rgba(16, 29, 51, 0.45);
+    }
+
+    .brand { font-weight: 900; letter-spacing: 0.18em; font-size: 0.8rem; color: var(--navy); }
+
+    .code {
+      font-size: 4.5rem; font-weight: 900; line-height: 1;
+      letter-spacing: -0.02em; color: var(--navy);
+      margin-top: 1.2rem;
+    }
+
+    h1 { font-size: 1.8rem; font-weight: 900; line-height: 1.1; margin-top: 0.5rem; }
+    .lede { color: var(--muted); font-size: 1rem; line-height: 1.45; margin-top: 0.7rem; }
+
+    .links { margin-top: 1.4rem; }
+
+    .link {
+      display: block; text-decoration: none; color: inherit;
+      border: 2.5px solid var(--edge); border-radius: 0.7rem;
+      padding: 0.85rem 1rem;
+      margin-top: 0.7rem;   /* stands in for a flex gap; see the header note */
+    }
+    .link:first-child { margin-top: 0; }
+    .link:active { background: var(--paper); }
+    .link:focus { outline: none; border-color: var(--navy); box-shadow: 0 0 0 2px var(--sky-line); }
+
+    .link-title { display: block; font-weight: 900; font-size: 1.1rem; }
+    .link-title::after { content: " \2192"; }   /* right arrow, no extra element */
+    .link-sub { display: block; color: var(--muted); font-weight: 500; font-size: 0.85rem; line-height: 1.35; margin-top: 0.15rem; }
+
+    .fine-print { color: var(--muted); font-size: 0.8rem; line-height: 1.4; margin-top: 1.4rem; }
+
+    @media (max-width: 480px) {
+      .card { padding: 1.5rem; }
+      .code { font-size: 3.5rem; }
+      h1 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <main class="page">
+    <section class="card">
+      <p class="brand">WEREWARDS</p>
+      <p class="code">404</p>
+      <h1>This page doesn't exist</h1>
+      <p class="lede">The address has a typo in it, or the link that brought you here is out of date. Here's where to go instead:</p>
+
+      <nav class="links">
+        <a class="link" href="/">
+          <span class="link-title">Open WeRewards</span>
+          <span class="link-sub">Earn points at local spots and cash them in for free food. Free for students, no app download.</span>
+        </a>
+        <a class="link" href="/terminal">
+          <span class="link-title">Vendor terminal</span>
+          <span class="link-sub">Sign in to award points and redeem rewards at your counter.</span>
+        </a>
+        <a class="link" href="/join">
+          <span class="link-title">Become a vendor</span>
+          <span class="link-sub">Apply to put your spot on the map and reward your student regulars.</span>
+        </a>
+      </nav>
+
+      <p class="fine-print">If a link inside the app sent you here, that's a bug on our side, not something you did wrong.</p>
+    </section>
+  </main>
+
+</body>
+</html>

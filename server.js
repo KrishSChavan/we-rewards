@@ -442,6 +442,73 @@ function serveShell(mount, root) {
   };
 }
 
+// ---- 404 ----
+// Every URL that matched no shell, no static asset and no API route ends up
+// here (see the catch-all mounted after the last route). Before this existed
+// they got Express's built-in handler: a bare "Cannot GET /termnal" in Times
+// New Roman, which reads like the site is broken rather than like one character
+// is wrong.
+//
+// The page is deliberately self-contained — no stylesheet, no script, all URLs
+// absolute — because it is served AT the bad path, not redirected to a canonical
+// one. A redirect would be worse here: it throws away the address the visitor
+// typed, so they never see what they got wrong, and it turns a 404 into a 302
+// that crawlers and link checkers read as a working link. See the long note at
+// the top of public/shared/404.html for the constraints that follow from that.
+//
+// public/shared is not an app root and is not mirrored into .build (see
+// scripts/build-client.js), so this is read from source.
+const NOT_FOUND_FILE = path.join(__dirname, 'public/shared/404.html');
+let notFoundHtml = null;
+function notFoundPage() {
+  // Memoised in production only, where the bytes can't change under a running
+  // dyno. Off production it is re-read every time, for the same reason
+  // freshenAsset exists below: this file is not a loaded module, so `node
+  // --watch` does not restart on an edit to it, and a cached copy would mean
+  // editing a page nobody is being served.
+  if (notFoundHtml == null || IS_TEST_ENV) {
+    const html = fs.readFileSync(NOT_FOUND_FILE, 'utf8');
+    notFoundHtml = IS_TEST_ENV ? markTestEnv(html) : html;
+  }
+  return notFoundHtml;
+}
+
+// Extensions this app actually serves as subresources. A miss on one of these
+// is a broken REFERENCE, not a URL a person typed, and answering it with an
+// HTML document hands the browser HTML to parse as JavaScript. helmet's
+// nosniff already refuses that, but a two-word text/plain body is cheaper and
+// reads far better in a devtools network panel.
+const ASSET_EXT = /\.([a-z0-9]{1,12})$/i;
+const ASSET_EXTS = new Set([
+  'js', 'css', 'map', 'json', 'wasm', 'traineddata',
+  'png', 'jpg', 'jpeg', 'webp', 'svg', 'ico', 'gif',
+  'woff', 'woff2', 'ttf', 'txt', 'xml',
+]);
+
+function sendNotFound(req, res) {
+  res.status(404);
+  // Never cache a 404. Cloudflare sits in front of the dyno, and the student
+  // PWA's service worker caches every same-origin GET it makes — so without
+  // this, a path that 404s today and ships in the next deploy would keep
+  // serving the miss to anyone who hit it early.
+  res.set('Cache-Control', 'no-store');
+
+  // API clients parse the body as JSON and show `message` verbatim; the shape
+  // matches the central error handler below so a caller needs one code path.
+  if (req.path === '/api' || req.path.startsWith('/api/')) {
+    return res.json({ error: 'NOT_FOUND', message: 'That endpoint does not exist.' });
+  }
+  // A fetch() that asked for JSON gets JSON even off /api.
+  if (req.accepts(['html', 'json']) === 'json') {
+    return res.json({ error: 'NOT_FOUND', message: 'That page does not exist.' });
+  }
+  const ext = ASSET_EXT.exec(req.path);
+  if (ext && ASSET_EXTS.has(ext[1].toLowerCase())) {
+    return res.type('txt').send('Not found');
+  }
+  res.type('html').send(notFoundPage());
+}
+
 // ---- Client asset build ----
 // Nothing under public/ is served directly any more. Every .js and .css is
 // lowered to ES2017 (and old-Safari-safe CSS) into .build/ first, and the mounts
@@ -599,9 +666,10 @@ app.use(
   (req, res, next) => {
     const requested = req.path.replace(/^\/+/, '');
     const file = requested.endsWith('.html') ? requested : `${requested}.html`;
-    if (!PUBLIC_LEGAL_FILES.has(file)) {
-      return res.status(404).type('txt').send('Not found');
-    }
+    // Not the allowlist's own 404 text any more: a student who mistypes a
+    // legal URL is a person in a browser, so they get the same page every
+    // other wrong address gets.
+    if (!PUBLIC_LEGAL_FILES.has(file)) return sendNotFound(req, res);
     next();
   },
   express.static(path.join(__dirname, 'legal'), {
@@ -782,6 +850,11 @@ app.get('/api/public-config', async (_req, res) =>
     signupBonus: await publicSignupBonus(),
   })
 );
+
+// Nothing matched. MUST stay below every route and above the error handler:
+// Express walks the stack in order, so a mount added after this one is
+// unreachable. (See sendNotFound above for what each kind of caller gets.)
+app.use(sendNotFound);
 
 // Central error handler — routes call next(err)
 app.use((err, req, res, _next) => {
