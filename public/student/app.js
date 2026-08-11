@@ -2330,6 +2330,8 @@ async function loadVendors() {
   }
 }
 
+// Set to true to restore the map thumbnail at the bottom of each vendor card.
+const SHOW_VENDOR_CARD_MAP = false;
 const TILE_Z = 16;   // OSM zoom for the vendor card thumbnail (~street level)
 
 // Build a 2×2 OpenStreetMap tile mosaic centred on (lat,lng) as the inner HTML
@@ -2382,11 +2384,11 @@ function openMaps(address) {
 // here; toLocaleString is what keeps that "10" rather than toFixed(2)'s "10.00",
 // while still printing 2.5 as "2.5" and 1000 as "1,000".
 //
-// This is the BASE rate and every caller below says so. The award path is
+// This is the BASE rate. The award path is
 // floor(floor(dollars * points_per_dollar) * multiplier) (routes/vendor.js), so
-// a tier 2 student at a 10-point spot actually earns 15. The home screen already
-// shows their multiplier as "1.5x at every spot", and an unqualified "10 pts per
-// $1" next to that chip would contradict it.
+// a tier 2 student at a 10-point spot actually earns 15. Surfaces with enough
+// room explain that the student's multiplier applies on top; compact cards show
+// only the ratio.
 //
 // A missing or nonsense rate renders NOTHING rather than a number. Number(null)
 // is 0, and "0 pts per $1" is both a lie and outside the 0.5-1000 range the
@@ -2418,7 +2420,9 @@ function buildVendorCard(v) {
   const card = document.createElement('button');
   card.className = 'vendor-card';
   card.dataset.id = v.vendorId;
-  const map = v.latitude != null && v.longitude != null ? vendorMapHtml(v.latitude, v.longitude) : '';
+  const map = SHOW_VENDOR_CARD_MAP && v.latitude != null && v.longitude != null
+    ? vendorMapHtml(v.latitude, v.longitude)
+    : '';
   if (!map) card.classList.add('no-map');   // shrink to content + centre in the row (styles.css)
   const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
   // What a dollar spent here is worth, right under the balance it feeds. Empty
@@ -2436,7 +2440,7 @@ function buildVendorCard(v) {
         <span class="vc-title">
           <span class="vc-name">${escapeHtml(v.name)}</span>
           <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
-          ${rate ? `<span class="vc-rate">Base rate: ${rate}</span>` : ''}
+          ${rate ? `<span class="vc-rate">${rate}</span>` : ''}
         </span>
       </span>
       ${address}
