@@ -277,6 +277,7 @@ h1, h3 { margin: 0; }
 .vendor-ratio-row { display: flex; align-items: center; gap: 0.5rem; }
 
 .vendor-edit-input, .vr-emoji, .vr-title, .vr-pts, .vr-visits {
+  min-width: 0; max-width: 100%;
   font: inherit; font-size: 0.85rem; padding: 0.45rem 0.55rem; border-radius: 8px;
   background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
 }
@@ -531,20 +532,131 @@ h1, h3 { margin: 0; }
 @media (prefers-reduced-motion: reduce) { .push-card { animation: none; } }
 
 @media (max-width: 640px) {
-  .tiles { grid-template-columns: repeat(2, 1fr); }
-  .two-col { grid-template-columns: 1fr; }
-  .topv-row { grid-template-columns: 90px 1fr auto; }
+  /* Keep every admin surface inside a narrow phone viewport. Dense controls
+     reflow below instead of relying on sideways scrolling. */
+  body { overflow-x: hidden; }
+
+  .topbar { gap: 0.55rem; padding: 0.7rem 0.75rem; }
+  .wordmark { font-size: 1rem; white-space: nowrap; }
+  .topbar-right { min-width: 0; gap: 0.35rem; }
+  .topbar-right .btn-compact { min-height: 2.75rem; padding: 0.5rem 0.65rem; }
   .admin-email { display: none; }
+  .btn-compact { min-height: 2.75rem; }
+
+  /* All three destinations stay on one predictable row at phone widths. */
+  .tabs {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.35rem; padding: 0.65rem 0.75rem 0;
+  }
+  .tab {
+    min-width: 0; min-height: 2.75rem; padding: 0.5rem 0.2rem;
+    font-size: 0.72rem; letter-spacing: 0.01em;
+  }
+
+  .wrap { padding: 0.75rem; gap: 0.75rem; }
+  .card { min-width: 0; padding: 0.85rem; border-radius: 13px; }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .tiles { gap: 0.6rem; }
+  .tile { min-width: 0; padding: 0.75rem; border-radius: 12px; }
+  .tile-num { font-size: 1.35rem; overflow-wrap: anywhere; }
+  .two-col { grid-template-columns: 1fr; }
+  .topv-row { grid-template-columns: minmax(70px, 0.8fr) 1fr auto; gap: 0.45rem; }
+
+  .card-head-actions { max-width: 100%; flex-wrap: wrap; justify-content: flex-end; }
+
+  /* Vendor names and four controls cannot share one phone-width line. Keep the
+     identity readable, then give every action a real touch target underneath. */
+  .vendor-row { padding: 0.7rem; }
+  .vendor-top { align-items: stretch; flex-direction: column; gap: 0.6rem; }
+  .vendor-name, .vendor-meta { white-space: normal; overflow-wrap: anywhere; }
+  .vendor-actions {
+    width: 100%; flex-wrap: wrap; gap: 0.4rem;
+  }
+  .vendor-actions > button { min-width: 0; min-height: 2.75rem; justify-content: center; }
+  .vendor-actions > .vendor-toggle { flex: 0 0 4.75rem; }
+  .vendor-actions > .vendor-edit,
+  .vendor-actions > .vendor-reset,
+  .vendor-actions > .vendor-delete { flex: 1 1 3.25rem; }
+  .vendor-edit, .vendor-reset, .vendor-delete { padding: 0.45rem 0.3rem; }
+  .vendor-addr {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: 0.4rem;
+  }
+  .vendor-addr-input, .vendor-addr-save { min-height: 2.75rem; }
+  .vendor-addr-note { grid-column: 1 / -1; min-width: 0; min-height: 0.85rem; }
+
+  /* Inputs use a comfortable mobile text size and all editor actions remain
+     reachable without precise tapping. */
+  .nv-input, .vendor-addr-input, .vendor-edit-input,
+  .vr-emoji, .vr-title, .vr-pts, .vr-visits { font-size: 1rem; }
+  .vr-save, .vr-cancel, .app-accept, .app-reject { min-height: 2.75rem; }
+
+  /* Reward items become two rows: emoji + title, then the two price fields. */
+  .vr-row { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.45rem; }
+  .vr-emoji { grid-column: span 1; }
+  .vr-title { grid-column: span 5; }
+  .vr-pts, .vr-visits { grid-column: span 3; }
+  .vr-actions { flex-wrap: wrap; gap: 0.45rem; }
+  .vr-note { flex-basis: 100%; }
+
   /* On a phone the business name would be sharing a ~340px row with its Save
      button, which leaves too little to read a long name in. Give it the whole
      width and let the button drop under it. The ratio input is 7rem and still
      fits beside its own button, so it is unaffected by the wrap. */
   .vendor-ratio-row { flex-wrap: wrap; }
   .vendor-edit-name { flex-basis: 100%; }
+
+  /* Let the backdrop own scrolling. This avoids a nested modal scroller and
+     keeps tall forms usable when the on-screen keyboard shortens the viewport. */
+  .overlay {
+    display: flex; align-items: flex-start; justify-content: center;
+    overflow-y: auto; padding: 0.75rem;
+  }
+  .reset-card, .push-card { width: 100%; margin: auto 0; padding: 1rem; }
+  .vendor-edit-card { max-height: none; overflow-y: visible; }
+  .reset-code { font-size: clamp(1.35rem, 8vw, 1.9rem); letter-spacing: 0.1em; overflow-wrap: anywhere; }
+
+  /* Application dates move below the applicant details instead of squeezing
+     the business name. The decision buttons share the row evenly. */
+  .app-top { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.35rem 0.65rem; }
+  .app-logo { grid-row: 1 / span 2; }
+  .app-info, .app-top > .app-when { grid-column: 2; }
+  .app-top > .app-when { white-space: normal; }
+  .app-actions { flex-wrap: wrap; }
+  .app-error { flex-basis: 100%; }
+  .app-accept, .app-reject { flex: 1 1 0; }
+
   /* Two columns of number fields is already tight at 640px and unreadable
      below it once the hints wrap. One column, full width. */
   .inc-form { grid-template-columns: 1fr; }
+  .inc-actions { align-items: stretch; flex-direction: column; }
+  .inc-actions .btn-primary, .inc-actions .btn-ghost { width: 100%; min-height: 2.75rem; }
+  .inc-past-row { align-items: stretch; flex-wrap: wrap; }
+  .inc-past-info { flex-basis: 100%; }
+  .inc-past-row .app-accept, .inc-past-row .app-reject { flex: 1 1 0; }
+
   /* The date column would otherwise squeeze the emails to a couple of
      characters. The row order still reads newest-first without it. */
   .referral-row .app-when, .grant-row .app-when { display: none; }
+  .referral-row, .grant-row { align-items: flex-start; gap: 0.5rem; padding: 0.65rem; }
+
+  .err-filter { min-height: 2.5rem; padding-inline: 0.75rem; }
+  .card-note-row { align-items: flex-start; flex-wrap: wrap; }
+  .btn-clear { min-height: 2.5rem; margin-top: 0; }
+  .err-row summary {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.25rem 0.45rem; padding: 0.5rem;
+  }
+  .err-badge { grid-column: 1; grid-row: 1; }
+  .err-msg { grid-column: 2; grid-row: 1; }
+  .err-del { grid-column: 3; grid-row: 1 / span 2; align-self: center; width: 2.75rem; height: 2.75rem; }
+  .err-when { grid-column: 2; grid-row: 2; white-space: normal; }
+  .err-detail { padding: 0 0.5rem 0.5rem; }
+}
+
+@media (max-width: 480px) {
+  /* With notification controls visible, the complete header needs a second
+     row on small phones. Keeping it sticky still leaves the controls in reach. */
+  .topbar { flex-wrap: wrap; }
+  .topbar-right { width: 100%; justify-content: flex-end; }
 }
