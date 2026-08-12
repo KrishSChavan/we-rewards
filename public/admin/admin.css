@@ -524,6 +524,7 @@ h1, h3 { margin: 0; }
 .push-bell { display: block; font-size: 2.4rem; line-height: 1; }
 .push-card h2 { margin: 0.6rem 0 0; font-size: 1.35rem; font-weight: 900; }
 .push-card #push-modal-desc { color: var(--muted); font-size: 0.9rem; margin: 0.5rem 0 0; }
+.push-card #push-error { margin: 0.75rem 0 0; }
 .push-actions { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1.25rem; }
 /* .btn-primary/.btn-ghost carry margin-top:1rem for the login stack; the flex gap
    already spaces these, so drop that margin inside the stacked actions. */

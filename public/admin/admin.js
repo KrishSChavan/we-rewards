@@ -15,6 +15,7 @@ let incentives = [];    // operator-created deals (the Incentives tab)
 let referrals = [];     // newest referrals, both sides named
 let grants = [];        // the community-point payout ledger
 let vapidKey = null;    // server's public VAPID key; null = push disabled
+let pushEndpoint = null;
 let pushInitDone = false;
 const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now" is tapped
 
@@ -45,7 +46,7 @@ const $ = (id) => document.getElementById(id);
   $('sb-delete').addEventListener('click', deleteSignupIncentive);
   $('ref-settle-btn').addEventListener('click', settleReferrals);
   $('grant-form').addEventListener('submit', giveGrant);
-  $('push-btn').addEventListener('click', enablePush);
+  $('push-btn').addEventListener('click', handlePushButton);
   // Popup: "Turn on alerts" runs the SAME enable flow directly on the click so the
   // requestPermission() gesture is preserved; "Not now"/backdrop just dismiss.
   $('push-enable').addEventListener('click', enablePush);
@@ -1872,41 +1873,102 @@ function renderGrants() {
 // are already granted, silently (re-)subscribe — the server upserts, so
 // repeating this every load just keeps the subscription fresh. If permission
 // was never asked, reveal the 🔔 button: requestPermission() must run from a
-// user gesture (Safari enforces this). If denied, stay out of the way.
+// user gesture (Safari enforces this). Every other state stays visible too, so
+// an operator can tell whether alerts are active, blocked or unavailable.
 async function initPush() {
   if (pushInitDone) return;
   pushInitDone = true;
   try {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      return setPushButton('unsupported');
+    }
     const res = await authFetch('/api/admin/push/public-key');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error('The server could not load notification settings.');
     vapidKey = (await res.json())?.publicKey ?? null;
-    if (!vapidKey) return;   // server has no VAPID keys → push disabled
+    if (!vapidKey) return setPushButton('unsupported');
     // Only 'default' is actionable: 'granted' silently re-subscribes; 'denied'
     // can't be re-prompted (requestPermission would no-op), so we stay quiet.
-    if (Notification.permission === 'granted') await subscribePush();
+    if (Notification.permission === 'granted') {
+      await subscribePush();
+      setPushButton('active');
+    }
     else if (Notification.permission === 'default') {
-      $('push-btn').hidden = false;                       // persistent topbar fallback
+      setPushButton('enable');
       // Louder one-time nudge — suppressed once the operator has said "Not now".
       let dismissed = false;
       try { dismissed = !!localStorage.getItem(PUSH_DISMISS_KEY); } catch { /* private mode */ }
       if (!dismissed) openPushModal();
+    } else {
+      setPushButton('blocked');
     }
-  } catch { /* push is a nice-to-have — never let it break the dashboard */ }
+  } catch (err) {
+    showPushFailure(err?.message || 'Alerts could not be connected.');
+  }
 }
 
 // The prominent popup and the topbar 🔔 button both call this. requestPermission()
 // must run from the user gesture, so it's the first thing awaited. Whatever the
-// outcome, hide the button and close the popup — permission is now decided, so
-// neither should linger (and initPush won't re-open the popup: pushInitDone).
+// outcome is reflected in the persistent topbar control, so a failed enrollment
+// can never look like success.
 async function enablePush() {
+  $('push-error').hidden = true;
   try {
+    if (Notification.permission === 'denied') {
+      setPushButton('blocked');
+      return showPushFailure('Notifications are blocked for this site. Allow them in your browser or device settings, then retry.', true);
+    }
     const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { $('push-btn').hidden = true; closePushModal(); return; }
+    if (perm !== 'granted') {
+      setPushButton(perm === 'denied' ? 'blocked' : 'enable');
+      closePushModal();
+      return;
+    }
     await subscribePush();
-    $('push-btn').hidden = true;
+    setPushButton('active');
     closePushModal();
-  } catch { $('push-btn').hidden = true; closePushModal(); }
+  } catch (err) {
+    showPushFailure(err?.message || 'Alerts could not be connected. Try again.', true);
+  }
+}
+
+function setPushButton(mode) {
+  const btn = $('push-btn');
+  btn.dataset.pushMode = mode;
+  btn.hidden = false;
+  btn.disabled = mode === 'unsupported';
+  if (mode === 'active') {
+    btn.textContent = '🔔 Test alerts';
+    btn.title = 'Send a test notification to this device';
+  } else if (mode === 'blocked') {
+    btn.textContent = '🔕 Alerts blocked';
+    btn.title = 'Notifications are blocked in this browser';
+  } else if (mode === 'failed') {
+    btn.textContent = '⚠ Fix alerts';
+    btn.title = 'Notifications are not connected';
+  } else if (mode === 'enable') {
+    btn.textContent = '🔔 Turn on alerts';
+    btn.title = 'Get application and error notifications';
+  } else if (mode === 'unsupported') {
+    btn.textContent = '🔕 Alerts unavailable';
+    btn.title = 'Push notifications are not available on this device or server';
+  }
+}
+
+function handlePushButton() {
+  const mode = $('push-btn').dataset.pushMode;
+  if (mode === 'active') return sendPushTest();
+  if (mode === 'blocked') {
+    return showPushFailure('Notifications are blocked for this site. Allow them in your browser or device settings, then retry.', true);
+  }
+  return enablePush();
+}
+
+function showPushFailure(message, open = false) {
+  setPushButton(Notification.permission === 'denied' ? 'blocked' : 'failed');
+  const error = $('push-error');
+  error.textContent = message;
+  error.hidden = false;
+  if (open) openPushModal();
 }
 
 // ----- enable-notifications popup (a louder entry point to enablePush) -----
@@ -1933,16 +1995,71 @@ function dismissPushModal() {
 }
 
 async function subscribePush() {
-  const reg = await navigator.serviceWorker.ready;
-  const sub = await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(vapidKey),
-  });
+  // Register this exact worker instead of relying on navigator.serviceWorker.ready,
+  // which can resolve to another registration when the dashboard is opened from
+  // an unusual URL. Also recover cleanly after a VAPID key rotation.
+  const reg = await navigator.serviceWorker.register('/admin/sw.js', { scope: '/admin/' });
+  const desiredKey = urlBase64ToUint8Array(vapidKey);
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && !subscriptionUsesKey(sub, desiredKey)) {
+    await sub.unsubscribe();
+    sub = null;
+  }
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: desiredKey,
+    });
+  }
   const { endpoint, keys } = sub.toJSON();
-  await authFetch('/api/admin/push/subscribe', {
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    throw new Error('The browser returned an incomplete push subscription.');
+  }
+  const res = await authFetch('/api/admin/push/subscribe', {
     method: 'POST',
     body: JSON.stringify({ endpoint, keys }),
   });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(out.message || 'The server could not save this notification subscription.');
+  pushEndpoint = endpoint;
+  return endpoint;
+}
+
+function subscriptionUsesKey(subscription, desiredKey) {
+  const stored = subscription.options?.applicationServerKey;
+  if (!stored) return true; // older engines do not expose it; keep their live subscription
+  const bytes = new Uint8Array(stored);
+  return bytes.length === desiredKey.length && bytes.every((value, i) => value === desiredKey[i]);
+}
+
+async function sendPushTest() {
+  const btn = $('push-btn');
+  btn.disabled = true;
+  try {
+    const endpoint = pushEndpoint || await subscribePush();
+    const res = await authFetch('/api/admin/push/test', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.message || 'The test notification was not delivered.');
+    btn.textContent = '✓ Test sent';
+    setTimeout(() => setPushButton('active'), 2500);
+  } catch (err) {
+    await discardBrowserPush();
+    showPushFailure(err?.message || 'The test notification was not delivered.', true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function discardBrowserPush() {
+  pushEndpoint = null;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('/admin/');
+    const sub = await reg?.pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+  } catch { /* the next retry still has a chance to replace it */ }
 }
 
 // Standard VAPID key decoder: base64url → the Uint8Array PushManager expects.

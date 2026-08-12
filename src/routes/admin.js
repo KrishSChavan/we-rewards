@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { geocode } from '../lib/geocode.js';
-import { getVapidPublicKey } from '../lib/push.js';
+import { getVapidPublicKey, notifyAdminEndpoint } from '../lib/push.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
@@ -1304,9 +1304,34 @@ router.post('/push/subscribe', async (req, res, next) => {
     }
     const { error } = await supabaseAdmin
       .from('push_subscriptions')
-      .upsert({ endpoint, p256dh, auth, user_id: req.user.id }, { onConflict: 'endpoint' });
+      .upsert({ endpoint, p256dh, auth, user_id: req.user.id, role: 'admin' }, { onConflict: 'endpoint' });
     if (error) throw error;
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/admin/push/test  { endpoint } - verify this browser end to end. */
+router.post('/push/test', async (req, res, next) => {
+  try {
+    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint : '';
+    if (!/^https:\/\//.test(endpoint) || endpoint.length > 1000) {
+      return res.status(400).json({ error: 'BAD_SUBSCRIPTION', message: 'That push subscription looks invalid.' });
+    }
+
+    const delivered = await notifyAdminEndpoint(req.user.id, endpoint, {
+      title: 'WeRewards alerts are working',
+      body: 'You will be notified about every vendor application and logged error.',
+      url: '/admin/',
+    });
+    if (!delivered) {
+      return res.status(502).json({
+        error: 'PUSH_NOT_DELIVERED',
+        message: 'The push service did not accept the test. Turn alerts on again and retry.',
+      });
+    }
+    res.json({ ok: true, delivered });
   } catch (err) {
     next(err);
   }

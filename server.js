@@ -19,7 +19,6 @@ import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
-import { recordServerError } from './src/lib/alerts.js';
 import { isUuid } from './src/lib/ids.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { startReferralWorker, stopReferralWorker } from './src/lib/referrals.js';
@@ -857,7 +856,7 @@ app.get('/api/public-config', async (_req, res) =>
 app.use(sendNotFound);
 
 // Central error handler — routes call next(err)
-app.use((err, req, res, _next) => {
+app.use(async (err, req, res, _next) => {
   const known = {
     INSUFFICIENT_POINTS: [400, 'Not enough points for this reward.'],
     REWARD_NOT_FOUND: [404, 'Reward not found or inactive.'],
@@ -938,7 +937,7 @@ app.use((err, req, res, _next) => {
   }
   console.error(err);
   // Unexpected failure → record it so it shows up on the /admin dashboard...
-  logError({
+  await logError({
     source: 'server',
     message: err?.message,
     stack: err?.stack,
@@ -948,8 +947,6 @@ app.use((err, req, res, _next) => {
     userId: req?.user?.id ?? null,
     userAgent: req?.headers?.['user-agent'],
   });
-  // ...and push the operator if these are spiking (throttled, best-effort).
-  recordServerError();
   res.status(500).json({ error: 'SERVER_ERROR', message: 'Something went wrong.' });
 });
 

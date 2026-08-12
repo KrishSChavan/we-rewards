@@ -27,7 +27,8 @@
 // v12: second incentive kind, the signup bonus (migration-040); programs are
 // now created switched OFF and turned on as a separate step.
 // v13: responsive admin shell, roster controls and modal editors for phones.
-const CACHE = 'werewards-admin-v13';
+// v14: reliable admin alert enrollment, test delivery, and per-error pushes.
+const CACHE = 'werewards-admin-v14';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',
@@ -66,9 +67,9 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
-/* Web push: "new vendor application" alerts sent by the server (src/lib/push.js)
-   to every subscribed operator browser — this fires even with the dashboard
-   closed. Payload: { title, body, url }. */
+/* Web push: vendor-application and logged-error alerts sent by the server to
+   subscribed operator browsers, even while the dashboard is closed.
+   Payload: { title, body, url }. */
 self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data?.json() ?? {}; } catch { /* non-JSON payload — show defaults */ }

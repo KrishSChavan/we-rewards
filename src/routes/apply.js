@@ -88,13 +88,13 @@ router.post('/', async (req, res, next) => {
       throw error;
     }
 
-    // Alert the operator's subscribed devices. Fire-and-forget: the application
-    // is saved either way, and push latency shouldn't delay the applicant's 201.
-    notifyAdmins({
+    // Wait for the best-effort delivery attempt. Returning while this promise
+    // was still loose could abandon an alert when a process stopped after 201.
+    await notifyAdmins({
       title: 'New vendor application',
       body: `${v.fields.business_name} · ${v.fields.contact_name}`,
       url: '/admin/',
-    }).catch(() => {});
+    });
 
     res.status(201).json({ ok: true });
   } catch (err) {

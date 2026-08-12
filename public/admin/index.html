@@ -70,7 +70,7 @@
       <span class="wordmark">WeRewards <em>Admin</em></span>
       <div class="topbar-right">
         <span id="admin-email" class="admin-email"></span>
-        <button id="push-btn" class="btn-ghost btn-compact" title="Get notified when a new vendor application arrives" hidden>🔔 Notify</button>
+        <button id="push-btn" class="btn-ghost btn-compact" title="Get application and error notifications" hidden>🔔 Turn on alerts</button>
         <button id="refresh-btn" class="btn-ghost btn-compact" aria-label="Refresh">↻</button>
         <button id="signout-btn" class="btn-ghost btn-compact">Sign out</button>
       </div>
@@ -368,8 +368,9 @@
     <div class="push-card" role="dialog" aria-modal="true"
          aria-labelledby="push-modal-title" aria-describedby="push-modal-desc">
       <span class="push-bell" aria-hidden="true">🔔</span>
-      <h2 id="push-modal-title">Turn on application alerts</h2>
-      <p id="push-modal-desc">Get a push notification the moment a vendor applies from /join, even when this dashboard is closed.</p>
+      <h2 id="push-modal-title">Turn on admin alerts</h2>
+      <p id="push-modal-desc">Get a push notification for every vendor application and logged error, even when this dashboard is closed.</p>
+      <p id="push-error" class="field-error" role="alert" hidden></p>
       <div class="push-actions">
         <button id="push-enable" class="btn-primary">Turn on alerts</button>
         <button id="push-dismiss" class="btn-ghost">Not now</button>

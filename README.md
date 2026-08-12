@@ -92,11 +92,13 @@ config — the terminal never sends a point value.
    ```
 6. Add that vendor's rewards rows in the Supabase table editor
    (`rewards`: vendor_id, title, cost_in_points).
-7. (Optional) Web-push alerts for new vendor applications: run
+7. (Optional) Web-push alerts for new vendor applications and logged errors: run
    `npx web-push generate-vapid-keys`, put the keys in `.env`
    (`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`), then click
-   **🔔 Notify** in the `/admin` topbar and allow notifications. With no keys
-   set, push is silently disabled and everything else works.
+   **🔔 Turn on alerts** in the `/admin` topbar and allow notifications. Once
+   connected, that control becomes **🔔 Test alerts** for an end-to-end check.
+   With no keys set, the dashboard reports alerts unavailable and everything
+   else works.
 8. (Recommended) Receipt forgery checking: get a key at
    [aistudio.google.com/apikey](https://aistudio.google.com/apikey), put it in
    `.env` as `GEMINI_API_KEY`, then verify it before you rely on it:

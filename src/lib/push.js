@@ -81,25 +81,49 @@ export async function sendToSubscriptions(subs, payload) {
   return results.filter((r) => r.status === 'fulfilled' && r.value).length;
 }
 
+/** Read admin subscriptions with optional ownership/endpoint narrowing. */
+async function adminSubscriptions({ userId = null, endpoint = null } = {}) {
+  let query = supabaseAdmin
+    .from('push_subscriptions')
+    .select('endpoint, p256dh, auth')
+    .eq('role', 'admin');
+  if (userId) query = query.eq('user_id', userId);
+  if (endpoint) query = query.eq('endpoint', endpoint);
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn(`[push] could not read admin subscriptions: ${error.message}`);
+    return [];
+  }
+  return data ?? [];
+}
+
 /**
- * Send a notification to every subscribed admin browser. Best-effort: callers
- * fire-and-forget, so this never throws.
+ * Send a notification to every subscribed admin browser. Best-effort and never
+ * throws. The accepted-delivery count lets diagnostic callers distinguish a
+ * real delivery attempt from a silent no-op.
  *
  * @param {{ title: string, body?: string, url?: string }} payload
  */
 export async function notifyAdmins(payload) {
-  if (!pushEnabled) return;
+  if (!pushEnabled) return 0;
   try {
-    const { data: subs, error } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('endpoint, p256dh, auth')
-      // Students subscribe to this same table (migration-032). Without this
-      // filter every one of them would receive "new vendor application".
-      .eq('role', 'admin');
-    if (error || !subs?.length) return;
-    await sendToSubscriptions(subs, payload);
-  } catch {
-    /* never let a notification failure surface to the caller */
+    return await sendToSubscriptions(await adminSubscriptions(), payload);
+  } catch (err) {
+    console.warn(`[push] admin notification failed: ${err?.message ?? err}`);
+    return 0;
+  }
+}
+
+/** Send a diagnostic alert only to the requesting admin's current browser. */
+export async function notifyAdminEndpoint(userId, endpoint, payload) {
+  if (!pushEnabled || !userId || !endpoint) return 0;
+  try {
+    const subs = await adminSubscriptions({ userId, endpoint });
+    return await sendToSubscriptions(subs, payload);
+  } catch (err) {
+    console.warn(`[push] admin test notification failed: ${err?.message ?? err}`);
+    return 0;
   }
 }
 
