@@ -2454,7 +2454,7 @@ const MONOGRAM_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'and', 'at', 'on', '
 
 // Initials for a vendor who never uploaded a logo. Every card gets a mark on
 // its plate this way, which is what lets the card assume ONE layout instead of
-// branching on hasLogo (styles.css → .vc-plate).
+// branching on hasLogo (styles.css → .vc-band).
 //
 // Split on separators first and strip punctuation inside each word, not the
 // other way around: splitting on every non-letter turns "Webster's Bookstore"
@@ -2494,20 +2494,23 @@ function buildVendorCard(v) {
   // What a dollar spent here is worth, right under the balance it feeds. Empty
   // string when the rate is missing, so the line disappears rather than lying.
   const rate = earnRateText(v.pointsPerDollar);
-  // The mark on the plate: the vendor's own artwork from the cacheable endpoint
-  // when they have it, their initials when they don't. Never empty, so both
-  // kinds of vendor render the same card — the point of the whole layout.
-  // aria-hidden on both: the plate is the vendor name rendered as a picture, and
-  // the name itself is the very next line, so announcing it twice buys nothing.
+  // The mark in the letterhead: the vendor's own artwork from the cacheable
+  // endpoint when they have it, their initials when they don't. Never empty, so
+  // both kinds of vendor render the same card — the point of the whole layout.
+  // aria-hidden because it is the vendor name rendered as a picture and the name
+  // itself sits right beside it; announcing it twice buys nothing.
   const mark = v.hasLogo
     ? `<span class="vc-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
     : `<span class="vc-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
-  // One centred column: plate, name, points, rate, address — then the map at the
-  // bottom, which is the only part that bleeds to the card's edges.
+  // Two zones sharing one left edge: the letterhead band says who, the body says
+  // how much. Then the map at the bottom — band and map are the two parts that
+  // bleed to the card's rounded edges.
   card.innerHTML = `
-    <span class="vc-body">
-      <span class="vc-plate" aria-hidden="true">${mark}</span>
+    <span class="vc-band">
+      <span class="vc-mark" aria-hidden="true">${mark}</span>
       <span class="vc-name">${escapeHtml(v.name)}</span>
+    </span>
+    <span class="vc-body">
       <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
       ${rate ? `<span class="vc-rate">${rate}</span>` : ''}
       ${address}
