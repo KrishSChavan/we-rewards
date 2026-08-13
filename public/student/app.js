@@ -2410,6 +2410,33 @@ function openMaps(address) {
   if (!win) location.href = url;   // popup blocked / custom scheme → navigate directly
 }
 
+// Every spot on here is in downtown State College, so "State College, PA 16801"
+// is the same eleven characters of noise on every card — and it is the part that
+// pushes the street line into a second row on a phone. Trim the tail off for
+// DISPLAY only: "123 College Ave, State College, PA 16801" reads as "123 College
+// Ave", while openMaps() below still gets handed the full stored address, or the
+// maps app would be guessing which College Ave the student meant.
+//
+// Only a comma-separated part that is ENTIRELY city/state/ZIP is dropped, so a
+// street named "Pennsylvania Ave" and a "Suite 200" both survive. An address
+// that is nothing but a city ("State College, PA") would trim to empty, and
+// falls back to its original text rather than rendering a bare pin.
+const ADDR_TAIL_TOKEN = '(?:state\\s*coll?ege|pennsylvania|pa|usa?|united\\s+states|\\d{5}(?:-\\d{4})?)';
+const ADDR_TAIL_PART = new RegExp(`^${ADDR_TAIL_TOKEN}(?:[\\s,]+${ADDR_TAIL_TOKEN})*[.]?$`, 'i');
+// The comma-free spelling ("123 College Ave State College PA"). Anchored on the
+// city name specifically — without it, a trailing "Suite 10012" looks exactly
+// like a ZIP to a regex, and the suite is the half a student actually needs.
+const ADDR_TAIL_RUN = new RegExp(`[\\s,]+state\\s*coll?ege\\b(?:[\\s,]+${ADDR_TAIL_TOKEN})*[\\s,.]*$`, 'i');
+
+function shortAddress(address) {
+  const full = String(address ?? '').trim();
+  if (!full) return '';
+  const parts = full.split(',').map((p) => p.trim()).filter(Boolean);
+  while (parts.length && ADDR_TAIL_PART.test(parts[parts.length - 1])) parts.pop();
+  const out = parts.join(', ').replace(ADDR_TAIL_RUN, '').replace(/[\s,]+$/, '').trim();
+  return out || full;
+}
+
 // A vendor's earn rate, worded for a student. points_per_dollar crosses the
 // wire as a JSON number, so 10.00 has already parsed to 10 by the time it gets
 // here; toLocaleString is what keeps that "10" rather than toFixed(2)'s "10.00",
@@ -2490,7 +2517,7 @@ function buildVendorCard(v) {
     ? vendorMapHtml(v.latitude, v.longitude)
     : '';
   if (!map) card.classList.add('no-map');   // shrink to content + centre in the row (styles.css)
-  const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(v.address)} 👆</span>` : '';
+  const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(shortAddress(v.address))} 👆</span>` : '';
   // What a dollar spent here is worth, right under the balance it feeds. Empty
   // string when the rate is missing, so the line disappears rather than lying.
   const rate = earnRateText(v.pointsPerDollar);
@@ -3290,7 +3317,7 @@ function openPinSheet(vendorId, pan) {
   $('map-pin-name').textContent = v.name;
   $('map-pin-num').textContent = String(v.balance ?? 0);
   const addr = $('map-pin-address');
-  addr.textContent = v.address ? `📍 ${v.address}` : '';
+  addr.textContent = v.address ? `📍 ${shortAddress(v.address)}` : '';
   addr.hidden = !v.address;
   const rate = $('map-pin-rate');
   const rateText = earnRateText(v.pointsPerDollar);
