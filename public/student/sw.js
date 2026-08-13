@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v54';   // v54: signup-bonus note on the landing page + community grants in History (migration-040)
+const CACHE = 'werewards-v55';   // v55: vendor cards widened to 85% of the carousel view
 // v51: receipt scans go through the AI reader (forgery check + extraction), tesseract as fallback
 // v49: each spot shows its earn rate (card, spot screen, map pin); browser tab favicon
 // v48: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the CDN; boot guard added

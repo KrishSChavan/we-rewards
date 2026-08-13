@@ -408,7 +408,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* mirrors .vendor-card, map variant (the designed-for case) */
 .vskel-card {
-  flex: 0 0 75%; max-width: 300px; min-height: 200px;
+  flex: 0 0 85%; max-width: 300px; min-height: 200px;
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--card); border: 3px solid var(--edge); border-radius: 1.3rem;
   box-shadow: 0 5px 0 var(--edge);
@@ -1298,7 +1298,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vendor-carousel::-webkit-scrollbar { display: none; }
 
 .vendor-card {
-  flex: 0 0 75%; max-width: 400px;   /* ~75% of the view (after padding), capped at 300px */
+  flex: 0 0 85%; max-width: 300px;   /* ~85% of the view (after padding), capped at 300px */
   /* Middle cards park dead-centre, with a sliver of each neighbour showing on
      both sides — that peek is what says "there is more this way". The two ends
      are the exceptions: they align to their own gutter instead, because a

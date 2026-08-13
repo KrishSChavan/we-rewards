@@ -2349,7 +2349,7 @@ async function loadVendors() {
 }
 
 // Set to true to restore the map thumbnail at the bottom of each vendor card.
-const SHOW_VENDOR_CARD_MAP = true;
+const SHOW_VENDOR_CARD_MAP = false;
 const TILE_Z = 16;   // OSM zoom for the vendor card thumbnail (~street level)
 
 // Build a 2×2 OpenStreetMap tile mosaic centred on (lat,lng) as the inner HTML
