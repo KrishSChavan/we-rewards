@@ -1,5 +1,17 @@
 <!doctype html>
-<html lang="en">
+<!-- data-vendor-map on the root element below: "on" restores the map thumbnail
+     at the bottom of every vendor card, anything else (or nothing) leaves it
+     off. This is the single declaration of that toggle. It lives here rather
+     than in app.js because the vendor skeleton further down has to reserve the
+     right card shape in the FIRST paint, before app.js is fetched — styles.css
+     (.vskel-map) and app.js (SHOW_VENDOR_CARD_MAP) both read it from here, so
+     they cannot drift apart.
+
+     Never write the root element's opening tag inside this comment, not even as
+     an example: on test builds server.js stamps data-app-env onto the first
+     match of that tag in the file (markTestEnv), and it would land in here
+     instead of on the element. -->
+<html lang="en" data-vendor-map="off">
 <!-- ===================================================================
      COPY RULE: no em dashes in user-visible text.
 
@@ -411,6 +423,7 @@
                 <div class="vskel-row">
                   <div class="vskel-card">
                     <span class="vskel-body">
+                      <span class="skel vskel-plate"></span>
                       <span class="skel vskel-name"></span>
                       <span class="skel vskel-num"></span>
                       <span class="skel vskel-rate"></span>
@@ -420,6 +433,7 @@
                   </div>
                   <div class="vskel-card">
                     <span class="vskel-body">
+                      <span class="skel vskel-plate"></span>
                       <span class="skel vskel-name"></span>
                       <span class="skel vskel-num"></span>
                       <span class="skel vskel-rate"></span>

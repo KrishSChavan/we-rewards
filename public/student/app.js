@@ -2348,8 +2348,21 @@ async function loadVendors() {
   }
 }
 
-// Set to true to restore the map thumbnail at the bottom of each vendor card.
-const SHOW_VENDOR_CARD_MAP = false;
+// Whether each vendor card carries the map thumbnail at its bottom. To restore
+// it, set data-vendor-map="on" on <html> in index.html — that attribute is the
+// only declaration, and this reads it.
+//
+// It lives in the HTML rather than as a const here because the loading skeleton
+// has to reserve the right card shape in the FIRST paint of the shell, before
+// this file has even been fetched. A const in app.js is unreadable at that
+// point, which is exactly how the skeleton came to reserve 150px of map for
+// cards that hadn't rendered one since the flag was turned off. styles.css keys
+// off the same attribute (see .vskel-map).
+//
+// Anything other than "on" — including a missing attribute — means off, on both
+// sides. The two can disagree only if someone edits one of them to a value the
+// other doesn't recognise, and there is no such value.
+const SHOW_VENDOR_CARD_MAP = document.documentElement.dataset.vendorMap === 'on';
 const TILE_Z = 16;   // OSM zoom for the vendor card thumbnail (~street level)
 
 // Build a 2×2 OpenStreetMap tile mosaic centred on (lat,lng) as the inner HTML
@@ -2434,6 +2447,41 @@ function renderVendorRate(v) {
   el.hidden = !text;
 }
 
+// Words that carry no identity of their own, so "The Waffle Shop" initials as
+// WS rather than TW. Only ever applied when something survives the filter — a
+// vendor literally called "The Diner" still gets a monogram, not a blank plate.
+const MONOGRAM_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'and', 'at', 'on', 'in', 'for']);
+
+// Initials for a vendor who never uploaded a logo. Every card gets a mark on
+// its plate this way, which is what lets the card assume ONE layout instead of
+// branching on hasLogo (styles.css → .vc-plate).
+//
+// Split on separators first and strip punctuation inside each word, not the
+// other way around: splitting on every non-letter turns "Webster's Bookstore"
+// into Webster / s / Bookstore and yields WS. The character class is spelled
+// out rather than using \p{L}, which needs the /u flag and a Safari newer than
+// this app's floor (scripts/build-client.js lowers syntax, not regex features).
+function vendorMonogram(name) {
+  const raw = String(name ?? '').trim();
+  // Ampersands and periods are stripped INSIDE a word rather than split on:
+  // "A&B Deli" has to stay two words (AD), because splitting it into A / B / Deli
+  // makes the stopword filter below eat the vendor's actual first initial.
+  const words = raw
+    .split(/[\s\-–—/]+/)
+    .map((w) => w.replace(/[^0-9A-Za-zÀ-ɏ]/g, ''))
+    .filter(Boolean);
+  // Nothing Latin to work with. A name in another script keeps its own opening
+  // characters — far better than a placeholder glyph, and toUpperCase would be
+  // a no-op on it anyway.
+  if (!words.length) return Array.from(raw).slice(0, 2).join('') || '•';
+  const named = words.filter((w) => !MONOGRAM_STOPWORDS.has(w.toLowerCase()));
+  const use = named.length ? named : words;
+  // Two letters read as a mark; one reads as a typo. A single-word vendor
+  // borrows its own second letter ("Irving's" -> IR).
+  const initials = use.length > 1 ? use[0].charAt(0) + use[1].charAt(0) : use[0].slice(0, 2);
+  return initials.toUpperCase();
+}
+
 function buildVendorCard(v) {
   const card = document.createElement('button');
   card.className = 'vendor-card';
@@ -2446,21 +2494,22 @@ function buildVendorCard(v) {
   // What a dollar spent here is worth, right under the balance it feeds. Empty
   // string when the rate is missing, so the line disappears rather than lying.
   const rate = earnRateText(v.pointsPerDollar);
-  // Logo (if any) loads from the cacheable endpoint, sized to the name+points height.
-  const logo = v.hasLogo
-    ? `<span class="vc-logo" role="img" aria-label="${escapeHtml(v.name)} logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
-    : '';
-  // Column layout: [logo | name + points], then address, then the map at the bottom.
+  // The mark on the plate: the vendor's own artwork from the cacheable endpoint
+  // when they have it, their initials when they don't. Never empty, so both
+  // kinds of vendor render the same card — the point of the whole layout.
+  // aria-hidden on both: the plate is the vendor name rendered as a picture, and
+  // the name itself is the very next line, so announcing it twice buys nothing.
+  const mark = v.hasLogo
+    ? `<span class="vc-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
+    : `<span class="vc-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
+  // One centred column: plate, name, points, rate, address — then the map at the
+  // bottom, which is the only part that bleeds to the card's edges.
   card.innerHTML = `
     <span class="vc-body">
-      <span class="vc-head">
-        ${logo}
-        <span class="vc-title">
-          <span class="vc-name">${escapeHtml(v.name)}</span>
-          <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
-          ${rate ? `<span class="vc-rate">${rate}</span>` : ''}
-        </span>
-      </span>
+      <span class="vc-plate" aria-hidden="true">${mark}</span>
+      <span class="vc-name">${escapeHtml(v.name)}</span>
+      <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
+      ${rate ? `<span class="vc-rate">${rate}</span>` : ''}
       ${address}
     </span>
     ${map}`;

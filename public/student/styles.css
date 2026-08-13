@@ -22,10 +22,15 @@
   /* semantic roles that diverge from --ink/--navy in dark mode:
      --edge  = the chunky borders + hard offset shadows
      --brand = brand-colored text/numbers sitting on light surfaces
-     --hairline = subtle separators (e.g. the nav's top border) */
+     --hairline = subtle separators (e.g. the nav's top border)
+     --plate = the tinted pad a vendor's logo sits on (see .vc-plate). It has to
+       read as a surface in BOTH themes, because the artwork is the vendor's and
+       we don't control it: a logo on a white background needs something behind
+       it in dark mode, and a white-ink logo needs something behind it in light. */
   --edge: #101d33;
   --brand: #12294b;
   --hairline: #e5eaf2;
+  --plate: #e7edf6;
 
   /* rewards hub (the wordmark pill + the panel it opens): the gutter both
      share — they must line up to the pixel — and the lit edge that marks the
@@ -56,6 +61,7 @@
   --edge: #35496a;
   --brand: #8fbdf0;
   --hairline: #2a3a56;
+  --plate: #2b3d5c;
   --hub-glow: rgba(140, 190, 245, 0.6);
   --hub-halo: rgba(120, 175, 235, 0.22);
 }
@@ -406,23 +412,45 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vskel-row > :nth-child(2) { --skel-delay: 0.12s; }
 .vskel-dots { height: 2rem; margin: 0 1.3rem 0.9rem; }   /* .vendor-dots, to the pixel */
 
-/* mirrors .vendor-card, map variant (the designed-for case) */
+/* Mirrors .vendor-card. The default here is the NO-map card, the mirror image
+   of .vendor-card (which declares the map shape and lets .no-map opt out) — and
+   deliberately so: index.html's data-vendor-map is what both this and app.js
+   read, and defaulting both sides to "off" means a missing or misspelt
+   attribute leaves them agreeing rather than reserving 150px of map for a card
+   that will never draw one. See the [data-vendor-map="on"] rules below. */
 .vskel-card {
-  flex: 0 0 85%; max-width: 300px; min-height: 200px;
+  flex: 0 0 85%; max-width: 300px;
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--card); border: 3px solid var(--edge); border-radius: 1.3rem;
   box-shadow: 0 5px 0 var(--edge);
 }
 .vskel-body {
   flex: 1 1 auto; min-height: 0;
-  display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
   gap: 0.35rem; padding: 1.1rem 1.3rem;
 }
-.vskel-name { width: 62%; height: 1.68rem; }              /* .vc-name: 1.5rem x 1.12 */
+/* .vc-plate — always drawn, because the real card always has one now: a vendor
+   with no artwork gets a monogram rather than a card with the plate missing. */
+.vskel-plate { width: 4.6rem; height: 4.6rem; margin-bottom: 0.15rem; border-radius: 1rem; }
+.vskel-name { width: 62%; height: 1.54rem; }              /* .vc-name: 1.35rem x 1.14 */
 .vskel-num { width: 45%; height: 3rem; }                  /* .vc-num */
 .vskel-rate { width: 55%; height: 1rem; border-radius: 0.3rem; }   /* .vc-rate: 0.8rem x 1.25 */
 .vskel-addr { width: 82%; height: 0.82rem; margin-top: 0.6rem; border-radius: 0.3rem; }
-.vskel-map { flex: 0 0 150px; border-radius: 0; border-top: 2px solid var(--edge); }
+/* The map placeholder is drawn only when the cards it stands in for will draw
+   one. Off, the span still ships in the markup — the skeleton is static HTML and
+   there is no server-side templating for this shell, so the toggle has to be a
+   style, not a branch. Reserving 150px of map for a mapless card is not a
+   cosmetic slip: the skeleton is what holds the home screen's height open, so
+   the whole page collapses upwards the moment the real cards land. */
+.vskel-map { display: none; }
+:root[data-vendor-map="on"] .vskel-map {
+  display: block;
+  flex: 0 0 150px; border-radius: 0; border-top: 2px solid var(--edge);
+}
+/* .vendor-card's own floor, which .no-map drops back to 0. Same split, same
+   reason: with a map the body needs the presence, without one it would just
+   reintroduce the empty space .no-map exists to remove. */
+:root[data-vendor-map="on"] .vskel-card { min-height: 200px; }
 
 /* ---------- skeleton: the community balance ----------
    A number nobody has yet is worse than no number: painting the 0 this card
@@ -1318,8 +1346,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   min-height: 200px;                 /* cards stretch to the tallest in the row */
   /* A big balance widens the card instead of being clipped by the overflow above.
      min-width beats max-width, so the 300px cap holds until the card's own
-     min-content — logo + gap + the points line + the body's padding — needs more
-     than that, and the card takes exactly the extra it needs. Only the number can
+     min-content — the widest of the plate and the points line, plus the body's
+     padding — needs more than that, and the card takes exactly the extra it
+     needs. The plate is 4.6rem and never the widest, so in practice this
+     resolves to the points row. Only the number can
      push it: .vc-name and .vc-address break anywhere (see below), so their
      min-content is one character and a long vendor name still wraps rather than
      stretching the row. Widths stay uniform for every balance that already fits,
@@ -1406,10 +1436,21 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 @media (prefers-reduced-motion: reduce) { .vdot-i { transition: none; } }
 
 /* name, points, and address stack at the top; the map sits at the bottom */
+/* One axis, dead centre. The logo used to sit LEFT of the name+points, which
+   gave the card two left edges — name/points/rate started 91.2px in (5rem logo
+   + 0.7rem gap), the address started at the body's own padding — and handed
+   the widest type on the card (.vc-name, 1.5rem/900) only 161px of a 252px
+   column, so a three-word name wrapped to three lines. Worse, a vendor without
+   artwork got a completely different layout, and in a snap carousel the two sit
+   side by side: the name and the number jumped between cards on every swipe.
+   The plate now stacks above the name and every line shares one centre, which
+   is also why the earn rate needs no alignment of its own. Cards with and
+   without a logo are now the same shape — see .vc-plate. */
 .vc-body {
   flex: 1 1 auto; min-height: 0;
-  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 0.35rem;
+  display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 0.35rem;
   padding: 1.1rem 1.3rem;
+  text-align: center;
 }
 /* No map → nothing to fill the bottom 150px with, so the card stops stretching to
    the row's tallest card and takes only the height its own content needs, then
@@ -1420,21 +1461,39 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    card is content-sized — there is no slack left to distribute. */
 .vendor-card.no-map { align-self: center; min-height: 0; }
 
-/* logo sits left of the name+points, centred against them */
-.vc-head { display: flex; align-items: center; gap: 0.7rem; }
-.vc-title { display: flex; flex-direction: column; justify-content: center; gap: 0.35rem; min-width: 0; }
-/* The size is declared outright. This used to be `align-self: stretch` +
-   `aspect-ratio: 1/1` with no width, so the square's width was transferred from
-   the stretch-resolved row height — the one direction WebKit does not resolve.
-   The span is empty, so on iOS its main size fell back to its content (0) and
-   the logo laid out 0px wide: the image loaded fine but painted nothing.
-   5rem is what that stretch produced anyway (name 1.5rem x 1.12 + 0.35rem gap
-   + points 3rem = 80.5px). */
-.vc-logo {
+/* The pad the vendor's mark sits on, centred above the name. It is always
+   present — a vendor with no uploaded artwork gets a monogram of their initials
+   instead (app.js → vendorMonogram), which is the whole reason this layout can
+   assume one shape for every card.
+   Sizes are declared outright, never derived. This used to be `align-self:
+   stretch` + `aspect-ratio: 1/1` with no width, so the square's width was
+   transferred from the stretch-resolved row height — the one direction WebKit
+   does not resolve. The span is empty, so on iOS its main size fell back to its
+   content (0) and the logo laid out 0px wide: the image loaded fine but painted
+   nothing. Keep every dimension in here explicit. */
+.vc-plate {
   flex: 0 0 auto;
-  width: 5rem; height: 5rem;
+  width: 4.6rem; height: 4.6rem;
+  padding: 0.4rem;
+  margin-bottom: 0.15rem;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--plate);
+  border-radius: 1rem;
+}
+/* The artwork itself, inset on the plate. `contain` because the upload can be
+   any aspect ratio and cropping someone's wordmark is worse than letterboxing it. */
+.vc-logo {
+  width: 100%; height: 100%;
   background-size: contain; background-repeat: no-repeat; background-position: center;
-  border-radius: 0.5rem;
+  border-radius: 0.62rem;
+}
+/* Initials, for a vendor who never uploaded a logo. Sized so its optical weight
+   matches a real mark on the same plate rather than shouting over the balance. */
+.vc-mono {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+  font-size: 1.55rem; font-weight: 900; line-height: 1;
+  letter-spacing: -0.02em; color: var(--brand);
 }
 
 /* `anywhere` (not break-word) is deliberate: it is the one wrapping value that
@@ -1442,7 +1501,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    card's min-width above — a long name wraps inside the card, only the points
    line can widen it. It also breaks a single over-long word instead of letting
    it run under the card's overflow: hidden. */
-.vc-name { font-weight: 900; font-size: 1.5rem; line-height: 1.12; color: var(--ink); overflow-wrap: anywhere; }
+/* 1.35rem, down from 1.5rem: the name now has the body's full 252px instead of
+   the 161px the old logo column left it, so it wraps to fewer lines at the
+   smaller size than it did at the larger one — and the balance goes back to
+   being the loudest thing on the card, which is what the card is for. */
+.vc-name { font-weight: 900; font-size: 1.35rem; line-height: 1.14; color: var(--ink); overflow-wrap: anywhere; }
 /* The row never wraps, so its min-content is the whole "10000 pts" — that is the
    width the card's min-width resolves to. */
 .vc-points { display: flex; align-items: baseline; gap: 0.3rem; flex-wrap: nowrap; }   /* points sit below the name */
