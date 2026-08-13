@@ -28,7 +28,10 @@
 // now created switched OFF and turned on as a separate step.
 // v13: responsive admin shell, roster controls and modal editors for phones.
 // v14: reliable admin alert enrollment, test delivery, and per-error pushes.
-const CACHE = 'werewards-admin-v14';
+// v15: error log rows now explain what each failure was FOR (who hit it, what
+// the request carried, which device) and the scan-here QR poster card was added
+// (index.html + admin.js + admin.css).
+const CACHE = 'werewards-admin-v15';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

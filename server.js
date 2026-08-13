@@ -17,7 +17,7 @@ import applyRoutes from './src/routes/apply.js';
 import { supabaseAdmin } from './src/lib/supabase.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
-import { logError } from './src/lib/errors.js';
+import { logError, requestContext } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
 import { isUuid } from './src/lib/ids.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
@@ -113,6 +113,15 @@ const receiptLimiter = rateLimit({
   message: { error: 'RATE_LIMITED', message: 'Too many receipt scans from this connection, try again in a few minutes.' },
 });
 app.use('/api/me/receipt', receiptLimiter, express.json({ limit: '8mb' }));
+
+// The operator's "scan here" QR poster is the other large body: a print-ready
+// PDF/ZIP, base64'd into JSON like the logo (this API takes no multipart — see
+// middleware/require-json.js). base64 inflates by 4/3, so this allows the 10 MB
+// file cap in lib/qr-poster.js plus the encoding overhead and the JSON envelope.
+// No extra limiter: /api/admin/* is behind the operator allowlist, which is a
+// far tighter gate than any per-IP cap. Mounted here, above the global parser,
+// for the same mount-order reason as the receipt route.
+app.use('/api/admin/qr-poster', express.json({ limit: '14mb' }));
 
 // Bodies are tiny everywhere except a vendor saving a logo, which arrives as a
 // base64 data-URL (resized client-side to ~128px, so tens of KB). 600kb gives
@@ -857,6 +866,19 @@ app.use(sendNotFound);
 
 // Central error handler — routes call next(err)
 app.use(async (err, req, res, _next) => {
+  // Body-parser rejections (too large, malformed JSON) are the CALLER's mistake,
+  // not a server fault. Without this they fell through to the 500 branch below,
+  // which told the user "Something went wrong" and wrote a bogus row into the
+  // error log — burying real failures under noise from an oversized upload.
+  // Narrowly gated: only body-parser's own `entity.*` types with a 4xx status.
+  if (typeof err?.type === 'string' && err.type.startsWith('entity.')
+      && err.status >= 400 && err.status < 500) {
+    const message = err.type === 'entity.too.large'
+      ? 'That file is too large to upload.'
+      : 'That request body could not be read.';
+    return res.status(err.status).json({ error: 'BAD_BODY', message });
+  }
+
   const known = {
     INSUFFICIENT_POINTS: [400, 'Not enough points for this reward.'],
     REWARD_NOT_FOUND: [404, 'Reward not found or inactive.'],
@@ -937,6 +959,12 @@ app.use(async (err, req, res, _next) => {
   }
   console.error(err);
   // Unexpected failure → record it so it shows up on the /admin dashboard...
+  //
+  // requestContext carries what the request was FOR (query + body fields,
+  // redacted; who was signed in; which vendor; which page it came from). Without
+  // it a 500 in the log reads "Cannot read properties of undefined" against a
+  // path, and the operator has no way to tell which customer, vendor or amount
+  // it happened on.
   await logError({
     source: 'server',
     message: err?.message,
@@ -946,6 +974,7 @@ app.use(async (err, req, res, _next) => {
     status: 500,
     userId: req?.user?.id ?? null,
     userAgent: req?.headers?.['user-agent'],
+    context: requestContext(req),
   });
   res.status(500).json({ error: 'SERVER_ERROR', message: 'Something went wrong.' });
 });

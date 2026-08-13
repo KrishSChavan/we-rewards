@@ -58,7 +58,9 @@
 // v18: bundles lowered to ES2017 so an older counter iPad can parse them at all;
 // supabase-js self-hosted off the CDN; boot guard added.
 // v20: browser tab favicon (index.html).
-const CACHE = 'werewards-terminal-v20';
+// v21: Settings can download the scan-here QR poster published by WeRewards
+// (index.html + terminal.js + terminal.css).
+const CACHE = 'werewards-terminal-v21';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

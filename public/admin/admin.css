@@ -483,6 +483,17 @@ h1, h3 { margin: 0; }
 .btn-clear:disabled { opacity: 0.6; cursor: default; }
 .btn-clear:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
 
+/* ---------- scan-here QR poster ---------- */
+.poster-row {
+  margin-top: 0.75rem; display: flex; align-items: center; justify-content: space-between;
+  gap: 0.75rem; flex-wrap: wrap;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem;
+}
+.poster-info { display: grid; gap: 0.15rem; min-width: 0; }
+.poster-name { font-size: 0.9rem; font-weight: 700; word-break: break-word; }
+.poster-meta { color: var(--muted); font-size: 0.75rem; }
+.poster-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+
 .error-list { margin-top: 0.75rem; display: grid; gap: 0.4rem; max-height: 500px; overflow-y: auto; padding-right: 0.3rem; }
 .err-row { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .err-row summary { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.7rem; cursor: pointer; list-style: none; }
@@ -502,11 +513,29 @@ h1, h3 { margin: 0; }
 .err-student { background: #1e3a8a; color: #bfdbfe; }
 .err-vendor { background: #4c1d95; color: #ddd6fe; }
 .err-admin { background: #134e4a; color: #99f6e4; }
-.err-msg { flex: 1; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Two lines per collapsed row: the raw message, then what it was for / who hit
+   it. min-width:0 is what lets the ellipsis work inside the flex summary. */
+.err-lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.err-msg { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.err-sub { color: var(--muted); font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.err-count {
+  flex-shrink: 0; font-size: 0.68rem; font-weight: 800; color: var(--bad);
+  border: 1px solid var(--bad); border-radius: 999px; padding: 0.1rem 0.4rem;
+}
 .err-when { color: var(--muted); font-size: 0.72rem; white-space: nowrap; }
-.err-detail { padding: 0 0.7rem 0.7rem; }
+.err-detail { padding: 0 0.7rem 0.7rem; display: grid; gap: 0.5rem; }
 .err-where { color: var(--muted); font-size: 0.78rem; margin: 0.2rem 0; font-family: ui-monospace, Menlo, Consolas, monospace; }
 .err-detail pre { background: #0b1220; border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem; font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 0; color: #cbd5e1; }
+
+/* The answer-first block: labelled facts, two columns on a wide screen. */
+.err-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.35rem 1rem; margin: 0.2rem 0 0; }
+.err-fact { display: grid; gap: 0.1rem; min-width: 0; }
+.err-fact-wide { grid-column: 1 / -1; }
+.err-fact dt { font-size: 0.65rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.err-fact dd { margin: 0; font-size: 0.8rem; word-break: break-word; }
+.err-block h4 { margin: 0 0 0.25rem; font-size: 0.65rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.err-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.err-id { color: var(--muted); font-size: 0.65rem; font-family: ui-monospace, Menlo, Consolas, monospace; }
 
 /* ---------- enable-notifications popup ---------- */
 /* Full-screen dim + centered card, above the sticky topbar (z-index:5). Opened by
@@ -641,6 +670,12 @@ h1, h3 { margin: 0; }
   .referral-row .app-when, .grant-row .app-when { display: none; }
   .referral-row, .grant-row { align-items: flex-start; gap: 0.5rem; padding: 0.65rem; }
 
+  /* Stack the poster card: side-by-side leaves the filename a few characters
+     wide next to four buttons. Buttons stay full-width targets. */
+  .poster-row { flex-direction: column; align-items: stretch; }
+  .poster-actions { width: 100%; }
+  .poster-actions > button { flex: 1 1 8rem; min-height: 2.5rem; }
+
   .err-filter { min-height: 2.5rem; padding-inline: 0.75rem; }
   .card-note-row { align-items: flex-start; flex-wrap: wrap; }
   .btn-clear { min-height: 2.5rem; margin-top: 0; }
@@ -649,10 +684,13 @@ h1, h3 { margin: 0; }
     gap: 0.25rem 0.45rem; padding: 0.5rem;
   }
   .err-badge { grid-column: 1; grid-row: 1; }
-  .err-msg { grid-column: 2; grid-row: 1; }
+  .err-lines { grid-column: 2; grid-row: 1; }
   .err-del { grid-column: 3; grid-row: 1 / span 2; align-self: center; width: 2.75rem; height: 2.75rem; }
+  .err-count { grid-column: 1; grid-row: 2; justify-self: start; }
   .err-when { grid-column: 2; grid-row: 2; white-space: normal; }
   .err-detail { padding: 0 0.5rem 0.5rem; }
+  /* One column of facts — two would leave every value a few characters wide. */
+  .err-facts { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {

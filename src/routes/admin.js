@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { requireAdmin } from '../middleware/auth.js';
+import { requireAdmin, isAdminEmail } from '../middleware/auth.js';
 import { geocode } from '../lib/geocode.js';
 import { getVapidPublicKey, notifyAdminEndpoint } from '../lib/push.js';
 import { isUuid } from '../lib/ids.js';
@@ -10,6 +10,10 @@ import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
 import { validReward, validRatio } from '../lib/rewards.js';
 import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
 import { validSignupConfig } from '../lib/signup-bonus.js';
+import {
+  getPoster, putPoster, deletePoster, readPoster, decodePosterBody,
+  POSTER_MAX_BYTES, POSTER_EXTENSIONS,
+} from '../lib/qr-poster.js';
 import { emitBalance } from '../lib/realtime.js';
 
 const router = Router();
@@ -1276,6 +1280,70 @@ router.post('/grants', async (req, res, next) => {
   }
 });
 
+/* ---------- the "scan here" QR poster ---------- */
+// One file, uploaded here and downloaded by every vendor terminal from its
+// Settings tab (GET /api/vendor/qr-poster). See src/lib/qr-poster.js for why it
+// lives in a private Supabase Storage bucket and not in a table.
+
+/** GET /api/admin/qr-poster — what vendors would download right now, if anything. */
+router.get('/qr-poster', async (req, res, next) => {
+  try {
+    const poster = await getPoster();
+    res.json({ poster, maxBytes: POSTER_MAX_BYTES, extensions: POSTER_EXTENSIONS });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PUT /api/admin/qr-poster  { filename, data }
+ * Replace the poster. `data` is the file base64-encoded (bare or as a data: URL)
+ * — this API takes JSON bodies only, and server.js mounts a larger parser for
+ * this one path. Whatever was there before is deleted once the new file lands.
+ */
+router.put('/qr-poster', async (req, res, next) => {
+  try {
+    const file = decodePosterBody(req.body);
+    if (file.error) return res.status(400).json({ error: 'BAD_FILE', message: file.error });
+
+    const poster = await putPoster(file);
+    res.json({ ok: true, poster });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/qr-poster/file
+ * The same bytes a terminal gets, so the operator can check what they published
+ * without signing into a vendor account. Streamed through the server; the bucket
+ * is private and stays that way.
+ */
+router.get('/qr-poster/file', async (req, res, next) => {
+  try {
+    const poster = await readPoster();
+    if (!poster) {
+      return res.status(404).json({ error: 'NO_POSTER', message: 'No QR poster has been published yet.' });
+    }
+    res.set('Content-Type', poster.contentType);
+    res.set('Content-Disposition', `attachment; filename="${poster.name}"`);
+    res.set('Content-Length', String(poster.bytes.length));
+    res.send(poster.bytes);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE /api/admin/qr-poster — take the download away from terminals. */
+router.delete('/qr-poster', async (req, res, next) => {
+  try {
+    const removed = await deletePoster();
+    res.json({ ok: true, removed });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /* ---------- web-push subscriptions (new-application alerts) ---------- */
 
 /**
@@ -1338,9 +1406,71 @@ router.post('/push/test', async (req, res, next) => {
 });
 
 /**
+ * Resolve the user ids on a page of error rows to something an operator can act
+ * on: an email, a name, and whether that person was a student, a vendor (which
+ * one), or another operator. A raw uuid in the log names nobody — it can't be
+ * searched for, emailed, or matched to the support message that prompted the
+ * look. Two lookups for the whole page, not one per row.
+ *
+ * Vendor logins have no profiles row (they're auth users linked through
+ * vendor_staff), so anyone still unidentified after the profiles join is looked
+ * up in auth directly — capped, because that call is one round trip per id.
+ */
+const ACTOR_AUTH_LOOKUPS = 20;
+
+async function resolveActors(userIds) {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  const actors = new Map();
+  if (!ids.length) return actors;
+
+  const [profiles, staff] = await Promise.all([
+    supabaseAdmin.from('profiles').select('user_id, name, email').in('user_id', ids),
+    supabaseAdmin.from('vendor_staff').select('user_id, vendors(name)').in('user_id', ids),
+  ]);
+
+  for (const p of profiles.data ?? []) {
+    actors.set(p.user_id, { id: p.user_id, email: p.email ?? null, name: p.name ?? null, role: 'student' });
+  }
+  // A vendor link wins over a profiles row: an operator who also has a student
+  // profile is far less confusing labelled by the terminal they were using.
+  for (const s of staff.data ?? []) {
+    const prev = actors.get(s.user_id);
+    actors.set(s.user_id, {
+      id: s.user_id,
+      email: prev?.email ?? null,
+      name: prev?.name ?? null,
+      role: 'vendor',
+      vendor: s.vendors?.name ?? null,
+    });
+  }
+
+  const unknown = ids.filter((id) => !actors.get(id)?.email).slice(0, ACTOR_AUTH_LOOKUPS);
+  await Promise.all(unknown.map(async (id) => {
+    try {
+      const { data } = await supabaseAdmin.auth.admin.getUserById(id);
+      const u = data?.user;
+      if (!u) return;
+      const prev = actors.get(id);
+      actors.set(id, {
+        id,
+        email: u.email ?? null,
+        name: prev?.name ?? u.user_metadata?.full_name ?? u.user_metadata?.name ?? null,
+        role: prev?.role ?? (isAdminEmail(u.email) ? 'admin' : 'unknown'),
+        ...(prev?.vendor ? { vendor: prev.vendor } : {}),
+      });
+    } catch { /* best-effort: the row still renders, just without a name */ }
+  }));
+
+  return actors;
+}
+
+/**
  * GET /api/admin/errors?source=&limit=
  * The most recent error_logs rows (server 500s + client-reported errors),
  * newest first. Optional `source` filter (server|student|vendor|admin).
+ *
+ * Each row carries an `actor` (who hit it) so the dashboard can say who and
+ * where, not just what — see resolveActors above.
  */
 router.get('/errors', async (req, res, next) => {
   try {
@@ -1357,7 +1487,12 @@ router.get('/errors', async (req, res, next) => {
     }
     const { data, error } = await q;
     if (error) throw error;
-    res.json(data);
+
+    const actors = await resolveActors((data ?? []).map((r) => r.user_id));
+    res.json((data ?? []).map((r) => ({
+      ...r,
+      actor: r.user_id ? actors.get(r.user_id) ?? { id: r.user_id, role: 'unknown' } : null,
+    })));
   } catch (err) {
     next(err);
   }

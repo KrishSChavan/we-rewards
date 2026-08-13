@@ -127,6 +127,15 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
 
+/**
+ * Is this address on the operator allowlist? Not a gate — adminRejection below
+ * is the gate, and it checks more than the address. This is for LABELLING a
+ * known user (e.g. naming who an error log belongs to), where the only question
+ * is whether the address is one of ours.
+ */
+export const isAdminEmail = (email) =>
+  !!email && ADMIN_EMAILS.includes(String(email).toLowerCase());
+
 // Identity providers accepted for /admin. The dashboard offers exactly one way
 // in — signInWithOAuth({ provider: 'google' }) in public/admin/admin.js — so a
 // real operator session always carries a Google identity.

@@ -11,6 +11,7 @@ import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupVendorAnalytics } from '../lib/analytics.js';
 import { validReward, validRatio } from '../lib/rewards.js';
+import { getPoster, readPoster } from '../lib/qr-poster.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
@@ -1103,6 +1104,47 @@ router.patch('/settings', requirePin, async (req, res, next) => {
     }
 
     res.json({ ...settingsView(data), pinChanged });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- the "scan here" QR poster ---------- */
+// The operator uploads one file in /admin; every terminal downloads that same
+// file from its Settings tab and prints it for the counter. Deliberately NOT
+// PIN-gated: the poster is public-facing artwork, and a shift that can't
+// remember the PIN still needs to be able to reprint the sign. It is still
+// vendor-authenticated (the whole router is), so the bucket stays private.
+
+/** GET /api/vendor/qr-poster — is there a poster, and what is it? */
+router.get('/qr-poster', async (req, res, next) => {
+  try {
+    const poster = await getPoster();
+    res.json({ poster });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/vendor/qr-poster/file
+ * The bytes, streamed through the server so the storage bucket can stay private
+ * — the terminal never sees a Supabase URL. Content-Disposition carries the
+ * operator's own filename, so the download lands with a name that means
+ * something on a counter iPad.
+ */
+router.get('/qr-poster/file', async (req, res, next) => {
+  try {
+    const poster = await readPoster();
+    if (!poster) {
+      return res.status(404).json({ error: 'NO_POSTER', message: 'No QR poster has been published yet.' });
+    }
+    res.set('Content-Type', poster.contentType);
+    // Quoted + ASCII-sanitised: validPosterName already keeps the stored name to
+    // safe characters, so this can't break the header.
+    res.set('Content-Disposition', `attachment; filename="${poster.name}"`);
+    res.set('Content-Length', String(poster.bytes.length));
+    res.send(poster.bytes);
   } catch (err) {
     next(err);
   }

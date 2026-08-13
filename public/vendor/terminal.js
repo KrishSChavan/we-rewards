@@ -63,6 +63,25 @@ const $ = (id) => document.getElementById(id);
 /* ---------- client crash reporting ---------- */
 // Uncaught errors + rejections post to /api/client-error → the operator /admin
 // error log. Best-effort, non-blocking.
+// What the terminal was doing when it crashed. A line/column number alone can't
+// be acted on from /admin — which tab was up, which vendor, and whether it was
+// the installed app or a browser tab is what makes a report reproducible.
+// Wrapped in try/catch and never allowed to throw: this runs INSIDE the error
+// handler, so a failure here would swallow the report it was decorating.
+function crashContext(extra) {
+  const ctx = { ...extra };
+  try {
+    const open = screens.find((s) => $(s) && !$(s).hidden);
+    if (open) ctx.screen = open.replace('screen-', '');
+    if (config?.name) ctx.vendor = config.name;
+    ctx.installed = window.matchMedia?.('(display-mode: standalone)')?.matches === true
+      || window.navigator.standalone === true;
+    ctx.online = navigator.onLine;
+    ctx.viewport = `${window.innerWidth}x${window.innerHeight}`;
+  } catch { /* report what we have */ }
+  return ctx;
+}
+
 function installErrorReporter() {
   const send = async (message, stack, context) => {
     let auth = {};
@@ -73,7 +92,7 @@ function installErrorReporter() {
     fetch('/api/client-error', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify({ source: 'vendor', message, stack, url: location.pathname, context }),
+      body: JSON.stringify({ source: 'vendor', message, stack, url: location.pathname, context: crashContext(context) }),
     }).catch(() => {});
   };
   window.addEventListener('error', (e) => send(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno }));
@@ -127,6 +146,7 @@ const screens = [
   $('set-exact').addEventListener('click', () => { toggleSwitch($('set-exact')); refreshSettingsDirty(); });
   $('set-logo-input').addEventListener('change', onLogoPick);
   $('set-logo-remove').addEventListener('click', removeLogo);
+  $('poster-download').addEventListener('click', downloadPoster);
   $('signout-btn').addEventListener('click', openSignOutConfirm);
   $('signout-cancel').addEventListener('click', closeSignOutConfirm);
   $('signout-go').addEventListener('click', signOut);
@@ -2322,6 +2342,82 @@ let loadedSettings = null;   // last-loaded server state, for the Reset button
 function enterSettings() {
   show('screen-settings');
   loadSettings();
+  loadPoster();
+}
+
+/* ---- scan-here QR poster ----
+   One file, published by WeRewards in the operator dashboard, downloaded here
+   and printed for the counter. The bucket it lives in is private, so the bytes
+   come through the API with this terminal's own auth (GET .../file) rather than
+   from a link - which is why the button fetches a blob instead of being an <a>.
+   Deliberately outside the batched Save: nothing here changes vendor settings. */
+
+let posterInfo = null;
+
+async function loadPoster() {
+  const line = $('poster-file-line');
+  const btn = $('poster-download');
+  try {
+    const res = await authFetch('/api/vendor/qr-poster');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error('unavailable');
+    posterInfo = data.poster ?? null;
+  } catch {
+    posterInfo = null;
+    // A failed lookup is not the same as "there is no poster" - say so, and
+    // leave the button disabled rather than promising a download that 404s.
+    line.textContent = 'Could not check for the poster. Reopen Settings to try again.';
+    line.hidden = false;
+    btn.disabled = true;
+    return;
+  }
+
+  if (!posterInfo) {
+    line.textContent = 'No poster has been published yet. Check back soon.';
+    line.hidden = false;
+    btn.disabled = true;
+    return;
+  }
+  const kb = posterInfo.size ? ` (${formatFileSize(posterInfo.size)})` : '';
+  line.textContent = `Ready to download: ${posterInfo.name}${kb}`;
+  line.hidden = false;
+  btn.disabled = false;
+}
+
+function formatFileSize(n) {
+  if (!Number.isFinite(n)) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+async function downloadPoster() {
+  const btn = $('poster-download');
+  const msg = $('poster-msg');
+  msg.hidden = true;
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Downloading...';
+  try {
+    const res = await authFetch('/api/vendor/qr-poster/file');
+    if (!res.ok) throw new Error('download failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = posterInfo?.name || 'werewards-qr-poster';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoked late: Safari can still be reading the blob when click() returns.
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch {
+    msg.textContent = 'Could not download the poster. Check the internet and try again.';
+    msg.hidden = false;
+  } finally {
+    btn.textContent = label;
+    btn.disabled = false;
+  }
 }
 
 /* ---- unsaved-changes guard ----

@@ -138,6 +138,30 @@
         <div id="vendor-list" class="vendor-list"></div>
       </div>
 
+      <!-- scan-here QR poster: one file, published here, downloaded by every terminal -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Scan-here QR poster</h3>
+          <span id="poster-state" class="chart-max"></span>
+        </div>
+        <p class="muted">The file every vendor downloads from <strong>Settings → Scan-here QR poster</strong> on their terminal, to print and put up for students to scan. Upload one file — a ZIP of print-ready artwork, a PDF, or an image — and it replaces whatever terminals were getting before. Up to 10 MB.</p>
+        <p id="poster-error" class="field-error" role="alert" hidden></p>
+        <div class="poster-row">
+          <div class="poster-info">
+            <span id="poster-name" class="poster-name">Nothing published yet</span>
+            <span id="poster-meta" class="poster-meta">Terminals see no download until you publish a file.</span>
+          </div>
+          <div class="poster-actions">
+            <button id="poster-pick" class="btn-ghost btn-compact" type="button">Choose file</button>
+            <input id="poster-file" type="file" accept=".zip,.pdf,.png,.jpg,.jpeg,.webp" hidden />
+            <button id="poster-upload" class="btn-primary btn-compact" type="button" hidden>Publish</button>
+            <button id="poster-cancel" class="btn-ghost btn-compact" type="button" hidden>Cancel</button>
+            <button id="poster-download" class="btn-ghost btn-compact" type="button" hidden>Download</button>
+            <button id="poster-remove" class="btn-clear" type="button" hidden>Remove</button>
+          </div>
+        </div>
+      </div>
+
       <!-- errors -->
       <div class="card">
         <div class="card-head">
@@ -151,7 +175,7 @@
           </div>
         </div>
         <div class="card-note-row">
-          <p class="muted">Server 500s and client crashes (tap a row for the stack). Newest first.</p>
+          <p class="muted">Server 500s and client crashes, newest first. Tap a row to see what the request was for, who hit it, what it carried, and the stack — <strong>Copy details</strong> puts all of it on the clipboard. <strong>×N</strong> marks a failure that appears more than once in this view.</p>
           <button id="clear-errors-btn" class="btn-clear" type="button">Clear all</button>
         </div>
         <div id="error-list" class="error-list"></div>

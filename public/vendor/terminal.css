@@ -511,6 +511,9 @@ button { font-family: inherit; border: none; cursor: pointer; }
 }
 .manage-head h2 { font-size: 2rem; font-weight: 900; }
 .manage-note { width: min(50rem, 100%); color: var(--muted); font-size: 1rem; font-weight: 500; }
+/* Which poster file is on offer, above the download button. Darker than the
+   surrounding notes because it is live state, not standing explanation. */
+.poster-file-line { color: var(--ink); font-weight: 700; }
 .btn-compact { font-size: 1.2rem; padding: 0.9rem 1.4rem; }
 
 .reward-list { width: min(50rem, 100%); display: flex; flex-direction: column; gap: 0.8rem; }

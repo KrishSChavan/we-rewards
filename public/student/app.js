@@ -60,6 +60,24 @@ const $ = (id) => document.getElementById(id);
 // Uncaught errors + promise rejections post to /api/client-error so they land in
 // the same error log the operator /admin dashboard reads. Best-effort: attaches
 // the auth token if we have a session, never blocks, never throws.
+// What the app was doing when it crashed, so /admin shows more than a line
+// number: which tab was open, installed-vs-browser, and whether the phone was
+// even online. Never allowed to throw — it runs inside the error handler, and a
+// failure here would swallow the report it was decorating.
+const TAB_NAMES = ['home', 'history', 'account'];
+
+function crashContext(extra) {
+  const ctx = { ...extra };
+  try {
+    ctx.tab = TAB_NAMES[activeTab] ?? String(activeTab);
+    ctx.installed = window.matchMedia?.('(display-mode: standalone)')?.matches === true
+      || window.navigator.standalone === true;
+    ctx.online = navigator.onLine;
+    ctx.viewport = `${window.innerWidth}x${window.innerHeight}`;
+  } catch { /* report what we have */ }
+  return ctx;
+}
+
 function installErrorReporter() {
   const send = async (message, stack, context) => {
     let auth = {};
@@ -70,7 +88,7 @@ function installErrorReporter() {
     fetch('/api/client-error', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify({ source: 'student', message, stack, url: location.pathname, context }),
+      body: JSON.stringify({ source: 'student', message, stack, url: location.pathname, context: crashContext(context) }),
     }).catch(() => {});
   };
   window.addEventListener('error', (e) => send(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno }));

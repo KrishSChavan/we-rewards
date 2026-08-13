@@ -470,6 +470,21 @@
             <p class="manage-note">Shown next to your name on customers' cards. Square images look best, since we shrink it to a small icon.</p>
           </div>
 
+          <!-- Print-and-put-up QR poster. The file itself is published by
+               WeRewards in the operator dashboard and served from
+               GET /api/vendor/qr-poster/file, so every terminal downloads the
+               same current artwork without an app update. Not part of the
+               batched "Save settings" - it is a download, not a setting. -->
+          <div class="stats-card">
+            <h3>Scan-here QR poster</h3>
+            <p class="manage-note">Download this, print it, and put it up where customers can see it. They scan it with their phone camera to get the WeRewards app and start earning at your spot.</p>
+            <p id="poster-file-line" class="manage-note poster-file-line" hidden></p>
+            <p id="poster-msg" class="field-error" hidden></p>
+            <div class="pad-actions">
+              <button id="poster-download" class="btn-primary btn-compact" type="button" disabled>Download poster</button>
+            </div>
+          </div>
+
           <div class="stats-card" data-card="punch">
             <div class="setting-row">
               <span class="setting-label">

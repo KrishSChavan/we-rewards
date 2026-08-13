@@ -14,6 +14,8 @@ let applications = [];  // pending vendor applications (the Applications tab)
 let incentives = [];    // operator-created deals (the Incentives tab)
 let referrals = [];     // newest referrals, both sides named
 let grants = [];        // the community-point payout ledger
+let poster = null;      // the published scan-here QR file, or null
+let pendingPoster = null; // a file chosen but not published yet
 let vapidKey = null;    // server's public VAPID key; null = push disabled
 let pushEndpoint = null;
 let pushInitDone = false;
@@ -83,6 +85,12 @@ const $ = (id) => document.getElementById(id);
     if (!$('vendor-modal').hidden) closeVendorModal();
     if (!$('new-vendor-modal').hidden) closeNewVendorModal();
   });
+  $('poster-pick').addEventListener('click', () => $('poster-file').click());
+  $('poster-file').addEventListener('change', onPosterPick);
+  $('poster-upload').addEventListener('click', publishPoster);
+  $('poster-cancel').addEventListener('click', () => { pendingPoster = null; renderPoster(); });
+  $('poster-download').addEventListener('click', downloadPoster);
+  $('poster-remove').addEventListener('click', removePoster);
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
 
@@ -177,7 +185,7 @@ async function loadAll() {
   if (ok) {
     await Promise.all([
       loadVendors(), loadErrors(), loadApplications(),
-      loadIncentives(), loadReferrals(), loadGrants(),
+      loadIncentives(), loadReferrals(), loadGrants(), loadPoster(),
     ]);
     initPush();   // best-effort, runs once — after admin access is confirmed
   }
@@ -2070,6 +2078,185 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
 }
 
+/* ---------- scan-here QR poster ---------- */
+// One file for the whole platform: published here, downloaded by every vendor
+// terminal from its Settings tab and printed for the counter. Kept in a private
+// Supabase Storage bucket (src/lib/qr-poster.js) — the browser never talks to
+// storage directly, both ways go through /api/admin/qr-poster.
+
+const POSTER_MAX_BYTES = 10 * 1024 * 1024;          // keep in sync with src/lib/qr-poster.js
+const POSTER_TYPES = /\.(zip|pdf|png|jpe?g|webp)$/i; // …and with its TYPES table
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n)) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+function posterError(msg) {
+  const el = $('poster-error');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+async function loadPoster() {
+  const res = await authFetch('/api/admin/qr-poster');
+  if (res.status === 403) return denyAccess();
+  if (!res.ok) {
+    // Say so rather than leaving the card's default "Nothing published yet" up:
+    // that would read as "terminals have no poster", which we don't know.
+    posterError('Couldn’t check the published poster. Hit ↻ to try again.');
+    return;
+  }
+  const d = await res.json().catch(() => ({}));
+  poster = d.poster ?? null;
+  renderPoster();
+}
+
+// Three states, one renderer: nothing published, something published, or a file
+// chosen and waiting for Publish. The pending state deliberately hides Download
+// and Remove — they'd act on the OLD file while the name on screen is the new one.
+function renderPoster() {
+  const show = (id, on) => { $(id).hidden = !on; };
+
+  if (pendingPoster) {
+    $('poster-name').textContent = pendingPoster.name;
+    $('poster-meta').textContent = `${fmtBytes(pendingPoster.size)} · not published yet`;
+    $('poster-state').textContent = poster ? 'Will replace the live file' : 'Ready to publish';
+  } else if (poster) {
+    $('poster-name').textContent = poster.name;
+    $('poster-meta').textContent = [
+      fmtBytes(poster.size),
+      poster.updatedAt
+        ? `published ${new Date(poster.updatedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+        : '',
+    ].filter(Boolean).join(' · ');
+    $('poster-state').textContent = 'Live on every terminal';
+  } else {
+    $('poster-name').textContent = 'Nothing published yet';
+    $('poster-meta').textContent = 'Terminals see no download until you publish a file.';
+    $('poster-state').textContent = '';
+  }
+
+  $('poster-pick').textContent = poster || pendingPoster ? 'Choose a different file' : 'Choose file';
+  show('poster-upload', !!pendingPoster);
+  show('poster-cancel', !!pendingPoster);
+  show('poster-download', !!poster && !pendingPoster);
+  show('poster-remove', !!poster && !pendingPoster);
+}
+
+function onPosterPick(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';                 // let the same file be re-picked later
+  if (!file) return;
+  posterError('');
+  if (!POSTER_TYPES.test(file.name)) {
+    posterError('Use a ZIP, PDF, PNG, JPG or WEBP file.');
+    return;
+  }
+  if (file.size > POSTER_MAX_BYTES) {
+    posterError(`That file is too large (${fmtBytes(file.size)}). The limit is 10 MB.`);
+    return;
+  }
+  pendingPoster = file;
+  renderPoster();
+}
+
+/** File → base64 data URL, which is how the JSON-only API takes binary. */
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function publishPoster() {
+  if (!pendingPoster) return;
+  const btn = $('poster-upload');
+  btn.disabled = true;
+  btn.textContent = 'Publishing…';
+  posterError('');
+  try {
+    const data = await fileToDataUrl(pendingPoster);
+    const res = await authFetch('/api/admin/qr-poster', {
+      method: 'PUT',
+      body: JSON.stringify({ filename: pendingPoster.name, data }),
+    });
+    if (res.status === 403) return denyAccess();
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      posterError(d.message || 'Couldn’t publish that file. Try again.');
+      return;
+    }
+    poster = d.poster ?? null;
+    pendingPoster = null;
+    renderPoster();
+  } catch {
+    posterError('Couldn’t publish that file. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Publish';
+  }
+}
+
+// Same bytes a terminal gets, so the operator can check what they published.
+// Streamed through the API (the bucket is private), so it needs the auth header
+// — which rules out a plain link and makes this a fetch + object URL.
+async function downloadPoster() {
+  const btn = $('poster-download');
+  btn.disabled = true;
+  posterError('');
+  try {
+    const res = await authFetch('/api/admin/qr-poster/file');
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      posterError('Couldn’t download that file. Try again.');
+      return;
+    }
+    saveBlob(await res.blob(), poster?.name || 'werewards-qr-poster');
+  } catch {
+    posterError('Couldn’t download that file. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked late: Safari can still be reading the blob when the click returns.
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+async function removePoster() {
+  if (!confirm('Remove the QR poster? Terminals will have nothing to download until you publish another one.')) return;
+  const btn = $('poster-remove');
+  btn.disabled = true;
+  posterError('');
+  try {
+    const res = await authFetch('/api/admin/qr-poster', { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      posterError('Couldn’t remove that file. Try again.');
+      return;
+    }
+    poster = null;
+    renderPoster();
+  } catch {
+    posterError('Couldn’t remove that file. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ---------- error log ---------- */
 
 function setErrorSource(src) {
@@ -2087,39 +2274,244 @@ async function loadErrors() {
   renderErrors(await res.json());
 }
 
+/* What a failing request was FOR, in the operator's language. A row that reads
+   "POST /api/vendor/redeem" tells you nothing unless you already know the
+   codebase; "Terminal · redeeming a reward" is answerable from the dashboard.
+   Matched against the path with ids normalised out, longest-specific first
+   (/deals/read before /deals, /redeem-preview before /redeem). */
+const ERROR_ACTIONS = [
+  // student app → /api/me/*
+  [/^\/api\/me\/balances/,           'Student app · loading points and rewards'],
+  [/^\/api\/me\/consent/,            'Student app · checking terms acceptance'],
+  [/^\/api\/me\/accept-terms/,       'Student · accepting the terms'],
+  [/^\/api\/me\/decline/,            'Student · declining the terms (account wipe)'],
+  [/^\/api\/me\/punch/,              'Student · counting a visit'],
+  [/^\/api\/me\/receipt/,            'Student · scanning a receipt for points'],
+  [/^\/api\/me\/earn-code/,          'Student · showing their code at the counter'],
+  [/^\/api\/me\/redeem-code/,        'Student · starting a reward redemption'],
+  [/^\/api\/me\/tier/,               'Student app · loading tier progress'],
+  [/^\/api\/me\/community-transfer/, 'Student · moving community points to a spot'],
+  [/^\/api\/me\/community/,          'Student app · loading community points'],
+  [/^\/api\/me\/referral/,           'Student · invite code (loading or entering one)'],
+  [/^\/api\/me\/history/,            'Student app · loading transaction history'],
+  [/^\/api\/me\/deals\/(read|open)/, 'Student · opening a deal'],
+  [/^\/api\/me\/deals/,              'Student app · loading deals'],
+  [/^\/api\/me\/push/,               'Student · push notification subscription'],
+  [/^\/api\/me\/notify/,             'Student · notification settings'],
+  [/^\/api\/me\/export/,             'Student · exporting their data'],
+  [/^\/api\/me\/delete/,             'Student · deleting their account'],
+  // vendor terminal → /api/vendor/*
+  [/^\/api\/vendor\/recover/,        'Vendor · password recovery (locked out)'],
+  [/^\/api\/vendor\/config/,         'Terminal · signing in / loading its setup'],
+  [/^\/api\/vendor\/punch-token/,    'Terminal · refreshing the rotating visit code'],
+  [/^\/api\/vendor\/scan/,           'Terminal · scanning a customer code'],
+  [/^\/api\/vendor\/award/,          'Terminal · awarding points for a purchase'],
+  [/^\/api\/vendor\/redeem-preview/, 'Terminal · previewing a redemption'],
+  [/^\/api\/vendor\/redeem/,         'Terminal · redeeming a reward'],
+  [/^\/api\/vendor\/reverse/,        'Terminal · undoing a transaction'],
+  [/^\/api\/vendor\/visit-impact/,   'Terminal · visits analytics'],
+  [/^\/api\/vendor\/rewards/,        'Terminal · editing reward items'],
+  [/^\/api\/vendor\/verify-pin/,     'Terminal · staff PIN check'],
+  [/^\/api\/vendor\/recent/,         'Terminal · loading recent activity'],
+  [/^\/api\/vendor\/analytics/,      'Terminal · loading the STATS tab'],
+  [/^\/api\/vendor\/campaigns/,      'Terminal · deals (sending or loading)'],
+  [/^\/api\/vendor\/settings/,       'Terminal · loading or saving settings'],
+  [/^\/api\/vendor\/qr-poster/,      'Terminal · downloading the scan-here QR poster'],
+  // operator dashboard → /api/admin/*
+  [/^\/api\/admin\/overview/,        'Admin · loading platform stats'],
+  [/^\/api\/admin\/vendors\/[^/]+\/rewards/, 'Admin · editing a vendor’s rewards'],
+  [/^\/api\/admin\/vendors\/[^/]+\/reset-code/, 'Admin · minting a vendor password-reset code'],
+  [/^\/api\/admin\/vendors/,         'Admin · adding, editing or removing a vendor'],
+  [/^\/api\/admin\/applications/,    'Admin · vendor applications'],
+  [/^\/api\/admin\/incentives/,      'Admin · signup / referral incentives'],
+  [/^\/api\/admin\/referrals/,       'Admin · referral payouts'],
+  [/^\/api\/admin\/grants/,          'Admin · granting community points'],
+  [/^\/api\/admin\/qr-poster/,       'Admin · the scan-here QR poster file'],
+  [/^\/api\/admin\/push/,            'Admin · alert notifications'],
+  [/^\/api\/admin\/errors/,          'Admin · this error log'],
+  // public / shared
+  [/^\/api\/apply/,                  'Public /join page · a vendor applying'],
+  [/^\/api\/punch/,                  'Phone-camera visit scan (sign-in handoff)'],
+  [/^\/api\/vendor-logo/,            'Serving a vendor logo image'],
+  [/^\/api\/public-config/,          'App boot · public config'],
+  [/^\/api\/client-(error|event)/,   'A client reporting its own crash'],
+  [/^\/api\/health/,                 'Uptime health check'],
+  // client rows carry a PAGE url, not an API path
+  [/^\/terminal/,                    'Vendor terminal app'],
+  [/^\/admin/,                       'Operator dashboard'],
+  [/^\/scan/,                        'Backup scan screen (older iPads)'],
+  [/^\/join/,                        'Public vendor application page'],
+  [/^\/legal/,                       'Terms / privacy document'],
+  [/^\/(index\.html)?$/,             'Student app'],
+];
+
+// uuids and numeric ids collapse to placeholders so one label covers every row.
+function normalizeErrPath(path) {
+  return String(path || '').split('?')[0]
+    .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '/:id')
+    .replace(/\/\d+(?=\/|$)/g, '/:n');
+}
+
+function describeAction(e) {
+  const p = normalizeErrPath(e.path);
+  if (!p) return null;
+  const hit = ERROR_ACTIONS.find(([re]) => re.test(p));
+  return hit ? hit[1] : null;
+}
+
+// Rough but useful: which browser on which device. The full UA string is still
+// shown underneath, so a wrong guess costs nothing.
+function describeDevice(ua) {
+  if (!ua) return null;
+  const browser =
+    /Edg\//.test(ua) ? 'Edge'
+    : /OPR\//.test(ua) ? 'Opera'
+    : /CriOS\//.test(ua) ? 'Chrome (iOS)'
+    : /FxiOS\//.test(ua) ? 'Firefox (iOS)'
+    : /Firefox\//.test(ua) ? 'Firefox'
+    : /Chrome\//.test(ua) ? 'Chrome'
+    : /Safari\//.test(ua) ? 'Safari'
+    : null;
+  const version = (/(?:Version|Edg|OPR|CriOS|FxiOS|Firefox|Chrome)\/(\d+)/.exec(ua) || [])[1];
+  const os =
+    /iPhone/.test(ua) ? 'iPhone'
+    : /iPad/.test(ua) ? 'iPad'
+    : /Android/.test(ua) ? 'Android'
+    : /Macintosh/.test(ua) ? 'Mac'
+    : /Windows/.test(ua) ? 'Windows'
+    : /Linux/.test(ua) ? 'Linux'
+    : null;
+  const parts = [browser && version ? `${browser} ${version}` : browser, os].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+// "4 minutes ago" reads faster than a timestamp when you're scanning for what
+// just broke; the exact time is right next to it.
+function relTime(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return '';
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
+  const days = Math.round(hrs / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function describeActor(actor) {
+  if (!actor) return 'Signed out (or before sign-in)';
+  const role = actor.role === 'vendor' ? (actor.vendor ? `vendor · ${actor.vendor}` : 'vendor staff')
+    : actor.role === 'admin' ? 'operator'
+    : actor.role === 'student' ? 'student'
+    : 'unknown account';
+  const who = actor.email || actor.name || actor.id;
+  return `${who} — ${role}`;
+}
+
+/** One <dt>/<dd> pair, skipped entirely when there's nothing to say. */
+function fact(label, value, cls) {
+  if (!value) return '';
+  return `<div class="err-fact${cls ? ` ${cls}` : ''}"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
+}
+
 function renderErrors(items) {
   const wrap = $('error-list');
   if (!items.length) {
     wrap.innerHTML = `<p class="muted">No errors logged${errorSource ? ` for “${errorSource}”` : ''}. 🎉</p>`;
     return;
   }
+  // How often the same failure appears in what we just loaded. One row saying
+  // "×14" is the difference between a fluke and something actively broken.
+  const repeats = new Map();
+  items.forEach((e) => {
+    const k = `${e.source}|${e.message}`;
+    repeats.set(k, (repeats.get(k) ?? 0) + 1);
+  });
+
   wrap.innerHTML = '';
   items.forEach((e) => {
-    const when = new Date(e.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    const where = e.method ? `${e.method} ${e.path ?? ''}` : (e.path ?? '');
-    const details = [
-      e.stack ? `STACK\n${e.stack}` : '',
-      e.user_id ? `user: ${e.user_id}` : '',
-      e.user_agent ? `ua: ${e.user_agent}` : '',
-      e.context ? `context: ${JSON.stringify(e.context)}` : '',
-    ].filter(Boolean).join('\n\n');
+    const when = new Date(e.created_at);
+    const shortWhen = when.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const fullWhen = when.toLocaleString([], {
+      weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+      hour: 'numeric', minute: '2-digit', second: '2-digit',
+    });
+    const action = describeAction(e);
+    const where = [e.method, e.path].filter(Boolean).join(' ');
+    const count = repeats.get(`${e.source}|${e.message}`) ?? 1;
+    const ctx = e.context && typeof e.context === 'object' ? { ...e.context } : null;
+    // Two context fields graduate to their own labelled rows — they answer
+    // "where in the app" and "which page" better than a JSON blob does.
+    const screen = ctx?.screen || ctx?.tab || ctx?.view || null;
+    const referer = ctx?.referer || null;
+    if (ctx) { delete ctx.referer; delete ctx.actorEmail; delete ctx.actorId; }
 
     const row = document.createElement('details');
     row.className = 'err-row';
     row.innerHTML = `
       <summary>
         <span class="err-badge err-${escapeHtml(e.source)}">${escapeHtml(e.source)}</span>
-        <span class="err-msg">${escapeHtml(e.message)}</span>
-        <span class="err-when">${escapeHtml(when)}</span>
+        <span class="err-lines">
+          <span class="err-msg">${escapeHtml(e.message)}</span>
+          <span class="err-sub">${escapeHtml(action || where || 'unknown request')}${
+            e.status ? ` · ${escapeHtml(String(e.status))}` : ''
+          }${e.actor?.email ? ` · ${escapeHtml(e.actor.email)}` : ''}</span>
+        </span>
+        ${count > 1 ? `<span class="err-count" title="${count} of these in the log">×${count}</span>` : ''}
+        <span class="err-when" title="${escapeHtml(fullWhen)}">${escapeHtml(shortWhen)}</span>
         <button class="err-del" type="button" title="Delete this error" aria-label="Delete this error">×</button>
       </summary>
       <div class="err-detail">
-        <p class="err-where">${escapeHtml(where || 'unknown')}${e.status ? ` · ${e.status}` : ''}</p>
-        ${details ? `<pre>${escapeHtml(details)}</pre>` : ''}
+        <dl class="err-facts">
+          ${fact('What broke', e.message, 'err-fact-wide')}
+          ${fact('What it was for', action)}
+          ${fact('Request', `${where || 'unknown'}${e.status ? ` → ${e.status}` : ''}`)}
+          ${fact('Who', describeActor(e.actor))}
+          ${fact('Where in the app', screen)}
+          ${fact('Page', referer)}
+          ${fact('When', `${fullWhen} · ${relTime(e.created_at)}`)}
+          ${fact('Device', describeDevice(e.user_agent))}
+          ${fact('Seen', count > 1 ? `${count} times in this view` : 'once in this view')}
+        </dl>
+        ${ctx && Object.keys(ctx).length
+          ? `<div class="err-block"><h4>What the request carried</h4><pre>${escapeHtml(JSON.stringify(ctx, null, 2))}</pre></div>`
+          : ''}
+        ${e.stack ? `<div class="err-block"><h4>Stack</h4><pre>${escapeHtml(e.stack)}</pre></div>` : ''}
+        ${e.user_agent ? `<div class="err-block"><h4>User agent</h4><pre>${escapeHtml(e.user_agent)}</pre></div>` : ''}
+        <div class="err-actions">
+          <button class="err-copy btn-ghost btn-compact" type="button">Copy details</button>
+          <span class="err-id">${escapeHtml(e.id)}</span>
+        </div>
       </div>`;
     row.querySelector('.err-del').addEventListener('click', (ev) => deleteError(e.id, row, ev));
+    row.querySelector('.err-copy').addEventListener('click', (ev) => copyErrorDetail(e, ev));
     wrap.appendChild(row);
   });
+}
+
+// Everything about one error as plain text, for pasting into a bug report or a
+// message to whoever owns the failing code.
+async function copyErrorDetail(e, ev) {
+  const btn = ev.currentTarget;
+  const text = [
+    `[${e.source}] ${e.message}`,
+    `What it was for: ${describeAction(e) || 'unknown'}`,
+    `Request: ${[e.method, e.path].filter(Boolean).join(' ') || 'unknown'}${e.status ? ` → ${e.status}` : ''}`,
+    `Who: ${describeActor(e.actor)}`,
+    `When: ${new Date(e.created_at).toISOString()}`,
+    `Device: ${describeDevice(e.user_agent) || 'unknown'} — ${e.user_agent || 'no user agent'}`,
+    e.context ? `Context: ${JSON.stringify(e.context, null, 2)}` : '',
+    e.stack ? `Stack:\n${e.stack}` : '',
+    `Log id: ${e.id}`,
+  ].filter(Boolean).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'Copied';
+  } catch {
+    btn.textContent = 'Press ⌘/Ctrl+C';
+  }
+  setTimeout(() => { btn.textContent = 'Copy details'; }, 2000);
 }
 
 // Permanently delete one error_logs row. The X lives inside <summary>, so we
@@ -2166,11 +2558,22 @@ async function clearErrors() {
 
 /* ---------- report this page's own errors ---------- */
 
+// Which tab was open when the dashboard itself crashed — the same "what was it
+// for" the rows above show for everyone else's errors. Never throws.
+function crashContext(extra) {
+  const ctx = { ...extra };
+  try {
+    ctx.view = VIEWS.find((v) => !$(`view-${v}`)?.hidden) ?? null;
+    ctx.online = navigator.onLine;
+  } catch { /* report what we have */ }
+  return ctx;
+}
+
 function installErrorReporter() {
   const send = (message, stack, context) => {
     authFetch('/api/client-error', {
       method: 'POST',
-      body: JSON.stringify({ source: 'admin', message, stack, url: location.pathname, context }),
+      body: JSON.stringify({ source: 'admin', message, stack, url: location.pathname, context: crashContext(context) }),
     }).catch(() => {});
   };
   window.addEventListener('error', (e) =>
