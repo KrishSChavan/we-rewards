@@ -3356,6 +3356,11 @@ function openPinSheet(vendorId, pan) {
 function closePinSheet(instant = false) {
   const sheet = $('map-pin-sheet');
   mapPinId = null;
+  // The sheet IS the selection, so putting it away drops the ring, the lift, and
+  // the full-strength pin with it — whichever way it was closed (the X, a tap on
+  // open map, Esc). Otherwise the map is left claiming a pin is selected with
+  // nothing on screen to select it.
+  setFocusPin(null);
   clearTimeout(mapSheetTimer);
   sheet.classList.remove('is-open');
   $('map-stage').style.setProperty('--map-sheet-h', '0px');
@@ -3450,8 +3455,7 @@ function closeMapScreen() {
   if (ov.hidden || !ov.classList.contains('is-open')) return;   // already closing/closed
   ov.classList.remove('is-open');
   stopMapLocate();
-  closePinSheet(true);
-  setFocusPin(null);
+  closePinSheet(true);   // clears the focus ring too
   setMapNote('');
   setTimeout(() => {
     if (!ov.classList.contains('is-open')) ov.hidden = true;     // unless it reopened mid-slide
