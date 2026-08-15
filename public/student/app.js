@@ -503,9 +503,8 @@ function render(session) {
 
   if (!session) {
     Splash.hide();              // settled: this visitor gets the landing page
-    endPaneSlide(false);        // a drill-in still mid-slide would re-hide #home behind us
-    $('home').hidden = false;   // reset the Home tab's sub-view for the next sign-in
-    $('vendor').hidden = true;
+    // A drill-in still mid-slide would settle over the landing page behind us.
+    closeVendorPane(false);     // park the spot screen instantly — no animation on sign-out
     dropSwipe();                // a finger still down would keep writing --tab over the reset
     vendorOrigin = TAB.home;    // …and the return tab, or the next student inherits it
     setTab(TAB.home, false);
@@ -555,8 +554,7 @@ function render(session) {
   // fires on silent token refreshes — those must NOT yank the user off a vendor
   // screen or their current tab, so only reset when the app was hidden.
   if (wasSignedOut) {
-    $('home').hidden = false;
-    $('vendor').hidden = true;
+    closeVendorPane(false);    // a fresh sign-in always lands on a tab, never on a spot
     vendorOrigin = TAB.home;   // never inherit the previous user's return tab
     setTab(TAB.home, false);
     // App just opened for this user: key install suppression to them + count the
@@ -1024,7 +1022,6 @@ function onSwipeStart(e) {
   // Keyed on [hidden], not .is-open: is-open comes off a few hundred ms before
   // the element actually stops hit-testing.
   if (document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')) return;
-  if ($('tab-home').classList.contains('home-sliding')) return;   // the home ↔ vendor slide owns the axis
   const t = e.touches[0];
   // A sideways drag inside a text field is the caret being moved or a selection
   // being made — the field wants it, and stealing it to change tab makes the
@@ -1066,12 +1063,11 @@ function onSwipeMove(e) {
     // uncancelable; taking the gesture then slides the track *and* the page.
     if (!e.cancelable) { swipe.axis = 'off'; return; }
     if (scrollerInWay(swipe.target, dx)) { swipe.axis = 'off'; return; }
-    // A rightward drag on the vendor screen is its own back-out gesture (see
-    // wireVendorSwipe) — leave the axis for that instead. Keyed on the pane
-    // being open rather than on the touch landing inside #vendor: the pane only
-    // spans its own content, so a target test missed any drag starting below a
-    // short vendor's content and stole it back for the tab swipe.
-    if (dx > 0 && !$('vendor').hidden && swipe.target.closest('#tab-home')) { swipe.axis = 'off'; return; }
+    // The rightward-drag carve-out that used to sit here is gone. It existed
+    // because the spot screen lived INSIDE #tab-home, so a back-swipe on it
+    // also reached this listener and the two gestures fought over the axis.
+    // The pane is an overlay on .tab-viewport now — outside #tab-track, which
+    // is where these listeners are bound — so a touch on it never gets here.
     swipe.axis = 'x';
     $('tab-track').classList.add('is-dragging');   // cut the easing; the finger is the animation now
   }
@@ -1160,15 +1156,18 @@ function eatNextClick(el = $('tab-track')) {
 let vswipe = null;   // the vendor back-gesture in flight, or null
 
 function wireVendorSwipe() {
-  // Bound to the *page*, not to #vendor itself. #vendor is only as tall as its
-  // content, so a vendor with few rewards used to leave a strip of bare
-  // #tab-home below it where a touch never reached this listener at all — the
-  // tab swipe took the drag instead and rubber-banded it back, which reads as
-  // the back-swipe working on some vendors and not others. #tab-home always
-  // fills the viewport, so every touch on the vendor screen lands here now.
-  // onVendorSwipeStart gates on #vendor being open; the page outlives both panes,
-  // so this is still wired exactly once.
-  const el = $('tab-home');
+  // Bound to #vendor itself now. It used to be bound to #tab-home, because the
+  // pane was only as tall as its content and a vendor with few rewards left a
+  // strip of bare page below it where a touch never reached this listener — the
+  // tab swipe took the drag instead, so the back-swipe appeared to work on some
+  // spots and not others. As an overlay the pane is inset:0 against
+  // .tab-viewport, so it always fills the screen and that gap cannot exist.
+  //
+  // It also means a touch on the spot screen never reaches the TAB swipe, which
+  // is bound to #tab-track — the pane is outside the track entirely. The
+  // explicit "is the vendor open?" guard that used to sit in onSwipeMove is gone
+  // with it; the DOM position is the guard now.
+  const el = $('vendor');
   el.addEventListener('touchstart', onVendorSwipeStart, { passive: true });
   el.addEventListener('touchmove', onVendorSwipeMove, { passive: false });   // non-passive to preventDefault
   window.addEventListener('touchend', onVendorSwipeEnd, { passive: true });
@@ -1176,17 +1175,17 @@ function wireVendorSwipe() {
   window.addEventListener('resize', onVendorSwipeResize);
 }
 
-// Both panes on screen, vendor covering home, ready to follow the finger.
+// Hand the pane over to the finger: no transition in the way, so it tracks 1:1.
 function beginVendorBackDrag() {
-  $('home').hidden = false;
-  $('tab-home').classList.add('home-sliding');
+  $('vendor').classList.add('is-dragging');
   paintVendorDrag(0);
 }
 
-// pos 0 = vendor fully covering (drag start), pos 1 = home fully in place.
+// pos 0 = the spot screen fully covering (drag start), pos 1 = fully dismissed.
+// Only the one element moves now; the tab underneath is a real page that was
+// never hidden, so there is no second pane to counter-animate.
 function paintVendorDrag(pos) {
   $('vendor').style.transform = `translateX(${pos * 100}%)`;
-  $('home').style.transform = `translateX(${(pos - 1) * 100}%)`;
 }
 
 // Give the gesture back without navigating: the vendor screen eases back into
@@ -1202,7 +1201,7 @@ function onVendorSwipeStart(e) {
   if (vswipe) abortVendorSwipe();               // a stale gesture whose touchend never landed
   if (e.touches.length !== 1) return;            // a second finger is a pinch, never a back-swipe
   if ($('vendor').hidden) return;                // on the carousel, not drilled in — nothing to back out of
-  if ($('tab-home').classList.contains('home-sliding')) return;   // a slide already owns the axis
+  if ($('vendor').classList.contains('is-sliding')) return;       // a slide already owns the axis
   if (document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')) return;
   const t = e.touches[0];
   vswipe = {
@@ -1272,38 +1271,34 @@ function onVendorSwipeResize() {
 // Finish the drag from wherever the finger left it: `commit` slides the rest
 // of the way home, same as tapping the back button; otherwise the vendor
 // screen springs back into place. Populates `paneSlide` exactly like
-// slidePanes() does, so an interrupting nav can still cut it short.
+// openVendorPane() does, so an interrupting nav can still cut it short.
 function settleVendorDrag(commit) {
-  const page = $('tab-home');
-  const incoming = commit ? $('home') : $('vendor');
-  const outgoing = commit ? $('vendor') : $('home');
+  const pane = $('vendor');
+  pane.classList.remove('is-dragging');
 
-  // Captured before the settle callback below can run, and cleared here so an
-  // interrupted drag can't restore it twice.
-  const origin = commit ? vendorOrigin : TAB.home;
   if (commit) {
-    vendor = null;
-    balanceReady = false;
+    // backToHome(true) does the rest: clears the spot, refreshes balances, and
+    // animates the pane the remaining distance off the right edge. The inline
+    // transform the drag left behind is cleared inside closeVendorPane, so the
+    // class-driven translateX(100%) is what the transition runs to.
     vendorOrigin = TAB.home;
-    loadVendors();                              // refresh card balances on the way back
+    backToHome(true);
+    return;
   }
 
-  page.classList.add('home-sliding-run');        // arm the transition...
-  void page.offsetWidth;                          // ...against the drag's current position...
-  incoming.style.transform = 'translateX(0)';    // ...then finish the slide the rest of the way
-  outgoing.style.transform = commit ? 'translateX(100%)' : 'translateX(-100%)';
+  // Not committed: spring back into place from wherever the finger let go. The
+  // inline transform is the START of that transition, so it is cleared only
+  // after .is-sliding is armed and a layout has been forced against it.
+  pane.classList.add('is-sliding');
+  void pane.offsetWidth;
+  pane.style.transform = '';
 
   const settle = (e) => {
-    if (e && e.target !== incoming) return;
+    if (e && e.target !== pane) return;
     endPaneSlide();
-    // A spot opened from Spots is still returned to Spots when it is dismissed
-    // by dragging rather than by the back arrow. AFTER the slide, not during:
-    // the gesture is physically pulling #home across, so cutting to another tab
-    // mid-drag would drop the pane the finger is still moving.
-    if (origin !== TAB.home) setTab(origin, false);
   };
-  paneSlide = { incoming, outgoing, settle, timer: setTimeout(settle, 420) };
-  incoming.addEventListener('transitionend', settle);
+  paneSlide = { settle, timer: setTimeout(settle, 420) };
+  pane.addEventListener('transitionend', settle);
 }
 
 /* ---------- history tab (last 30 days) ---------- */
@@ -3944,21 +3939,21 @@ function onVendorTap(e) {
 /**
  * Open a spot's screen.
  *
- * #vendor lives INSIDE #tab-home, so it can only ever be shown over the Home
- * tab — this function used to assume the caller was already there. It wasn't
- * always: onDealTap hops to Home by hand first (with a comment naming the bug),
- * and the map's "View rewards" never did, which was harmless only because the
- * map was reachable from Home alone. The Spots tab makes that assumption false
- * everywhere, so the hop belongs here, once, instead of at each call site.
+ * The pane is an overlay on .tab-viewport (see index.html), so it slides in from
+ * the right over WHICHEVER tab is showing and there is no tab to change. That
+ * is the whole reason it was moved out of #tab-home: while it lived inside the
+ * Home page it could only ever cover Home, so opening a spot from anywhere else
+ * had to snap the track first — which meant either a visible flash of the Home
+ * carousel, or no animation at all.
  *
- * `origin` is the tab to return to on the way out; it defaults to wherever the
- * student actually is. Backing out of a spot opened from Spots returns to
- * Spots, not to Home — see exitVendor.
+ * `origin` is now advisory only, kept so the caller can say where the student
+ * should end up if a future path needs to differ. Closing the pane simply
+ * uncovers the tab that was underneath it, so the common case needs no bookkeeping.
  */
 function openVendor(vendorId, origin) {
   const v = allVendors.find((x) => String(x.vendorId) === String(vendorId));
   if (!v) return;
-  closeHub();     // the spot's own screen slides in under it — same story as setTab
+  closeHub();     // the spot's own screen slides in over it — same story as setTab
   vendorOrigin = origin ?? activeTab;
   vendor = v;
   balanceReady = false;                       // paint the number instantly, no ticker
@@ -3966,22 +3961,7 @@ function openVendor(vendorId, origin) {
   renderVendorRate(v);
   renderItems();
   applyBalance(v.balance ?? 0);
-
-  if (vendorOrigin === TAB.home) {
-    slidePanes($('vendor'), $('home'), 1);    // vendor screen in from the right, home out left
-  } else {
-    // Arriving from another tab. Swapping the panes and snapping the track in
-    // the SAME frame is what keeps Home from flashing between the list the
-    // student tapped and the spot that opens: a slide here would have to run
-    // after the tab snap, so Home would be visible for at least one frame in
-    // between. endPaneSlide(false) first, in case a slide is still in flight
-    // from a previous drill-in — its settle would hide the pane we're showing.
-    endPaneSlide(false);
-    $('vendor').hidden = false;
-    $('home').hidden = true;
-    $('tab-home').scrollTop = 0;
-    setTab(TAB.home, false);
-  }
+  openVendorPane();
   // After the pane is shown, not before: it un-hides the pane, and the stamp
   // rows are measured against a card that has no width while #vendor is still
   // hidden. Nothing has painted between the two calls, so the block still
@@ -3990,107 +3970,115 @@ function openVendor(vendorId, origin) {
 }
 
 /**
- * Leave the spot screen and go back where the student came from.
+ * Leave the spot screen.
  *
- * `animate` is only honoured for a spot opened from Home, where the two panes
- * genuinely slide past each other. From any other tab there is no pane to slide
- * back to on screen — the destination is a different page of the track — so it
- * swaps instantly and snaps the tab, mirroring how openVendor arrived.
+ * The tab underneath never moved, so this is just the pane sliding back out —
+ * a spot opened from Spots reveals Spots, one opened from Home reveals Home,
+ * with no tab bookkeeping and no snap.
  */
 function exitVendor(animate) {
-  const origin = vendorOrigin;
   vendorOrigin = TAB.home;
-  if (origin === TAB.home) {
-    if (animate) backToHomeSlide();
-    else backToHome();
-    return;
-  }
-  backToHome();            // resets state, un-hides #home, refreshes balances
-  setTab(origin, false);   // ...then put the track back on the tab they left
+  backToHome(animate);
 }
 
-function backToHome() {
+/**
+ * Tear the spot screen down and put the pane back where it started.
+ *
+ * `animate` slides it out to the right; without it the pane is parked instantly
+ * (sign-out, an interrupting navigation, reduced motion).
+ */
+function backToHome(animate = false) {
   vendor = null;
   balanceReady = false;
-  // A drill-in slide may still be in flight — tap a card, tab away, then tap
-  // Home inside the 360ms. Its pending settle would hide #home, the very pane
-  // we're about to show, leaving tab 0 blank until a reload. End it first, and
-  // let the two hidden flags below decide what shows rather than that settle.
-  endPaneSlide(false);
-  $('vendor').hidden = true;
-  $('home').hidden = false;
   loadVendors();                              // refresh card balances on the way back
-  $('tab-home').scrollTop = 0;
-  dotsFromScroll();                           // #home is visible again — see endPaneSlide
-}
-
-// End the in-flight pane slide: transition listeners off, classes and inline
-// transforms cleared. `hideOutgoing` is false only for an interrupting
-// navigation, which sets both panes' hidden flags itself a moment later.
-// Split out of slidePanes so a slide can be cut short — see backToHome.
-function endPaneSlide(hideOutgoing = true) {
-  if (!paneSlide) return;
-  const { incoming, outgoing, settle, timer } = paneSlide;
-  paneSlide = null;                               // first, so a re-entrant call is a no-op
-  clearTimeout(timer);
-  incoming.removeEventListener('transitionend', settle);
-  const page = $('tab-home');
-  page.classList.remove('home-sliding', 'home-sliding-run');
-  incoming.style.transform = '';
-  outgoing.style.transform = '';
-  if (hideOutgoing) outgoing.hidden = true;
-  page.scrollTop = 0;
-  // The carousel keeps its scroll position while the pane is away, so the dots
-  // are re-read the moment it is back on screen rather than waiting on the next
-  // loadVendors() to land — that fetch can fail, and the pager would sit on the
-  // wrong card until the user scrolled. A no-op when #home is not the pane showing.
+  closeVendorPane(animate);
+  // The carousel keeps its scroll position while the pane is over it, so the
+  // dots are re-read as soon as it is uncovered rather than waiting on the next
+  // loadVendors() to land — that fetch can fail, and the pager would otherwise
+  // sit on the wrong card until the user scrolled.
   dotsFromScroll();
 }
 
-// Slide between the two Home-tab panes. `incoming` enters from `dir` (1 = from
-// the right, moving left — drilling into a vendor; -1 = from the left, moving
-// right — backing out) while `outgoing` exits the other way; `outgoing` hides
-// once it settles. JS drives the transforms against the .home-sliding layout.
-function slidePanes(incoming, outgoing, dir) {
-  const page = $('tab-home');
-  if (paneSlide) return;   // a slide is already running
+/* ---------- the spot screen's slide ----------
+   #vendor is an overlay on .tab-viewport now, not one of a pair of panes inside
+   #tab-home, so this is a single element moving between translateX(100%) and 0.
+   The old slidePanes/endPaneSlide pair drove two panes against a .home-sliding
+   layout and is gone with them: it could only ever animate over the Home tab,
+   because both panes lived on it.
 
-  // Reduced motion (or no matchMedia support): skip the animation, just swap.
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-    incoming.hidden = false;
-    outgoing.hidden = true;
-    page.scrollTop = 0;
-    dotsFromScroll();     // this path skips endPaneSlide, so re-read the dots here too
+   paneSlide holds the in-flight settle so an interrupting navigation can cancel
+   it rather than letting it fire against a pane it no longer describes. */
+
+/** Cut any in-flight slide short. Leaves the pane wherever the caller puts it. */
+function endPaneSlide() {
+  if (!paneSlide) return;
+  const { settle, timer } = paneSlide;
+  paneSlide = null;                     // first, so a re-entrant call is a no-op
+  clearTimeout(timer);
+  $('vendor').removeEventListener('transitionend', settle);
+  $('vendor').classList.remove('is-sliding');
+}
+
+/** True when the device asks for less motion (or can't be asked). */
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
+/** Slide the spot screen in from the right over whatever tab is showing. */
+function openVendorPane() {
+  const pane = $('vendor');
+  endPaneSlide();
+  pane.hidden = false;
+  pane.scrollTop = 0;
+
+  if (reducedMotion()) { pane.classList.add('is-open'); return; }
+
+  // Two frames' worth of care: the pane was display:none a moment ago, so it has
+  // no layout yet and a transform set now would be its FIRST computed value —
+  // there would be nothing to transition from. Force layout while it is still
+  // parked at translateX(100%), then flip the class.
+  pane.classList.remove('is-open');
+  void pane.offsetWidth;
+  pane.classList.add('is-sliding', 'is-open');
+
+  const settle = (e) => {
+    if (e && e.target !== pane) return;   // ignore transitions bubbling from children
+    endPaneSlide();
+  };
+  paneSlide = { settle, timer: setTimeout(settle, 420) };  // timer: if transitionend never fires
+  pane.addEventListener('transitionend', settle);
+}
+
+/** Slide it back out to the right, or park it instantly. */
+function closeVendorPane(animate = true) {
+  const pane = $('vendor');
+  endPaneSlide();
+  pane.classList.remove('is-dragging');
+
+  if (!animate || reducedMotion()) {
+    pane.classList.remove('is-open', 'is-sliding');
+    pane.style.transform = '';
+    pane.hidden = true;
     return;
   }
 
-  incoming.hidden = false;                       // both panes on screen for the transition
-  page.classList.add('home-sliding');
-  incoming.style.transform = `translateX(${dir * 100}%)`;   // incoming waits off one edge
-  outgoing.style.transform = 'translateX(0)';
-  void page.offsetWidth;                          // commit the start positions
-
-  page.classList.add('home-sliding-run');         // arm the transition...
-  incoming.style.transform = 'translateX(0)';     // ...then slide the pair across
-  outgoing.style.transform = `translateX(${dir * -100}%)`;
+  // A drag may have left an inline transform mid-way; clearing it lets the
+  // class-driven translateX(100%) be what the transition runs to.
+  pane.style.transform = '';
+  pane.classList.add('is-sliding');
+  pane.classList.remove('is-open');
 
   const settle = (e) => {
-    if (e && e.target !== incoming) return;       // ignore transitions bubbling from children
+    if (e && e.target !== pane) return;
     endPaneSlide();
+    pane.hidden = true;                   // only once it is actually off-screen
   };
-  // Held in paneSlide rather than a local `done` flag, so an interrupting
-  // navigation can cancel this settle instead of letting it fire against panes
-  // it no longer describes.
-  paneSlide = { incoming, outgoing, settle, timer: setTimeout(settle, 420) };  // timer: if transitionend never fires
-  incoming.addEventListener('transitionend', settle);
+  paneSlide = { settle, timer: setTimeout(settle, 420) };
+  pane.addEventListener('transitionend', settle);
 }
 
-// Back arrow / Home tap: carousel in from the left, vendor screen out to the right.
+// Back arrow: the spot screen slides out to the right, revealing the tab that
+// was underneath it all along — Home, Spots, wherever it was opened from.
 function backToHomeSlide() {
-  vendor = null;
-  balanceReady = false;
-  loadVendors();                                  // refresh card balances on the way back
-  slidePanes($('home'), $('vendor'), -1);
+  backToHome(true);
 }
 
 /* ---------- live balance: socket push + ticker + notification ---------- */

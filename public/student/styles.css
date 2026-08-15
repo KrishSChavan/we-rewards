@@ -1651,7 +1651,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .app-main { padding: 1.3rem 1.3rem 3rem; }
 
 /* earn rate at the top of a spot's own screen, under the points bar */
-.vendor-rate { margin-bottom: 1rem; font-size: 0.9rem; font-weight: 700; color: var(--muted); line-height: 1.3; }
+.vendor-rate { margin-bottom: 1rem; font-size: 0.9rem; font-weight: 700; color: var(--muted); line-height: 1.3; text-align: center; }
 
 .my-code {
   width: 100%; text-align: center;
@@ -2052,27 +2052,48 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    native horizontal pan before our axis-lock gets 10px in to decide, which
    reads as the swipe silently doing nothing on any vendor with enough content
    to scroll. pan-y keeps vertical scrolling native; horizontal stays JS-only. */
-/* min-height matches #home above and #history/#account below. Without it the
-   pane is only as tall as its content, and a vendor with few rewards (or punch
-   cards off) leaves a strip of bare #tab-home under it. wireVendorSwipe binds
-   touchstart to the *page*, not this pane, so that strip is no longer dead —
-   but a short pane still shows the wrong background through, and every sibling
-   pane already stretches. */
-#vendor { touch-action: pan-y; min-height: 100%; }
+/* ---------- the spot screen, as an overlay ----------
+   #vendor is a child of .tab-viewport, NOT of a tab page (see index.html). That
+   is what lets it slide in over whichever tab is showing — inside the track it
+   could only ever cover Home, so opening a spot from the Spots tab had nothing
+   to animate.
 
-/* Sliding between the carousel (#home) and a vendor's redeem screen (#vendor):
-   drilling in slides them leftward, backing out slides them rightward. JS drives
-   the direction/transforms; these rules just stack the two panes for the slide. */
-#tab-home.home-sliding { overflow: hidden; }
-#tab-home.home-sliding > #home,
-#tab-home.home-sliding > #vendor {
-  position: absolute; inset: 0;
+   inset: 0 against .tab-viewport (position: relative, and already exactly the
+   box above the bottom nav) gives it the full screen height for free, which is
+   also what retires the old min-height: a short vendor no longer leaves a strip
+   of another pane showing through, because there is no pane underneath it any
+   more — it is opaque and full-bleed.
+
+   PARKED OFF THE RIGHT EDGE when closed rather than display:none, so opening is
+   a transform on an element that is already laid out and composited. .tab-viewport
+   clips, so the parked pane is invisible with no extra work.
+
+   z-index 5: above the track (which makes its own stacking context via
+   transform/will-change, at the auto level) and below .tabbar's 30, so the
+   bottom nav stays lit and usable over the spot screen — same arrangement the
+   rewards hub uses. */
+#vendor {
+  position: absolute;
+  /* Longhands, not `inset: 0`. esbuild lowers the shorthand for safari11, but
+     the build floor drops enough modern CSS silently that the explicit form is
+     cheaper than trusting it here — this rule is what makes the pane visible at
+     all, and there is no fallback if it is dropped. */
+  top: 0; right: 0; bottom: 0; left: 0;
+  z-index: 5;
   overflow-y: auto; -webkit-overflow-scrolling: touch;
-}
-#tab-home.home-sliding-run > #home,
-#tab-home.home-sliding-run > #vendor {
-  transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  background: var(--paper);
+  touch-action: pan-y;
+  transform: translateX(100%);
   will-change: transform;
+}
+/* Opened. JS adds .is-open; the transition rides on .is-sliding so that the
+   FIRST paint of a freshly-unhidden pane can be positioned without animating. */
+#vendor.is-open { transform: translateX(0); }
+#vendor.is-sliding { transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1); }
+/* A finger on the pane drives the transform directly — no transition in the way. */
+#vendor.is-dragging { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  #vendor.is-sliding { transition: none; }
 }
 
 /* ---------- bottom nav ---------- */
@@ -2133,6 +2154,23 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   padding: 0.55rem 0.85rem;
   background: var(--card);
   border: 2px solid var(--edge); border-radius: 0.85rem;
+}
+
+/* The magnifying glass is an EMOJI, and .vendor-search-icon sets line-height: 1
+   for the Home row. An emoji's ink box is taller than one em — the glyph's
+   ascent overshoots the top of a 1em line box — so at line-height: 1 the top of
+   the glass was being cut off.
+
+   Fixed by giving it a box of its own instead of leaving it as a bare inline:
+   display: flex makes the glyph an anonymous item that centres inside a 1.5rem
+   square, which is comfortably taller than the ink, so nothing overshoots.
+   Scoped to this row rather than patched on .vendor-search-icon so the Home
+   search pill, which is tuned around its own smaller pill height, is untouched. */
+.spots-search-row .vendor-search-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 1.35rem; height: 1.5rem;
+  font-size: 0.95rem;
+  line-height: 1;
 }
 .spots-search-input {
   flex: 1 1 auto; min-width: 0;

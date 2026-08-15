@@ -197,8 +197,97 @@
   <!-- ================= SIGNED-IN APP (sliding tabs + bottom nav) ================= -->
   <div id="app" hidden>
 
-    <!-- viewport clips the 3-wide track; the track slides horizontally per tab -->
+    <!-- The viewport clips the 4-wide track (Home / Spots / History / Account),
+         which slides horizontally per tab. It also hosts the spot screen as an
+         overlay — see the block directly below. -->
     <div class="tab-viewport">
+      <!-- ---------- SPOT SCREEN (overlay, NOT a tab page) ----------
+           Lives here, as an absolutely-positioned child of .tab-viewport,
+           rather than inside #tab-home where it used to sit. Two reasons, and
+           the second is why it moved:
+
+             1. .tab-viewport is already the exact box above the bottom nav
+                (#app is a column flex and .tabbar is flex-shrink: 0), and it
+                already clips — so an overlay parked at translateX(100%) is
+                hidden for free, with no extra sizing or z-index arithmetic.
+             2. Inside the track it could only ever cover the HOME tab, because
+                the track slides all four pages together. Opening a spot from
+                the Spots tab therefore could not animate at all: the pane was
+                on a page that was off-screen. Out here it overlays whatever
+                tab is showing, so the same slide works from Home, Spots, or a
+                deal notification, and closing it reveals the tab underneath
+                without having to remember which one that was.
+
+           It sits below .tabbar's z-index on purpose: the bottom nav stays lit
+           and usable over the spot screen, same as the rewards hub. -->
+      <div id="vendor" hidden>
+        <!-- points bar: back button (left) replaces the old sign-out link -->
+        <header class="points-bar">
+          <button id="back-btn" class="pb-back" aria-label="Back to vendors">←</button>
+          <p id="pb-vendor" class="pb-vendor">WEREWARDS</p>
+          <div class="pb-points">
+            <span id="pb-balance">0</span><small>pts</small>
+          </div>
+        </header>
+
+        <main class="app-main">
+          <!-- What a dollar spent here earns, BEFORE the tier multiplier
+               (award is floor(floor(dollars * rate) * multiplier), so a
+               tier 2 student at a 10-point spot earns 15). Written by
+               renderVendorRate,
+               and it sits ABOVE the visit counter on purpose: #punch-block
+               and #punch-scan-btn below are both hidden for a vendor with
+               punch cards off, so anything under them would move around
+               depending on the vendor. Ships [hidden] because a payload
+               without a rate has to leave nothing behind, not an empty line. -->
+          <p id="vendor-rate" class="vendor-rate" hidden></p>
+          <!-- Visit counter (migration-029): shown only when this vendor has
+               punch cards on. Tapping it opens #punch-modal, which is
+               progress-only — redeeming happens on the reward itself, since
+               every reward carries its own visit price. The number is set by
+               renderPunchUi, which also writes the button's aria-label (a
+               bare digit is a useless accessible name). -->
+          <div id="punch-block" hidden>
+            <p class="app-sub">VISITS</p>
+            <button id="punch-card-btn" class="punch-card" type="button"
+                    aria-haspopup="dialog" aria-expanded="false" aria-controls="punch-modal">
+              <span class="punch-card-head">
+                <span id="punch-count" class="punch-count" aria-hidden="true">0</span>
+                <span id="punch-count-unit" class="punch-count-unit" aria-hidden="true">visits</span>
+              </span>
+              <span id="punch-next" class="punch-next"></span>
+            </button>
+          </div>
+
+          <!-- Sits directly under the punch card it feeds, above the rewards
+               list. Opens the full-screen scanner sheet. Hidden unless this
+               vendor has punch cards on. -->
+          <button id="punch-scan-btn" class="punch-scan-btn" type="button" hidden
+                  aria-haspopup="dialog" aria-expanded="false" aria-controls="punch-scan-modal">
+            <span class="psb-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8" /><path d="M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8" />
+                <path d="M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16" /><path d="M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16" />
+                <path d="M4 12h16" />
+              </svg>
+            </span>
+            <span class="psb-text">
+              <span class="psb-title">Add a visit</span>
+              <span id="punch-scan-sub" class="psb-sub">Scan the code at the counter</span>
+            </span>
+            <span class="psb-arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 14.5 12 8.5l6 6" />
+              </svg>
+            </span>
+          </button>
+
+          <p class="app-sub">REWARDS</p>
+
+          <div id="items" class="items"></div>
+          <p id="items-empty" class="empty-state" hidden>No rewards yet, check back soon!</p>
+        </main>
+      </div>
       <div id="tab-track" class="tab-track">
 
         <!-- ---------- HOME TAB (vendor carousel + vendor drill-down) ---------- -->
@@ -471,75 +560,6 @@
             </main>
           </div>
 
-          <!-- vendor screen: drills in over the carousel, nav bar stays put -->
-          <div id="vendor" hidden>
-            <!-- points bar: back button (left) replaces the old sign-out link -->
-            <header class="points-bar">
-              <button id="back-btn" class="pb-back" aria-label="Back to vendors">←</button>
-              <p id="pb-vendor" class="pb-vendor">WEREWARDS</p>
-              <div class="pb-points">
-                <span id="pb-balance">0</span><small>pts</small>
-              </div>
-            </header>
-
-            <main class="app-main">
-              <!-- What a dollar spent here earns, BEFORE the tier multiplier
-                   (award is floor(floor(dollars * rate) * multiplier), so a
-                   tier 2 student at a 10-point spot earns 15). Written by
-                   renderVendorRate,
-                   and it sits ABOVE the visit counter on purpose: #punch-block
-                   and #punch-scan-btn below are both hidden for a vendor with
-                   punch cards off, so anything under them would move around
-                   depending on the vendor. Ships [hidden] because a payload
-                   without a rate has to leave nothing behind, not an empty line. -->
-              <p id="vendor-rate" class="vendor-rate" hidden></p>
-              <!-- Visit counter (migration-029): shown only when this vendor has
-                   punch cards on. Tapping it opens #punch-modal, which is
-                   progress-only — redeeming happens on the reward itself, since
-                   every reward carries its own visit price. The number is set by
-                   renderPunchUi, which also writes the button's aria-label (a
-                   bare digit is a useless accessible name). -->
-              <div id="punch-block" hidden>
-                <p class="app-sub">VISITS</p>
-                <button id="punch-card-btn" class="punch-card" type="button"
-                        aria-haspopup="dialog" aria-expanded="false" aria-controls="punch-modal">
-                  <span class="punch-card-head">
-                    <span id="punch-count" class="punch-count" aria-hidden="true">0</span>
-                    <span id="punch-count-unit" class="punch-count-unit" aria-hidden="true">visits</span>
-                  </span>
-                  <span id="punch-next" class="punch-next"></span>
-                </button>
-              </div>
-
-              <!-- Sits directly under the punch card it feeds, above the rewards
-                   list. Opens the full-screen scanner sheet. Hidden unless this
-                   vendor has punch cards on. -->
-              <button id="punch-scan-btn" class="punch-scan-btn" type="button" hidden
-                      aria-haspopup="dialog" aria-expanded="false" aria-controls="punch-scan-modal">
-                <span class="psb-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8" /><path d="M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8" />
-                    <path d="M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16" /><path d="M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16" />
-                    <path d="M4 12h16" />
-                  </svg>
-                </span>
-                <span class="psb-text">
-                  <span class="psb-title">Add a visit</span>
-                  <span id="punch-scan-sub" class="psb-sub">Scan the code at the counter</span>
-                </span>
-                <span class="psb-arrow" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M6 14.5 12 8.5l6 6" />
-                  </svg>
-                </span>
-              </button>
-
-              <p class="app-sub">REWARDS</p>
-
-              <div id="items" class="items"></div>
-              <p id="items-empty" class="empty-state" hidden>No rewards yet, check back soon!</p>
-            </main>
-          </div>
 
         </section>
 
