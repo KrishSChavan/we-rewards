@@ -578,7 +578,35 @@
           <div id="spots">
             <header class="page-head">
               <h1 class="page-title">Spots</h1>
-              <p class="page-sub">Everywhere you can earn</p>
+              <!-- The strapline and the filter share a line: the filter is a
+                   refinement of what that line describes, and giving it a row of
+                   its own would push the list itself further down a screen whose
+                   whole job is the list. -->
+              <div class="spots-sub-row">
+                <p class="page-sub">Everywhere you can earn</p>
+                <!-- A real <select>, styled to a pill rather than rebuilt as a
+                     custom popup. It is three mutually exclusive options with no
+                     custom rendering inside them, which is exactly what a select
+                     is for — and it arrives with keyboard support, screen-reader
+                     semantics, outside-click and Esc dismissal, and the native
+                     iOS picker, none of which a hand-rolled menu gets for free.
+                     Only the closed state needs styling, and that is fully
+                     reachable with appearance: none. -->
+                <div class="spots-filter">
+                  <select id="spots-filter" class="spots-filter-select" aria-label="Filter spots">
+                    <option value="all" selected>All</option>
+                    <option value="recent">Recent</option>
+                    <option value="top">Top</option>
+                  </select>
+                  <!-- Decorative: the select owns the interaction, so this must
+                       not eat the tap (pointer-events: none in the CSS). -->
+                  <span class="spots-filter-chev" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M6 9.5 12 15.5l6-6" />
+                    </svg>
+                  </span>
+                </div>
+              </div>
             </header>
 
             <div class="spots-search-row">

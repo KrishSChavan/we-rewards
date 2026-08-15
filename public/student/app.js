@@ -2657,6 +2657,10 @@ function paintVendorRow() {
  * ============================================================ */
 
 let spotsQuery = '';
+// 'all' | 'recent' | 'top' — the pill beside the strapline. In memory only:
+// it is a way of looking at the list, not a setting, and a student who comes
+// back tomorrow should get the whole directory rather than yesterday's lens.
+let spotsFilter = 'all';
 // Rows are pooled by vendor id, exactly like the carousel's cards: a keystroke
 // re-orders the list rather than rebuilding it, so a row keeps its loaded logo
 // and its heart doesn't flicker mid-save.
@@ -2668,6 +2672,42 @@ const favoritePending = new Set();
 /** Alphabetical by name, case- and accent-insensitively. */
 function spotsOrder(a, b) {
   return searchFold(a.name).localeCompare(searchFold(b.name), undefined, { numeric: true });
+}
+
+/**
+ * The list the current filter describes, before any search is applied.
+ *
+ *   all    — every spot, alphabetical. The directory.
+ *   recent — spots with activity in the last 7 days (the server's `recent`
+ *            flag), alphabetical. The same set the Home carousel draws from.
+ *   top    — the most-visited spots, in the server's ranking. `recommendedRank`
+ *            is only set on the ranked few, so this is a short list by design.
+ *
+ * Each returns a NEW array; nothing here may sort allVendors in place, or the
+ * carousel's own ordering would change underneath it.
+ */
+function spotsFilterList() {
+  if (spotsFilter === 'recent') {
+    return allVendors.filter((v) => v.recent).sort(spotsOrder);
+  }
+  if (spotsFilter === 'top') {
+    return allVendors
+      .filter((v) => v.recommendedRank != null)
+      .sort((a, b) => a.recommendedRank - b.recommendedRank);
+  }
+  return allVendors.slice().sort(spotsOrder);
+}
+
+/** What to say when the current filter (plus any query) matches nothing. */
+function spotsEmptyText(query) {
+  if (query) {
+    if (spotsFilter === 'recent') return `No recent spots match “${query}”.`;
+    if (spotsFilter === 'top') return `No top spots match “${query}”.`;
+    return `No spots match “${query}”.`;
+  }
+  if (spotsFilter === 'recent') return "You haven't been anywhere in the last 7 days.";
+  if (spotsFilter === 'top') return 'No visits recorded yet, so there is nothing to rank.';
+  return 'No spots yet, check back soon!';
 }
 
 function buildSpotRow(v) {
@@ -2752,10 +2792,21 @@ function renderSpots() {
     if (!live.has(id)) { row.remove(); spotRows.delete(id); }
   });
 
-  // filterVendors() returns relevance order, which is what a query wants. With
-  // no query the whole list comes back and gets sorted by name instead.
+  // The filter picks the set; the search narrows it. That order is deliberate —
+  // the filter is an explicit choice the student can see in the pill, so a
+  // search running outside it would quietly return spots they had just asked to
+  // exclude. When nothing matches, spotsEmptyText names the filter so the empty
+  // state reads as "not in Recent" rather than "does not exist".
   const q = spotsQuery.trim();
-  const shown = q ? filterVendors(spotsQuery) : allVendors.slice().sort(spotsOrder);
+  const base = spotsFilterList();
+  let shown = base;
+  if (q) {
+    // filterVendors() returns RELEVANCE order over the whole catalogue, which is
+    // what a query wants; intersecting preserves that ranking while honouring
+    // the pill. A Set because this is otherwise quadratic on every keystroke.
+    const allowed = new Set(base.map((v) => String(v.vendorId)));
+    shown = filterVendors(spotsQuery).filter((v) => allowed.has(String(v.vendorId)));
+  }
 
   // Mount exactly `shown`, in order. insertBefore MOVES a mounted node rather
   // than recreating it, so a row that survives a keystroke keeps its logo.
@@ -2770,13 +2821,13 @@ function renderSpots() {
   skel.hidden = loaded;
   list.hidden = !loaded || want.length === 0;
   empty.hidden = want.length > 0 || !loaded;
-  if (!want.length && loaded) {
-    empty.textContent = q ? `No spots match “${q}”.` : 'No spots yet, check back soon!';
-  }
+  if (!want.length && loaded) empty.textContent = spotsEmptyText(q);
 
-  // Only while filtering: an idle live region that re-announced on every socket
-  // push would talk over everything else the student is doing.
-  $('spots-search-status').textContent = q
+  // Announced for a query OR a filter change — both are actions the student
+  // took whose only visible result is the list changing under them, and a screen
+  // reader gets no cue from that on its own. Silent otherwise: an idle live
+  // region that re-announced on every socket push would talk over everything.
+  $('spots-search-status').textContent = (q || spotsFilter !== 'all')
     ? `${want.length} ${want.length === 1 ? 'spot' : 'spots'} found`
     : '';
   $('spots-search-clear').hidden = !q;
@@ -2845,6 +2896,18 @@ function onSpotsSearchInput() {
 }
 
 function wireSpots() {
+  // `change`, not `input`: on iOS a <select> fires input for every value the
+  // picker wheel passes through, so the list would re-render several times per
+  // spin before the student has committed to anything.
+  $('spots-filter').addEventListener('change', (e) => {
+    spotsFilter = e.target.value;
+    renderSpots();
+    // Back to the top: the list under the finger just became a different list,
+    // so being scrolled to where row 30 used to be is meaningless. Same reason
+    // applyVendorFilter resets the carousel on a query change.
+    $('tab-spots').scrollTop = 0;
+  });
+
   $('spots-search').addEventListener('input', onSpotsSearchInput);
   $('spots-search-clear').addEventListener('click', () => {
     $('spots-search').value = '';
@@ -2881,6 +2944,9 @@ function wireSpots() {
 /** Sign-out unpaint: the next student must not read the previous one's list. */
 function resetSpots() {
   spotsQuery = '';
+  spotsFilter = 'all';
+  const filter = $('spots-filter');
+  if (filter) filter.value = 'all';   // the <select> keeps its own state
   const input = $('spots-search');
   if (input) input.value = '';
   spotRows.forEach((row) => row.remove());
