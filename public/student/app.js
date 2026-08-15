@@ -2674,6 +2674,57 @@ function spotsOrder(a, b) {
   return searchFold(a.name).localeCompare(searchFold(b.name), undefined, { numeric: true });
 }
 
+/** Newest first. Ties keep the server's order, which is already created_at DESC. */
+function newestFirst(a, b) {
+  return new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime();
+}
+
+/** Spots that joined inside the server's new-vendor window, newest first. */
+function newVendors() {
+  return allVendors.filter((v) => v.isNew).sort(newestFirst);
+}
+
+/** How many spots the Recommended row aims to show. */
+const RECOMMENDED_TARGET = 5;
+
+/**
+ * The Recommended list — shared by the Home carousel's fallback row and the
+ * Spots tab's "Top" filter, so the two can never disagree about what is being
+ * recommended.
+ *
+ * Three rules, in order:
+ *
+ *   1. A SMALL CATALOGUE IS ITS OWN RECOMMENDATION. At five spots or fewer,
+ *      ranking them is theatre — the student can see the whole town either way,
+ *      and a "top 3 of 4" reads as though something is being withheld. So the
+ *      whole list is returned, alphabetically.
+ *   2. Otherwise the server's visit ranking leads, best first.
+ *   3. If that ranking is short of the target — a young deployment where few
+ *      spots have visits yet — the remainder is filled from the newest spots.
+ *      They go at the BOTTOM, after everything that earned its place by being
+ *      visited, so topping up never displaces a genuinely popular spot.
+ *
+ * Rule 3 is why the row is labelled "Recommended" rather than "Most visited":
+ * a brand-new spot has no visits by definition, so it is there on the strength
+ * of being new, and the heading has to be able to carry both.
+ */
+function recommendedList() {
+  if (allVendors.length <= RECOMMENDED_TARGET) {
+    return allVendors.slice().sort(spotsOrder);
+  }
+
+  const ranked = allVendors
+    .filter((v) => v.recommendedRank != null)
+    .sort((a, b) => a.recommendedRank - b.recommendedRank);
+
+  if (ranked.length >= RECOMMENDED_TARGET) return ranked;
+
+  // Top up with new spots the ranking didn't already include.
+  const taken = new Set(ranked.map((v) => String(v.vendorId)));
+  const filler = newVendors().filter((v) => !taken.has(String(v.vendorId)));
+  return ranked.concat(filler.slice(0, RECOMMENDED_TARGET - ranked.length));
+}
+
 /**
  * The list the current filter describes, before any search is applied.
  *
@@ -2695,11 +2746,7 @@ function spotsFilterList() {
   if (spotsFilter === 'recent') {
     return allVendors.filter((v) => v.recent).sort(spotsOrder);
   }
-  if (spotsFilter === 'top') {
-    return allVendors
-      .filter((v) => v.recommendedRank != null)
-      .sort((a, b) => a.recommendedRank - b.recommendedRank);
-  }
+  if (spotsFilter === 'top') return recommendedList();
   return allVendors.slice().sort(spotsOrder);
 }
 
@@ -2770,6 +2817,27 @@ function spotRowSig(v) {
   return JSON.stringify([v.name, !!v.hasLogo, v.pointsPerDollar ?? null]);
 }
 
+/**
+ * Mount exactly `vendors`' rows into `container`, in order, and return them.
+ *
+ * insertBefore MOVES a node that is already in the document rather than
+ * recreating it, which is the whole reason rows are pooled: a row that survives
+ * a keystroke — or moves between the NEW strip and the main list — keeps its
+ * loaded logo and its heart state. Set membership for the unmount pass, since
+ * an array scan there is quadratic.
+ */
+function mountRows(container, vendors) {
+  const want = vendors.map((v) => spotRows.get(String(v.vendorId))).filter(Boolean);
+  const wanted = new Set(want);
+  [...container.children].forEach((el) => { if (!wanted.has(el)) el.remove(); });
+  want.forEach((el, k) => {
+    // Live HTMLCollection: index k is re-read after each move, so this settles
+    // in one pass with a move only where the order actually differs.
+    if (container.children[k] !== el) container.insertBefore(el, container.children[k] ?? null);
+  });
+  return want;
+}
+
 function renderSpots() {
   const list = $('spots-list');
   const skel = $('spots-skel');
@@ -2817,27 +2885,40 @@ function renderSpots() {
     shown = filterVendors(spotsQuery).filter((v) => allowed.has(String(v.vendorId)));
   }
 
-  // Mount exactly `shown`, in order. insertBefore MOVES a mounted node rather
-  // than recreating it, so a row that survives a keystroke keeps its logo.
-  const want = shown.map((v) => spotRows.get(String(v.vendorId))).filter(Boolean);
-  const wanted = new Set(want);
-  [...list.children].forEach((el) => { if (!wanted.has(el)) el.remove(); });
-  want.forEach((el, k) => {
-    if (list.children[k] !== el) list.insertBefore(el, list.children[k] ?? null);
-  });
+  // The NEW strip only exists on the unfiltered, unsearched view — once the
+  // student has narrowed things deliberately, a strip of unrelated spots is
+  // noise. When it is not showing, new spots are NOT lifted out; they stay in
+  // the main list wherever their name sorts.
+  const strip = $('spots-new');
+  const stripList = $('spots-new-list');
+  const newOnes = (!q && spotsFilter === 'all') ? newVendors() : [];
+  const lifted = new Set(newOnes.map((v) => String(v.vendorId)));
+
+  // Mount into the strip first, so a row moving between the two containers has
+  // left the list before the list is measured. One pool serves both: a row can
+  // only be in one place at a time, and lifting it out of `shown` below is what
+  // guarantees no vendor is asked to render twice.
+  mountRows(stripList, newOnes);
+  strip.hidden = newOnes.length === 0;
+
+  const rest = shown.filter((v) => !lifted.has(String(v.vendorId)));
+  const want = mountRows(list, rest);
 
   const loaded = allVendors.length > 0;
   skel.hidden = loaded;
   list.hidden = !loaded || want.length === 0;
-  empty.hidden = want.length > 0 || !loaded;
-  if (!want.length && loaded) empty.textContent = spotsEmptyText(q);
+  // The empty state speaks for the WHOLE tab, so a directory whose only spots
+  // are new ones (all of them lifted into the strip) is not empty.
+  const total = want.length + newOnes.length;
+  empty.hidden = total > 0 || !loaded;
+  if (!total && loaded) empty.textContent = spotsEmptyText(q);
 
   // Announced for a query OR a filter change — both are actions the student
   // took whose only visible result is the list changing under them, and a screen
   // reader gets no cue from that on its own. Silent otherwise: an idle live
   // region that re-announced on every socket push would talk over everything.
   $('spots-search-status').textContent = (q || spotsFilter !== 'all')
-    ? `${want.length} ${want.length === 1 ? 'spot' : 'spots'} found`
+    ? `${total} ${total === 1 ? 'spot' : 'spots'} found`
     : '';
   $('spots-search-clear').hidden = !q;
 }
@@ -2975,6 +3056,7 @@ function resetSpots() {
   spotRows.forEach((row) => row.remove());
   spotRows.clear();
   favoritePending.clear();
+  $('spots-new').hidden = true;      // …including the NEW strip's rows, which share the pool
   $('spots-list').hidden = true;
   $('spots-skel').hidden = false;
   $('spots-empty').hidden = true;
@@ -3017,16 +3099,18 @@ function recentVendors() {
     return { list: sorted, heading: RECENT_HEADING, mode: 'recent' };
   }
 
-  // No recent activity. recommendedRank is the server's ordering, so keep it
-  // rather than re-sorting; a vendor that isn't ranked is simply not in it.
-  const ranked = allVendors
-    .filter((v) => v.recommendedRank != null)
-    .sort((a, b) => a.recommendedRank - b.recommendedRank);
-  // The very first student on a brand-new deployment has no visits to rank, so
-  // there is nothing to recommend either. Fall back to the whole list rather
-  // than an empty carousel — "check back soon" is wrong when spots do exist.
-  const list = ranked.length ? ranked : allVendors.slice().sort(spotsOrder);
-  return { list, heading: RECOMMENDED_HEADING, mode: 'recommended' };
+  // No recent activity — show the Recommended list instead. recommendedList()
+  // handles the small-catalogue and top-up rules, and is the same function the
+  // Spots tab's "Top" filter uses, so the two surfaces can never disagree.
+  // Its final fallback covers a brand-new deployment with nothing ranked and
+  // nothing new: better the whole list than an empty carousel, since "check
+  // back soon" is wrong when spots plainly exist.
+  const list = recommendedList();
+  return {
+    list: list.length ? list : allVendors.slice().sort(spotsOrder),
+    heading: RECOMMENDED_HEADING,
+    mode: 'recommended',
+  };
 }
 
 function renderVendors() {

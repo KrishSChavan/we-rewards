@@ -635,6 +635,29 @@
               <div class="spots-skel-row"><span class="skel sskel-mark"></span><span class="skel sskel-name"></span><span class="skel sskel-pts"></span></div>
             </div>
 
+            <!-- ---------- newly joined spots ----------
+                 Spots that signed up inside the server's new-vendor window,
+                 lifted out of the list below so a student notices them at all —
+                 alphabetically a new spot lands wherever its name happens to
+                 fall, which for a directory is nowhere in particular.
+
+                 Capped at a quarter of the screen and scrolls internally past
+                 that, so a busy signup week can never push the actual directory
+                 off the bottom of the phone.
+
+                 Shown ONLY under the All filter with no search running. Once
+                 the student has narrowed the view deliberately, a strip of
+                 unrelated spots is noise — and in that case the new spots are
+                 not lifted out, they just appear in the list in their normal
+                 place. See renderSpots(). -->
+            <div id="spots-new" class="spots-new" hidden>
+              <div class="spots-new-head">
+                <span class="spots-new-badge">NEW</span>
+                <span class="spots-new-label">Just joined WeRewards</span>
+              </div>
+              <div id="spots-new-list" class="spots-new-list"></div>
+            </div>
+
             <div id="spots-list" class="spots-list" hidden></div>
             <!-- Off-screen rather than [hidden]: a hidden live region is not
                  announced at all. Written only while a query is active. -->

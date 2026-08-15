@@ -351,7 +351,9 @@ export function loadVendorCatalogue() {
   return vendorCatalogueCache.get('all', async () => {
     const { data, error } = await supabaseAdmin
       .from('vendors')
-      .select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)')
+      // created_at rides along so the app can mark a spot as newly joined. It
+      // is already the sort key; it just was never selected.
+      .select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, created_at, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)')
       .eq('active', true)
       .order('created_at', { ascending: false });
     if (error) throw error;

@@ -2240,6 +2240,65 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .spots-search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
 .spots-search-input::placeholder { color: var(--muted); font-weight: 600; }
 
+/* ---------- the NEW strip ----------
+   A column so the heading can stay put while only the rows scroll: max-height
+   on the whole block with a single overflow would scroll the "NEW · Just
+   joined" heading away, and a strip whose own label disappears reads as a
+   rendering bug.
+
+   25vh is the cap the strip is allowed to take of the SCREEN, not of its
+   parent — vh is correct here and is also what survives the build floor (dvh is
+   Safari 15.4 and is dropped silently). min-height: 0 on the scroller is
+   load-bearing: a flex item's default min-height is auto, so without it the
+   list refuses to shrink below its content and the max-height never binds. */
+.spots-new {
+  display: flex; flex-direction: column;
+  max-height: 25vh;
+  margin-bottom: 1rem;
+  padding: 0.7rem 0.75rem 0.75rem;
+  background: var(--sky);
+  border: 2px solid var(--edge); border-radius: 1rem;
+}
+.spots-new[hidden] { display: none; }
+
+.spots-new-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+  margin-bottom: 0.6rem;
+  padding: 0 0.1rem;
+}
+.spots-new-badge {
+  font-size: 0.68rem; font-weight: 900; letter-spacing: 0.12em;
+  color: var(--card);
+  background: var(--navy);
+  padding: 0.18rem 0.45rem;
+  border-radius: 0.35rem;
+  /* No flex gap — see .spots-sub-row for why the fallback is worth avoiding. */
+  margin-right: 0.5rem;
+}
+.spots-new-label {
+  font-size: 0.78rem; font-weight: 800; letter-spacing: 0.02em;
+  color: var(--brand);
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.spots-new-list {
+  flex: 1 1 auto;
+  min-height: 0;                    /* see the block comment above */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  /* The strip is inside a vertically-scrolling page; without this a flick that
+     runs past the end of this list keeps going and drags the page with it. */
+  overscroll-behavior-y: contain;
+  display: flex; flex-direction: column;
+}
+/* Row separation without a flex gap, so no :root.no-flex-gap fallback is
+   needed inside a scroller whose height is doing precise work. */
+.spots-new-list > .spot-row + .spot-row { margin-top: 0.5rem; }
+/* On the tinted strip the rows need the card colour to stay legible. */
+.spots-new-list .spot-row { background: var(--card); }
+
 .spots-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .spots-list[hidden] { display: none; }
 

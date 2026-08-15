@@ -29,6 +29,17 @@ const router = Router();
  */
 const RECENT_WINDOW_DAYS = 7;
 
+/**
+ * How long a spot counts as newly joined, for the NEW strip at the top of the
+ * Spots tab.
+ *
+ * Deliberately a SEPARATE constant from RECENT_WINDOW_DAYS even though both are
+ * currently 7. They measure different things — one is the age of the vendor,
+ * the other is the freshness of this student's own activity — and tuning one
+ * should never silently move the other.
+ */
+const NEW_VENDOR_WINDOW_DAYS = 7;
+
 // Every route here needs a valid session.
 router.use(requireUser);
 
@@ -192,6 +203,10 @@ router.post('/decline', async (req, res, next) => {
 router.get('/balances', requireConsent, async (req, res, next) => {
   try {
     const recentSince = new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    // Compared as epoch ms, not as strings: Postgres hands timestamptz back as
+    // '…+00:00' while toISOString() produces '…Z', so a lexicographic compare of
+    // the two would be wrong in a way that only shows up at certain times of day.
+    const newSinceMs = Date.now() - NEW_VENDOR_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
     const [
       vendors,
@@ -294,6 +309,12 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           // has no recent spots at all, where the carousel shows these instead
           // under a "Recommended" heading rather than opening empty.
           recommendedRank: recommendedRank.has(v.id) ? recommendedRank.get(v.id) : null,
+          // Joined in the last NEW_VENDOR_WINDOW_DAYS — drives the NEW strip at
+          // the top of the Spots tab. `createdAt` rides along so the client can
+          // order those newest-first without re-deriving the window: the server
+          // owns "how new counts as new", the client owns the ordering.
+          isNew: new Date(v.created_at).getTime() >= newSinceMs,
+          createdAt: v.created_at,
         };
       })
     );
