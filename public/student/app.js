@@ -3020,9 +3020,14 @@ function wireSpots() {
     $('spots-search').focus();
   });
 
-  // Delegated, so pooled rows need no per-row listeners and a rebuilt row is
-  // wired the moment it is mounted.
-  $('spots-list').addEventListener('click', (e) => {
+  // Delegated on the PAGE, not on #spots-list. Rows live in two containers —
+  // the NEW strip and the main list — and a listener on the list alone is deaf
+  // to every row in the strip, which made both the heart and the row tap dead
+  // there. Binding one level up covers both, and covers any container added
+  // later without this having to be remembered again. Everything above a row
+  // (the search field, the filter pill) fails the .spot-row test and falls
+  // through untouched.
+  $('spots').addEventListener('click', (e) => {
     const row = e.target.closest('.spot-row');
     if (!row) return;
     if (e.target.closest('.spot-heart')) {
@@ -3035,8 +3040,9 @@ function wireSpots() {
   });
 
   // role="button" carries no built-in keyboard activation, so it has to be
-  // written out — Enter and Space, matching what a real <button> does.
-  $('spots-list').addEventListener('keydown', (e) => {
+  // written out — Enter and Space, matching what a real <button> does. Same
+  // page-level delegation, for the same reason.
+  $('spots').addEventListener('keydown', (e) => {
     const row = e.target.closest?.('.spot-row');
     if (!row || e.target !== row) return;
     if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
