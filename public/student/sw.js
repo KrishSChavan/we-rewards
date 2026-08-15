@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v57';   // v57: addresses render street-line only (city/state/ZIP trimmed); focused map pin drops the is-zero dimming
+const CACHE = 'werewards-v58';   // v58: Spots tab (4th tab, searchable directory + saved spots); Home carousel is now Recent spots / Recommended
 // v51: receipt scans go through the AI reader (forgery check + extraction), tesseract as fallback
 // v49: each spot shows its earn rate (card, spot screen, map pin); browser tab favicon
 // v48: bundles lowered to ES2017 for old Safari; supabase-js self-hosted off the CDN; boot guard added

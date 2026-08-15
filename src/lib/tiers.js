@@ -1,4 +1,5 @@
 import { supabaseAdmin } from './supabase.js';
+import { loadActiveVendorIds } from './cache.js';
 
 /* 30-day rolling engagement score (0–1000) from three balanced parts:
      B breadth — % of active vendors visited
@@ -144,8 +145,12 @@ export function scoreProfile({ vendorCount, txns, activeVendorIds, revisits = 0 
 export async function computeTierProfile(userId) {
   const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
-  const [{ data: vendors, error: vErr }, { data: txns, error: tErr }, { data: prof }] = await Promise.all([
-    supabaseAdmin.from('vendors').select('id').eq('active', true),
+  const [vendors, { data: txns, error: tErr }, { data: prof }] = await Promise.all([
+    // Served off the shared catalogue cache (src/lib/cache.js). This used to be
+    // its own `select('id').eq('active', true)`, which meant a tier refresh ran
+    // a SECOND sequential scan of `vendors` alongside the one GET
+    // /api/me/balances was already running in the same refresh cycle.
+    loadActiveVendorIds(),
     supabaseAdmin
       .from('transactions')
       .select('vendor_id, dollar_amount, created_at')
@@ -154,7 +159,6 @@ export async function computeTierProfile(userId) {
       .gte('created_at', since),
     supabaseAdmin.from('profiles').select('revisits').eq('user_id', userId).maybeSingle(),
   ]);
-  if (vErr) throw vErr;
   if (tErr) throw tErr;
 
   const activeVendorIds = new Set((vendors ?? []).map((v) => v.id));

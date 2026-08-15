@@ -33,7 +33,8 @@ let communityPoints = 0;    // cross-vendor wallet (see community-points.md)
 let communityReady = false; // first community count shown yet? (same reason)
 const tickRaf = new WeakMap(); // per-element requestAnimationFrame id for the counting ticker
 let toastTimer = null;
-let activeTab = 0;          // 0 = home, 1 = history, 2 = account
+let activeTab = 0;          // index into TABS (see there)
+let vendorOrigin = 0;       // which tab the open vendor screen was entered from
 let historyLoaded = false;  // has the history tab fetched at least once?
 let paneSlide = null;       // the in-flight #home <-> #vendor slide, so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
@@ -64,7 +65,29 @@ const $ = (id) => document.getElementById(id);
 // number: which tab was open, installed-vs-browser, and whether the phone was
 // even online. Never allowed to throw — it runs inside the error handler, and a
 // failure here would swallow the report it was decorating.
-const TAB_NAMES = ['home', 'history', 'account'];
+/* ---------- the tab registry ----------
+   ONE source of truth for tab order. This used to be three independent
+   positional systems that all had to be edited together — a names array for
+   crash reports, a `data-tab` attribute the nav's click handler read, and the
+   button's DOM index, which setTab used to paint the active state. Adding a tab
+   between two existing ones desynced them silently: taps routed to one page
+   while the highlight lit a different button.
+
+   TABS is now the order, TAB is the lookup, and NOTHING below may compare
+   activeTab against a bare number. The `if (i === 1) loadHistory()` that used
+   to sit at the foot of setTab is exactly the bug this prevents: inserting a
+   tab ahead of History would not have made History load late, it would have
+   stopped History loading at all — historyLoaded is only ever set inside
+   loadHistory(), and both background refreshers are gated on it, so the tab
+   would have sat on its skeleton forever with no error and no empty state.
+
+   Keep in step with the .tab-btn order in index.html; the data-tab attributes
+   are asserted against this at boot (see wireTabs). */
+const TABS = ['home', 'spots', 'history', 'account'];
+const TAB = Object.fromEntries(TABS.map((name, i) => [name, i]));
+
+// Kept for the crash reporter, which wants a name for whatever tab was open.
+const TAB_NAMES = TABS;
 
 function crashContext(extra) {
   const ctx = { ...extra };
@@ -219,16 +242,25 @@ const Splash = (() => {
     const btn = e.target.closest('.tab-btn');
     if (!btn) return;
     const tab = Number(btn.dataset.tab);
-    // Home tapped while drilled into a vendor's redeem screen → return to the
+    // Home tapped while drilled into a spot's redeem screen → return to the
     // carousel with a leftward slide, rather than re-selecting the open tab.
-    if (tab === 0 && !$('vendor').hidden) {
-      if (activeTab === 0) backToHomeSlide();   // on screen: animate the slide
-      else { backToHome(); setTab(0); }         // off screen: reset, then slide the tab in
+    // Asking for Home explicitly overrides where the spot was opened from: the
+    // student pressed Home, so Home is the destination even if they arrived
+    // from Spots.
+    if (tab === TAB.home && !$('vendor').hidden) {
+      vendorOrigin = TAB.home;
+      if (activeTab === TAB.home) backToHomeSlide();   // on screen: animate the slide
+      else { backToHome(); setTab(TAB.home); }         // off screen: reset, then slide the tab in
       return;
     }
+    // Tapping any OTHER tab while a spot is open leaves the drill-in mounted
+    // behind Home. Tear it down on the way out, so coming back to Home lands on
+    // the carousel rather than on a spot the student had already left.
+    if (tab !== TAB.home && !$('vendor').hidden) backToHome();
     setTab(tab);
   });
-  wireTabSwipe();   // …and the same three tabs by dragging the track itself
+  wireSpots();      // the Spots tab's search field, rows, and hearts
+  wireTabSwipe();   // …and the four tabs by dragging the track itself
   wireVendorSwipe(); // …and a rightward drag on the vendor screen backs out to Home
   // appearance: dark-mode toggle (the <head> script already applied the theme)
   applyTheme(currentTheme());
@@ -289,7 +321,9 @@ const Splash = (() => {
   $('account-install').addEventListener('click', () => InstallPrompt.openManual());
   $('account-install-reset').addEventListener('click', () => { InstallPrompt.reset(); syncInstallRow(); });
   window.addEventListener('appinstalled', syncInstallRow);   // drop the row the moment it's installed
-  $('back-btn').addEventListener('click', backToHomeSlide);
+  // Back arrow: returns to whichever tab the spot was opened from, animating
+  // only when that is Home (see exitVendor).
+  $('back-btn').addEventListener('click', () => exitVendor(true));
   $('items').addEventListener('click', onItemTap);
   $('item-close').addEventListener('click', closeItemModal);
   $('item-redeem').addEventListener('click', () => onRedeemTap('points'));
@@ -473,7 +507,8 @@ function render(session) {
     $('home').hidden = false;   // reset the Home tab's sub-view for the next sign-in
     $('vendor').hidden = true;
     dropSwipe();                // a finger still down would keep writing --tab over the reset
-    setTab(0, false);
+    vendorOrigin = TAB.home;    // …and the return tab, or the next student inherits it
+    setTab(TAB.home, false);
     stopMyCode();
     disconnectSocket();
     balanceReady = false;   // re-login should show the balance instantly, no ticker
@@ -484,6 +519,7 @@ function render(session) {
     resetTier();            // …as is the tier chip on the pill above it
     allVendors = [];
     resetVendorSearch();        // …and unpaint the cards, or the next student reads them
+    resetSpots();               // …and the directory, which carries their saved spots
     vendor = null;
     historyLoaded = false;
     dropHistory();              // …and unpaint the rows, or the next student reads them
@@ -521,7 +557,8 @@ function render(session) {
   if (wasSignedOut) {
     $('home').hidden = false;
     $('vendor').hidden = true;
-    setTab(0, false);
+    vendorOrigin = TAB.home;   // never inherit the previous user's return tab
+    setTab(TAB.home, false);
     // App just opened for this user: key install suppression to them + count the
     // session, then let trigger 3 (third session) fire once the shell is up.
     InstallPrompt.setUser(session.user.id);
@@ -849,13 +886,17 @@ function setTab(i, animate = true) {
   track.style.setProperty('--tab', i);
   if (!animate) { void track.offsetWidth; track.style.transition = ''; }  // restore for next time
 
-  document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
-    const on = idx === i;
+  // Keyed on data-tab, NOT on the button's DOM position. Those were two
+  // different numbering schemes over the same buttons: the nav's click handler
+  // has always dispatched on data-tab, so painting by index meant a markup
+  // reorder lit the wrong button while taps still went to the right page.
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
+    const on = Number(btn.dataset.tab) === i;
     btn.classList.toggle('is-active', on);
     btn.setAttribute('aria-current', on ? 'page' : 'false');
   });
 
-  if (i === 1) loadHistory();   // refresh activity whenever the History tab opens
+  if (i === TAB.history) loadHistory();   // refresh activity whenever the History tab opens
 }
 
 /* ---------- bottom nav: swipe between tabs ----------
@@ -1237,9 +1278,13 @@ function settleVendorDrag(commit) {
   const incoming = commit ? $('home') : $('vendor');
   const outgoing = commit ? $('vendor') : $('home');
 
+  // Captured before the settle callback below can run, and cleared here so an
+  // interrupted drag can't restore it twice.
+  const origin = commit ? vendorOrigin : TAB.home;
   if (commit) {
     vendor = null;
     balanceReady = false;
+    vendorOrigin = TAB.home;
     loadVendors();                              // refresh card balances on the way back
   }
 
@@ -1251,6 +1296,11 @@ function settleVendorDrag(commit) {
   const settle = (e) => {
     if (e && e.target !== incoming) return;
     endPaneSlide();
+    // A spot opened from Spots is still returned to Spots when it is dismissed
+    // by dragging rather than by the back arrow. AFTER the slide, not during:
+    // the gesture is physically pulling #home across, so cutting to another tab
+    // mid-drag would drop the pane the finger is still moving.
+    if (origin !== TAB.home) setTab(origin, false);
   };
   paneSlide = { incoming, outgoing, settle, timer: setTimeout(settle, 420) };
   incoming.addEventListener('transitionend', settle);
@@ -2602,6 +2652,299 @@ function paintVendorRow() {
   });
 }
 
+/* ============================================================
+ * The Spots tab — every vendor, alphabetical, searchable.
+ *
+ * Home's carousel answers "where have I been lately"; this answers "where can
+ * I go". It renders from the SAME allVendors array the carousel uses, so it
+ * costs no extra request — every field it needs (balance, logo, favorite) is
+ * already in the /api/me/balances payload the app fetched on load.
+ * ============================================================ */
+
+let spotsQuery = '';
+// Rows are pooled by vendor id, exactly like the carousel's cards: a keystroke
+// re-orders the list rather than rebuilding it, so a row keeps its loaded logo
+// and its heart doesn't flicker mid-save.
+const spotRows = new Map();
+// Vendor ids with a favorite request in flight. The heart is painted
+// optimistically, and this is what stops a second tap racing the first.
+const favoritePending = new Set();
+
+/** Alphabetical by name, case- and accent-insensitively. */
+function spotsOrder(a, b) {
+  return searchFold(a.name).localeCompare(searchFold(b.name), undefined, { numeric: true });
+}
+
+function buildSpotRow(v) {
+  // A <div role="button"> rather than a <button>: the heart is itself a button
+  // and nesting one inside another is invalid HTML, which browsers "fix" by
+  // un-nesting them — the heart would end up as a sibling and the row's layout
+  // would break. Both elements carry their own handler; the heart's stops
+  // propagation so tapping it never also opens the spot.
+  const row = document.createElement('div');
+  row.className = 'spot-row';
+  row.setAttribute('role', 'button');
+  row.setAttribute('tabindex', '0');
+  row.dataset.id = v.vendorId;
+
+  const mark = v.hasLogo
+    ? `<span class="spot-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
+    : `<span class="spot-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
+
+  const rate = earnRateText(v.pointsPerDollar);
+
+  row.innerHTML = `
+    <span class="spot-mark" aria-hidden="true">${mark}</span>
+    <span class="spot-name">${escapeHtml(v.name)}${rate ? `<small class="spot-sub">${escapeHtml(rate)}</small>` : ''}</span>
+    <span class="spot-points"><span class="spot-num">${v.balance ?? 0}</span><small>pts</small></span>
+    <button class="spot-heart" type="button" aria-pressed="false">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 20.4S3.6 15 3.6 9.1a4.6 4.6 0 0 1 8.4-2.6 4.6 4.6 0 0 1 8.4 2.6c0 5.9-8.4 11.3-8.4 11.3z" />
+      </svg>
+    </button>`;
+
+  paintSpotHeart(row, Boolean(v.favorite), v.name);
+  return row;
+}
+
+/** The heart's two states, in one place so the class and the label can't drift. */
+function paintSpotHeart(row, on, name) {
+  const heart = row.querySelector('.spot-heart');
+  if (!heart) return;
+  heart.classList.toggle('is-on', on);
+  heart.setAttribute('aria-pressed', on ? 'true' : 'false');
+  // The accessible name has to carry the ACTION, not just the icon: "heart"
+  // tells a screen-reader user nothing about what tapping it will do.
+  heart.setAttribute('aria-label', `${on ? 'Remove' : 'Save'} ${name}${on ? ' from' : ' to'} your spots`);
+}
+
+// Everything on a row except the balance and the heart is fixed for the life of
+// the vendor, so this decides reuse vs rebuild — same contract as
+// vendorCardSig(). `favorite` is deliberately NOT in it: the heart is patched
+// in place, and rebuilding on a toggle would throw the logo away mid-tap.
+function spotRowSig(v) {
+  return JSON.stringify([v.name, !!v.hasLogo, v.pointsPerDollar ?? null]);
+}
+
+function renderSpots() {
+  const list = $('spots-list');
+  const skel = $('spots-skel');
+  const empty = $('spots-empty');
+
+  // Bring the pool in line with allVendors — build what's new, patch what
+  // moved, drop what's gone.
+  const live = new Set();
+  allVendors.forEach((v) => {
+    const id = String(v.vendorId);
+    live.add(id);
+    const sig = spotRowSig(v);
+    const existing = spotRows.get(id);
+    if (!existing || existing.dataset.sig !== sig) {
+      const next = buildSpotRow(v);
+      next.dataset.sig = sig;
+      existing?.remove();
+      spotRows.set(id, next);
+      return;
+    }
+    const num = existing.querySelector('.spot-num');
+    const points = String(v.balance ?? 0);
+    if (num && num.textContent !== points) num.textContent = points;
+    // Don't stomp a heart the student just tapped — the optimistic paint is
+    // ahead of the payload until the save lands.
+    if (!favoritePending.has(id)) paintSpotHeart(existing, Boolean(v.favorite), v.name);
+  });
+  spotRows.forEach((row, id) => {
+    if (!live.has(id)) { row.remove(); spotRows.delete(id); }
+  });
+
+  // filterVendors() returns relevance order, which is what a query wants. With
+  // no query the whole list comes back and gets sorted by name instead.
+  const q = spotsQuery.trim();
+  const shown = q ? filterVendors(spotsQuery) : allVendors.slice().sort(spotsOrder);
+
+  // Mount exactly `shown`, in order. insertBefore MOVES a mounted node rather
+  // than recreating it, so a row that survives a keystroke keeps its logo.
+  const want = shown.map((v) => spotRows.get(String(v.vendorId))).filter(Boolean);
+  const wanted = new Set(want);
+  [...list.children].forEach((el) => { if (!wanted.has(el)) el.remove(); });
+  want.forEach((el, k) => {
+    if (list.children[k] !== el) list.insertBefore(el, list.children[k] ?? null);
+  });
+
+  const loaded = allVendors.length > 0;
+  skel.hidden = loaded;
+  list.hidden = !loaded || want.length === 0;
+  empty.hidden = want.length > 0 || !loaded;
+  if (!want.length && loaded) {
+    empty.textContent = q ? `No spots match “${q}”.` : 'No spots yet, check back soon!';
+  }
+
+  // Only while filtering: an idle live region that re-announced on every socket
+  // push would talk over everything else the student is doing.
+  $('spots-search-status').textContent = q
+    ? `${want.length} ${want.length === 1 ? 'spot' : 'spots'} found`
+    : '';
+  $('spots-search-clear').hidden = !q;
+}
+
+/**
+ * Save or un-save a spot.
+ *
+ * Painted optimistically, because a heart that waits for a round trip feels
+ * broken on a phone. The request sends the STATE WANTED (PUT to save, DELETE to
+ * un-save) rather than a toggle, so a double-tap or a retry converges instead
+ * of alternating. On failure the paint is reverted and a toast says so — a
+ * silent revert reads as the tap not having registered.
+ */
+async function toggleFavorite(vendorId, row) {
+  const id = String(vendorId);
+  if (favoritePending.has(id)) return;          // a save is already in flight
+
+  const v = allVendors.find((x) => String(x.vendorId) === id);
+  if (!v) return;
+
+  const want = !v.favorite;
+  favoritePending.add(id);
+  row.querySelector('.spot-heart')?.classList.add('is-busy');
+  v.favorite = want;                            // optimistic, so the next render agrees
+  paintSpotHeart(row, want, v.name);
+
+  try {
+    const res = await authFetch(`/api/me/favorites/${encodeURIComponent(id)}`, {
+      method: want ? 'PUT' : 'DELETE',
+    });
+    if (!res.ok) throw new Error('FAVORITE_FAILED');
+    // The response carries the full saved list, so the client never has to
+    // guess what the server now believes — reconcile every row against it
+    // rather than trusting the one we just painted.
+    const { favorites } = await res.json();
+    if (Array.isArray(favorites)) {
+      const saved = new Set(favorites.map(String));
+      allVendors.forEach((x) => { x.favorite = saved.has(String(x.vendorId)); });
+      spotRows.forEach((r, rid) => {
+        const rv = allVendors.find((x) => String(x.vendorId) === rid);
+        if (rv) paintSpotHeart(r, Boolean(rv.favorite), rv.name);
+      });
+    }
+  } catch {
+    v.favorite = !want;                         // put it back
+    paintSpotHeart(row, !want, v.name);
+    // The same pill every other event uses, in its "lose" colour — a silent
+    // revert reads as the tap never having registered.
+    punchToast(want ? "Couldn't save that spot" : "Couldn't remove that spot", false);
+  } finally {
+    favoritePending.delete(id);
+    row.querySelector('.spot-heart')?.classList.remove('is-busy');
+  }
+}
+
+// One filter per frame at most, same reasoning as the carousel's search.
+let spotsSearchRaf = 0;
+function onSpotsSearchInput() {
+  if (spotsSearchRaf) return;
+  spotsSearchRaf = requestAnimationFrame(() => {
+    spotsSearchRaf = 0;
+    spotsQuery = $('spots-search').value ?? '';
+    renderSpots();
+  });
+}
+
+function wireSpots() {
+  $('spots-search').addEventListener('input', onSpotsSearchInput);
+  $('spots-search-clear').addEventListener('click', () => {
+    $('spots-search').value = '';
+    spotsQuery = '';
+    renderSpots();
+    $('spots-search').focus();
+  });
+
+  // Delegated, so pooled rows need no per-row listeners and a rebuilt row is
+  // wired the moment it is mounted.
+  $('spots-list').addEventListener('click', (e) => {
+    const row = e.target.closest('.spot-row');
+    if (!row) return;
+    if (e.target.closest('.spot-heart')) {
+      // The heart is inside the row's hit area, so this must not also drill in.
+      e.stopPropagation();
+      void toggleFavorite(row.dataset.id, row);
+      return;
+    }
+    openVendor(row.dataset.id, TAB.spots);
+  });
+
+  // role="button" carries no built-in keyboard activation, so it has to be
+  // written out — Enter and Space, matching what a real <button> does.
+  $('spots-list').addEventListener('keydown', (e) => {
+    const row = e.target.closest?.('.spot-row');
+    if (!row || e.target !== row) return;
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    e.preventDefault();
+    openVendor(row.dataset.id, TAB.spots);
+  });
+}
+
+/** Sign-out unpaint: the next student must not read the previous one's list. */
+function resetSpots() {
+  spotsQuery = '';
+  const input = $('spots-search');
+  if (input) input.value = '';
+  spotRows.forEach((row) => row.remove());
+  spotRows.clear();
+  favoritePending.clear();
+  $('spots-list').hidden = true;
+  $('spots-skel').hidden = false;
+  $('spots-empty').hidden = true;
+  $('spots-search-clear').hidden = true;
+}
+
+/* ---------- Home's carousel: recent spots, or a recommendation ----------
+   The row used to be every vendor in the app, ordered by the date each one
+   signed up — so at twenty spots a student's daily coffee shop could sit at
+   card seventeen, behind sixteen places they had never been. It is now the
+   places they actually go.
+
+   Two modes, decided by the data rather than by a setting:
+
+     RECENT — anything with activity in the last 7 days (the server's `recent`
+       flag: bought, redeemed, scanned a receipt, or collected a visit).
+     RECOMMENDED — the fallback when there is no recent activity at all, which
+       is every brand-new student and anyone back from a break. Shows the five
+       most-visited spots, so the first screen of the app is never empty.
+
+   Saved spots (the heart on the Spots tab) sort to the front of the recent row.
+   They do not ADD to it — a spot you saved but haven't been to in a month
+   belongs in the directory, not in a row that claims to be recent. */
+const RECOMMENDED_HEADING = 'RECOMMENDED';
+const RECENT_HEADING = 'RECENT SPOTS';
+
+/**
+ * The vendors the carousel shows, and what to call the row.
+ * Returns { list, heading, mode }.
+ */
+function recentVendors() {
+  const recent = allVendors.filter((v) => v.recent);
+  if (recent.length) {
+    // Saved first, then the rest; alphabetical within each group so the order
+    // is stable between loads rather than reshuffling on every socket push.
+    const sorted = recent.slice().sort((a, b) => {
+      const fav = Number(Boolean(b.favorite)) - Number(Boolean(a.favorite));
+      return fav || spotsOrder(a, b);
+    });
+    return { list: sorted, heading: RECENT_HEADING, mode: 'recent' };
+  }
+
+  // No recent activity. recommendedRank is the server's ordering, so keep it
+  // rather than re-sorting; a vendor that isn't ranked is simply not in it.
+  const ranked = allVendors
+    .filter((v) => v.recommendedRank != null)
+    .sort((a, b) => a.recommendedRank - b.recommendedRank);
+  // The very first student on a brand-new deployment has no visits to rank, so
+  // there is nothing to recommend either. Fall back to the whole list rather
+  // than an empty carousel — "check back soon" is wrong when spots do exist.
+  const list = ranked.length ? ranked : allVendors.slice().sort(spotsOrder);
+  return { list, heading: RECOMMENDED_HEADING, mode: 'recommended' };
+}
+
 function renderVendors() {
   // First, and before anything measures: applyVendorFilter() ends in
   // renderVendorDots(), which reads the carousel's geometry back off the page.
@@ -2610,6 +2953,9 @@ function renderVendors() {
   buildVendorIndex();
   syncVendorSearchRow();
   applyVendorFilter();
+  // The directory shares allVendors with the carousel, so it repaints on the
+  // same data — including every socket-driven balance push.
+  renderSpots();
   // The map's own entry point and, if the screen happens to be open, its badges.
   // Both are cheap no-ops when there is nothing to change, which matters: this
   // runs on every socket push, not just the first load.
@@ -2623,7 +2969,19 @@ function renderVendors() {
 // pass it, or an award landing while you browse would yank you to the first card.
 function applyVendorFilter(reset = false) {
   const wrap = $('vendor-carousel');
-  shownVendors = filterVendors(vendorQuery);
+  const q = vendorQuery.trim();
+  if (q) {
+    // A live query searches EVERY spot, not just the recent ones. Searching a
+    // row that has been narrowed to a handful would answer "no spots match" for
+    // a place that plainly exists, which reads as a bug rather than as a
+    // filter — and the Spots tab is one tap away for the full list anyway.
+    shownVendors = filterVendors(vendorQuery);
+    $('home-sub').textContent = 'ALL SPOTS';
+  } else {
+    const { list, heading } = recentVendors();
+    shownVendors = list;
+    $('home-sub').textContent = heading;
+  }
   paintVendorRow();
   wrap.classList.toggle('single', shownVendors.length === 1);   // lone vendor → full width
 
@@ -2631,7 +2989,7 @@ function applyVendorFilter(reset = false) {
   empty.hidden = shownVendors.length > 0;
   if (!shownVendors.length) {
     empty.textContent = allVendors.length
-      ? `No spots match “${vendorQuery.trim()}”.`
+      ? `No spots match “${q}”.`
       : 'No spots yet, check back soon!';
   }
   // Only while filtering: an idle live region that re-announces on every socket
@@ -3583,22 +3941,72 @@ function onVendorTap(e) {
   openVendor(card.dataset.id);
 }
 
-function openVendor(vendorId) {
+/**
+ * Open a spot's screen.
+ *
+ * #vendor lives INSIDE #tab-home, so it can only ever be shown over the Home
+ * tab — this function used to assume the caller was already there. It wasn't
+ * always: onDealTap hops to Home by hand first (with a comment naming the bug),
+ * and the map's "View rewards" never did, which was harmless only because the
+ * map was reachable from Home alone. The Spots tab makes that assumption false
+ * everywhere, so the hop belongs here, once, instead of at each call site.
+ *
+ * `origin` is the tab to return to on the way out; it defaults to wherever the
+ * student actually is. Backing out of a spot opened from Spots returns to
+ * Spots, not to Home — see exitVendor.
+ */
+function openVendor(vendorId, origin) {
   const v = allVendors.find((x) => String(x.vendorId) === String(vendorId));
   if (!v) return;
   closeHub();     // the spot's own screen slides in under it — same story as setTab
+  vendorOrigin = origin ?? activeTab;
   vendor = v;
   balanceReady = false;                       // paint the number instantly, no ticker
   $('pb-vendor').textContent = v.name.toUpperCase();
   renderVendorRate(v);
   renderItems();
   applyBalance(v.balance ?? 0);
-  slidePanes($('vendor'), $('home'), 1);      // vendor screen in from the right, home out left
-  // After the slide, not before: it un-hides the pane, and the stamp rows are
-  // measured against a card that has no width while #vendor is still hidden.
-  // Nothing has painted between the two calls, so the block still arrives with
-  // the screen rather than a frame late.
+
+  if (vendorOrigin === TAB.home) {
+    slidePanes($('vendor'), $('home'), 1);    // vendor screen in from the right, home out left
+  } else {
+    // Arriving from another tab. Swapping the panes and snapping the track in
+    // the SAME frame is what keeps Home from flashing between the list the
+    // student tapped and the spot that opens: a slide here would have to run
+    // after the tab snap, so Home would be visible for at least one frame in
+    // between. endPaneSlide(false) first, in case a slide is still in flight
+    // from a previous drill-in — its settle would hide the pane we're showing.
+    endPaneSlide(false);
+    $('vendor').hidden = false;
+    $('home').hidden = true;
+    $('tab-home').scrollTop = 0;
+    setTab(TAB.home, false);
+  }
+  // After the pane is shown, not before: it un-hides the pane, and the stamp
+  // rows are measured against a card that has no width while #vendor is still
+  // hidden. Nothing has painted between the two calls, so the block still
+  // arrives with the screen rather than a frame late.
   renderPunchUi();
+}
+
+/**
+ * Leave the spot screen and go back where the student came from.
+ *
+ * `animate` is only honoured for a spot opened from Home, where the two panes
+ * genuinely slide past each other. From any other tab there is no pane to slide
+ * back to on screen — the destination is a different page of the track — so it
+ * swaps instantly and snaps the tab, mirroring how openVendor arrived.
+ */
+function exitVendor(animate) {
+  const origin = vendorOrigin;
+  vendorOrigin = TAB.home;
+  if (origin === TAB.home) {
+    if (animate) backToHomeSlide();
+    else backToHome();
+    return;
+  }
+  backToHome();            // resets state, un-hides #home, refreshes balances
+  setTab(origin, false);   // ...then put the track back on the tab they left
 }
 
 function backToHome() {
@@ -4701,11 +5109,16 @@ function dealEndsLabel(iso) {
 // feature — and records the click-through the vendor's DEALS tab counts.
 function onDealTap(d) {
   authFetch('/api/me/deals/open', { method: 'POST', body: JSON.stringify({ id: d.id }) }).catch(() => {});
+  // Captured before anything moves: the deals sheet can be opened from any tab,
+  // and this is the tab the student should come back to.
+  const from = activeTab;
   closeDealsSheet();
-  // Home first: openVendor slides the spot in over the Home tab, so arriving
-  // from History or Account would leave it stranded behind the wrong pane.
-  setTab(0, false);
-  setTimeout(() => openVendor(d.vendorId), 260);   // after the sheet has slid away
+  // The manual setTab(0, false) that used to sit here is gone: openVendor now
+  // hops to the Home tab itself, because #vendor lives inside it. Hopping here
+  // ALSO meant openVendor read activeTab as 0 and recorded Home as the return
+  // tab, so backing out of a deal always dumped you on Home no matter where you
+  // opened it from.
+  setTimeout(() => openVendor(d.vendorId, from), 260);   // after the sheet has slid away
 }
 
 /* ---------- notification permission ---------- */

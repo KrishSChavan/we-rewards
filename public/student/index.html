@@ -390,7 +390,10 @@
                    only appears once the row is long enough to be worth
                    searching — app.js → VENDOR_SEARCH_MIN. -->
               <div class="home-sub-row">
-                <p class="home-sub">VENDORS</p>
+                <!-- Written by applyVendorFilter: "RECENT SPOTS" once there is
+                     activity to show, "RECOMMENDED" for a student who has none
+                     yet, and "ALL SPOTS" while a search is live. -->
+                <p id="home-sub" class="home-sub">RECENT SPOTS</p>
                 <div id="vendor-search-wrap" class="vendor-search" hidden>
                   <span class="vendor-search-icon" aria-hidden="true">🔍</span>
                   <!-- type=search for the phone keyboard's "search" key; the
@@ -538,6 +541,54 @@
             </main>
           </div>
 
+        </section>
+
+        <!-- ---------- SPOTS TAB (every vendor, searchable) ----------
+             The Home carousel only carries spots you've been to lately, so this
+             is the one place the whole list lives. Alphabetical rather than
+             newest-first: a student looking for a specific shop scans by name,
+             and "which of these opened most recently" is not a question anyone
+             is asking of a list they came here to search.
+
+             Rows are built by renderSpots() in app.js. The search field is
+             always present here (unlike Home's, which only appears past
+             VENDOR_SEARCH_MIN) — a list you opened deliberately is one you may
+             well have opened in order to search it. -->
+        <section class="tab-page" id="tab-spots" aria-label="Spots">
+          <div id="spots">
+            <header class="page-head">
+              <h1 class="page-title">Spots</h1>
+              <p class="page-sub">Everywhere you can earn</p>
+            </header>
+
+            <div class="spots-search-row">
+              <span class="vendor-search-icon" aria-hidden="true">🔍</span>
+              <input id="spots-search" class="spots-search-input" type="search"
+                     placeholder="Search spots" aria-label="Search spots"
+                     aria-controls="spots-list"
+                     autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+              <button id="spots-search-clear" class="vendor-search-clear" type="button"
+                      aria-label="Clear search" hidden>✕</button>
+            </div>
+
+            <!-- Skeleton rows, same reasoning as #vendor-skel on Home: static
+                 markup so the list has its shape in the shell's first paint
+                 rather than a frame after /api/me/balances lands. -->
+            <div id="spots-skel" class="spots-skel" aria-hidden="true">
+              <div class="spots-skel-row"><span class="skel sskel-mark"></span><span class="skel sskel-name"></span><span class="skel sskel-pts"></span></div>
+              <div class="spots-skel-row"><span class="skel sskel-mark"></span><span class="skel sskel-name"></span><span class="skel sskel-pts"></span></div>
+              <div class="spots-skel-row"><span class="skel sskel-mark"></span><span class="skel sskel-name"></span><span class="skel sskel-pts"></span></div>
+              <div class="spots-skel-row"><span class="skel sskel-mark"></span><span class="skel sskel-name"></span><span class="skel sskel-pts"></span></div>
+              <div class="spots-skel-row"><span class="skel sskel-mark"></span><span class="skel sskel-name"></span><span class="skel sskel-pts"></span></div>
+              <div class="spots-skel-row"><span class="skel sskel-mark"></span><span class="skel sskel-name"></span><span class="skel sskel-pts"></span></div>
+            </div>
+
+            <div id="spots-list" class="spots-list" hidden></div>
+            <!-- Off-screen rather than [hidden]: a hidden live region is not
+                 announced at all. Written only while a query is active. -->
+            <p id="spots-search-status" class="sr-only" role="status" aria-live="polite"></p>
+            <p id="spots-empty" class="empty-state" hidden>No spots yet, check back soon!</p>
+          </div>
         </section>
 
         <!-- ---------- HISTORY TAB (last 30 days) ---------- -->
@@ -852,13 +903,22 @@
         </svg>
         <span>Home</span>
       </button>
-      <button class="tab-btn" data-tab="1" type="button" aria-current="false" aria-label="History">
+      <!-- data-tab is the ONLY numbering that counts: app.js dispatches taps on
+           it and paints the active state from it. Keep these in the same order
+           as TABS in app.js, and as the .tab-page order in #tab-track. -->
+      <button class="tab-btn" data-tab="1" type="button" aria-current="false" aria-label="Spots">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 21s7-5.7 7-11a7 7 0 1 0-14 0c0 5.3 7 11 7 11z" /><circle cx="12" cy="10" r="2.6" />
+        </svg>
+        <span>Spots</span>
+      </button>
+      <button class="tab-btn" data-tab="2" type="button" aria-current="false" aria-label="History">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7.5V12l3.5 2" />
         </svg>
         <span>History</span>
       </button>
-      <button class="tab-btn" data-tab="2" type="button" aria-current="false" aria-label="Account">
+      <button class="tab-btn" data-tab="3" type="button" aria-current="false" aria-label="Account">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" />
         </svg>

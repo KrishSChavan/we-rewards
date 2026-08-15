@@ -2111,13 +2111,151 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   width: 2.2rem; height: 3px; border-radius: 0 0 3px 3px; background: var(--brand);
 }
 
-/* ---------- history + account pages ---------- */
+/* ---------- spots + history + account pages ---------- */
 
-#history, #account {
+#spots, #history, #account {
   min-height: 100%;
   display: flex; flex-direction: column;
   padding: calc(1.6rem + env(safe-area-inset-top)) 1.3rem 1.6rem;
 }
+
+/* ---------- the Spots tab ----------
+   Every vendor, alphabetical, searchable. Home's carousel is the "where have I
+   been lately" row; this is the directory.
+
+   Rows are a fixed three-column grid — mark, name, points — with the heart
+   pinned outside it. Grid rather than flex so the points column lines up down
+   the whole list: a student comparing balances is reading a column, and with
+   flex each row would size its own number and the digits would wander. */
+.spots-search-row {
+  display: flex; align-items: center; gap: 0.55rem;
+  margin-bottom: 1rem;
+  padding: 0.55rem 0.85rem;
+  background: var(--card);
+  border: 2px solid var(--edge); border-radius: 0.85rem;
+}
+.spots-search-input {
+  flex: 1 1 auto; min-width: 0;
+  border: none; background: none; outline: none;
+  font-family: inherit; font-size: 0.95rem; font-weight: 600;
+  color: var(--ink);
+  /* iOS puts its own clear button and inner shadow on type=search */
+  -webkit-appearance: none; appearance: none;
+}
+.spots-search-input::-webkit-search-decoration,
+.spots-search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.spots-search-input::placeholder { color: var(--muted); font-weight: 600; }
+
+.spots-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.spots-list[hidden] { display: none; }
+
+.spot-row {
+  display: grid;
+  /* mark | name (flexes) | points | heart */
+  grid-template-columns: 2.6rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.8rem;
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  background: var(--card);
+  border: 2px solid var(--edge); border-radius: 0.9rem;
+  text-align: left;
+  font-family: inherit;
+  transition: transform 90ms ease;
+}
+.spot-row:active { transform: scale(0.985); }
+
+.spot-mark {
+  width: 2.6rem; height: 2.6rem;
+  border-radius: 0.55rem; overflow: hidden;
+  background: var(--plate);
+  display: flex; align-items: center; justify-content: center;
+}
+.spot-logo {
+  display: block; width: 100%; height: 100%;
+  background-size: contain; background-repeat: no-repeat; background-position: center;
+}
+.spot-mono {
+  font-weight: 900; font-size: 0.85rem; letter-spacing: 0.02em;
+  color: var(--brand);
+}
+
+/* The name is the one column allowed to run out of room, so it is the one that
+   ellipsises. min-width: 0 on the grid track above is what actually permits it
+   — without it the track resolves to min-content and a long name pushes the
+   points column off the row instead of truncating. */
+.spot-name {
+  min-width: 0;
+  font-weight: 800; font-size: 0.98rem;
+  color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.spot-sub {
+  display: block;
+  font-weight: 600; font-size: 0.76rem; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 0.1rem;
+}
+
+.spot-points {
+  font-weight: 900; font-size: 0.95rem; color: var(--brand);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.spot-points small {
+  font-size: 0.62em; font-weight: 800; margin-left: 0.15em;
+  color: var(--muted);
+}
+
+/* The heart. Outline-only when unsaved — a stroked path with no fill, so it
+   reads as an affordance rather than as state. Saved fills it.
+
+   It is its own <button> INSIDE the row button, which is not legal HTML, so the
+   row is a <div role="button"> instead and both carry their own handlers. See
+   buildSpotRow(). The 2.75rem box is the WCAG 2.5.8 target minimum; the drawn
+   heart is smaller than its tap area on purpose. */
+.spot-heart {
+  flex: 0 0 auto;
+  width: 2.75rem; height: 2.75rem;
+  margin: -0.4rem -0.35rem -0.4rem 0;   /* absorb the padding it adds to the row */
+  padding: 0; border: 0; background: none;
+  appearance: none; -webkit-appearance: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted);
+  touch-action: manipulation;
+  transition: transform 120ms ease, color 120ms ease;
+}
+.spot-heart svg { width: 1.35rem; height: 1.35rem; display: block; }
+.spot-heart:active { transform: scale(0.86); }
+.spot-heart.is-on { color: var(--danger); }
+/* Only the saved state fills. currentColor on both, so the two never disagree. */
+.spot-heart svg path { fill: none; stroke: currentColor; }
+.spot-heart.is-on svg path { fill: currentColor; }
+/* The optimistic paint is reverted if the server refuses; this marks the gap so
+   a failed save doesn't look like a successful one for the half-second before. */
+.spot-heart.is-busy { opacity: 0.55; }
+
+/* ---------- skeleton: the spots list ----------
+   Six rows because that is roughly a phone's worth, and the same grid as the
+   real row so nothing shifts sideways when the fetch lands. */
+.spots-skel { display: flex; flex-direction: column; gap: 0.5rem; }
+.spots-skel[hidden] { display: none; }
+.spots-skel-row {
+  display: grid;
+  grid-template-columns: 2.6rem minmax(0, 1fr) auto;
+  align-items: center; gap: 0.8rem;
+  padding: 0.7rem 0.85rem;
+  border: 2px solid var(--hairline); border-radius: 0.9rem;
+}
+.sskel-mark { width: 2.6rem; height: 2.6rem; border-radius: 0.55rem; }
+.sskel-name { height: 0.95rem; border-radius: 0.3rem; }
+.sskel-pts  { width: 3.2rem; height: 0.95rem; border-radius: 0.3rem; }
+/* Uneven widths so it reads as text that hasn't arrived, not as a graphic. */
+.spots-skel-row:nth-child(2) .sskel-name { width: 62%; }
+.spots-skel-row:nth-child(3) .sskel-name { width: 78%; }
+.spots-skel-row:nth-child(4) .sskel-name { width: 54%; }
+.spots-skel-row:nth-child(5) .sskel-name { width: 70%; }
+.spots-skel-row:nth-child(6) .sskel-name { width: 48%; }
 .page-head { margin-bottom: 1.2rem; }
 .page-title { font-size: 1.9rem; font-weight: 900; letter-spacing: -0.01em; }
 .page-sub { margin-top: 0.2rem; color: var(--muted); font-weight: 600; font-size: 0.95rem; }

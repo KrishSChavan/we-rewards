@@ -12,8 +12,22 @@ import { getVapidPublicKey } from '../lib/push.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
+import { loadVendorCatalogue, loadRecommendedVendorIds } from '../lib/cache.js';
 
 const router = Router();
+
+/**
+ * How far back "Recent spots" looks. Any activity inside this window — a
+ * purchase, a redemption, a receipt claim (which writes an 'earn'), or a
+ * scanned visit — puts a spot on the Home carousel.
+ *
+ * Seven days is a week of habit rather than a month of history: the row is
+ * meant to answer "where have I been lately", and at a 30-day window a student
+ * who tried somewhere once in week one would still be looking at it in week
+ * four. Students with nothing in the window get the Recommended list instead,
+ * so a short window never leaves the carousel empty.
+ */
+const RECENT_WINDOW_DAYS = 7;
 
 // Every route here needs a valid session.
 router.use(requireUser);
@@ -177,19 +191,72 @@ router.post('/decline', async (req, res, next) => {
  */
 router.get('/balances', requireConsent, async (req, res, next) => {
   try {
-    const [{ data: vendors, error: vErr }, { data: balances, error: bErr }, { data: cards, error: cErr }] = await Promise.all([
-      // Newest vendors first so they land at the start (left) of the home carousel.
-      supabaseAdmin.from('vendors').select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)').eq('active', true).order('created_at', { ascending: false }),
+    const recentSince = new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+    const [
+      vendors,
+      { data: balances, error: bErr },
+      { data: cards, error: cErr },
+      { data: favorites, error: fErr },
+      { data: recentTxns, error: rErr },
+      { data: recentPunches, error: pErr },
+      recommended,
+    ] = await Promise.all([
+      // The catalogue half of this payload is IDENTICAL for every student, and
+      // `vendors` has no index beyond its primary key — so filtering on `active`
+      // and sorting by `created_at` is a sequential scan plus a sort. Uncached,
+      // that ran once per student per home open, per socket reconnect, and on
+      // every back-out of a vendor screen. See src/lib/cache.js; the per-student
+      // reads below are deliberately NOT cached.
+      loadVendorCatalogue(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
       // Visit counters (migration-029): exactly one row per (student, vendor).
       supabaseAdmin.from('punch_cards').select('vendor_id, punches').eq('user_id', req.user.id),
+      // Saved spots (migration-041) — the heart on each Spots row. PK-prefixed
+      // on user_id, so this is an index scan bounded by how many the student saved.
+      supabaseAdmin.from('vendor_favorites').select('vendor_id').eq('user_id', req.user.id),
+      // "Recent spots" part 1: anything bought or redeemed in the window. Uses
+      // idx_tx_user_vendor_time (user_id leading), so it is a prefix scan.
+      // `community_transfer` is excluded on purpose — moving pooled points into
+      // a vendor happens inside the app, not at a counter, so it is not a visit.
+      supabaseAdmin
+        .from('transactions')
+        .select('vendor_id')
+        .eq('user_id', req.user.id)
+        .in('type', ['earn', 'redeem'])
+        .gte('created_at', recentSince),
+      // "Recent spots" part 2: a scanned visit with no purchase attached. A
+      // punch is the one kind of activity that writes no transaction row, so
+      // without this a student who only ever punches would have no recent spots.
+      supabaseAdmin
+        .from('punches')
+        .select('vendor_id')
+        .eq('user_id', req.user.id)
+        .gte('created_at', recentSince),
+      // The Recommended fallback for a student with no recent activity. Global
+      // rather than per-student, so it is cached like the catalogue.
+      loadRecommendedVendorIds(),
     ]);
-    if (vErr) throw vErr;
     if (bErr) throw bErr;
     if (cErr) throw cErr;
+    if (fErr) throw fErr;
+    if (rErr) throw rErr;
+    if (pErr) throw pErr;
 
     const balanceMap = Object.fromEntries((balances ?? []).map((b) => [b.vendor_id, b.balance]));
     const visitMap = Object.fromEntries((cards ?? []).map((c) => [c.vendor_id, c.punches ?? 0]));
+    const favoriteSet = new Set((favorites ?? []).map((f) => f.vendor_id));
+    // Both feeds collapse to the same question — "was I here lately?" — so they
+    // merge into one set rather than being ranked. The client orders the Recent
+    // row itself; the server only says which spots qualify.
+    const recentSet = new Set([
+      ...(recentTxns ?? []).map((t) => t.vendor_id),
+      ...(recentPunches ?? []).map((p) => p.vendor_id),
+    ]);
+    // Position in the top-N list, so the client can keep the ranking. A vendor
+    // that has since been deactivated is already absent from `vendors`, so it
+    // simply never gets read back out.
+    const recommendedRank = new Map(recommended.map((id, i) => [id, i]));
     res.json(
       (vendors ?? []).map((v) => {
         return {
@@ -217,9 +284,98 @@ router.get('/balances', requireConsent, async (req, res, next) => {
             enabled: Boolean(v.punch_enabled),
             visits: visitMap[v.id] ?? 0,
           },
+          // ---- what the Spots tab and the Recent row are built from ----
+          // The heart's state (migration-041).
+          favorite: favoriteSet.has(v.id),
+          // Any activity in the last RECENT_WINDOW_DAYS: bought, redeemed, or
+          // scanned a visit. Drives the Home carousel's "Recent spots" row.
+          recent: recentSet.has(v.id),
+          // Rank in the most-visited list, or null. Only read when the student
+          // has no recent spots at all, where the carousel shows these instead
+          // under a "Recommended" heading rather than opening empty.
+          recommendedRank: recommendedRank.has(v.id) ? recommendedRank.get(v.id) : null,
         };
       })
     );
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ============================================================
+ * Saved spots — the heart on each row of the Spots tab (migration-041).
+ *
+ * PUT and DELETE rather than one toggle endpoint, and both IDEMPOTENT: the
+ * client sends the state it wants, not a flip. A heart is exactly the control
+ * that gets double-tapped, and a toggle would turn a duplicate tap (or a retry
+ * after a dropped response) into the opposite of what the student saw. Sending
+ * the desired state means the same request twice is the same outcome.
+ *
+ * Both return the full saved list, so the client never has to guess what the
+ * server now believes — one response repaints every heart on screen.
+ * ============================================================ */
+
+/** The student's saved vendor ids. Shared by both handlers below. */
+async function favoriteIds(userId) {
+  const { data, error } = await supabaseAdmin
+    .from('vendor_favorites')
+    .select('vendor_id')
+    .eq('user_id', userId);
+  if (error) throw error;
+  return (data ?? []).map((r) => r.vendor_id);
+}
+
+/** PUT /api/me/favorites/:vendorId — save a spot. Idempotent. */
+router.put('/favorites/:vendorId', requireConsent, async (req, res, next) => {
+  try {
+    const vendorId = req.params.vendorId;
+    if (!isUuid(vendorId)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Spot not found.' });
+    }
+
+    // Only an ACTIVE vendor may be saved. Read from the cached catalogue rather
+    // than issuing a lookup: it is the same list the client just rendered from,
+    // so a vendor that isn't in it is one the student could not have seen.
+    const catalogue = await loadVendorCatalogue();
+    if (!catalogue.some((v) => v.id === vendorId)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Spot not found.' });
+    }
+
+    // `ignoreDuplicates` makes this ON CONFLICT DO NOTHING against the (user_id,
+    // vendor_id) primary key, so saving twice is a no-op rather than a 409.
+    const { error } = await supabaseAdmin
+      .from('vendor_favorites')
+      .upsert({ user_id: req.user.id, vendor_id: vendorId }, { onConflict: 'user_id,vendor_id', ignoreDuplicates: true });
+    if (error) throw error;
+
+    res.json({ favorites: await favoriteIds(req.user.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/me/favorites/:vendorId — un-save a spot. Idempotent.
+ *
+ * No existence check on the vendor: un-saving must keep working for a spot that
+ * has since been deactivated, or a student would be stuck with a saved row they
+ * can no longer remove. Deleting something that isn't there is a no-op anyway.
+ */
+router.delete('/favorites/:vendorId', requireConsent, async (req, res, next) => {
+  try {
+    const vendorId = req.params.vendorId;
+    if (!isUuid(vendorId)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Spot not found.' });
+    }
+
+    const { error } = await supabaseAdmin
+      .from('vendor_favorites')
+      .delete()
+      .eq('user_id', req.user.id)
+      .eq('vendor_id', vendorId);
+    if (error) throw error;
+
+    res.json({ favorites: await favoriteIds(req.user.id) });
   } catch (err) {
     next(err);
   }

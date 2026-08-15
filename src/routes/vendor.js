@@ -12,6 +12,7 @@ import { isUuid } from '../lib/ids.js';
 import { rollupVendorAnalytics } from '../lib/analytics.js';
 import { validReward, validRatio } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
+import { invalidateVendorCaches } from '../lib/cache.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
@@ -388,6 +389,9 @@ router.post('/rewards', requirePin, async (req, res, next) => {
       .select()
       .single();
     if (error) throw error;
+    // Rewards ride inside the cached student catalogue (src/lib/cache.js), so a
+    // new item has to drop it or it won't show up for students for up to a TTL.
+    invalidateVendorCaches(req.vendor.id);
     res.json(data);
   } catch (err) {
     next(err);
@@ -452,6 +456,8 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
       throw error;
     }
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
+    // Includes toggling an item off, which is how the terminal "deletes" one.
+    invalidateVendorCaches(req.vendor.id);
     res.json(data);
   } catch (err) {
     next(err);
@@ -1097,6 +1103,13 @@ router.patch('/settings', requirePin, async (req, res, next) => {
       .select()
       .single();
     if (error) throw error;
+
+    // The settings save is the one write that can change BOTH halves: the
+    // catalogue (name, rate, address, punch on/off) and the artwork the logo
+    // cache holds. Dropping this vendor's logo entry is what makes a new upload
+    // visible — its ETag is derived from the bytes, so a stale cache entry would
+    // keep answering 304 with the old image.
+    invalidateVendorCaches(req.vendor.id);
 
     if (pinChanged) {
       // Drop every session for this vendor; the terminal must re-enter the PIN.

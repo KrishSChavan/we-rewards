@@ -20,6 +20,7 @@ import { setIo } from './src/lib/realtime.js';
 import { logError, requestContext } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
 import { isUuid } from './src/lib/ids.js';
+import { loadVendorLogo } from './src/lib/cache.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { startReferralWorker, stopReferralWorker } from './src/lib/referrals.js';
 import { publicSignupBonus } from './src/lib/signup-bonus.js';
@@ -829,17 +830,49 @@ app.post('/api/punch/hold', async (req, res, next) => {
 // data-URL stored on the vendor) so the student card can use a plain <img>/
 // background that the browser caches — keeping the polled /balances payload
 // lean. Logos are shown to everyone, so no auth; only active vendors resolve.
+// ONE RENDER OF THE VENDOR LIST USED TO BE ONE DATABASE QUERY PER CARD. Each
+// card's background-image points here, and this read a base64 blob out of
+// `vendors` and decoded it per request, behind `max-age=300` with no validator —
+// so every five minutes each student paid N queries and N full downloads again,
+// and nothing could ever answer 304. The service worker doesn't help either: it
+// returns early on /api/ paths (public/student/sw.js).
+//
+// Three changes, in order of how much they matter:
+//   1. The decoded bytes are cached in process (src/lib/cache.js), so N cards
+//      cost at most N queries ONCE, shared by every student on the dyno, and
+//      the vendor's logo-upload path invalidates it.
+//   2. A content-derived ETag, so a browser revalidating gets a 304 with an
+//      empty body instead of the image again.
+//   3. An hour of max-age instead of five minutes, plus stale-while-revalidate
+//      so the refresh happens off the paint path.
+//
+// NOT `immutable`, and NOT a year: this URL is mutable — a vendor re-uploading
+// their artwork keeps the same /api/vendor-logo/<id>. A long max-age here would
+// pin the old image in every student's browser with no way to reach them, since
+// nothing about the URL changes. An hour is the trade: 12x fewer revalidations
+// than before, each one now answered from memory rather than Postgres, and a new
+// logo is live everywhere within the hour. To go longer the URL has to carry a
+// content version (e.g. ?v=<hash> sourced from the catalogue) — worth doing if
+// logo traffic ever matters again, but it needs a client change to go with it.
 app.get('/api/vendor-logo/:id', async (req, res) => {
   try {
     if (!isUuid(req.params.id)) return res.status(404).end();
-    const { data, error } = await supabaseAdmin
-      .from('vendors').select('logo, active').eq('id', req.params.id).maybeSingle();
-    if (error || !data?.active || !data.logo) return res.status(404).end();
-    const m = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(data.logo);
-    if (!m) return res.status(404).end();
-    res.set('Content-Type', m[1]);
-    res.set('Cache-Control', 'public, max-age=300');
-    res.send(Buffer.from(m[2], 'base64'));
+
+    const logo = await loadVendorLogo(req.params.id);
+    if (!logo) return res.status(404).end();
+
+    // Set the validator before the conditional check, so the 304 carries it too
+    // — a 304 without an ETag makes the browser drop its cached copy.
+    res.set('ETag', logo.etag);
+    res.set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
+
+    // req.fresh compares If-None-Match against the ETag we just set. Express
+    // handles the weak/strong and multi-value cases; doing it by hand gets the
+    // `W/` prefix and `*` wrong.
+    if (req.fresh) return res.status(304).end();
+
+    res.set('Content-Type', logo.contentType);
+    res.send(logo.body);
   } catch {
     res.status(404).end();
   }

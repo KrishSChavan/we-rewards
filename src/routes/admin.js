@@ -15,6 +15,7 @@ import {
   POSTER_MAX_BYTES, POSTER_EXTENSIONS,
 } from '../lib/qr-poster.js';
 import { emitBalance } from '../lib/realtime.js';
+import { invalidateVendorCaches } from '../lib/cache.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -300,8 +301,17 @@ async function onboardVendor({ name, email, password, passwordHash, address, log
       .from('vendor_staff')
       .insert({ vendor_id: vendor.id, user_id: userId, role: 'owner' });
     if (staffErr) throw staffErr;
+
+    // A new spot should appear for students on their next load, not up to the
+    // catalogue TTL later. See src/lib/cache.js.
+    invalidateVendorCaches();
   } catch (err) {
-    if (vendor) await supabaseAdmin.from('vendors').delete().eq('id', vendor.id).then(() => {}, () => {});
+    if (vendor) {
+      await supabaseAdmin.from('vendors').delete().eq('id', vendor.id).then(() => {}, () => {});
+      // The rollback is also a write — if the insert above got far enough to
+      // populate the cache, the deleted vendor must not survive in it.
+      invalidateVendorCaches(vendor.id);
+    }
     // Unwind only a login WE created. A linked pre-existing account (a
     // student's, possibly) must survive a failed onboard untouched.
     if (!linkedExisting) await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
@@ -537,6 +547,9 @@ router.patch('/vendors/:id', async (req, res, next) => {
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    // Covers the on/off kill-switch, so a vendor toggled off disappears from
+    // students immediately rather than at the end of the catalogue TTL.
+    invalidateVendorCaches(req.params.id);
     res.json(data);
   } catch (err) {
     next(err);
@@ -602,6 +615,8 @@ router.post('/vendors/:id/rewards', async (req, res, next) => {
       .select()
       .single();
     if (error) throw error;
+    // Rewards ride inside the cached catalogue payload.
+    invalidateVendorCaches(req.params.id);
     res.json(data);
   } catch (err) {
     next(err);
@@ -664,6 +679,9 @@ router.patch('/vendors/:id/rewards/:rewardId', async (req, res, next) => {
       throw error;
     }
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
+    // Covers hiding an item too — a "delete" here is active: false, not a row
+    // removal, and it still has to leave the students' catalogue.
+    invalidateVendorCaches(req.params.id);
     res.json(data);
   } catch (err) {
     next(err);
@@ -712,6 +730,9 @@ router.delete('/vendors/:id', async (req, res, next) => {
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    // Before the orphaned-login sweep below, which can take a while: a deleted
+    // vendor must not keep being served to students out of the cache meanwhile.
+    invalidateVendorCaches(req.params.id);
 
     // Remove each login that's now orphaned (no remaining vendor_staff link) —
     // UNLESS it is also a student account (has a profiles row). Deleting a
