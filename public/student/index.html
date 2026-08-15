@@ -593,8 +593,12 @@
                      Only the closed state needs styling, and that is fully
                      reachable with appearance: none. -->
                 <div class="spots-filter">
+                  <!-- Favorites sits directly after All: it is the only option
+                       the student curates by hand, and it is what the heart on
+                       every row feeds. Recent and Top keep their order below it. -->
                   <select id="spots-filter" class="spots-filter-select" aria-label="Filter spots">
                     <option value="all" selected>All</option>
+                    <option value="favorites">Favorites</option>
                     <option value="recent">Recent</option>
                     <option value="top">Top</option>
                   </select>

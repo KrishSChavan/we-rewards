@@ -2677,16 +2677,21 @@ function spotsOrder(a, b) {
 /**
  * The list the current filter describes, before any search is applied.
  *
- *   all    — every spot, alphabetical. The directory.
- *   recent — spots with activity in the last 7 days (the server's `recent`
- *            flag), alphabetical. The same set the Home carousel draws from.
- *   top    — the most-visited spots, in the server's ranking. `recommendedRank`
- *            is only set on the ranked few, so this is a short list by design.
+ *   all       — every spot, alphabetical. The directory.
+ *   favorites — the spots this student saved with the heart, alphabetical.
+ *   recent    — spots with activity in the last 7 days (the server's `recent`
+ *               flag), alphabetical. The set the Home carousel draws from.
+ *   top       — the most-visited spots, in the server's ranking.
+ *               `recommendedRank` is only set on the ranked few, so this is a
+ *               short list by design.
  *
  * Each returns a NEW array; nothing here may sort allVendors in place, or the
  * carousel's own ordering would change underneath it.
  */
 function spotsFilterList() {
+  if (spotsFilter === 'favorites') {
+    return allVendors.filter((v) => v.favorite).sort(spotsOrder);
+  }
   if (spotsFilter === 'recent') {
     return allVendors.filter((v) => v.recent).sort(spotsOrder);
   }
@@ -2701,10 +2706,14 @@ function spotsFilterList() {
 /** What to say when the current filter (plus any query) matches nothing. */
 function spotsEmptyText(query) {
   if (query) {
+    if (spotsFilter === 'favorites') return `None of your saved spots match “${query}”.`;
     if (spotsFilter === 'recent') return `No recent spots match “${query}”.`;
     if (spotsFilter === 'top') return `No top spots match “${query}”.`;
     return `No spots match “${query}”.`;
   }
+  // Says what to DO, not just what is missing: an empty Favorites list is the
+  // one empty state here a student can fix in one tap, so it should say how.
+  if (spotsFilter === 'favorites') return 'No saved spots yet. Tap the heart on a spot to save it.';
   if (spotsFilter === 'recent') return "You haven't been anywhere in the last 7 days.";
   if (spotsFilter === 'top') return 'No visits recorded yet, so there is nothing to rank.';
   return 'No spots yet, check back soon!';
@@ -2879,8 +2888,22 @@ async function toggleFavorite(vendorId, row) {
     // revert reads as the tap never having registered.
     punchToast(want ? "Couldn't save that spot" : "Couldn't remove that spot", false);
   } finally {
+    // Cleared BEFORE the re-render below, or renderSpots would skip this row's
+    // heart — it deliberately leaves pending rows alone so an in-flight save is
+    // not stomped by a socket push landing mid-tap.
     favoritePending.delete(id);
     row.querySelector('.spot-heart')?.classList.remove('is-busy');
+    // Under the Favorites filter the heart decides MEMBERSHIP, not just the
+    // icon: un-saving a spot means it no longer belongs in the list at all.
+    // Re-render so the row leaves (and the empty state appears when it was the
+    // last one) at a moment the student can connect to their own tap — without
+    // this it lingered until some unrelated socket push happened to repaint,
+    // which is the same outcome arriving at a random time.
+    //
+    // Only for this filter. Everywhere else the row's membership is unchanged
+    // and the in-place heart paint above is the whole update, so a full
+    // re-render would be wasted work that can also shift the scroll position.
+    if (spotsFilter === 'favorites') renderSpots();
   }
 }
 
