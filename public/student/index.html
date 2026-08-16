@@ -287,6 +287,23 @@
           <div id="items" class="items"></div>
           <p id="items-empty" class="empty-state" hidden>No rewards yet, check back soon!</p>
         </main>
+
+        <!-- Pinned under the rewards list: the list scrolls, this does not.
+             position:sticky rather than fixed (see styles.css) so it is part of
+             the pane's flow — it rides the pane's slide with everything else,
+             and on iOS it does not detach the way a fixed child of a
+             -webkit-overflow-scrolling scroller does mid-flick.
+
+             Opens the same full-screen map as the 🗺️ on Home, but focused on
+             this spot: openMapScreen(vendorId) drops the pin sheet in and
+             centres its pin. [hidden] until syncVendorMapCta says this vendor
+             has coordinates — the map cannot show a spot it cannot place. -->
+        <div id="vendor-map-cta" class="vendor-map-cta" hidden>
+          <button id="vendor-map-btn" class="vendor-map-btn" type="button">
+            <span class="vmb-icon" aria-hidden="true">🗺️</span>
+            <span>Show in map</span>
+          </button>
+        </div>
       </div>
       <div id="tab-track" class="tab-track">
 
@@ -495,15 +512,18 @@
                   <button id="vendor-search-clear" class="vendor-search-clear" type="button"
                           aria-label="Clear search" hidden>✕</button>
                 </div>
-                <!-- Every spot on one map. An icon rather than a labelled row
-                     because .home-main splits its leftover height three ways
-                     (see there) and a full-width button would spend a third of
-                     that budget; sitting in this row it costs no height at all.
+                <!-- Every spot on one map. A pill sharing this row rather than a
+                     row of its own because .home-main splits its leftover height
+                     three ways (see there) and a full-width button would spend a
+                     third of that budget; sitting in this row it costs no height
+                     at all. The word leads and the 🗺️ trails it — the label is
+                     what makes the control readable, the glyph is decoration, so
+                     it carries aria-hidden and the button keeps its own label.
                      margin-left:auto in the CSS keeps it hard right on the
                      screens where the search box is below VENDOR_SEARCH_MIN and
                      therefore hidden. Hidden until a spot has coordinates. -->
                 <button id="map-open-btn" class="map-open-btn" type="button"
-                        aria-label="See all vendors on a map" hidden>🗺️</button>
+                        aria-label="See all vendors on a map" hidden><span class="map-open-label">Map</span><span class="map-open-icon" aria-hidden="true">🗺️</span></button>
               </div>
               <!-- Two placeholder cards holding the row's height and shape until
                    /api/me/balances lands. Static markup, not built by JS, so it

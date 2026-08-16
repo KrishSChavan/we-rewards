@@ -1648,7 +1648,49 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .points-toast.gain { background: var(--success); }
 .points-toast.lose { background: var(--warn); }
 
-.app-main { padding: 1.3rem 1.3rem 3rem; }
+/* flex-grow so a short spot (one reward, no punch card) still fills the pane and
+   leaves .vendor-map-cta on the bottom edge rather than floating it halfway up
+   under the list. 0 shrink keeps the padding intact when the content overflows. */
+.app-main { flex: 1 0 auto; padding: 1.3rem 1.3rem 3rem; }
+
+/* ---------- "Show in map" bar on a spot's screen ----------
+   Sticky, not fixed. #vendor is the scroller AND is transformed, so a fixed
+   child would be positioned against the pane (right answer) but repaints
+   unreliably inside a -webkit-overflow-scrolling:touch scroller on iOS — the
+   classic bar that lags a flick and snaps back at the end of the momentum.
+   Sticky is what .points-bar already uses in this same scroller.
+
+   Being in flow is also what keeps the last reward reachable: the bar floats at
+   the bottom edge while there is list below it and settles into its own place
+   at the end of the scroll, so nothing is permanently underneath it and no
+   scroll-padding arithmetic is needed.
+
+   No safe-area padding here on purpose: .tab-viewport already ends above
+   .tabbar, and .tabbar carries env(safe-area-inset-bottom) for both of them. */
+.vendor-map-cta {
+  position: sticky; bottom: 0; z-index: 6;
+  flex: 0 0 auto;
+  padding: 0.8rem 1.3rem;
+  background: var(--paper);
+  border-top: 2px solid var(--hairline);
+}
+.vendor-map-cta[hidden] { display: none; }
+
+.vendor-map-btn {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0.85rem 1rem; border-radius: 1.1rem;
+  font: inherit; font-size: 1rem; font-weight: 900;
+  background: var(--navy); color: #fff;
+  border: 3px solid var(--edge);
+  box-shadow: 0 4px 0 var(--edge);
+  cursor: pointer;
+  transition: transform 90ms ease, box-shadow 90ms ease;
+}
+/* margin, not flex `gap` — same reason as .map-open-icon above. */
+.vmb-icon { margin-right: 0.5rem; font-size: 1.1rem; line-height: 1; }
+.vendor-map-btn:active { transform: translateY(4px); box-shadow: 0 0 0 var(--edge); }
+.vendor-map-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 /* earn rate at the top of a spot's own screen, under the points bar */
 .vendor-rate { margin-bottom: 1rem; font-size: 0.9rem; font-weight: 700; color: var(--muted); line-height: 1.3; text-align: center; }
@@ -2080,12 +2122,24 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
      all, and there is no fallback if it is dropped. */
   top: 0; right: 0; bottom: 0; left: 0;
   z-index: 5;
+  /* A flex column purely so .app-main can grow into the leftover height and hold
+     .vendor-map-cta down on the bottom edge when a spot has one reward and no
+     scrolling to do. The pane is still its own scroller — a column flex
+     container with overflow-y:auto scrolls exactly as a block one does, and
+     .points-bar's sticky top is unaffected by being a flex item. */
+  display: flex; flex-direction: column;
   overflow-y: auto; -webkit-overflow-scrolling: touch;
   background: var(--paper);
   touch-action: pan-y;
   transform: translateX(100%);
   will-change: transform;
 }
+/* An author `display:` normally outranks the UA sheet's [hidden] rule, which
+   would leave the closed pane laid out. The global `[hidden] { display: none
+   !important }` near the top of this file already covers it, so this is belt and
+   braces — but it is spelled out here because the rule above is the reason the
+   pane now needs the cover at all. */
+#vendor[hidden] { display: none; }
 /* Opened. JS adds .is-open; the transition rides on .is-sliding so that the
    FIRST paint of a freshly-unhidden pane can be positioned without animating. */
 #vendor.is-open { transform: translateX(0); }
@@ -2764,21 +2818,31 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    file only has to dress it: the app's chunky-border language over Leaflet's
    default grey furniture. */
 
-/* --- the 🗺️ entry point, sharing the heading's row --- */
+/* --- the "Map 🗺️" entry point, sharing the heading's row --- */
 /* margin-left:auto rather than a spacer: .vendor-search is flex:1 and eats the
    slack when it is showing, but it is [hidden] below VENDOR_SEARCH_MIN spots,
-   and without the auto margin this would slide left to hug the heading. */
+   and without the auto margin this would slide left to hug the heading.
+
+   A pill, not a circle: the width is whatever the label plus the glyph needs, and
+   the row's height is unchanged (2.3rem was the circle's diameter and is now the
+   pill's height), so widening it costs the carousel below nothing. The gap is a
+   margin on the glyph rather than flex `gap` — see .spots-sub-row on why an auto
+   margin beats leaning on the no-flex-gap fallback. */
 .map-open-btn {
   flex: 0 0 auto; margin-left: auto;
-  width: 2.3rem; height: 2.3rem; border-radius: 999px;
+  height: 2.3rem; padding: 0 0.7rem; border-radius: 999px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 1.05rem; line-height: 1;
+  line-height: 1;
   background: var(--card); color: var(--ink);
   border: 2.5px solid var(--edge);
   box-shadow: 0 3px 0 var(--edge);
   cursor: pointer;
   transition: transform 90ms ease, box-shadow 90ms ease;
 }
+/* The word sits on the heading row's own type scale (.home-sub is 0.8rem/900),
+   so it reads as part of that line rather than as a shrunken button label. */
+.map-open-label { font-size: 0.8rem; font-weight: 900; letter-spacing: 0.08em; }
+.map-open-icon { margin-left: 0.35rem; font-size: 1.05rem; }
 .map-open-btn[hidden] { display: none; }
 .map-open-btn:active { transform: translateY(3px); box-shadow: 0 0 0 var(--edge); }
 .map-open-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

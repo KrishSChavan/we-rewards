@@ -283,6 +283,8 @@ const Splash = (() => {
   // on that one (see onVendorTap). ✕ / Esc close it, and Esc puts the pin sheet
   // away first if one is up.
   $('map-open-btn').addEventListener('click', () => openMapScreen(null));
+  // Same screen from inside a spot, focused on the spot you are standing in.
+  $('vendor-map-btn').addEventListener('click', onShowVendorInMap);
   $('map-close').addEventListener('click', closeMapScreen);
   $('map-locate').addEventListener('click', onMapLocateTap);
   $('map-pin-close').addEventListener('click', () => closePinSheet());
@@ -3616,10 +3618,14 @@ function mapCoord(x) {
   return Number.isFinite(n) ? n : NaN;
 }
 
-// Only vendors we can actually put somewhere. A vendor with no address (or one
-// Nominatim could not geocode) has null coordinates — see src/lib/geocode.js.
+// A vendor we can actually put somewhere. One with no address (or one Nominatim
+// could not geocode) has null coordinates — see src/lib/geocode.js.
+function vendorMappable(v) {
+  return !!v && !Number.isNaN(mapCoord(v.latitude)) && !Number.isNaN(mapCoord(v.longitude));
+}
+
 function mappableVendors() {
-  return allVendors.filter((v) => !Number.isNaN(mapCoord(v.latitude)) && !Number.isNaN(mapCoord(v.longitude)));
+  return allVendors.filter(vendorMappable);
 }
 
 // The 🗺️ is pointless with nothing to show, so it only appears once at least one
@@ -3627,6 +3633,15 @@ function mappableVendors() {
 function syncMapButton() {
   const btn = $('map-open-btn');
   if (btn) btn.hidden = mappableVendors().length === 0;
+}
+
+// Same rule one spot down: "Show in map" can only ever open a map with THIS spot
+// on it, so it goes away for a vendor with no coordinates rather than opening a
+// map that quietly focuses nothing. Called from openVendor, so it is decided
+// once per screen — coordinates do not move while the screen is up.
+function syncVendorMapCta(v) {
+  const bar = $('vendor-map-cta');
+  if (bar) bar.hidden = !vendorMappable(v);
 }
 
 function mapScreenOpen() {
@@ -4011,6 +4026,7 @@ function dropMapScreen() {
   mapMarkers.clear();
   mapFocusId = null;
   $('map-open-btn').hidden = true;
+  $('vendor-map-cta').hidden = true;   // ...and the way in from a spot's screen
 }
 
 // Esc backs out one layer at a time: the sheet if it is up, otherwise the map.
@@ -4024,6 +4040,14 @@ function onMapPinOpenVendor() {
   if (!id) return;
   closeMapScreen();
   openVendor(id);
+}
+
+// The other direction: from a spot's own screen up to its pin. The map is a
+// body-level overlay above .tabbar, so it slides up OVER the spot screen and
+// leaves it standing — closing the map drops the student back exactly where they
+// were, with no pane to rebuild and no back-stack to keep.
+function onShowVendorInMap() {
+  if (vendor) openMapScreen(vendor.vendorId);
 }
 
 function onMapPinDirections() {
@@ -4138,6 +4162,7 @@ function openVendor(vendorId, origin) {
   balanceReady = false;                       // paint the number instantly, no ticker
   $('pb-vendor').textContent = v.name.toUpperCase();
   renderVendorRate(v);
+  syncVendorMapCta(v);
   renderItems();
   applyBalance(v.balance ?? 0);
   openVendorPane();
@@ -4207,6 +4232,13 @@ function openVendorPane() {
   endPaneSlide();
   pane.hidden = false;
   pane.scrollTop = 0;
+
+  // Already standing where it is going. "Show in map" made this ordinary: open a
+  // spot, open the map on its pin, tap View rewards — openVendor runs against a
+  // pane that never left. Re-running the slide would park it off the right edge
+  // for a frame and drag it back in, which reads as a flicker behind the map
+  // sliding down. The content swap above is the whole job here.
+  if (pane.classList.contains('is-open')) return;
 
   if (reducedMotion()) { pane.classList.add('is-open'); return; }
 
