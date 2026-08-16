@@ -110,7 +110,7 @@ export function rollupVendorAnalytics(txns, t0) {
 /**
  * Platform-wide 30-day rollup. Returns only the windowed portion; the route
  * merges in the lifetime count totals + newStudents/newVendors.
- * @param {Array<{type,points,dollar_amount,created_at,user_id,vendor_id,vendors?}>} txns
+ * @param {Array<{type,points,dollar_amount,created_at,user_id,vendor_id,vendors?:{name?:string,active?:boolean}}>} txns
  * @param {number} t0  start of today (ms, server-local)
  * @returns {{today,last7,last30,daily,topVendors}}
  */
@@ -144,7 +144,15 @@ export function rollupPlatformOverview(txns, t0) {
 
     if (transfer) continue;   // keep the daily series + top-vendors purchase-only
 
-    if (earn) {
+    // A vendor switched OFF is hidden from every student surface and its terminal
+    // is blocked, so ranking it here would spend one of five slots on a spot
+    // nobody can visit. Only the ranking skips it: the windows, the daily series
+    // and the totals above still count what it earned while it was on, because
+    // turning a vendor off is not a deletion and that revenue did happen.
+    // `active` is undefined for a deleted vendor (the join has no row left, and
+    // those already fold into one generic "Vendor"); only an explicit false is
+    // treated as off, so a missing join never silently drops a spot.
+    if (earn && tx.vendors?.active !== false) {
       const va = vendorAgg.get(tx.vendor_id) ?? { name: tx.vendors?.name ?? 'Vendor', revenue: 0, awards: 0 };
       va.revenue += rev; va.awards += pts >= 0 ? 1 : -1;
       vendorAgg.set(tx.vendor_id, va);

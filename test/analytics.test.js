@@ -120,6 +120,33 @@ describe('rollupPlatformOverview', () => {
     assert.deepEqual(r.topVendors.map((v) => v.name), ['C', 'B'], 'higher revenue first');
   });
 
+  // A vendor the operator switched off is gone from every student surface, so it
+  // must not hold a slot in the top-5. Its money still happened, though: the
+  // windows and the chart keep counting it, or an off-toggle would look like the
+  // platform lost revenue it really earned.
+  test('a switched-off vendor drops out of topVendors but stays in the totals', () => {
+    const t0 = startOfToday();
+    const r = rollupPlatformOverview([
+      { type: 'earn', points: 900, dollar_amount: 90, created_at: iso(t0 + HOUR), user_id: 'u1', vendor_id: 'v1', vendors: { name: 'Closed', active: false } },
+      { type: 'earn', points: 50, dollar_amount: 5, created_at: iso(t0 + HOUR), user_id: 'u2', vendor_id: 'v2', vendors: { name: 'Open', active: true } },
+    ], t0);
+
+    assert.deepEqual(r.topVendors.map((v) => v.name), ['Open'], 'the off vendor is not ranked, despite the higher revenue');
+    assert.equal(r.today.revenue, 95, 'platform revenue still counts what the off vendor earned');
+    assert.equal(r.today.awards, 2);
+    assert.equal(r.daily[13].revenue, 95, 'and so does the chart');
+  });
+
+  // Deleting a vendor leaves the join empty, which is not the same thing as
+  // switching one off; those rows already collapse into one generic "Vendor".
+  test('a missing vendor join is still ranked', () => {
+    const t0 = startOfToday();
+    const r = rollupPlatformOverview([
+      { type: 'earn', points: 100, dollar_amount: 10, created_at: iso(t0 + HOUR), user_id: 'u1', vendor_id: null, vendors: null },
+    ], t0);
+    assert.deepEqual(r.topVendors.map((v) => v.name), ['Vendor']);
+  });
+
   test('the daily series is 14 days ending today', () => {
     const t0 = startOfToday();
     const r = rollupPlatformOverview([], t0);

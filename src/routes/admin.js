@@ -116,7 +116,11 @@ router.get('/overview', async (req, res, next) => {
       supabaseAdmin.from('error_logs').select('id', { count: 'exact', head: true }),
       supabaseAdmin
         .from('transactions')
-        .select('type, points, dollar_amount, created_at, user_id, vendor_id, vendors(name)')
+        // vendors.active rides along so the rollup can keep switched-off vendors
+        // out of the top-5 ranking. NOT a filter on the query: the windowed
+        // totals and the daily chart must still count what an off vendor earned
+        // while it was on, or toggling one off rewrites platform history.
+        .select('type, points, dollar_amount, created_at, user_id, vendor_id, vendors(name, active)')
         .gte('created_at', since30)
         .limit(TX_LIMIT),
     ]);
