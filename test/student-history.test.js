@@ -104,14 +104,25 @@ describe('mergeHistory', () => {
     assert.deepEqual(items.map((r) => r.id), ['t0', 't1', 't2', 't3']);
   });
 
-  test('either source sitting on its own DB limit truncates the feed', () => {
-    // The merge has room here — but a query that came back holding exactly its
-    // limit has more behind it, so the feed is still short. Reporting it is what
-    // keeps "Load older" from being offered a window it cannot widen into.
-    const full = Array.from({ length: 4 }, (_, i) => tx(`t${i}`, `2026-08-1${i}T09:00:00Z`));
-    assert.equal(mergeHistory(full, [], { max: 4, grantMax: 50 }).truncated, true);
+  test('a merge landing exactly on the cap is a full page, not a complete one', () => {
+    // The boundary the button turns on. Widening the window cannot reveal a row
+    // that isn't already on screen once the page is full, so calling this
+    // complete would offer a tap that provably changes nothing.
+    const { items, truncated } = mergeHistory(
+      [tx('t1', '2026-08-12T09:00:00Z'), tx('t2', '2026-08-11T09:00:00Z')],
+      [grant('g1', '2026-08-10T09:00:00Z'), grant('g2', '2026-08-09T09:00:00Z')],
+      { max: 4, grantMax: 50 },
+    );
+    assert.equal(items.length, 4);
+    assert.equal(truncated, true);
+  });
 
+  test('grants saturating their own limit truncate a feed with room to spare', () => {
+    // Their limit sits far below the merge cap, so they can come back capped
+    // while the feed is half empty — the one case the row count cannot show.
     const grants = Array.from({ length: 3 }, (_, i) => grant(`g${i}`, `2026-08-0${i + 1}T09:00:00Z`));
-    assert.equal(mergeHistory([], grants, { max: 100, grantMax: 3 }).truncated, true);
+    const { items, truncated } = mergeHistory([], grants, { max: 100, grantMax: 3 });
+    assert.equal(items.length, 3);
+    assert.equal(truncated, true);
   });
 });

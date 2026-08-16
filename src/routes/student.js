@@ -915,7 +915,14 @@ export function mergeHistory(transactions, grants, { max = HISTORY_ROWS, grantMa
 
   return {
     items: all.slice(0, max),
-    truncated: all.length > max || tx.length >= max || gr.length >= grantMax,
+    // `>=`, not `>`: a merge landing exactly on the cap has already filled the
+    // page, so widening the window cannot surface a single row the student
+    // can't already see. Reporting it as complete would buy them one tap that
+    // provably changes nothing. The transactions query's own limit needs no
+    // clause of its own — those rows are all in `all`, so a query sitting on it
+    // has already put the merge over the cap. Grants do need one: their limit is
+    // far below `max`, so they can saturate while the feed is half empty.
+    truncated: all.length >= max || gr.length >= grantMax,
   };
 }
 

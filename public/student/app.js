@@ -1322,22 +1322,32 @@ const HISTORY_DAYS_MAX = 360;
 let historyDays = HISTORY_DAYS;
 let historyVendor = 'all';   // vendor_id the chips are filtering to, or 'all'
 let historyMore = false;     // the server says there is something older to reach
+let historyTruncated = false; // …and that the feed came back capped, not complete
 let historyRows = [];        // the last payload, unfiltered — what the chips are built from
+let historySeq = 0;          // which fetch is the newest one out (cf. the admin roster's pager)
 
 async function loadHistory() {
+  const seq = ++historySeq;
   try {
     const res = await authFetch(`/api/me/history?days=${historyDays}`);
     if (!res.ok) throw new Error();
     const body = await res.json();
+    // A "Load older" and a background push can be in flight at once, and the
+    // wider request is not necessarily the one that lands last. Anything that
+    // isn't the newest request is dropped rather than painted, or the rows on
+    // screen and the window the strapline claims for them disagree.
+    if (seq !== historySeq) return;
     // The route still answers a paramless request with a bare array, for clients
     // cached from before the window existed. We always name a window, so this is
     // the envelope — but read both shapes rather than trust one, because the
     // failure mode of guessing wrong is a silently empty tab, not an error.
     const envelope = !Array.isArray(body);
     historyMore = envelope && body.hasMore === true;
+    historyTruncated = envelope && body.truncated === true;
     renderHistory(envelope ? (body.items ?? []) : body);
     historyLoaded = true;
   } catch {
+    if (seq !== historySeq) return;   // a superseded request's failure is not this view's
     $('history-loading').hidden = true;
     if (!historyLoaded) {          // keep any existing list on a transient refresh failure
       $('history-list').innerHTML = '';
@@ -1379,6 +1389,13 @@ function renderHistoryFilters(spots) {
     return;
   }
   const left = row.scrollLeft;     // a background refresh must not scroll the row home
+  // Tapping a chip rebuilds the row the chip lives in, so without this a
+  // keyboard or switch user loses focus to <body> on every activation and the
+  // next Tab restarts from the top of the page.
+  const held = document.activeElement;
+  const refocus = held && held.parentNode === row ? held.dataset.vendor : null;
+  let refocused = null;
+
   row.innerHTML = '';
   [{ id: 'all', name: 'All' }, ...spots].forEach((spot) => {
     const chip = document.createElement('button');
@@ -1388,10 +1405,12 @@ function renderHistoryFilters(spots) {
     chip.dataset.vendor = spot.id;
     chip.setAttribute('aria-pressed', on ? 'true' : 'false');
     chip.textContent = spot.name;  // not innerHTML: a vendor name is theirs to choose
+    if (refocus && spot.id === refocus) refocused = chip;
     row.appendChild(chip);
   });
   row.hidden = false;
   row.scrollLeft = left;
+  if (refocused) refocused.focus();
 }
 
 function renderHistory(items) {
@@ -1401,12 +1420,20 @@ function renderHistory(items) {
 
   // Chips come from the payload, so a spot with nothing left inside the current
   // window takes the filter back to All rather than leaving the tab filtered to
-  // a chip that is no longer on screen.
+  // a chip that is no longer on screen. `spots.length < 2` is that same case
+  // wearing a different hat: the row hides itself below two spots, and a filter
+  // left running with no chip to clear it strands the tab — every grant and
+  // every deleted-vendor row gone, and nothing on screen to tap to get back.
   const spots = historySpots(items);
-  if (historyVendor !== 'all' && !spots.some((s) => s.id === historyVendor)) historyVendor = 'all';
+  const stranded = spots.length < 2 || !spots.some((s) => s.id === historyVendor);
+  if (historyVendor !== 'all' && stranded) historyVendor = 'all';
   renderHistoryFilters(spots);
 
-  $('history-sub').textContent = `Your last ${historyDays} days`;
+  // The window — unless the feed came back capped, in which case the honest line
+  // is how many rows this is, not a span of days the list does not cover.
+  $('history-sub').textContent = historyTruncated
+    ? `Your most recent ${items.length} items`
+    : `Your last ${historyDays} days`;
   $('history-more').hidden = !historyMore;
 
   // Filter BEFORE the loop below, never by hiding rows afterwards: the day
@@ -1491,10 +1518,15 @@ function dropHistory() {
   $('history-filters').innerHTML = '';
   $('history-filters').hidden = true;
   $('history-more').hidden = true;
+  // The strapline is painted from historyDays, so resetting the variable alone
+  // would leave the next student's skeleton sitting under "Your last 120 days".
+  $('history-sub').textContent = `Your last ${HISTORY_DAYS} days`;
   historyRows = [];
   historyDays = HISTORY_DAYS;
   historyVendor = 'all';
   historyMore = false;
+  historyTruncated = false;
+  historySeq++;      // a fetch still in flight belongs to the student who just left
 }
 
 /** How a community-point grant reads in History, by the ledger's `kind`. */

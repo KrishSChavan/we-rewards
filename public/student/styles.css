@@ -2515,7 +2515,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .history-filters {
   display: flex;
   margin: 0 -1.3rem 1rem;
-  padding: 0.15rem 1.3rem 0.35rem;
+  /* The block padding is not spacing — a scroll container clips at its padding
+     box, and the chips' focus ring (3px at a 2px offset, styles.css:1948) needs
+     5px of room outside the button or it renders flat-topped. */
+  padding: 0.35rem 1.3rem;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
@@ -2534,13 +2537,21 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   border: 2.5px solid var(--edge); box-shadow: 0 3px 0 var(--edge);
   font-size: 0.8rem; font-weight: 900; letter-spacing: 0.04em;
 }
-.hfilter:active { transform: translateY(3px); box-shadow: 0 0 0 var(--edge); }
 /* Chosen: the navy border + inset hairline + sky fill the move-points picker
-   already uses for "this is the one", kept over the pill's own drop shadow. */
+   already uses for "this is the one", kept over the pill's own drop shadow.
+   The LABEL has to turn navy with it. --sky stays pale in dark mode while --ink
+   goes near-white, so a chip that swapped only its background would print the
+   spot's name white-on-white and leave a border colour as the only sign the
+   list is filtered at all. */
 .hfilter.is-selected {
-  border-color: var(--navy); background: var(--sky);
+  border-color: var(--sky); color: var(--navy);
   box-shadow: inset 0 0 0 1.5px var(--navy), 0 3px 0 var(--edge);
 }
+/* Both press rules sit AFTER .is-selected: same specificity, so the later rule
+   wins the box-shadow. Without the pair, pressing the selected chip would sink
+   it 3px while keeping the shadow the press is supposed to flatten. */
+.hfilter:active { transform: translateY(3px); box-shadow: 0 0 0 var(--edge); }
+.hfilter.is-selected:active { box-shadow: inset 0 0 0 1.5px var(--navy), 0 0 0 var(--edge); }
 
 /* "Load older": the secondary-on-paper sticker button (cf. .scan-receipt-btn),
    a type step down because it extends a list rather than starting anything. */
