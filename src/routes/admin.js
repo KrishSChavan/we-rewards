@@ -1430,6 +1430,251 @@ router.post('/push/test', async (req, res, next) => {
   }
 });
 
+/* ---------- students ---------- */
+
+/**
+ * The student roster behind the "Students" tile. READ-ONLY by design: this is a
+ * support surface (someone writes in about their points and you need to see what
+ * the app thinks), not an editor. Nothing under /students writes, so no amount of
+ * clicking here can move a balance — the points-write guard would refuse it
+ * anyway (migration-025).
+ */
+const STUDENT_PAGE = 100;        // rows per request
+const STUDENT_PAGE_MAX = 200;
+const STUDENT_Q_MAX = 100;       // longest search term accepted
+const STUDENT_TX_SCAN = 500;     // transactions read to total up one student
+const STUDENT_TX_SHOWN = 25;     // of those, how many come back as activity
+const STUDENT_REFERRALS = 50;    // friends listed on one student's card
+
+/**
+ * PostgREST parses `or=(…)` as its own small grammar, so a comma, paren or quote
+ * typed into the search box would rewrite the filter instead of being searched
+ * for. Blanking those (plus the `%`/`*` wildcards) leaves something that can only
+ * ever be a literal substring. `_` is left alone: it is a single-character LIKE
+ * wildcard, but it is also in real email addresses, and matching a superset is
+ * not a hazard.
+ */
+export function safeSearch(raw) {
+  return String(raw ?? '').replace(/[,()"'\\%*]/g, ' ').trim().slice(0, STUDENT_Q_MAX);
+}
+
+/**
+ * GET /api/admin/students?q=&limit=&offset=
+ * One page of the roster, newest first, with each student's live point totals.
+ * `q` matches name OR email as a substring, server-side — the operator searching
+ * for someone is usually looking for a student who is NOT on the loaded page.
+ */
+router.get('/students', async (req, res, next) => {
+  try {
+    const limit = Math.min(STUDENT_PAGE_MAX, Math.max(1, Number(req.query.limit) || STUDENT_PAGE));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const q = safeSearch(req.query.q);
+
+    let sel = supabaseAdmin
+      .from('profiles')
+      .select('user_id, name, email, created_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (q) sel = sel.or(`name.ilike.*${q}*,email.ilike.*${q}*`);
+
+    const { data, error, count } = await sel;
+    if (error) throw error;
+
+    const rows = data ?? [];
+    const ids = rows.map((r) => r.user_id);
+    // Two reads for the whole page, not two per student.
+    const [bal, comm] = ids.length ? await Promise.all([
+      supabaseAdmin.from('point_balances').select('user_id, balance').in('user_id', ids),
+      supabaseAdmin.from('community_balances').select('user_id, balance').in('user_id', ids),
+    ]) : [{ data: [] }, { data: [] }];
+    if (bal.error) throw bal.error;
+    if (comm.error) throw comm.error;
+
+    const agg = new Map();   // user_id -> { points, spots }
+    for (const b of bal.data ?? []) {
+      const a = agg.get(b.user_id) ?? { points: 0, spots: 0 };
+      a.points += b.balance ?? 0;
+      if ((b.balance ?? 0) > 0) a.spots += 1;   // "spots" = places they can spend today
+      agg.set(b.user_id, a);
+    }
+    const community = new Map((comm.data ?? []).map((c) => [c.user_id, c.balance ?? 0]));
+
+    res.json({
+      students: rows.map((r) => ({
+        id: r.user_id,
+        name: r.name ?? null,
+        email: r.email ?? null,
+        createdAt: r.created_at,
+        points: agg.get(r.user_id)?.points ?? 0,
+        spots: agg.get(r.user_id)?.spots ?? 0,
+        community: community.get(r.user_id) ?? 0,
+      })),
+      total: count ?? rows.length,
+      offset,
+      limit,
+      query: q,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/students/:id
+ * Everything the platform knows about one student, gathered in one round of
+ * parallel reads: balances per spot, the community pool, punch cards, lifetime
+ * totals, recent activity, referral position, alert state and terms acceptance.
+ *
+ * Lifetime totals are summed over the most recent STUDENT_TX_SCAN transactions
+ * and report `truncated` when that cap is hit, the same contract the platform
+ * overview uses — a silently short total is worse than one labelled short.
+ */
+router.get('/students/:id', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (!isUuid(id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Student not found.' });
+    }
+
+    const [profile, balances, community, txRes, cards, visits, referredBy, referred, notify, subs, terms] =
+      await Promise.all([
+        supabaseAdmin.from('profiles').select('user_id, name, email, created_at').eq('user_id', id).maybeSingle(),
+        supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at, vendors(name, active)').eq('user_id', id),
+        supabaseAdmin.from('community_balances').select('balance, lifetime_earned').eq('user_id', id).maybeSingle(),
+        supabaseAdmin.from('transactions')
+          .select('id, type, points, dollar_amount, community_points, created_at, vendors(name), rewards(title)')
+          .eq('user_id', id).order('created_at', { ascending: false }).limit(STUDENT_TX_SCAN),
+        // Post-029 a punch card is a plain counter: `punches` IS the student's
+        // spendable visit count at that vendor, reset by a visits redemption.
+        supabaseAdmin.from('punch_cards')
+          .select('vendor_id, punches, vendors(name, active)').eq('user_id', id),
+        // One punch = one business day at one vendor, so this is visit-days, not scans.
+        supabaseAdmin.from('punches').select('id', { count: 'exact', head: true }).eq('user_id', id),
+        supabaseAdmin.from('referrals').select('status, created_at, friend_points, referrer_id').eq('friend_id', id).maybeSingle(),
+        supabaseAdmin.from('referrals').select('status, created_at, referrer_points, friend_id')
+          .eq('referrer_id', id).order('created_at', { ascending: false }).limit(STUDENT_REFERRALS),
+        supabaseAdmin.from('student_notify_state').select('push_opt_in, last_push_at').eq('user_id', id).maybeSingle(),
+        supabaseAdmin.from('push_subscriptions').select('id', { count: 'exact', head: true }).eq('user_id', id).eq('role', 'student'),
+        supabaseAdmin.from('terms_acceptances').select('terms_version, accepted_at')
+          .eq('user_id', id).order('accepted_at', { ascending: false }).limit(1),
+      ]);
+    for (const r of [profile, balances, community, txRes, cards, visits, referredBy, referred, notify, subs, terms]) {
+      if (r.error) throw r.error;
+    }
+    if (!profile.data) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Student not found.' });
+    }
+
+    // Name the other side of every referral in one lookup rather than per row.
+    const otherIds = [
+      ...(referredBy.data?.referrer_id ? [referredBy.data.referrer_id] : []),
+      ...(referred.data ?? []).map((r) => r.friend_id),
+    ];
+    const names = new Map();
+    if (otherIds.length) {
+      const { data: others } = await supabaseAdmin
+        .from('profiles').select('user_id, name, email').in('user_id', [...new Set(otherIds)]);
+      for (const o of others ?? []) names.set(o.user_id, o.name || o.email || null);
+    }
+
+    const txns = txRes.data ?? [];
+    const totals = { earned: 0, redeemed: 0, spend: 0, awards: 0, redemptions: 0 };
+    for (const t of txns) {
+      const pts = Number(t.points) || 0;
+      // Same netting rule as the platform rollup: a reversal is a negative row of
+      // the same type, so it cancels rather than counting as a second event.
+      if (t.type === 'earn') {
+        totals.earned += pts;
+        totals.spend += Number(t.dollar_amount) || 0;
+        totals.awards += pts >= 0 ? 1 : -1;
+      } else if (t.type === 'redeem') {
+        totals.redeemed += -pts;
+        totals.redemptions += pts <= 0 ? 1 : -1;
+      }
+    }
+
+    // One row per spot the student has anything at. Points and visits are
+    // separate tables and either can exist without the other (visits with no
+    // points is normal after a redemption), so they're merged rather than
+    // listed twice.
+    const spots = new Map();
+    const spot = (vendorId, vendors) => {
+      const s = spots.get(vendorId) ?? {
+        vendorId,
+        vendor: vendors?.name ?? 'Vendor',
+        vendorActive: vendors?.active !== false,
+        points: 0,
+        visits: 0,
+        updatedAt: null,
+      };
+      spots.set(vendorId, s);
+      return s;
+    };
+    for (const b of balances.data ?? []) {
+      const s = spot(b.vendor_id, b.vendors);
+      s.points = b.balance ?? 0;
+      s.updatedAt = b.updated_at;
+    }
+    for (const c of cards.data ?? []) {
+      spot(c.vendor_id, c.vendors).visits = c.punches ?? 0;
+    }
+    const bal = [...spots.values()].sort((a, b) => b.points - a.points || b.visits - a.visits);
+
+    res.json({
+      student: {
+        id: profile.data.user_id,
+        name: profile.data.name ?? null,
+        email: profile.data.email ?? null,
+        joinedAt: profile.data.created_at,
+      },
+      totals: {
+        ...totals,
+        spend: Number(totals.spend.toFixed(2)),
+        points: bal.reduce((s, b) => s + b.points, 0),
+        community: community.data?.balance ?? 0,
+        communityLifetime: community.data?.lifetime_earned ?? 0,
+        visits: visits.count ?? 0,
+        truncated: txns.length >= STUDENT_TX_SCAN,
+      },
+      spots: bal,
+      recent: txns.slice(0, STUDENT_TX_SHOWN).map((t) => ({
+        id: t.id,
+        type: t.type,
+        points: t.points,
+        dollarAmount: t.dollar_amount,
+        communityPoints: t.community_points ?? 0,
+        vendor: t.vendors?.name ?? null,
+        reward: t.rewards?.title ?? null,
+        createdAt: t.created_at,
+      })),
+      referral: {
+        referredBy: referredBy.data ? {
+          name: names.get(referredBy.data.referrer_id) ?? null,
+          status: referredBy.data.status,
+          points: referredBy.data.friend_points,
+          at: referredBy.data.created_at,
+        } : null,
+        made: (referred.data ?? []).map((r) => ({
+          name: names.get(r.friend_id) ?? null,
+          status: r.status,
+          points: r.referrer_points,
+          at: r.created_at,
+        })),
+      },
+      alerts: {
+        optIn: notify.data?.push_opt_in ?? null,   // null = never touched the switch
+        lastPushAt: notify.data?.last_push_at ?? null,
+        subscriptions: subs.count ?? 0,
+      },
+      terms: terms.data?.[0]
+        ? { version: terms.data[0].terms_version, acceptedAt: terms.data[0].accepted_at }
+        : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * Resolve the user ids on a page of error rows to something an operator can act
  * on: an email, a name, and whether that person was a student, a vendor (which

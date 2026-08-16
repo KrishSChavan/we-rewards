@@ -88,7 +88,8 @@
       <!-- lifetime totals -->
       <div class="tiles">
         <div class="tile"><span id="tot-vendors" class="tile-num">0</span><span class="tile-label">Vendors</span></div>
-        <div class="tile"><span id="tot-students" class="tile-num">0</span><span class="tile-label">Students</span></div>
+        <!-- Also a button: it opens the roster behind the number. -->
+        <button id="tot-students-card" class="tile tile-btn" type="button" title="Open the student roster"><span id="tot-students" class="tile-num">0</span><span class="tile-label">Students</span><span class="tile-sub">Tap to browse</span></button>
         <div class="tile"><span id="tot-transactions" class="tile-num">0</span><span class="tile-label">Transactions</span></div>
         <!-- A button, not a div. This tile only says that SOMETHING broke, so it
              has to be the way to what broke: it jumps to the error log below. -->
@@ -164,6 +165,31 @@
         <div id="vendor-list" class="vendor-list"></div>
       </div>
 
+    </div>
+
+    <!-- ===== STUDENTS ===== -->
+    <!-- A drill-in from the Students tile, not a tab: the roster is something you
+         go and look at when a specific student writes in, not one of the daily
+         jobs the tab row is for. No tab is active while it's open, so the Back
+         button here is the way out (Dashboard works too). -->
+    <div id="view-students" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>Students</h3>
+          <div class="card-head-actions">
+            <span id="students-count" class="chart-max"></span>
+            <button id="students-back" class="btn-ghost btn-compact" type="button">← Dashboard</button>
+          </div>
+        </div>
+        <p class="muted">Everyone who has signed up, newest first. Search by name or email (the whole roster is searched, not just what is loaded), then tap a student to see their points, visits, activity and account state. Read-only: nothing on this screen changes a balance.</p>
+        <div class="student-search">
+          <input id="student-q" class="student-q" type="search" placeholder="Search name or email" autocomplete="off" spellcheck="false" aria-label="Search students" />
+          <button id="student-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
+        </div>
+        <p id="students-error" class="field-error" role="alert" hidden></p>
+        <div id="student-list" class="student-list"></div>
+        <button id="students-more" class="btn-ghost btn-compact" type="button" hidden>Show more</button>
+      </div>
     </div>
 
     <!-- ===== APPLICATIONS TAB ===== -->
@@ -457,6 +483,22 @@
        for the pricing half, so nothing an operator saves here could be rejected
        by the vendor's Settings screen. The name has no vendor-side editor at all:
        this dialog is the only place it can be changed. -->
+  <!-- ===== STUDENT DETAIL ===== -->
+  <!-- Everything the platform knows about one student, from
+       GET /api/admin/students/:id. Read-only, so it has no save path and no
+       dirty state: Close is the only way out besides Escape and the backdrop. -->
+  <div id="student-modal" class="overlay" hidden>
+    <div class="reset-card student-detail-card" role="dialog" aria-modal="true" aria-labelledby="student-detail-title">
+      <h2 id="student-detail-title">Student</h2>
+      <p id="student-detail-sub" class="muted"></p>
+      <p id="student-detail-error" class="field-error" role="alert" hidden></p>
+      <div id="student-detail-body" class="student-detail"></div>
+      <div class="push-actions">
+        <button id="student-detail-close" class="btn-ghost" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="vendor-modal" class="overlay" hidden>
     <div class="reset-card vendor-edit-card" role="dialog" aria-modal="true" aria-labelledby="vendor-edit-title">
       <h2 id="vendor-edit-title">Edit vendor</h2>

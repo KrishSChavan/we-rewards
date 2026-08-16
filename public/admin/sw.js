@@ -35,7 +35,11 @@
 // moved from last-of-eight to first card, directly under the "Errors · 24h" tile,
 // which is now a button that jumps to it; the publish-once QR poster card moved
 // off the dashboard into its own tab (index.html + admin.js + admin.css).
-const CACHE = 'werewards-admin-v16';
+// v17: student roster behind the Students tile. A searchable, paged list of
+// every signed-up student (GET /api/admin/students) and a read-only card per
+// student (GET /api/admin/students/:id) with balances, visits, activity,
+// referral position and account state (index.html + admin.js + admin.css).
+const CACHE = 'werewards-admin-v17';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

@@ -42,6 +42,15 @@ const $ = (id) => document.getElementById(id);
   $('tab-incentives').addEventListener('click', () => setView('incentives'));
   $('tab-poster').addEventListener('click', () => setView('poster'));
   $('tot-errors-card').addEventListener('click', jumpToErrors);
+  $('tot-students-card').addEventListener('click', openStudents);
+  $('students-back').addEventListener('click', () => setView('dashboard'));
+  $('student-q').addEventListener('input', onStudentSearch);
+  $('student-q-clear').addEventListener('click', clearStudentSearch);
+  $('students-more').addEventListener('click', () => loadStudents());
+  $('student-detail-close').addEventListener('click', closeStudentDetail);
+  $('student-modal').addEventListener('click', (e) => {
+    if (e.target === $('student-modal')) closeStudentDetail();   // backdrop only, not the card
+  });
   $('inc-form').addEventListener('submit', saveIncentive);
   $('inc-toggle').addEventListener('click', toggleIncentive);
   $('inc-delete').addEventListener('click', deleteIncentive);
@@ -86,6 +95,7 @@ const $ = (id) => document.getElementById(id);
     if (!$('reset-modal').hidden) closeResetModal();
     if (!$('vendor-modal').hidden) closeVendorModal();
     if (!$('new-vendor-modal').hidden) closeNewVendorModal();
+    if (!$('student-modal').hidden) closeStudentDetail();
   });
   $('poster-pick').addEventListener('click', () => $('poster-file').click());
   $('poster-file').addEventListener('change', onPosterPick);
@@ -188,6 +198,9 @@ async function loadAll() {
     await Promise.all([
       loadVendors(), loadErrors(), loadApplications(),
       loadIncentives(), loadReferrals(), loadGrants(), loadPoster(),
+      // Only if the operator has actually opened the roster: a page of students
+      // is two extra queries, and boot shouldn't pay for a screen nobody is on.
+      students.length ? loadStudents({ reset: true }) : null,
     ]);
     initPush();   // best-effort, runs once — after admin access is confirmed
   }
@@ -198,13 +211,16 @@ async function loadAll() {
 // Mutually exclusive views under one topbar; `hidden` is the source of truth
 // (same convention as the #login/#dash panels). Driven off one list so adding a
 // tab is adding its name here plus the matching #tab-/#view- ids in the markup.
-const VIEWS = ['dashboard', 'applications', 'incentives', 'poster'];
+const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'students'];
 
 function setView(view) {
   const target = VIEWS.includes(view) ? view : 'dashboard';
   VIEWS.forEach((v) => {
     $(`view-${v}`).hidden = v !== target;
-    $(`tab-${v}`).classList.toggle('is-active', v === target);
+    // `students` is opened from a tile, not the tab row, so it has no tab to
+    // light up: every tab sits inactive while it is on screen, and its own Back
+    // button is the way out.
+    $(`tab-${v}`)?.classList.toggle('is-active', v === target);
   });
 }
 
@@ -2271,6 +2287,266 @@ async function removePoster() {
   } finally {
     btn.disabled = false;
   }
+}
+
+/* ---------- students ---------- */
+
+// The roster behind the Students tile: a drill-in screen, not a tab. Search and
+// paging are BOTH server-side — the student an operator is hunting for is
+// usually not on the loaded page, so filtering what happens to be in memory
+// would answer "no such student" for someone who exists.
+const STUDENT_PAGE = 100;
+const STUDENT_SEARCH_DEBOUNCE = 250;
+
+let students = [];
+let studentsTotal = 0;
+let studentQuery = '';
+let studentSearchTimer = null;
+// Every request carries a sequence number and a reply that isn't the newest is
+// dropped. Without it, a slower earlier query can land last and leave the list
+// showing results for a term the operator has already finished deleting.
+let studentReqSeq = 0;
+
+function openStudents() {
+  setView('students');
+  if (!students.length && !studentQuery) loadStudents({ reset: true });
+  $('student-q').focus();
+}
+
+const studentDate = (iso) => (iso
+  ? new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+  : '');
+const studentWhen = (iso) => (iso
+  ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  : '');
+
+function onStudentSearch() {
+  clearTimeout(studentSearchTimer);
+  studentSearchTimer = setTimeout(() => {
+    const next = $('student-q').value.trim();
+    if (next === studentQuery) return;
+    studentQuery = next;
+    $('student-q-clear').hidden = !studentQuery;
+    loadStudents({ reset: true });
+  }, STUDENT_SEARCH_DEBOUNCE);
+}
+
+function clearStudentSearch() {
+  $('student-q').value = '';
+  $('student-q-clear').hidden = true;
+  studentQuery = '';
+  loadStudents({ reset: true });
+  $('student-q').focus();
+}
+
+async function loadStudents({ reset = false } = {}) {
+  const seq = ++studentReqSeq;
+  const offset = reset ? 0 : students.length;
+  $('students-error').hidden = true;
+  $('students-more').disabled = true;
+  try {
+    const q = studentQuery ? `&q=${encodeURIComponent(studentQuery)}` : '';
+    const res = await authFetch(`/api/admin/students?limit=${STUDENT_PAGE}&offset=${offset}${q}`);
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) throw new Error(`students ${res.status}`);
+    const d = await res.json();
+    if (seq !== studentReqSeq) return;              // a newer search already won
+    students = reset ? (d.students ?? []) : students.concat(d.students ?? []);
+    studentsTotal = d.total ?? students.length;
+    renderStudents();
+  } catch {
+    if (seq !== studentReqSeq) return;
+    $('students-error').textContent = 'Couldn’t load students. Check your connection and try again.';
+    $('students-error').hidden = false;
+  } finally {
+    $('students-more').disabled = false;
+  }
+}
+
+// Names and emails are whatever Google handed us, i.e. untrusted text, so every
+// row is built with DOM APIs and textContent (same rule as renderApplications).
+function renderStudents() {
+  const wrap = $('student-list');
+  wrap.innerHTML = '';
+  $('students-count').textContent = studentQuery
+    ? `${num(studentsTotal)} matching`
+    : `${num(studentsTotal)} total`;
+
+  if (!students.length) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = studentQuery ? 'No student matches that search.' : 'No students yet.';
+    wrap.appendChild(p);
+    $('students-more').hidden = true;
+    return;
+  }
+
+  students.forEach((s) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'student-row';
+
+    const info = document.createElement('span');
+    info.className = 'student-info';
+    const name = document.createElement('span');
+    name.className = 'student-name';
+    name.textContent = s.name || s.email || 'Unnamed student';
+    const meta = document.createElement('span');
+    meta.className = 'student-meta';
+    meta.textContent = s.email || 'No email on file';
+    // Everything wordy lives in this column, which is the one allowed to shrink
+    // and ellipsize. The right-hand column is a number and nothing else: giving
+    // it a text line made the row unshrinkable and overflowed a 360px phone.
+    // Community points are a separate pool, so they're named, not summed in.
+    const facts = document.createElement('span');
+    facts.className = 'student-meta';
+    facts.textContent = [
+      s.spots ? `${num(s.spots)} spot${s.spots === 1 ? '' : 's'}` : 'no balances',
+      s.community ? `${num(s.community)} community` : null,
+      `joined ${studentDate(s.createdAt)}`,
+    ].filter(Boolean).join(' · ');
+    info.append(name, meta, facts);
+
+    const pts = document.createElement('span');
+    pts.className = 'student-pts';
+    pts.textContent = `${num(s.points)} pts`;
+
+    row.append(info, pts);
+    row.addEventListener('click', () => openStudentDetail(s));
+    wrap.appendChild(row);
+  });
+
+  const left = studentsTotal - students.length;
+  $('students-more').hidden = left <= 0;
+  $('students-more').textContent = `Show more (${num(left)} left)`;
+}
+
+/* ----- one student's card ----- */
+
+function closeStudentDetail() {
+  $('student-modal').hidden = true;
+}
+
+async function openStudentDetail(s) {
+  $('student-detail-title').textContent = s.name || s.email || 'Student';
+  $('student-detail-sub').textContent = s.email && s.name ? s.email : '';
+  $('student-detail-error').hidden = true;
+  $('student-detail-body').innerHTML = '';
+  $('student-modal').hidden = false;
+  $('student-detail-close').focus();
+
+  try {
+    const res = await authFetch(`/api/admin/students/${encodeURIComponent(s.id)}`);
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) throw new Error(`student ${res.status}`);
+    renderStudentDetail(await res.json());
+  } catch {
+    $('student-detail-error').textContent = 'Couldn’t load this student. Check your connection and try again.';
+    $('student-detail-error').hidden = false;
+  }
+}
+
+// Small builders, local to this dialog: everything below is untrusted text.
+const sdEl = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+
+function sdSection(title) {
+  const box = sdEl('div', 'sd-section');
+  box.appendChild(sdEl('p', 'sd-title', title));
+  return box;
+}
+
+// label + value pair, the shape used for both the stat grid and the list rows
+function sdRow(label, value, cls) {
+  const row = sdEl('div', `sd-row${cls ? ` ${cls}` : ''}`);
+  row.append(sdEl('span', 'sd-label', label), sdEl('span', 'sd-value', value));
+  return row;
+}
+
+function renderStudentDetail(d) {
+  const body = $('student-detail-body');
+  body.innerHTML = '';
+  const t = d.totals ?? {};
+
+  $('student-detail-sub').textContent = [
+    d.student?.email,
+    d.student?.joinedAt ? `joined ${studentDate(d.student.joinedAt)}` : null,
+  ].filter(Boolean).join(' · ');
+
+  // headline numbers
+  const stats = sdEl('div', 'sd-stats');
+  [
+    ['Points', num(t.points)],
+    ['Community', num(t.community)],
+    ['Visits', num(t.visits)],
+    ['Spend', money(t.spend)],
+    ['Awards', num(t.awards)],
+    ['Redemptions', num(t.redemptions)],
+  ].forEach(([label, value]) => {
+    const cell = sdEl('div', 'sd-stat');
+    cell.append(sdEl('span', 'sd-stat-num', value), sdEl('span', 'sd-stat-label', label));
+    stats.appendChild(cell);
+  });
+  body.appendChild(stats);
+  if (t.truncated) {
+    body.appendChild(sdEl('p', 'muted', 'Lifetime totals cover this student’s most recent 500 transactions.'));
+  }
+
+  // per-spot points and visits
+  const spots = sdSection('By spot');
+  if (!(d.spots ?? []).length) {
+    spots.appendChild(sdEl('p', 'muted', 'No points or visits anywhere yet.'));
+  } else {
+    d.spots.forEach((s) => {
+      const parts = [`${num(s.points)} pts`];
+      if (s.visits) parts.push(`${num(s.visits)} visit${s.visits === 1 ? '' : 's'}`);
+      const row = sdRow(s.vendor + (s.vendorActive ? '' : ' (off)'), parts.join(' · '));
+      if (!s.vendorActive) row.classList.add('is-off');
+      spots.appendChild(row);
+    });
+  }
+  body.appendChild(spots);
+
+  // recent activity
+  const recent = sdSection('Recent activity');
+  if (!(d.recent ?? []).length) {
+    recent.appendChild(sdEl('p', 'muted', 'Nothing yet.'));
+  } else {
+    d.recent.forEach((r) => {
+      const what = r.type === 'earn'
+        ? `Earned ${num(r.points)} at ${r.vendor ?? 'a spot'}${r.dollarAmount ? ` on ${money(r.dollarAmount)}` : ''}`
+        : `Redeemed ${r.reward ? r.reward : `${num(-r.points)} pts`} at ${r.vendor ?? 'a spot'}`;
+      recent.appendChild(sdRow(what, studentWhen(r.createdAt), 'sd-row-wrap'));
+    });
+  }
+  body.appendChild(recent);
+
+  // referral position, both directions
+  const ref = sdSection('Referrals');
+  const by = d.referral?.referredBy;
+  ref.appendChild(sdRow('Referred by', by ? `${by.name || 'a student'} (${by.status})` : 'Nobody'));
+  const made = d.referral?.made ?? [];
+  ref.appendChild(sdRow('Friends referred', made.length ? String(made.length) : 'None'));
+  made.slice(0, 10).forEach((m) => {
+    ref.appendChild(sdRow(m.name || 'A student', `${m.status} · ${studentDate(m.at)}`, 'sd-row-sub'));
+  });
+  body.appendChild(ref);
+
+  // account state
+  const acct = sdSection('Account');
+  const alerts = d.alerts ?? {};
+  acct.appendChild(sdRow('Deal alerts',
+    alerts.optIn === null ? 'Never set' : alerts.optIn ? 'On' : 'Off'));
+  acct.appendChild(sdRow('Devices subscribed', num(alerts.subscriptions)));
+  if (alerts.lastPushAt) acct.appendChild(sdRow('Last push', studentWhen(alerts.lastPushAt)));
+  acct.appendChild(sdRow('Terms accepted',
+    d.terms ? `${d.terms.version} · ${studentDate(d.terms.acceptedAt)}` : 'Not accepted'));
+  acct.appendChild(sdRow('User id', d.student?.id ?? '', 'sd-row-id'));
+  body.appendChild(acct);
 }
 
 /* ---------- error log ---------- */
