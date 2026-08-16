@@ -141,6 +141,7 @@ const screens = [
   $('settings-save').addEventListener('click', () => saveSettings());
   $('settings-reset').addEventListener('click', () => renderSettings(loadedSettings));
   $('set-pw-save').addEventListener('click', () => updatePassword());
+  $('set-pin-save').addEventListener('click', () => updateStaffPin());
   $('tier-add').addEventListener('click', () => { addTierRow(); refreshSettingsDirty(); });
   $('set-ratio').addEventListener('input', updateRatioExample);
   $('set-exact').addEventListener('click', () => { toggleSwitch($('set-exact')); refreshSettingsDirty(); });
@@ -2424,7 +2425,12 @@ async function downloadPoster() {
    The form is captured field-by-field, keyed to match each card's data-card
    attribute, and compared against a baseline taken whenever the form matches the
    server (load / Reset / Save). Any difference means there are unsaved edits,
-   which the leave-guard blocks on; per-key differences highlight each card. */
+   which the leave-guard blocks on; per-key differences highlight each card.
+   The staff PIN is deliberately NOT in here any more: it moved to the
+   self-saving Access region, so like the password it commits on its own button
+   and never makes the batched form dirty. Every key below still has to have a
+   matching data-card in the markup, and vice versa — a key with no card silently
+   never highlights, and a card with no key silently never lights up. */
 
 function settingsSnapshot() {
   return {
@@ -2432,7 +2438,6 @@ function settingsSnapshot() {
     exact: switchOn($('set-exact')),
     tiers: collectTiers(),
     address: $('set-address').value.trim(),
-    pin: $('set-pin').value.trim(),
     logo: logoValue,
     // Just the switch since migration-029: the card's target and reward are
     // gone, replaced by a per-reward punch price on the ITEMS tab. The key stays
@@ -2523,9 +2528,10 @@ function renderSettings(s) {
   logoValue = s.logo ?? null;
   logoChanged = false;
   setLogoPreview(logoValue);
+  // The Access cards are independent of the batched save — clear their fields
+  // and any lingering message whenever Settings (re)renders.
   $('set-pin').value = '';
-  // The password card is independent of the batched save — clear its fields and
-  // any lingering message whenever Settings (re)renders.
+  $('set-pin-msg').hidden = true;
   $('set-pw-new').value = '';
   $('set-pw-confirm').value = '';
   $('set-pw-msg').hidden = true;
@@ -2682,8 +2688,9 @@ async function saveSettings(afterTarget) {
     punchEnabled: switchOn($('set-punch')),
   };
   if (logoChanged) body.logo = logoValue;   // null clears it; a data-URL sets it
-  const pin = $('set-pin').value.trim();
-  if (pin) body.pin = pin;
+  // No `pin` here: the staff PIN saves itself from the Access region, because a
+  // PIN change drops every PIN session server-side — folding that into this
+  // batch meant editing the earning rate could sign the counter out.
 
   await pushSettings(body, afterTarget);
 }
@@ -2727,6 +2734,10 @@ async function pushSettings(body, afterTarget) {
     syncPunchTab();   // the PUNCH tab appears/disappears with the toggle
 
     if (data.pinChanged) {
+      // Defensive now that the PIN saves itself from Access: this body no longer
+      // carries one, so the route should never report a change here. Kept because
+      // dropping the re-gate would leave the terminal running on a session the
+      // server has already deleted if a PIN ever rejoins the batch.
       // The server dropped every session (incl. ours). Re-gate so the terminal
       // re-asks for the new PIN before any further sensitive action.
       pinUnlocked = false;
@@ -2745,6 +2756,70 @@ async function pushSettings(body, afterTarget) {
     busy = false;
     $('settings-save').disabled = false;
   }
+}
+
+/* ---- change the staff PIN ----
+   Self-saving, like the password card beside it in the Access region. It cannot
+   share the batched Save settings: the server deletes every vendor_pin_sessions
+   row on a PIN change, so batching it meant a vendor editing their earning rate
+   could sign the counter out as a side effect of an unrelated edit — and the one
+   thing that must never surprise a terminal mid-rush is losing its PIN session.
+   The route takes a partial body, so this sends `pin` and nothing else. */
+async function updateStaffPin() {
+  if (busy) return;
+  const pin = $('set-pin').value.trim();
+  if (!/^\d{4}$/.test(pin)) return pinMsg('The staff PIN must be exactly 4 digits.', false);
+  // A new PIN ends this terminal's session and sends it back to SCAN, which
+  // would take any unsaved "Your spot" edits with it. Make the vendor land those
+  // first rather than discarding them behind a success message.
+  if (isSettingsDirty()) {
+    return pinMsg('Save or reset your changes above first. A new PIN signs this terminal out.', false);
+  }
+  await pushStaffPin(pin);
+}
+
+// The PATCH itself, split from the form read above for the same reason
+// pushSettings is: a save that hits an expired PIN session replays THIS with the
+// already-captured value, and the unlock path re-renders Settings (wiping the
+// field) before the replay runs.
+async function pushStaffPin(pin) {
+  if (busy) return;
+  busy = true;
+  $('set-pin-save').disabled = true;
+  try {
+    const res = await authFetch('/api/vendor/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ pin }),
+    });
+    const data = await res.json().catch(() => ({}));
+    const retry = mode === 'settings' ? () => pushStaffPin(pin) : null;
+    if (handlePinRequired(res, data, retry)) return;
+    if (!res.ok) return pinMsg(data.message || 'Couldn’t update the PIN.', false);
+
+    settingsLoadSeq++;   // this PATCH is authoritative; void any in-flight GET
+    loadedSettings = data;
+    $('set-pin').value = '';
+    // The server dropped every PIN session, ours included. Re-gate before any
+    // further sensitive action rather than run on a session it has deleted.
+    pinUnlocked = false;
+    pinToken = null;
+    const cfg = await authFetch('/api/vendor/config');
+    if (cfg.ok) config = await cfg.json();
+    flood('success', 'NEW PIN SET', 'Re-enter it to continue.', () => switchMode('scan'));
+  } catch {
+    pinMsg('No connection, try again.', false);
+  } finally {
+    busy = false;
+    $('set-pin-save').disabled = false;
+  }
+}
+
+// Inline feedback for the staff PIN card: green on success, red on error.
+function pinMsg(text, ok) {
+  const el = $('set-pin-msg');
+  el.textContent = text;
+  el.className = ok ? 'field-success' : 'field-error';
+  el.hidden = false;
 }
 
 /* ---- change the login password ----
@@ -2869,6 +2944,7 @@ function resetToLogin() {
   // Don't leave the previous vendor's PIN / password keystrokes sitting in the
   // hidden form fields; renderSettings() re-clears them on the next sign-in too.
   $('set-pin').value = '';
+  $('set-pin-msg').hidden = true;
   $('set-pw-new').value = '';
   $('set-pw-confirm').value = '';
   $('set-pw-msg').hidden = true;

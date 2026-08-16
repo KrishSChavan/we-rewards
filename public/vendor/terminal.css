@@ -734,6 +734,27 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .settings-field input:focus { outline: none; border-color: var(--navy); }
 .settings-actions { justify-content: flex-end; }
 
+/* Settings is grouped into three regions, one per save model (see index.html):
+   the batched "Your spot" with Save settings inside it, self-saving "Access",
+   and "Downloads". The display/direction/gap MUST stay in this one rule — the
+   build derives its no-flex-gap fallback per gapped flex container, and the
+   fallback it already generates for .settings-inner only reaches that element's
+   direct children, which are now the regions rather than the cards. Without a
+   rule of its own here, every card inside a region would sit flush on
+   Safari < 14.1 (i.e. on exactly the older counter iPads). */
+.settings-region { display: flex; flex-direction: column; gap: 1rem; }
+/* A divider heading, deliberately lighter than the cards it groups: the cards
+   keep .stats-card h3 (1.15rem/900), so the region reads as a label above them
+   rather than competing with them. Scoped class, not a bare h3, because
+   .stats-card h3 is shared with the STATS and DEALS tabs. */
+.region-head {
+  margin-top: 0.4rem;
+  font-size: 1.05rem; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 0.4rem;
+  border-bottom: 3px solid var(--sky-line);
+}
+
 /* unsaved-changes cue: an amber note above the actions + a dot on the tab, plus
    a ring on Save so the way out of the state is obvious. */
 .settings-dirty { color: var(--redeem); font-weight: 800; font-size: 1.05rem; text-align: right; }
@@ -1272,6 +1293,7 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
   .tier-remove { width: 2.75rem; height: 2.75rem; }
   .logo-preview { width: 4rem; height: 4rem; }
   .settings-dirty { font-size: 0.95rem; text-align: left; }
+  .region-head { font-size: 0.95rem; letter-spacing: 0.08em; }
 
   /* ---------- overlays ---------- */
 

@@ -413,135 +413,168 @@
       </section>
 
       <!-- ===== SETTINGS: self-service economics ===== -->
+      <!-- Three regions, one per save model. This screen used to be ten cards in
+           a single column under one "Save settings" button at the very bottom:
+           seven batched behind it, one saving itself, and two that were not
+           settings at all. Grouping by how each card commits is what makes the
+           single Save button legible - it now visibly owns exactly the group it
+           sits under, instead of trailing the whole screen. -->
       <section id="screen-settings" class="screen settings-screen" hidden>
         <div class="settings-inner">
           <div class="stats-head">
             <h2>Settings</h2>
           </div>
 
-          <div class="stats-card" data-card="ratio">
-            <h3>Earning rate</h3>
-            <label class="settings-field">Points per $1 spent
-              <input id="set-ratio" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" />
-            </label>
-            <p class="manage-note">Customers earn <strong id="set-ratio-eg"></strong> for a $10 purchase (before their tier multiplier).</p>
-          </div>
+          <!-- REGION 1: the batched PATCH. Every card here carries a data-card
+               key matching settingsSnapshot(), and Save settings sits directly
+               under them rather than under the whole screen. -->
+          <section class="settings-region" aria-labelledby="region-spot-h">
+            <h3 class="region-head" id="region-spot-h">Your spot</h3>
+            <p class="manage-note">How your spot earns, and how it looks on the cards your customers carry. These save together: change as many as you like, then press Save settings at the end of this group.</p>
 
-          <div class="stats-card" data-card="exact">
-            <div class="setting-row">
-              <span class="setting-label">
-                <span class="setting-name">Exact amount entry</span>
-                <span class="setting-desc">Let staff type the exact purchase amount on the keypad.</span>
-              </span>
-              <button id="set-exact" class="switch" type="button" role="switch" aria-checked="true" aria-label="Exact amount entry">
-                <span class="switch-knob"></span>
-              </button>
+            <div class="stats-card" data-card="ratio">
+              <h3>Earning rate</h3>
+              <label class="settings-field">Points per $1 spent
+                <input id="set-ratio" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" />
+              </label>
+              <p class="manage-note">Customers earn <strong id="set-ratio-eg"></strong> for a $10 purchase (before their tier multiplier).</p>
             </div>
-          </div>
 
-          <div class="stats-card" data-card="tiers">
-            <h3>Quick amount buttons</h3>
-            <p class="manage-note">Tap-to-award buttons shown once you scan a customer's code. Each is a set purchase amount; points are that amount × your rate. They're optional: remove them all and the terminal shows just the keypad.</p>
-            <div id="tier-editor" class="tier-editor"></div>
-            <button id="tier-add" class="btn-ghost btn-compact" type="button">+ Add button</button>
-          </div>
-
-          <div class="stats-card" data-card="address">
-            <h3>Location</h3>
-            <label class="settings-field">Street address
-              <input id="set-address" type="text" autocomplete="off" maxlength="300" placeholder="123 College Ave, State College, PA" />
-            </label>
-            <p class="manage-note">Shown as a tappable map on your customers' cards, and tapping it opens directions in their maps app. Leave blank to hide the map.</p>
-          </div>
-
-          <div class="stats-card" data-card="logo">
-            <h3>Logo</h3>
-            <div class="logo-field">
-              <span id="set-logo-preview" class="logo-preview is-empty" aria-hidden="true"></span>
-              <div class="logo-buttons">
-                <label class="btn-ghost btn-compact logo-pick">Choose image
-                  <input id="set-logo-input" type="file" accept="image/png,image/jpeg,image/webp" hidden />
-                </label>
-                <button id="set-logo-remove" class="btn-ghost btn-compact" type="button" hidden>Remove</button>
+            <div class="stats-card" data-card="exact">
+              <div class="setting-row">
+                <span class="setting-label">
+                  <span class="setting-name">Exact amount entry</span>
+                  <span class="setting-desc">Let staff type the exact purchase amount on the keypad.</span>
+                </span>
+                <button id="set-exact" class="switch" type="button" role="switch" aria-checked="true" aria-label="Exact amount entry">
+                  <span class="switch-knob"></span>
+                </button>
               </div>
             </div>
-            <p id="set-logo-error" class="field-error" hidden></p>
-            <p id="set-logo-warn" class="field-warn" hidden></p>
-            <p class="manage-note">Shown next to your name on customers' cards. Square images look best, since we shrink it to a small icon.</p>
-          </div>
 
-          <!-- Print-and-put-up QR poster. The file itself is published by
+            <div class="stats-card" data-card="tiers">
+              <h3>Quick amount buttons</h3>
+              <p class="manage-note">Tap-to-award buttons shown once you scan a customer's code. Each is a set purchase amount; points are that amount × your rate. They're optional: remove them all and the terminal shows just the keypad.</p>
+              <div id="tier-editor" class="tier-editor"></div>
+              <button id="tier-add" class="btn-ghost btn-compact" type="button">+ Add button</button>
+            </div>
+
+            <div class="stats-card" data-card="address">
+              <h3>Location</h3>
+              <label class="settings-field">Street address
+                <input id="set-address" type="text" autocomplete="off" maxlength="300" placeholder="123 College Ave, State College, PA" />
+              </label>
+              <p class="manage-note">Shown as a tappable map on your customers' cards, and tapping it opens directions in their maps app. Leave blank to hide the map.</p>
+            </div>
+
+            <div class="stats-card" data-card="logo">
+              <h3>Logo</h3>
+              <div class="logo-field">
+                <span id="set-logo-preview" class="logo-preview is-empty" aria-hidden="true"></span>
+                <div class="logo-buttons">
+                  <label class="btn-ghost btn-compact logo-pick">Choose image
+                    <input id="set-logo-input" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                  </label>
+                  <button id="set-logo-remove" class="btn-ghost btn-compact" type="button" hidden>Remove</button>
+                </div>
+              </div>
+              <p id="set-logo-error" class="field-error" hidden></p>
+              <p id="set-logo-warn" class="field-warn" hidden></p>
+              <p class="manage-note">Shown next to your name on customers' cards. Square images look best, since we shrink it to a small icon.</p>
+            </div>
+
+            <div class="stats-card" data-card="punch">
+              <div class="setting-row">
+                <span class="setting-label">
+                  <span class="setting-name">Visits</span>
+                  <span class="setting-desc">Show a rotating visit code on the VISITS tab. Customers scan it once a night to collect a visit, then spend visits on any item you have given a visit price.</span>
+                </span>
+                <button id="set-punch" class="switch" type="button" role="switch" aria-checked="false" aria-label="Visits">
+                  <span class="switch-knob"></span>
+                </button>
+              </div>
+              <p class="manage-note">Set what each item costs in visits on the ITEMS tab. Turning this off hides visits from customers, it does not take away the ones they have collected.</p>
+            </div>
+
+            <!-- The batched save, with its error line and unsaved-changes note,
+                 now inside the region it actually commits. -->
+            <p id="settings-error" class="field-error" hidden></p>
+            <p id="settings-dirty" class="settings-dirty" role="status" hidden>● Unsaved changes, save before leaving this tab.</p>
+            <div class="pad-actions settings-actions">
+              <button id="settings-reset" class="btn-ghost" type="button">Reset</button>
+              <button id="settings-save" class="btn-primary" type="button">Save settings</button>
+            </div>
+          </section>
+
+          <!-- REGION 2: who can work this terminal. Every card here commits on
+               its own button, so none of them carry a data-card key and none of
+               them are touched by Save settings above. -->
+          <section class="settings-region" aria-labelledby="region-access-h">
+            <h3 class="region-head" id="region-access-h">Access</h3>
+            <p class="manage-note">Who can work this terminal. Each of these saves on its own button the moment you press it. Save settings above does not apply to them.</p>
+
+            <!-- Staff PIN. Self-saving because it cannot share the batch: the
+                 server drops every PIN session on a change, so folding it in
+                 meant a rate edit could sign the counter out as a side effect. -->
+            <div class="stats-card">
+              <h3>Staff PIN</h3>
+              <p class="manage-note">The 4-digit code staff enter to reach Settings and redemptions. Changing it signs out every terminal, including this one, so everyone re-enters the new PIN next time.</p>
+              <label class="settings-field">New 4-digit PIN
+                <input id="set-pin" type="text" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="4 digits" />
+              </label>
+              <p id="set-pin-msg" class="field-error" hidden></p>
+              <div class="pad-actions">
+                <button id="set-pin-save" class="btn-primary btn-compact" type="button">Update PIN</button>
+              </div>
+            </div>
+
+            <!-- Login password. Its own button calls Supabase auth directly
+                 (no server route). -->
+            <div class="stats-card">
+              <h3>Login password</h3>
+              <p class="manage-note">Change the password for this terminal's email login. You'll stay signed in on this device, so use the new password next time you sign in.</p>
+              <label class="settings-field">New password
+                <input id="set-pw-new" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="at least 8 characters" />
+              </label>
+              <label class="settings-field">Confirm new password
+                <input id="set-pw-confirm" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="re-type it" />
+              </label>
+              <p id="set-pw-msg" class="field-error" hidden></p>
+              <div class="pad-actions">
+                <button id="set-pw-save" class="btn-primary btn-compact" type="button">Update password</button>
+              </div>
+            </div>
+
+            <!-- Sign out of this device. It ends the Supabase session directly.
+                 Living on Settings puts it behind the staff PIN, so a customer
+                 (or a mis-tap mid-rush) can't sign the terminal out. -->
+            <div class="stats-card">
+              <h3>Sign out</h3>
+              <p class="manage-note">Signs this terminal out of <strong id="signout-vendor"></strong>. Staff will need the email and password to sign back in, so keep them handy.</p>
+              <p id="signout-msg" class="field-error" hidden></p>
+              <div class="pad-actions">
+                <button id="signout-btn" class="btn-danger btn-compact" type="button">Sign out</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- REGION 3: not a setting at all. The poster file is published by
                WeRewards in the operator dashboard and served from
                GET /api/vendor/qr-poster/file, so every terminal downloads the
-               same current artwork without an app update. Not part of the
-               batched "Save settings" - it is a download, not a setting. -->
-          <div class="stats-card">
-            <h3>Scan-here QR poster</h3>
-            <p class="manage-note">Download this, print it, and put it up where customers can see it. They scan it with their phone camera to get the WeRewards app and start earning at your spot.</p>
-            <p id="poster-file-line" class="manage-note poster-file-line" hidden></p>
-            <p id="poster-msg" class="field-error" hidden></p>
-            <div class="pad-actions">
-              <button id="poster-download" class="btn-primary btn-compact" type="button" disabled>Download poster</button>
+               same current artwork without an app update. -->
+          <section class="settings-region" aria-labelledby="region-downloads-h">
+            <h3 class="region-head" id="region-downloads-h">Downloads</h3>
+
+            <div class="stats-card">
+              <h3>Scan-here QR poster</h3>
+              <p class="manage-note">Download this, print it, and put it up where customers can see it. They scan it with their phone camera to get the WeRewards app and start earning at your spot.</p>
+              <p id="poster-file-line" class="manage-note poster-file-line" hidden></p>
+              <p id="poster-msg" class="field-error" hidden></p>
+              <div class="pad-actions">
+                <button id="poster-download" class="btn-primary btn-compact" type="button" disabled>Download poster</button>
+              </div>
             </div>
-          </div>
-
-          <div class="stats-card" data-card="punch">
-            <div class="setting-row">
-              <span class="setting-label">
-                <span class="setting-name">Visits</span>
-                <span class="setting-desc">Show a rotating visit code on the VISITS tab. Customers scan it once a night to collect a visit, then spend visits on any item you have given a visit price.</span>
-              </span>
-              <button id="set-punch" class="switch" type="button" role="switch" aria-checked="false" aria-label="Visits">
-                <span class="switch-knob"></span>
-              </button>
-            </div>
-            <p class="manage-note">Set what each item costs in visits on the ITEMS tab. Turning this off hides visits from customers, it does not take away the ones they have collected.</p>
-          </div>
-
-          <div class="stats-card" data-card="pin">
-            <h3>Staff PIN</h3>
-            <label class="settings-field">New 4-digit PIN
-              <input id="set-pin" type="text" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="leave blank to keep current" />
-            </label>
-            <p class="manage-note">Changing the PIN signs out every terminal, so everyone re-enters the new PIN next time.</p>
-          </div>
-
-          <!-- Login password. Independent of the batched "Save settings" below —
-               its own button calls Supabase auth directly (no server route). -->
-          <div class="stats-card">
-            <h3>Login password</h3>
-            <p class="manage-note">Change the password for this terminal's email login. You'll stay signed in on this device, so use the new password next time you sign in.</p>
-            <label class="settings-field">New password
-              <input id="set-pw-new" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="at least 8 characters" />
-            </label>
-            <label class="settings-field">Confirm new password
-              <input id="set-pw-confirm" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="re-type it" />
-            </label>
-            <p id="set-pw-msg" class="field-error" hidden></p>
-            <div class="pad-actions">
-              <button id="set-pw-save" class="btn-primary btn-compact" type="button">Update password</button>
-            </div>
-          </div>
-
-          <!-- Sign out of this device. Like the password card, it's independent of
-               the batched "Save settings" — it ends the Supabase session directly.
-               Living on Settings puts it behind the staff PIN, so a customer (or a
-               mis-tap mid-rush) can't sign the terminal out. -->
-          <div class="stats-card">
-            <h3>Sign out</h3>
-            <p class="manage-note">Signs this terminal out of <strong id="signout-vendor"></strong>. Staff will need the email and password to sign back in, so keep them handy.</p>
-            <p id="signout-msg" class="field-error" hidden></p>
-            <div class="pad-actions">
-              <button id="signout-btn" class="btn-danger btn-compact" type="button">Sign out</button>
-            </div>
-          </div>
-
-          <p id="settings-error" class="field-error" hidden></p>
-          <p id="settings-dirty" class="settings-dirty" role="status" hidden>● Unsaved changes, save before leaving this tab.</p>
-          <div class="pad-actions settings-actions">
-            <button id="settings-reset" class="btn-ghost" type="button">Reset</button>
-            <button id="settings-save" class="btn-primary" type="button">Save settings</button>
-          </div>
+          </section>
         </div>
       </section>
 

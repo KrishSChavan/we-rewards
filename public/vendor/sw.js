@@ -60,7 +60,10 @@
 // v20: browser tab favicon (index.html).
 // v21: Settings can download the scan-here QR poster published by WeRewards
 // (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v21';
+// v22: Settings split into three regions by save model — Your spot (batched,
+// with Save settings inside it), Access (staff PIN now self-saving, password,
+// sign out) and Downloads (index.html + terminal.js + terminal.css).
+const CACHE = 'werewards-terminal-v22';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch
