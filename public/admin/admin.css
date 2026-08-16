@@ -108,6 +108,11 @@ h1, h3 { margin: 0; }
 .tile-num { font-size: 1.6rem; font-weight: 900; line-height: 1.1; }
 .tile-label { color: var(--muted); font-size: 0.75rem; }
 .tile-sub { color: var(--muted); font-size: 0.7rem; }
+/* The errors tile is a <button> (it jumps to the log). Undo the UA button styling
+   so it stays pixel-identical to the three plain tiles beside it. */
+.tile-btn { font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.tile-btn:hover { border-color: var(--muted); }
+.tile-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #tot-errors-card.is-alert { border-color: var(--bad); }
 #tot-errors-card.is-alert .tile-num { color: var(--bad); }
 
@@ -494,6 +499,13 @@ h1, h3 { margin: 0; }
 .poster-meta { color: var(--muted); font-size: 0.75rem; }
 .poster-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
+/* Clears the sticky topbar when the "Errors · 24h" tile scrolls this card into
+   view; without it the card head lands underneath the bar. focus() on the card
+   would otherwise draw a ring on a heading nobody can read. */
+#errors-card { scroll-margin-top: 4.5rem; }
+#errors-card:focus { outline: none; }
+#errors-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .error-list { margin-top: 0.75rem; display: grid; gap: 0.4rem; max-height: 500px; overflow-y: auto; padding-right: 0.3rem; }
 .err-row { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .err-row summary { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.7rem; cursor: pointer; list-style: none; }
@@ -573,14 +585,16 @@ h1, h3 { margin: 0; }
   .admin-email { display: none; }
   .btn-compact { min-height: 2.75rem; }
 
-  /* All three destinations stay on one predictable row at phone widths. */
+  /* All four destinations stay on one predictable row at phone widths. Equal
+     columns rather than flex-wrap so the row height never changes when a tab is
+     added; "Applications" is the one that sets the floor on the font size. */
   .tabs {
-    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.35rem; padding: 0.65rem 0.75rem 0;
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.3rem; padding: 0.65rem 0.75rem 0;
   }
   .tab {
-    min-width: 0; min-height: 2.75rem; padding: 0.5rem 0.2rem;
-    font-size: 0.72rem; letter-spacing: 0.01em;
+    min-width: 0; min-height: 2.75rem; padding: 0.5rem 0.15rem;
+    font-size: 0.66rem; letter-spacing: 0; line-height: 1.15;
   }
 
   .wrap { padding: 0.75rem; gap: 0.75rem; }
@@ -698,4 +712,6 @@ h1, h3 { margin: 0; }
      row on small phones. Keeping it sticky still leaves the controls in reach. */
   .topbar { flex-wrap: wrap; }
   .topbar-right { width: 100%; justify-content: flex-end; }
+  /* Two-row topbar, so the errors tile's jump has more sticky header to clear. */
+  #errors-card { scroll-margin-top: 7.5rem; }
 }

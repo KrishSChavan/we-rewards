@@ -31,7 +31,11 @@
 // v15: error log rows now explain what each failure was FOR (who hit it, what
 // the request carried, which device) and the scan-here QR poster card was added
 // (index.html + admin.js + admin.css).
-const CACHE = 'werewards-admin-v15';
+// v16: dashboard reordered around the two jobs it gets opened for. The error log
+// moved from last-of-eight to first card, directly under the "Errors · 24h" tile,
+// which is now a button that jumps to it; the publish-once QR poster card moved
+// off the dashboard into its own tab (index.html + admin.js + admin.css).
+const CACHE = 'werewards-admin-v16';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

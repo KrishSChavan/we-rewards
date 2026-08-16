@@ -40,6 +40,8 @@ const $ = (id) => document.getElementById(id);
   $('tab-dashboard').addEventListener('click', () => setView('dashboard'));
   $('tab-applications').addEventListener('click', () => setView('applications'));
   $('tab-incentives').addEventListener('click', () => setView('incentives'));
+  $('tab-poster').addEventListener('click', () => setView('poster'));
+  $('tot-errors-card').addEventListener('click', jumpToErrors);
   $('inc-form').addEventListener('submit', saveIncentive);
   $('inc-toggle').addEventListener('click', toggleIncentive);
   $('inc-delete').addEventListener('click', deleteIncentive);
@@ -196,7 +198,7 @@ async function loadAll() {
 // Mutually exclusive views under one topbar; `hidden` is the source of truth
 // (same convention as the #login/#dash panels). Driven off one list so adding a
 // tab is adding its name here plus the matching #tab-/#view- ids in the markup.
-const VIEWS = ['dashboard', 'applications', 'incentives'];
+const VIEWS = ['dashboard', 'applications', 'incentives', 'poster'];
 
 function setView(view) {
   const target = VIEWS.includes(view) ? view : 'dashboard';
@@ -204,6 +206,20 @@ function setView(view) {
     $(`view-${v}`).hidden = v !== target;
     $(`tab-${v}`).classList.toggle('is-active', v === target);
   });
+}
+
+// "Errors · 24h" tile → the error log. The tile is the alert; this is the detail,
+// so the two are one tap apart. Focus moves as well as the scroll, otherwise a
+// keyboard or screen-reader operator is left back up at the tile. scroll-margin-top
+// on #errors-card is what keeps the card head out from under the sticky topbar.
+function jumpToErrors() {
+  setView('dashboard');           // the tile lives on the dashboard, but be safe
+  const card = $('errors-card');
+  // behavior:'smooth' overrides any CSS scroll-behavior, so reduced-motion has to
+  // be checked here rather than left to a media query.
+  const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  card.scrollIntoView({ behavior: still ? 'auto' : 'smooth', block: 'start' });
+  card.focus({ preventScroll: true });
 }
 
 async function loadOverview() {

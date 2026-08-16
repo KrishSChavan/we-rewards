@@ -80,6 +80,7 @@
       <button id="tab-dashboard" class="tab is-active" type="button">Dashboard</button>
       <button id="tab-applications" class="tab" type="button">Applications<span id="apps-badge" class="tab-badge" hidden>0</span></button>
       <button id="tab-incentives" class="tab" type="button">Incentives</button>
+      <button id="tab-poster" class="tab" type="button">QR poster</button>
     </nav>
 
     <main>
@@ -89,7 +90,32 @@
         <div class="tile"><span id="tot-vendors" class="tile-num">0</span><span class="tile-label">Vendors</span></div>
         <div class="tile"><span id="tot-students" class="tile-num">0</span><span class="tile-label">Students</span></div>
         <div class="tile"><span id="tot-transactions" class="tile-num">0</span><span class="tile-label">Transactions</span></div>
-        <div id="tot-errors-card" class="tile"><span id="tot-errors" class="tile-num">0</span><span class="tile-label">Errors · 24h</span><span id="tot-errors-sub" class="tile-sub"></span></div>
+        <!-- A button, not a div. This tile only says that SOMETHING broke, so it
+             has to be the way to what broke: it jumps to the error log below. -->
+        <button id="tot-errors-card" class="tile tile-btn" type="button" title="Go to the error log"><span id="tot-errors" class="tile-num">0</span><span class="tile-label">Errors · 24h</span><span id="tot-errors-sub" class="tile-sub"></span></button>
+      </div>
+
+      <!-- errors -->
+      <!-- First card on the dashboard, directly under the tile that announces it.
+           Reading the error log is one of the two jobs this page gets opened for
+           (the other, applications, is a tab with its own badge), so it does not
+           sit at the bottom under the vendor roster and a publish-once upload. -->
+      <div class="card" id="errors-card" tabindex="-1">
+        <div class="card-head">
+          <h3>Error log</h3>
+          <div class="err-filters">
+            <button class="err-filter is-active" data-src="">All</button>
+            <button class="err-filter" data-src="server">Server</button>
+            <button class="err-filter" data-src="student">Student</button>
+            <button class="err-filter" data-src="vendor">Vendor</button>
+            <button class="err-filter" data-src="admin">Admin</button>
+          </div>
+        </div>
+        <div class="card-note-row">
+          <p class="muted">Server 500s and client crashes, newest first. Tap a row to see what the request was for, who hit it, what it carried, and the stack — <strong>Copy details</strong> puts all of it on the clipboard. <strong>×N</strong> marks a failure that appears more than once in this view.</p>
+          <button id="clear-errors-btn" class="btn-clear" type="button">Clear all</button>
+        </div>
+        <div id="error-list" class="error-list"></div>
       </div>
 
       <!-- today -->
@@ -138,48 +164,6 @@
         <div id="vendor-list" class="vendor-list"></div>
       </div>
 
-      <!-- scan-here QR poster: one file, published here, downloaded by every terminal -->
-      <div class="card">
-        <div class="card-head">
-          <h3>Scan-here QR poster</h3>
-          <span id="poster-state" class="chart-max"></span>
-        </div>
-        <p class="muted">The file every vendor downloads from <strong>Settings → Scan-here QR poster</strong> on their terminal, to print and put up for students to scan. Upload one file — a ZIP of print-ready artwork, a PDF, or an image — and it replaces whatever terminals were getting before. Up to 10 MB.</p>
-        <p id="poster-error" class="field-error" role="alert" hidden></p>
-        <div class="poster-row">
-          <div class="poster-info">
-            <span id="poster-name" class="poster-name">Nothing published yet</span>
-            <span id="poster-meta" class="poster-meta">Terminals see no download until you publish a file.</span>
-          </div>
-          <div class="poster-actions">
-            <button id="poster-pick" class="btn-ghost btn-compact" type="button">Choose file</button>
-            <input id="poster-file" type="file" accept=".zip,.pdf,.png,.jpg,.jpeg,.webp" hidden />
-            <button id="poster-upload" class="btn-primary btn-compact" type="button" hidden>Publish</button>
-            <button id="poster-cancel" class="btn-ghost btn-compact" type="button" hidden>Cancel</button>
-            <button id="poster-download" class="btn-ghost btn-compact" type="button" hidden>Download</button>
-            <button id="poster-remove" class="btn-clear" type="button" hidden>Remove</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- errors -->
-      <div class="card">
-        <div class="card-head">
-          <h3>Error log</h3>
-          <div class="err-filters">
-            <button class="err-filter is-active" data-src="">All</button>
-            <button class="err-filter" data-src="server">Server</button>
-            <button class="err-filter" data-src="student">Student</button>
-            <button class="err-filter" data-src="vendor">Vendor</button>
-            <button class="err-filter" data-src="admin">Admin</button>
-          </div>
-        </div>
-        <div class="card-note-row">
-          <p class="muted">Server 500s and client crashes, newest first. Tap a row to see what the request was for, who hit it, what it carried, and the stack — <strong>Copy details</strong> puts all of it on the clipboard. <strong>×N</strong> marks a failure that appears more than once in this view.</p>
-          <button id="clear-errors-btn" class="btn-clear" type="button">Clear all</button>
-        </div>
-        <div id="error-list" class="error-list"></div>
-      </div>
     </div>
 
     <!-- ===== APPLICATIONS TAB ===== -->
@@ -379,6 +363,36 @@
         </div>
         <p class="muted">Every community point this system has handed out, newest first. Automatic referral payouts show as <strong>system</strong>.</p>
         <div id="grant-list" class="grant-list"></div>
+      </div>
+    </div>
+
+    <!-- ===== QR POSTER TAB ===== -->
+    <!-- Its own view rather than the last card on the dashboard: this file is
+         published once and then not touched for months, so it was costing the
+         daily scroll a card's worth of height every day to be found twice a year. -->
+    <div id="view-poster" class="wrap" hidden>
+      <!-- scan-here QR poster: one file, published here, downloaded by every terminal -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Scan-here QR poster</h3>
+          <span id="poster-state" class="chart-max"></span>
+        </div>
+        <p class="muted">The file every vendor downloads from <strong>Settings → Scan-here QR poster</strong> on their terminal, to print and put up for students to scan. Upload one file — a ZIP of print-ready artwork, a PDF, or an image — and it replaces whatever terminals were getting before. Up to 10 MB.</p>
+        <p id="poster-error" class="field-error" role="alert" hidden></p>
+        <div class="poster-row">
+          <div class="poster-info">
+            <span id="poster-name" class="poster-name">Nothing published yet</span>
+            <span id="poster-meta" class="poster-meta">Terminals see no download until you publish a file.</span>
+          </div>
+          <div class="poster-actions">
+            <button id="poster-pick" class="btn-ghost btn-compact" type="button">Choose file</button>
+            <input id="poster-file" type="file" accept=".zip,.pdf,.png,.jpg,.jpeg,.webp" hidden />
+            <button id="poster-upload" class="btn-primary btn-compact" type="button" hidden>Publish</button>
+            <button id="poster-cancel" class="btn-ghost btn-compact" type="button" hidden>Cancel</button>
+            <button id="poster-download" class="btn-ghost btn-compact" type="button" hidden>Download</button>
+            <button id="poster-remove" class="btn-clear" type="button" hidden>Remove</button>
+          </div>
+        </div>
       </div>
     </div>
     </main>
