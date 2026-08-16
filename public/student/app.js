@@ -260,6 +260,7 @@ const Splash = (() => {
     setTab(tab);
   });
   wireSpots();      // the Spots tab's search field, rows, and hearts
+  wireHistory();    // …the Activity tab's spot chips and its Load older button
   wireTabSwipe();   // …and the four tabs by dragging the track itself
   wireVendorSwipe(); // …and a rightward drag on the vendor screen backs out to Home
   // appearance: dark-mode toggle (the <head> script already applied the theme)
@@ -1303,13 +1304,38 @@ function settleVendorDrag(commit) {
   pane.addEventListener('transitionend', settle);
 }
 
-/* ---------- history tab (last 30 days) ---------- */
+/* ---------- history tab ---------- */
+
+// Must match the route's own default and ceiling (src/routes/student.js).
+const HISTORY_DAYS = 30;
+const HISTORY_DAYS_MAX = 360;
+
+// How wide a window the tab is showing, and which spot it is filtered to. Both
+// live in memory only: they are a way of looking at the list, not a setting, so
+// a student who comes back tomorrow starts at the default window with every spot
+// in view — the same posture spotsFilter takes on the directory.
+//
+// historyDays rides on EVERY fetch, including the two background ones. A scan
+// landing at the counter fires loadHistory() with no arguments, and without the
+// window in module state that push would snap a list the student just expanded
+// back to 30 days under their thumb.
+let historyDays = HISTORY_DAYS;
+let historyVendor = 'all';   // vendor_id the chips are filtering to, or 'all'
+let historyMore = false;     // the server says there is something older to reach
+let historyRows = [];        // the last payload, unfiltered — what the chips are built from
 
 async function loadHistory() {
   try {
-    const res = await authFetch('/api/me/history');
+    const res = await authFetch(`/api/me/history?days=${historyDays}`);
     if (!res.ok) throw new Error();
-    renderHistory(await res.json());
+    const body = await res.json();
+    // The route still answers a paramless request with a bare array, for clients
+    // cached from before the window existed. We always name a window, so this is
+    // the envelope — but read both shapes rather than trust one, because the
+    // failure mode of guessing wrong is a silently empty tab, not an error.
+    const envelope = !Array.isArray(body);
+    historyMore = envelope && body.hasMore === true;
+    renderHistory(envelope ? (body.items ?? []) : body);
     historyLoaded = true;
   } catch {
     $('history-loading').hidden = true;
@@ -1317,24 +1343,94 @@ async function loadHistory() {
       $('history-list').innerHTML = '';
       $('history-empty').textContent = 'Couldn’t load your activity. Check your connection and try again.';
       $('history-empty').hidden = false;
+      // …and with no rows there is nothing to filter or extend.
+      $('history-filters').hidden = true;
+      $('history-more').hidden = true;
     }
   }
+}
+
+// The spots this payload actually has rows for, in the order they first appear —
+// the feed is newest-first, so that is most-recently-active first.
+//
+// A row with no vendor belongs to no spot and gets no chip: community grants
+// ship vendor_id: null, and so does a transaction whose vendor the operator has
+// since deleted (migration-017). Both stay visible under "All", which is where a
+// student would look for them.
+function historySpots(items) {
+  const spots = new Map();
+  items.forEach((tx) => {
+    if (!tx.vendor_id || spots.has(tx.vendor_id)) return;
+    spots.set(tx.vendor_id, { id: tx.vendor_id, name: tx.vendors?.name ?? 'Vendor' });
+  });
+  return [...spots.values()];
+}
+
+// Chips are rebuilt on every render, because every render can come from a socket
+// push. The selected one is therefore re-applied from historyVendor and never
+// read back off the DOM, or a scan at the counter would silently clear the
+// filter. The row element itself is only ever refilled, never replaced, so the
+// delegated listener in wireHistory() survives the rebuild.
+function renderHistoryFilters(spots) {
+  const row = $('history-filters');
+  if (spots.length < 2) {          // one spot is not a choice
+    row.innerHTML = '';
+    row.hidden = true;
+    return;
+  }
+  const left = row.scrollLeft;     // a background refresh must not scroll the row home
+  row.innerHTML = '';
+  [{ id: 'all', name: 'All' }, ...spots].forEach((spot) => {
+    const chip = document.createElement('button');
+    const on = spot.id === historyVendor;
+    chip.type = 'button';
+    chip.className = on ? 'hfilter is-selected' : 'hfilter';
+    chip.dataset.vendor = spot.id;
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+    chip.textContent = spot.name;  // not innerHTML: a vendor name is theirs to choose
+    row.appendChild(chip);
+  });
+  row.hidden = false;
+  row.scrollLeft = left;
 }
 
 function renderHistory(items) {
   const list = $('history-list');
   $('history-loading').hidden = true;
-  list.innerHTML = '';
+  historyRows = items;
 
-  if (!items.length) {
-    $('history-empty').textContent = 'No activity in the last 30 days.';
+  // Chips come from the payload, so a spot with nothing left inside the current
+  // window takes the filter back to All rather than leaving the tab filtered to
+  // a chip that is no longer on screen.
+  const spots = historySpots(items);
+  if (historyVendor !== 'all' && !spots.some((s) => s.id === historyVendor)) historyVendor = 'all';
+  renderHistoryFilters(spots);
+
+  $('history-sub').textContent = `Your last ${historyDays} days`;
+  $('history-more').hidden = !historyMore;
+
+  // Filter BEFORE the loop below, never by hiding rows afterwards: the day
+  // dividers are emitted on day-change while walking the list, so a hidden row
+  // would leave its "YESTERDAY" heading standing over nothing.
+  const shown = historyVendor === 'all'
+    ? items
+    : items.filter((tx) => tx.vendor_id === historyVendor);
+
+  list.innerHTML = '';
+  if (!shown.length) {
+    // Three messages share this one paragraph — the two here and the connection
+    // failure in loadHistory() — and it is never reset when hidden, so each
+    // branch has to write its own text rather than just unhide it.
+    $('history-empty').textContent = items.length
+      ? 'No activity at this spot in this window.'
+      : `No activity in the last ${historyDays} days.`;
     $('history-empty').hidden = false;
     return;
   }
   $('history-empty').hidden = true;
 
   let lastDay = null;
-  items.forEach((tx) => {
+  shown.forEach((tx) => {
     const day = dayLabel(new Date(tx.created_at));
     if (day !== lastDay) {
       lastDay = day;
@@ -1347,6 +1443,40 @@ function renderHistory(items) {
   });
 }
 
+// #history-filters and #history-more are stable elements — only the chips inside
+// the row are replaced — so both bind exactly once, here. Nothing inside
+// #history-list takes a listener: renderHistory() replaces that subtree on every
+// socket push, and a handler bound to a row would go with it (the same tearing
+// wireTabSwipe() has to put its release on window for).
+function wireHistory() {
+  $('history-filters').addEventListener('click', (e) => {
+    const chip = e.target.closest('.hfilter');
+    if (!chip) return;
+    if (chip.dataset.vendor === historyVendor) return;
+    historyVendor = chip.dataset.vendor;
+    renderHistory(historyRows);      // no fetch: the rows are already here
+  });
+  $('history-more').addEventListener('click', onHistoryMore);
+}
+
+// One more window's worth. It goes through loadHistory() rather than fetching on
+// its own because historyLoaded is only ever set in there, and both background
+// refreshers are gated on it (see the header note) — a pager with its own fetch
+// would quietly turn the live updates off.
+async function onHistoryMore() {
+  const btn = $('history-more');
+  if (btn.disabled) return;          // one window per tap, however fast the taps
+  historyDays = Math.min(historyDays + HISTORY_DAYS, HISTORY_DAYS_MAX);
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  try {
+    await loadHistory();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Load older';
+  }
+}
+
 // Back to the first-load state. historyLoaded = false alone only stops the
 // background refreshes — it doesn't unpaint anything, so without this a
 // sign-out leaves one student's rows on screen for whoever signs in next on the
@@ -1355,6 +1485,16 @@ function dropHistory() {
   $('history-list').innerHTML = '';
   $('history-loading').hidden = false;
   $('history-empty').hidden = true;
+  // The chips name the spots this student goes to, which is the one part of the
+  // tab that would still be readable during the next student's fetch — and a
+  // stale window would quietly widen theirs too.
+  $('history-filters').innerHTML = '';
+  $('history-filters').hidden = true;
+  $('history-more').hidden = true;
+  historyRows = [];
+  historyDays = HISTORY_DAYS;
+  historyVendor = 'all';
+  historyMore = false;
 }
 
 /** How a community-point grant reads in History, by the ledger's `kind`. */

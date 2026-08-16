@@ -853,8 +853,74 @@ router.post('/referral', requireConsent, async (req, res, next) => {
   }
 });
 
+/* ---------- history ---------- */
+
+// The default window, the ceiling "Load older" walks out to one step at a time,
+// and the row caps each source is read under. HISTORY_DAYS_MAX is a whole number
+// of steps so the last tap lands on it exactly rather than on a stubby 5-day
+// remainder.
+const HISTORY_DAYS = 30;
+const HISTORY_DAYS_MAX = 360;
+const HISTORY_ROWS = 200;
+const HISTORY_GRANTS = 50;
+
 /**
- * GET /api/me/history — the student's last 30 days.
+ * The window `?days=` is asking for, clamped to [HISTORY_DAYS, HISTORY_DAYS_MAX].
+ *
+ * Junk coerces to the default instead of 400ing. This parameter only ever
+ * WIDENS a view that already has a correct answer, and the client throws on
+ * `!res.ok` — so a 400 here would blank the whole Activity tab over a typo in a
+ * query string. Same posture as GET /api/vendor/visit-impact, not the one the
+ * body validators above take.
+ *
+ * The `|| HISTORY_DAYS` sits INSIDE the clamp because Express's qs parser hands
+ * `?days=30&days=60` over as an array and `?days[]=60` as an object. Number()
+ * makes both NaN, and NaN has to land on the default rather than propagate
+ * through Math.max.
+ */
+export function historyWindowDays(raw) {
+  return Math.min(HISTORY_DAYS_MAX, Math.max(HISTORY_DAYS, Number(raw) || HISTORY_DAYS));
+}
+
+/**
+ * Merge the two sources into the one day-ordered feed the client renders.
+ *
+ * `truncated` says the feed came back short — either the merge overflowed the
+ * cap, or one of the two queries is sitting exactly on its own DB limit. It is
+ * reported rather than swallowed for the same reason the admin rollups report
+ * theirs: a silently short list reads as a complete one. It is also what stops
+ * "Load older" being offered a wider window it could not show — once a page is
+ * full, widening returns the same newest HISTORY_ROWS rows.
+ */
+export function mergeHistory(transactions, grants, { max = HISTORY_ROWS, grantMax = HISTORY_GRANTS } = {}) {
+  const tx = transactions ?? [];
+  const gr = grants ?? [];
+  // type 'grant' is a CLIENT-SIDE label, not a transactions.type — nothing
+  // here is written back, and transactions_type_check knows nothing about it.
+  // points carries the amount so the row's chip works unchanged; grant_kind
+  // is what the client uses to choose the wording.
+  const asRows = gr.map((g) => ({
+    id: g.id,
+    type: 'grant',
+    grant_kind: g.kind,
+    reason: g.reason,
+    points: 0,                    // no vendor balance moved
+    community_points: g.points,
+    vendor_id: null,
+    created_at: g.created_at,
+  }));
+
+  const all = [...tx, ...asRows]
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  return {
+    items: all.slice(0, max),
+    truncated: all.length > max || tx.length >= max || gr.length >= grantMax,
+  };
+}
+
+/**
+ * GET /api/me/history[?days=30] — the student's recent activity.
  *
  * Two sources merged, because community points arrive two different ways: the
  * 10% that rides on an `earn` row (migration-026), and an incentive payout,
@@ -865,54 +931,85 @@ router.post('/referral', requireConsent, async (req, res, next) => {
  * Grants are shaped into the same envelope the client's historyRow() already
  * reads rather than shipped as a second list: the tab groups strictly by day,
  * so two lists would have to be interleaved on the client anyway.
+ *
+ * `days` widens the window behind the tab's "Load older" button. limit/offset
+ * is the house paging convention (GET /api/admin/students), but it cannot work
+ * here: the two sources carry their own limits and are re-sliced AFTER the
+ * merge, so an offset applied to transactions alone would skip rows the merge
+ * reorders and would re-read every grant on every page. Widening the window and
+ * taking the newest page of it is the shape that survives a merged feed.
+ *
+ * TWO RESPONSE SHAPES, deliberately. A request with no `days` gets the bare
+ * array it has always got: a PWA cached before this change reads `items.length`
+ * straight off the body, so handing it an envelope would render "No activity"
+ * with nothing thrown and nothing in the console. Any request that names a
+ * window is new enough to know about the envelope. Collapse the two once no
+ * installed client predates this.
  */
 router.get('/history', requireConsent, async (req, res, next) => {
   try {
-    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const { data, error } = await supabaseAdmin
-      .from('transactions')
-      // community_points rides on the earn's own row, so the History tab can
-      // show "+150 pts · +15 community" without a second query. paid_with /
-      // visits_spent do the same job for a visits redemption, which is points=0
-      // and would otherwise render as a meaningless "-0 pts".
-      // `reverses` marks a compensating row, which carries the original's type
-      // with every number negated and would otherwise render as a duplicate.
-      .select('id, vendor_id, type, points, dollar_amount, community_points, paid_with, visits_spent, reverses, created_at, vendors(name), rewards(title)')
-      .eq('user_id', req.user.id)
-      .gte('created_at', since)
-      .order('created_at', { ascending: false })
-      .limit(200);
-    if (error) throw error;
+    const days = historyWindowDays(req.query.days);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const legacy = req.query.days === undefined;
 
-    const { data: grants, error: gErr } = await supabaseAdmin
-      .from('community_grants')
-      .select('id, points, kind, reason, created_at')
-      .eq('user_id', req.user.id)
-      .gte('created_at', since)
-      .order('created_at', { ascending: false })
-      .limit(50);
-    if (gErr) throw gErr;
+    // The last two are existence probes — one row older than the window from
+    // either source is what makes "Load older" worth offering at all. Asking is
+    // cheaper than making the student tap a button that returns the same list,
+    // and they are skipped entirely for a legacy caller that has no button.
+    const probes = legacy ? [] : [
+      supabaseAdmin
+        .from('transactions')
+        .select('id')
+        .eq('user_id', req.user.id)
+        .lt('created_at', since)
+        .limit(1),
+      supabaseAdmin
+        .from('community_grants')
+        .select('id')
+        .eq('user_id', req.user.id)
+        .lt('created_at', since)
+        .limit(1),
+    ];
 
-    // type 'grant' is a CLIENT-SIDE label, not a transactions.type — nothing
-    // here is written back, and transactions_type_check knows nothing about it.
-    // points carries the amount so the row's chip works unchanged; grant_kind
-    // is what the client uses to choose the wording.
-    const asRows = (grants ?? []).map((g) => ({
-      id: g.id,
-      type: 'grant',
-      grant_kind: g.kind,
-      reason: g.reason,
-      points: 0,                    // no vendor balance moved
-      community_points: g.points,
-      vendor_id: null,
-      created_at: g.created_at,
-    }));
+    const [txRes, grantRes, olderTx, olderGrant] = await Promise.all([
+      supabaseAdmin
+        .from('transactions')
+        // community_points rides on the earn's own row, so the History tab can
+        // show "+150 pts · +15 community" without a second query. paid_with /
+        // visits_spent do the same job for a visits redemption, which is points=0
+        // and would otherwise render as a meaningless "-0 pts".
+        // `reverses` marks a compensating row, which carries the original's type
+        // with every number negated and would otherwise render as a duplicate.
+        .select('id, vendor_id, type, points, dollar_amount, community_points, paid_with, visits_spent, reverses, created_at, vendors(name), rewards(title)')
+        .eq('user_id', req.user.id)
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(HISTORY_ROWS),
+      supabaseAdmin
+        .from('community_grants')
+        .select('id, points, kind, reason, created_at')
+        .eq('user_id', req.user.id)
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(HISTORY_GRANTS),
+      ...probes,
+    ]);
+    for (const r of [txRes, grantRes, olderTx, olderGrant]) {
+      if (r?.error) throw r.error;
+    }
 
-    const merged = [...(data ?? []), ...asRows]
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(0, 200);
+    const { items, truncated } = mergeHistory(txRes.data, grantRes.data);
+    if (legacy) return res.json(items);
 
-    res.json(merged);
+    const older = (olderTx.data?.length ?? 0) > 0 || (olderGrant.data?.length ?? 0) > 0;
+    res.json({
+      items,
+      days,
+      truncated,
+      // Nothing older to reach, or a full page already (a wider window returns
+      // the same newest rows), or the ceiling.
+      hasMore: older && !truncated && days < HISTORY_DAYS_MAX,
+    });
   } catch (err) {
     next(err);
   }

@@ -691,8 +691,17 @@
           <div id="history">
             <header class="page-head">
               <h1 class="page-title">Activity</h1>
-              <p class="page-sub">Your last 30 days</p>
+              <!-- Rewritten by renderHistory: "Load older" widens the window, and
+                   a strapline still saying 30 would be the only thing on screen
+                   claiming the list is shorter than it is. -->
+              <p id="history-sub" class="page-sub">Your last 30 days</p>
             </header>
+            <!-- Filter by spot. Filled from the rows that actually arrived (see
+                 historySpots), so it stays hidden for a student with activity at
+                 one spot, and it is a SIBLING of the list rather than a child
+                 because renderHistory replaces the list's contents wholesale on
+                 every socket push. -->
+            <div id="history-filters" class="history-filters" role="group" aria-label="Filter activity by spot" hidden></div>
             <div id="history-list" class="history-list"></div>
             <!-- Still #history-loading, so every hidden flag app.js already sets
                  on the old "Loading…" line keeps working — it just has a shape
@@ -727,6 +736,10 @@
               </div>
             </div>
             <p id="history-empty" class="empty-state" hidden>No activity in the last 30 days.</p>
+            <!-- One more window's worth per tap, server-side (the route clamps at
+                 360 days). Stays hidden until the server has said there is
+                 something older to reach — see hasMore. -->
+            <button id="history-more" class="history-more" type="button" hidden>Load older</button>
           </div>
         </section>
 

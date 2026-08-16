@@ -1946,7 +1946,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* The stylesheet has no focus rules at all, so a brand-new pair of buttons would
    fall back to UA defaults. */
 .btn-redeem:focus-visible, .item-card:focus-visible, .punch-card:focus-visible,
-.vdot:focus-visible {
+.vdot:focus-visible, .hfilter:focus-visible, .history-more:focus-visible {
   outline: 3px solid var(--brand); outline-offset: 2px;
 }
 
@@ -2502,6 +2502,57 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* a community transfer: brand-coloured like the community counter it came from */
 .history-row.transfer .hr-icon { background: var(--sky); }
 .history-row.transfer .hr-points { color: var(--brand); }
+
+/* ---------- filter the activity list by spot ----------
+   The second horizontal scroller in this file (.vendor-carousel is the first),
+   so it repeats that recipe: momentum scrolling, no scrollbar, and
+   overscroll-behavior-x so a flick that runs out of chips can't chain outward
+   into the page while the tab-swipe handler is taking the same gesture.
+
+   #history carries a 1.3rem gutter that #home does not, so the row pays it back
+   as its own inline padding and bleeds through it. Without that, a chip scrolled
+   to the end stops a gutter short of the edge and reads as the last one. */
+.history-filters {
+  display: flex;
+  margin: 0 -1.3rem 1rem;
+  padding: 0.15rem 1.3rem 0.35rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.history-filters[hidden] { display: none; }
+.history-filters::-webkit-scrollbar { display: none; }
+/* No flex gap — see .spots-sub-row for why the fallback is worth avoiding. */
+.hfilter + .hfilter { margin-left: 0.4rem; }
+.hfilter {
+  flex: 0 0 auto;
+  height: 2.3rem; padding: 0 0.85rem;
+  max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-radius: 999px;
+  background: var(--card); color: var(--ink);
+  border: 2.5px solid var(--edge); box-shadow: 0 3px 0 var(--edge);
+  font-size: 0.8rem; font-weight: 900; letter-spacing: 0.04em;
+}
+.hfilter:active { transform: translateY(3px); box-shadow: 0 0 0 var(--edge); }
+/* Chosen: the navy border + inset hairline + sky fill the move-points picker
+   already uses for "this is the one", kept over the pill's own drop shadow. */
+.hfilter.is-selected {
+  border-color: var(--navy); background: var(--sky);
+  box-shadow: inset 0 0 0 1.5px var(--navy), 0 3px 0 var(--edge);
+}
+
+/* "Load older": the secondary-on-paper sticker button (cf. .scan-receipt-btn),
+   a type step down because it extends a list rather than starting anything. */
+.history-more {
+  width: 100%; margin-top: 1rem;
+  background: var(--card); color: var(--ink);
+  border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 0.7rem 0.9rem; box-shadow: 0 4px 0 var(--edge);
+  font-size: 0.95rem; font-weight: 900;
+}
+.history-more:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+.history-more:disabled { opacity: 0.55; }
 
 /* ---------- skeleton: the activity list ----------
    This one is #history-loading itself — the element that used to be the word
