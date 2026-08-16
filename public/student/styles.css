@@ -2544,7 +2544,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    spot's name white-on-white and leave a border colour as the only sign the
    list is filtered at all. */
 .hfilter.is-selected {
-  border-color: var(--sky); color: var(--navy);
+  border-color: var(--navy); color: var(--sky);
   box-shadow: inset 0 0 0 1.5px var(--navy), 0 3px 0 var(--edge);
 }
 /* Both press rules sit AFTER .is-selected: same specificity, so the later rule
