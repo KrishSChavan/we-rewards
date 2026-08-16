@@ -190,6 +190,14 @@ function bootFailed(message) {
   $('tab-deals').addEventListener('click', () => switchMode('deals'));
   $('tab-stats').addEventListener('click', () => switchMode('stats'));
   $('tab-settings').addEventListener('click', () => switchMode('settings'));
+  // Anything that can change how much of the tab row fits has to re-measure it:
+  // the finger moving it, a rotation, a phone/tablet layout swap at the 34.5rem
+  // line — and the web font, which lands after first paint and changes the
+  // width of all six tabs at once.
+  $('tabs').addEventListener('scroll', syncTabRail, { passive: true });
+  window.addEventListener('resize', syncTabRail);
+  window.addEventListener('orientationchange', syncTabRail);
+  if (document.fonts) document.fonts.ready.then(syncTabRail);
   $('punch-fullscreen').addEventListener('click', enterPunchFullscreen);
   $('punch-exit-fs').addEventListener('click', exitPunchFullscreen);
   // System fullscreen exited some other way (Esc, swipe): drop the CSS kiosk too.
@@ -487,6 +495,39 @@ function setTabs(active) {
   $('tab-deals').classList.toggle('is-active', active === 'deals');
   $('tab-stats').classList.toggle('is-active', active === 'stats');
   $('tab-settings').classList.toggle('is-active', active === 'settings');
+  // The row is one scrolling line (see .tab-rail), so lighting a tab is not the
+  // same as showing it: the mode changes on its own often enough — a PIN detour
+  // bouncing back to SCAN, VISITS switched off underneath the active tab, a
+  // sign-in landing on SCAN — that leaving the lit tab off-screen is a real state.
+  scrollTabIntoView($(`tab-${active}`));
+  syncTabRail();
+}
+
+// Bring a tab fully into the rail, plus a margin so the neighbouring tab's edge
+// still shows and the row reads as scrollable. getBoundingClientRect and not
+// scrollIntoView({inline}): the options object and smooth behaviour both land
+// after the Safari version the older counter iPads are stuck on, and a bare
+// scrollIntoView() there scrolls the whole page instead.
+function scrollTabIntoView(btn) {
+  const row = $('tabs');
+  if (!btn || btn.hidden || row.scrollWidth <= row.clientWidth) return;
+  const tab = btn.getBoundingClientRect();
+  const rail = row.getBoundingClientRect();
+  const margin = 16;
+  if (tab.left < rail.left + margin) row.scrollLeft -= rail.left + margin - tab.left;
+  else if (tab.right > rail.right - margin) row.scrollLeft += tab.right - (rail.right - margin);
+}
+
+// The edge fades have to mean "there is a tab that way", which only measuring
+// can decide — it changes with the device, the orientation, whether VISITS is
+// on, and how far the row is scrolled. Cheap: two reads, no layout written.
+function syncTabRail() {
+  const row = $('tabs');
+  const end = row.scrollWidth - row.clientWidth;
+  // 1px of slack at both stops: sub-pixel tab widths leave scrollLeft a hair
+  // short of `end`, which would otherwise strand the fade lit at the far edge.
+  $('tab-rail').classList.toggle('has-more-start', row.scrollLeft > 1);
+  $('tab-rail').classList.toggle('has-more-end', row.scrollLeft < end - 1);
 }
 
 // Land on the screen for a mode once the PIN gate (if any) is cleared. PUNCH
@@ -1431,6 +1472,7 @@ function syncPunchTab() {
   const on = Boolean(config?.punchEnabled);
   $('tab-punch').hidden = !on;
   if (!on && mode === 'punch') proceedSwitchMode('scan');
+  syncTabRail();   // one tab fewer (or more) can be the difference for the fades
 }
 
 // The rotating code refreshes only while its screen is actually visible —

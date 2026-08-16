@@ -57,9 +57,54 @@ button { font-family: inherit; border: none; cursor: pointer; }
 
 .vendor-name { font-weight: 900; letter-spacing: 0.04em; font-size: 1.15rem; text-transform: uppercase; }
 
-.tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* ---------- tabs: one line that scrolls ----------
+
+   These tabs used to wrap. That reads as harmless until you count the devices
+   this runs on: six tabs measure ~780px, so a 1024px iPad keeps them on the
+   header's own line, a 768px one drops them to a second line and then wraps
+   SETTINGS onto a third, and every one of those is a different header height
+   eating a different amount of #main — which is where the viewfinder lives.
+   A seventh tab moves each of those thresholds again.
+
+   So the row is fixed at one line and scrolls instead. The rail is the frame:
+   it shrinks (min-width: 0, or a flex item refuses to go below its contents)
+   and it carries the fades. .tabs is what moves inside it. Nothing here is
+   width-conditional, deliberately — the media queries in this file are all
+   max-width and the widest is 34.5rem, so anything written in one of them
+   never reaches a 768px counter iPad at all. */
+.tab-rail { position: relative; min-width: 0; }
+
+.tabs {
+  display: flex; flex-wrap: nowrap; gap: 0.5rem;
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;   /* momentum on the older iPads */
+  scrollbar-width: none;               /* Firefox */
+}
+/* No visible scrollbar: on a desktop it would sit under the tabs and add its
+   own height to the header, which is the thing we are holding still. The
+   fades below are the affordance instead. */
+.tabs::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Lit only when there is really a tab that way — syncTabRail() measures.
+   rgba(255,255,255,0) and not `transparent`: the keyword interpolates through
+   transparent BLACK on the Safari versions the counter iPads are stuck on, and
+   the fade comes out grey. It has to stay in step with --card. */
+.tab-rail::before,
+.tab-rail::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 1.75rem;
+  pointer-events: none; opacity: 0; transition: opacity 120ms linear;
+}
+.tab-rail::before { left: 0;  background: linear-gradient(to right, var(--card), rgba(255, 255, 255, 0)); }
+.tab-rail::after  { right: 0; background: linear-gradient(to left,  var(--card), rgba(255, 255, 255, 0)); }
+.tab-rail.has-more-start::before,
+.tab-rail.has-more-end::after { opacity: 1; }
 
 .tab {
+  /* never squeezed, never broken across lines — the rail scrolls instead.
+     No `display` here on purpose: #tab-punch is shown and hidden with the
+     hidden property, and an author display rule would beat the UA rule for it
+     (which is exactly why the phone block below needs .tab[hidden]). */
+  flex: 0 0 auto; white-space: nowrap;
   font-size: 1.1rem; font-weight: 900; letter-spacing: 0.06em;
   padding: 0.8rem 1.35rem; border-radius: 0.6rem;
   background: transparent; color: var(--ink);
@@ -999,9 +1044,20 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
     flex-wrap: nowrap; gap: 0;
     background: var(--card); border-top: 3px solid var(--ink);
     padding-bottom: env(safe-area-inset-bottom);
+    /* overflow-x: auto is inherited from the base rule and is what stops a
+       seventh tab from shrinking the labels into each other. It only ever
+       engages once the tabs hit the min-width floor below — at six tabs on a
+       360px phone the bar still fills the width exactly as it always has. */
   }
+  /* .tabs is fixed here, so the rail is a zero-size box left up in the header;
+     its fades would have nothing to sit on. The half-cut tab at the screen
+     edge is the affordance on this layout. */
+  .tab-rail::before, .tab-rail::after { content: none; }
   .tab {
-    flex: 1 1 0; min-width: 0; position: relative;
+    /* Equal columns that fill the bar, but not below the width the label needs
+       — past that the bar scrolls. 3.7rem holds SETTINGS at 0.63rem, and six
+       tabs at 3.7rem is 355px, so it stays inert on every phone from 360px up. */
+    flex: 1 1 0; min-width: 3.7rem; position: relative;
     display: flex; align-items: center; justify-content: center;
     height: var(--nav-h); padding: 0.2rem 0.12rem;
     font-size: 0.63rem; letter-spacing: 0.02em;

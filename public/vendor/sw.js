@@ -68,7 +68,12 @@
 // recognises more engines' wording for a parse failure, so a counter iPad too
 // old to parse terminal.js is told so instead of being offered a Try again
 // button that can only fail again (terminal.js + boot-guard.js).
-const CACHE = 'werewards-terminal-v23';
+// v24: the tab row is one line that scrolls instead of a row that wraps, so the
+// header is the same height on a phone, a 768px iPad and a 1024px one, and a
+// seventh tab extends the scroll rather than growing the header into the
+// viewfinder. Bottom bar on phones scrolls only once labels would clip
+// (index.html + terminal.js + terminal.css).
+const CACHE = 'werewards-terminal-v24';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

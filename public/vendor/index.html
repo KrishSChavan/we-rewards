@@ -122,18 +122,27 @@
   <div id="shell" hidden>
     <header id="topbar">
       <span id="vendor-name" class="vendor-name"></span>
-      <nav class="tabs" aria-label="Mode">
-        <!-- One tab for both directions. The scanned (or typed) code says
-             whether it's an award or a redemption, so there is nothing for the
-             cashier to pick first. -->
-        <button id="tab-scan" class="tab is-active">SCAN</button>
-        <!-- hidden until the vendor turns punch cards on in Settings -->
-        <button id="tab-punch" class="tab tab-punch" hidden>VISITS</button>
-        <button id="tab-manage" class="tab tab-manage">ITEMS</button>
-        <button id="tab-deals" class="tab tab-deals">DEALS</button>
-        <button id="tab-stats" class="tab tab-stats">STATS</button>
-        <button id="tab-settings" class="tab tab-settings">SETTINGS</button>
-      </nav>
+      <!-- The tab row is ONE line that scrolls sideways — it never wraps and it
+           never squeezes a label. The terminal runs on phones and on iPads of
+           several sizes, so "how many tabs fit" has a different answer on every
+           one of them; a scrolling rail is the only shape that gives the same
+           answer on all of them, and a seventh tab lands in it without redrawing
+           anything. #tab-rail is the frame that stays put (it carries the edge
+           fades); .tabs is the part that moves inside it. See syncTabRail(). -->
+      <div id="tab-rail" class="tab-rail">
+        <nav id="tabs" class="tabs" aria-label="Mode">
+          <!-- One tab for both directions. The scanned (or typed) code says
+               whether it's an award or a redemption, so there is nothing for the
+               cashier to pick first. -->
+          <button id="tab-scan" class="tab is-active">SCAN</button>
+          <!-- hidden until the vendor turns punch cards on in Settings -->
+          <button id="tab-punch" class="tab tab-punch" hidden>VISITS</button>
+          <button id="tab-manage" class="tab tab-manage">ITEMS</button>
+          <button id="tab-deals" class="tab tab-deals">DEALS</button>
+          <button id="tab-stats" class="tab tab-stats">STATS</button>
+          <button id="tab-settings" class="tab tab-settings">SETTINGS</button>
+        </nav>
+      </div>
     </header>
 
     <main id="main">
