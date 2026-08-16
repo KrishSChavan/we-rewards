@@ -394,32 +394,33 @@
                 </span>
               </button>
 
-              <!-- The ways to earn, as ONE row directly under the balance they
-                   feed. They used to be three full-width rows, which spent about
-                   150px of a screen that is tuned to fit exactly once (see
-                   .home-main's gap arithmetic) on copy the sheets behind them
-                   were already repeating. Three across gives that height back to
-                   the carousel and gives a fourth way to earn somewhere to land:
-                   a column, not another row. See .home-actions.
+              <!-- The ways to earn, ranked rather than stacked. They used to be
+                   three full-width rows, which spent about 150px of a screen
+                   that is tuned to fit exactly once (see .home-main's gap
+                   arithmetic) on copy the sheets behind them were already
+                   repeating word for word.
 
-                   Each tile is now icon + label. The explanatory line each
-                   button used to carry lives in the sheet it opens —
-                   #earn-modal's .mc-sub and #receipt-modal's .detail-desc were
-                   already saying the same thing in the same words. Invite is the
-                   exception: it has no sheet of its own (it goes straight to the
-                   OS share sheet), and its line is live referral state rather
-                   than fixed copy, so it rides on the button's aria-label, which
-                   loadReferral() keeps in step.
+                   Now: the earn code takes a full-width row of its own, because
+                   it is the counter flow and the one a student opens standing at
+                   a till, and everything else shares the row beneath it. That
+                   second row is self-sizing (see .home-actions-row) — with only
+                   the receipt button in it, the receipt button IS the row and
+                   takes the same wide form as the button above; when invite
+                   joins, the two split it.
 
-                   The full label stays the accessible name on all three. The
-                   visible text is short because 360px divided three ways is
-                   ~99px per tile, not because the shorter wording is better. -->
+                   The explanatory line each button used to carry lives in the
+                   sheet it opens: #earn-modal's .mc-sub and #receipt-modal's
+                   .detail-desc were already saying the same thing in the same
+                   words. Invite is the exception — it has no sheet of its own
+                   (it goes straight to the OS share sheet) and its line is live
+                   referral state rather than fixed copy, so it rides on the
+                   button's aria-label, which loadReferral() keeps in step. -->
               <div class="home-actions">
                 <!-- The code itself lives in a full-screen sheet (#earn-modal)
                      rather than sitting on the home screen as a QR nobody is
-                     scanning yet. This button is the only way in. -->
-                <button id="show-code-btn" class="earn-tile show-code-btn" type="button"
-                        aria-label="Show earn code"
+                     scanning yet. This button is the only way in, and the only
+                     one with a permanent claim on a whole row. -->
+                <button id="show-code-btn" class="earn-btn earn-btn-wide show-code-btn" type="button"
                         aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
                   <span class="et-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -430,59 +431,88 @@
                       <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
                     </svg>
                   </span>
-                  <!-- aria-hidden because the button already has its full name
-                       from aria-label; without this a screen reader reads the
-                       abbreviation after the sentence it abbreviates. Same on
-                       the two tiles below. -->
-                  <span class="et-title" aria-hidden="true">Earn code</span>
-                </button>
-
-                <!-- The other way in: you already paid and walked off without
-                     showing the code, so the paper receipt becomes the proof.
-                     Opens the receipt sheet: photo → server OCR → points. -->
-                <button id="scan-receipt-btn" class="earn-tile scan-receipt-btn" type="button"
-                        aria-label="Scan a receipt"
-                        aria-haspopup="dialog" aria-expanded="false" aria-controls="receipt-modal">
-                  <span class="et-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <!-- receipt with the torn bottom edge, two lines of print -->
-                      <path d="M6 2.8h12v18.4l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z" />
-                      <path d="M9.4 8.4h5.2M9.4 12.4h5.2" />
-                    </svg>
+                  <!-- Two labels, one shown at a time by .home-actions.is-flat.
+                       The short one exists because a collapsed row gives each
+                       button ~99px on a 360px phone, where "Show earn code" is
+                       three lines and costs back half of what collapsing saved.
+                       display:none keeps the inactive one out of the
+                       accessibility tree too, so the button never announces
+                       both. -->
+                  <span class="et-title">
+                    <span class="et-full">Show earn code</span>
+                    <span class="et-abbr">Earn code</span>
                   </span>
-                  <span class="et-title" aria-hidden="true">Receipt</span>
                 </button>
 
-                <!-- The third way to earn: bring someone. Hidden unless a
-                     referral program is actually running (loadReferral decides),
-                     because a button promising a bonus nobody will be paid is
-                     worse than no button. Tapping it hands the share link to the
-                     OS share sheet, or copies it where there isn't one.
+                <!-- Everything else. A wrapper rather than loose siblings so the
+                     buttons in it divide one row's width between themselves
+                     instead of each claiming a row of .home-actions. -->
+                <div class="home-actions-row">
+                  <!-- The other way in: you already paid and walked off without
+                       showing the code, so the paper receipt becomes the proof.
+                       Opens the receipt sheet: photo → server OCR → points.
 
-                     The aria-label here is a placeholder: loadReferral rewrites
-                     it with the live line ("2 joined · 1 yet to buy anything")
-                     at the same moment it unhides the tile, so this wording is
-                     only ever the name of a button nobody can reach. -->
-                <button id="invite-btn" class="earn-tile invite-btn" type="button"
-                        aria-label="Invite a friend" hidden>
-                  <span class="et-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <!-- one person, plus a second being added -->
-                      <path d="M9.5 11.4a3.6 3.6 0 1 0 0-7.2 3.6 3.6 0 0 0 0 7.2z" />
-                      <path d="M2.9 20.1a6.6 6.6 0 0 1 13.2 0" />
-                      <path d="M18.6 8.2v5.2M21.2 10.8H16" />
-                    </svg>
-                  </span>
-                  <span class="et-title" aria-hidden="true">Invite</span>
-                </button>
+                       Ships wide, because invite ships hidden and this is then
+                       the only button in the row. loadReferral() drops the wide
+                       class at the same moment it unhides invite. -->
+                  <button id="scan-receipt-btn" class="earn-btn earn-btn-wide scan-receipt-btn" type="button"
+                          aria-haspopup="dialog" aria-expanded="false" aria-controls="receipt-modal">
+                    <span class="et-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <!-- receipt with the torn bottom edge, two lines of print -->
+                        <path d="M6 2.8h12v18.4l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z" />
+                        <path d="M9.4 8.4h5.2M9.4 12.4h5.2" />
+                      </svg>
+                    </span>
+                    <span class="et-title">
+                      <span class="et-full">Scan a receipt</span>
+                      <span class="et-abbr">Receipt</span>
+                    </span>
+                  </button>
+
+                  <!-- The third way to earn: bring someone. Hidden unless a
+                       referral program is actually running (loadReferral
+                       decides), because a button promising a bonus nobody will
+                       be paid is worse than no button. Tapping it hands the
+                       share link to the OS share sheet, or copies it where there
+                       isn't one.
+
+                       No aria-label here: the visible label is the name, same as
+                       the two above. loadReferral ADDS one carrying the live
+                       line ("2 joined · 1 yet to buy anything") when it unhides
+                       the button, since that sentence has nowhere visible to go
+                       at this width. -->
+                  <button id="invite-btn" class="earn-btn invite-btn" type="button" hidden>
+                    <span class="et-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <!-- one person, plus a second being added -->
+                        <path d="M9.5 11.4a3.6 3.6 0 1 0 0-7.2 3.6 3.6 0 0 0 0 7.2z" />
+                        <path d="M2.9 20.1a6.6 6.6 0 0 1 13.2 0" />
+                        <path d="M18.6 8.2v5.2M21.2 10.8H16" />
+                      </svg>
+                    </span>
+                    <span class="et-title">
+                      <span class="et-full">Invite a friend</span>
+                      <span class="et-abbr">Invite</span>
+                    </span>
+                  </button>
+                </div>
               </div>
 
               <!-- first-points fallback nudge: a small dismissible inline banner,
                    not a sheet. Last in the stack because it is about the code
-                   button above it. install-prompt.js toggles .is-open. -->
+                   button above it. install-prompt.js toggles .is-open.
+
+                   One line of copy, not two sentences. This is the most
+                   expensive block on the home screen per word — it was 105px on
+                   a 360px phone, more than every earn button put together — and
+                   it is a nudge the student can dismiss, which makes it the last
+                   thing entitled to that room. What it drops ("Add WeRewards to
+                   your home screen") is said again, at length and with the
+                   actual steps, in the sheet the Add button opens. -->
               <div id="install-banner" class="install-banner" hidden>
                 <span class="install-banner-emoji" aria-hidden="true">📲</span>
-                <span id="install-banner-text" class="install-banner-text">Add WeRewards to your home screen. Your code, one tap away.</span>
+                <span id="install-banner-text" class="install-banner-text">Your code, one tap away</span>
                 <button id="install-banner-add" class="install-banner-add" type="button">Add</button>
                 <button id="install-banner-close" class="install-banner-close" type="button" aria-label="Dismiss">✕</button>
               </div>

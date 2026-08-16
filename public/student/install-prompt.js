@@ -349,18 +349,26 @@
   }
 
   /* ---------- first-points inline banner (low-priority fallback surface) ---------- */
+  // The banner is a rung of .home-stack, so putting it up or taking it down
+  // changes the home screen's height by a whole block — which is exactly what
+  // app.js's syncHomeDensity() decides the earn actions' shape from. Guarded
+  // because this file also runs before app.js has finished booting.
+  function remeasureHome() {
+    if (typeof window.syncHomeDensity === 'function') window.syncHomeDensity();
+  }
   function showBanner(payload) {
     var d = els();
     if (!d.banner) return;
     d.banner.hidden = false;
     void d.banner.offsetWidth;
     d.banner.classList.add('is-open');
+    remeasureHome();
   }
   function hideBanner() {
     var d = dom;
     if (!d || !d.banner) return;
     d.banner.classList.remove('is-open');
-    setTimeout(function () { d.banner.hidden = true; }, 300);
+    setTimeout(function () { d.banner.hidden = true; remeasureHome(); }, 300);
   }
   function onBannerAdd() {
     hideBanner();

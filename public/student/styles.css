@@ -1180,52 +1180,59 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .move-final { font-size: 0.9rem; font-weight: 800; color: var(--warn); text-align: center; }
 
 /* ---------- home: the earn actions ----------
-   Every way to get points, as ONE row directly under the balance they feed.
+   Every way to get points, ranked, directly under the balance they feed.
 
    They were three full-width rows until Aug 2026. Home is sized to fit one
    screen and splits its leftover height three ways (see .home-main), so those
    rows cost about 150px of a budget the carousel below was already losing —
    and they spent it on subtitles that the sheet behind each button repeated
-   almost word for word. Icon-over-label tiles say the same thing in a third of
-   the height, and a fourth earn method now costs a column instead of a row.
+   almost word for word. Dropping the subtitles is most of the height back; the
+   shape below is what is left of the decision.
 
-   grid, not flex, for two reasons. `grid-auto-flow: column` with
-   `grid-auto-columns: 1fr` sizes the row to however many tiles are actually
-   showing, so the invite tile arriving turns two equal columns into three with
-   no count to keep in step by hand. And `gap` inside a GRID container is
-   Safari 12, below this app's floor, so unlike a flex row it does not go
-   through the margin-synthesis fallback in scripts/build-client.js.
+   Two rows, not one and not three. The earn code keeps a full-width row because
+   it is the counter flow, the one a student opens while standing at a till, and
+   halving its target to make room for a referral button would be ranking them
+   the same. Everything else shares row two.
+
+   grid rather than flex throughout, for two reasons. `grid-auto-flow: column`
+   with `grid-auto-columns: 1fr` sizes row two to however many buttons are
+   actually SHOWING, so invite arriving splits the row and invite absent leaves
+   the receipt button holding all of it, with no count to keep in step by hand.
+   And `gap` inside a GRID container is Safari 12, below this app's floor, so
+   unlike a flex row it does not go through the margin-synthesis fallback in
+   scripts/build-client.js.
 
    No width or margin of its own — .home-stack supplies both. That is what makes
-   the row exactly as wide as the community card above it, and what keeps
+   these exactly as wide as the community card above them, and what keeps
    .home-main's three gaps equal: nothing inside the stack may take an auto. */
-.home-actions {
+.home-actions { display: grid; gap: 0.7rem; }
+
+/* Row two. Self-sizing: one visible button fills it, two split it, and a fourth
+   earn method costs a column here rather than another row. */
+.home-actions-row {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
   gap: 0.7rem;
 }
-/* The invite tile is [hidden] until loadReferral finds a live program. The
-   global `[hidden] { display: none !important }` at the top of this file already
-   wins, but the companion is spelled out because a grid child that is merely
-   invisible would still claim a third of the row — auto-flow columns are only
-   self-sizing if the hidden tile is genuinely display:none. */
-.home-actions > [hidden] { display: none; }
+/* Invite is [hidden] until loadReferral finds a live program. The global
+   `[hidden] { display: none !important }` at the top of this file already wins,
+   but the companion is spelled out because a grid child that is merely
+   invisible would still claim half the row — auto-flow columns are only
+   self-sizing if the hidden button is genuinely display:none. */
+.home-actions-row > [hidden] { display: none; }
 
-/* One tile: icon over label, centred, in the same sticker language as every
-   other tappable card on this screen (3px edge, hard offset shadow, matching
-   radius, press-down on :active).
+/* One button. The narrow form is the default: icon over label, centred, in the
+   same sticker language as every other tappable card on this screen (3px edge,
+   hard offset shadow, matching radius, press-down on :active).
 
-   Stretch is the grid's default and does real work here — the implicit row
-   takes the height of the tallest tile, so on a 320px phone, where "Earn code"
-   is the one label that wraps, all three grow together instead of one standing
-   proud. Nothing reserves that second line, because above ~340px there isn't
-   one and a reserved-but-empty line reads as a spacing bug.
+   Stretch is the grid's default and does real work here — row two takes the
+   height of its tallest button, so when one label wraps on a 320px phone and
+   the other does not, they grow together instead of one standing proud.
 
-   Horizontal padding is deliberately smaller than the old rows' 0.9rem: at
-   360px each tile is ~99px wide, and the padding is what the label runs out of
-   first. */
-.earn-tile {
+   Horizontal padding is deliberately tight: at 360px a shared row gives each
+   button ~154px, and the padding is what the label runs out of first. */
+.earn-btn {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 0.4rem;
   text-align: center;
@@ -1235,7 +1242,17 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   box-shadow: 0 4px 0 var(--edge);
   transition: transform 80ms ease, box-shadow 80ms ease;
 }
-.earn-tile:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+.earn-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+
+/* The wide form, for a button that has a whole row: the label moves up beside
+   the icon instead of under it, which is ~20px shorter and the only reason this
+   variant exists. Worn permanently by the earn code button and by the receipt
+   button whenever it is alone in row two (loadReferral owns that class). */
+.earn-btn-wide {
+  flex-direction: row;
+  gap: 0.7rem;
+  padding: 0.7rem 0.9rem;
+}
 
 .et-icon {
   flex: 0 0 auto;
@@ -1244,18 +1261,50 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   display: flex; align-items: center; justify-content: center;
 }
 .et-icon svg { width: 1.35rem; height: 1.35rem; display: block; }
-.et-title { font-size: 0.82rem; font-weight: 900; line-height: 1.15; }
+.et-title { font-size: 0.85rem; font-weight: 900; line-height: 1.15; }
+.earn-btn-wide .et-title { font-size: 1rem; }
+/* Only one of the label pair is ever in the box — display:none, so the other is
+   out of the accessibility tree as well as out of the layout. */
+.et-abbr { display: none; }
+
+/* ---------- the short-screen form ----------
+   Ranked rows cost ~57-79px over one flat row of three. On a phone that cannot
+   hold the home screen anyway, that is the wrong 79px to be spending, so the
+   ranking collapses and every earn button becomes a column again.
+
+   syncHomeDensity() in app.js owns .is-flat, and it decides by MEASURING rather
+   than by @media (max-height): #app is `height: 100vh` below Safari 15.4 because
+   `dvh` is dead there, so on an iPhone in mobile Safari the layout is taller
+   than the window and a height query reports the screen rather than what the
+   student can actually see.
+
+   display: contents dissolves the row wrapper so its buttons become columns of
+   .home-actions directly. It is Safari 11.1, below this app's floor, and the
+   wrapper is a bare div with no role, so nothing is lost from the a11y tree.
+   The `> [hidden]` companion above still applies — a hidden invite claims no
+   column in either form. */
+.home-actions.is-flat { grid-auto-flow: column; grid-auto-columns: 1fr; }
+.home-actions.is-flat .home-actions-row { display: contents; }
+/* Whatever was wide goes back to icon-over-label, at the narrow measurements. */
+.home-actions.is-flat .earn-btn-wide {
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.7rem 0.45rem;
+}
+.home-actions.is-flat .earn-btn-wide .et-title { font-size: 0.85rem; }
+.home-actions.is-flat .et-full { display: none; }
+.home-actions.is-flat .et-abbr { display: inline; }
 
 /* "Show earn code" — the counter flow, the one that works while you are still
-   standing there, and the only way into #earn-modal. It keeps the filled navy
-   treatment it had as a full-width button; now that all three tiles are the
-   same size, colour is the whole of what marks it as the primary. */
+   standing there, and the only way into #earn-modal. Keeps the filled navy
+   treatment it always had; the full-width row is now the other half of what
+   says it outranks the two beneath it. */
 .show-code-btn { background: var(--navy); color: #fff; }
 .show-code-btn .et-icon { background: rgba(255, 255, 255, 0.13); color: var(--accent); }
 .show-code-btn .et-title { color: #3DDC97; }
 
 /* "Scan a receipt" — the recovery path, for when you have already walked off.
-   It is .earn-tile unchanged, which is the point: secondary here means "not the
+   It is .earn-btn unchanged, which is the point: secondary here means "not the
    navy one", not a second set of measurements. The class stays as the name the
    rest of this file cross-references for the secondary-on-paper sticker. */
 
@@ -2020,13 +2069,18 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* first-points fallback: a small dismissible inline banner on the home screen —
    not a sheet, so the app stays fully usable. Reuses the sticker look. */
+/* Sized to ONE line of copy. Home has to fit one screen (see .home-main), and
+   at 0.75rem padding round two wrapped sentences this banner was 105px on a
+   360px phone — more than the earn buttons it sits under, for a nudge that is
+   dismissible. The padding, the type size and the copy were all cut together;
+   putting any of them back puts the second line back. */
 .install-banner {
-  display: flex; align-items: center; gap: 0.6rem;
+  display: flex; align-items: center; gap: 0.55rem;
   /* No margin: this is the last rung of .home-stack, which supplies both the
      gutter and the 0.7rem above. When it's dismissed, display:none takes its
      gap with it and the stack closes up on its own. */
   margin: 0;
-  padding: 0.75rem 0.85rem;
+  padding: 0.5rem 0.7rem;
   background: var(--card);
   border: 3px solid var(--edge); border-radius: 1.1rem;
   box-shadow: 0 4px 0 var(--edge);
@@ -2034,19 +2088,21 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   transition: opacity 260ms ease, transform 260ms ease;
 }
 .install-banner.is-open { opacity: 1; transform: translateY(0); }
-.install-banner-emoji { font-size: 1.5rem; flex-shrink: 0; }
-.install-banner-text { flex: 1; min-width: 0; font-weight: 700; font-size: 0.9rem; line-height: 1.3; }
+.install-banner-emoji { font-size: 1.25rem; flex-shrink: 0; }
+/* Wraps rather than ellipsing if a 320px phone can't hold it: a truncated nudge
+   reads as a bug, and a second line here is 18px, not the 40 it used to be. */
+.install-banner-text { flex: 1; min-width: 0; font-weight: 700; font-size: 0.85rem; line-height: 1.25; }
 .install-banner-add {
   flex-shrink: 0;
   background: var(--navy); color: #fff;
-  font-weight: 900; font-size: 0.9rem;
-  padding: 0.5rem 0.9rem; border-radius: 0.7rem;
+  font-weight: 900; font-size: 0.85rem;
+  padding: 0.4rem 0.75rem; border-radius: 0.7rem;
 }
 .install-banner-add:active { background: var(--navy-press); }
 .install-banner-close {
   flex-shrink: 0;
-  width: 1.9rem; height: 1.9rem; border-radius: 50%;
-  font-size: 0.85rem; font-weight: 900; color: var(--muted);
+  width: 1.7rem; height: 1.7rem; border-radius: 50%;
+  font-size: 0.8rem; font-weight: 900; color: var(--muted);
   border: 2px solid var(--edge); background: var(--paper);
 }
 
@@ -2556,7 +2612,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .hfilter:active { transform: translateY(3px); box-shadow: 0 0 0 var(--edge); }
 .hfilter.is-selected:active { box-shadow: inset 0 0 0 1.5px var(--navy), 0 0 0 var(--edge); }
 
-/* "Load older": the secondary-on-paper sticker button (cf. .earn-tile),
+/* "Load older": the secondary-on-paper sticker button (cf. .earn-btn),
    a type step down because it extends a list rather than starting anything. */
 .history-more {
   width: 100%; margin-top: 1rem;

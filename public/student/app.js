@@ -334,7 +334,17 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // elements — only their children are replaced — so these bind exactly once.
   $('vendor-carousel').addEventListener('scroll', onCarouselScroll, { passive: true });
   $('vendor-dots').addEventListener('click', onDotTap);
-  window.addEventListener('resize', () => { dotSnaps = []; });   // card widths changed; re-measure lazily
+  window.addEventListener('resize', () => {
+    dotSnaps = [];        // card widths changed; re-measure lazily
+    // The height changed too, and in mobile Safari this is the ONLY signal that
+    // it did: showing and hiding the URL bar resizes the window without any
+    // other event. Two layout reads, so it is cheap enough to run inline.
+    syncHomeDensity();
+  });
+  // install-prompt.js is a separate ES5 IIFE with no import of its own; it calls
+  // this by name when the nudge opens or closes, since either changes the home
+  // screen's height by a whole block.
+  window.syncHomeDensity = syncHomeDensity;
   // Filter the spots. Same story as the two above: the field is a stable element
   // that is only hidden, never replaced, so these bind exactly once.
   $('vendor-search').addEventListener('input', onVendorSearchInput);
@@ -563,6 +573,10 @@ function render(session) {
   // the modal have a backdrop instead of a blank screen on a slow connection.
   $('landing').hidden = ready;
   $('app').hidden = !ready;
+  // Nothing inside #app has a height until this line runs, so the first fit
+  // decision has to be taken after it — renderVendors() may well have already
+  // run against a shell that measured zero.
+  if (ready) syncHomeDensity();
 
   if (!session) {
     Splash.hide();              // settled: this visitor gets the landing page
@@ -3352,6 +3366,41 @@ function recentVendors() {
   };
 }
 
+/* ---------- home: fitting one screen ----------
+ * Home is built to fit a phone exactly once (see .home-main's gap arithmetic in
+ * styles.css) and degrades to scrolling rather than clipping when it can't. On
+ * a short phone it can't: at 8 spots the blocks add up to ~655px, and an
+ * iPhone SE gives the scroller 606px — worse in mobile Safari, and worse again
+ * with the install nudge up.
+ *
+ * The earn actions are what gives. Ranked (a full-width earn code over a shared
+ * row) they are 145-167px; collapsed to one row of three they are 88px. That is
+ * the whole of .is-flat.
+ *
+ * Why a measurement and not @media (max-height): #app is `height: 100vh` with a
+ * `100dvh` after it, and dvh is dead below Safari 15.4 (the CSS floor is 13.1),
+ * so in mobile Safari the layout is laid out to the FULL screen height while the
+ * URL bar covers the bottom ~110px of it. A height query would report 667 on a
+ * phone showing 553. The scroll container's own clientHeight does not lie.
+ */
+const HOME_OVERFLOW_TOLERANCE = 24;   // px of scroll not worth reshaping the screen for
+
+function syncHomeDensity() {
+  const page = $('tab-home');
+  const actions = document.querySelector('.home-actions');
+  if (!page || !actions) return;
+  // Shell still hidden (landing page, consent gate, cold boot): everything
+  // measures zero, which would read as "fits" and drop a collapse that was
+  // right. Leave the class alone and wait to be called again from render().
+  if (!page.clientHeight) return;
+  // Measure in the RANKED form every time, then decide. Reading the collapsed
+  // height would be reading the consequence of the last decision: the row would
+  // fit, un-collapse, stop fitting, re-collapse, and flip on every resize.
+  actions.classList.remove('is-flat');
+  const overflow = page.scrollHeight - page.clientHeight;   // forces the layout we need
+  actions.classList.toggle('is-flat', overflow > HOME_OVERFLOW_TOLERANCE);
+}
+
 function renderVendors() {
   // First, and before anything measures: applyVendorFilter() ends in
   // renderVendorDots(), which reads the carousel's geometry back off the page.
@@ -3368,6 +3417,9 @@ function renderVendors() {
   // runs on every socket push, not just the first load.
   syncMapButton();
   refreshMapPins();
+  // Last: the carousel's own height is part of what decides this, so it has to
+  // be measured after the row it pages through exists.
+  syncHomeDensity();
 }
 
 // The one place the visible row is decided. `reset` is for a query change: the
@@ -5055,6 +5107,17 @@ async function claimPendingReferral() {
   }
 }
 
+// Row two of the earn actions divides itself between whatever is showing, so
+// the receipt button is either sharing it with invite or holding all of it. Wide
+// is the markup's default because invite ships hidden; this is the one thing
+// that has to move when that changes.
+function syncEarnRowWidth(inviteShown) {
+  const receipt = $('scan-receipt-btn');
+  if (receipt) receipt.classList.toggle('earn-btn-wide', !inviteShown);
+  // A third button is a taller block, so the fit decision has to be taken again.
+  syncHomeDensity();
+}
+
 // The invite button's label and visibility. `program: null` means nothing is
 // running, and the button stays hidden rather than promising a bonus that
 // wouldn't be paid.
@@ -5071,6 +5134,7 @@ async function loadReferral() {
   if (!btn) return;
   if (!referralState?.program || !referralState.shareUrl) {
     btn.hidden = true;
+    syncEarnRowWidth(false);
     return;
   }
 
@@ -5087,15 +5151,15 @@ async function loadReferral() {
   } else {
     sub = `${joined} joined · ${earned} points earned`;
   }
-  // The tile has no room for this line and no sheet to move it into — tapping
-  // goes straight to the OS share sheet — so it becomes the button's accessible
-  // name instead of a subtitle. Rewritten here rather than left in the markup
-  // because every one of these sentences is live state, and a stale "You both
-  // get points" announced over "2 joined · 1 yet to buy anything" is worse than
-  // no line at all. Set BEFORE unhiding, so the tile is never reachable under
-  // the placeholder name.
+  // Half a row is no room for this line, and unlike the other two buttons there
+  // is no sheet to move it into — tapping goes straight to the OS share sheet —
+  // so it becomes the button's accessible name instead of a subtitle. Written
+  // here rather than in the markup because every one of these sentences is live
+  // state, and a stale one announced over the real one is worse than no line at
+  // all. Set BEFORE unhiding, so the button is never reachable without it.
   btn.setAttribute('aria-label', `Invite a friend — ${sub}`);
   btn.hidden = false;
+  syncEarnRowWidth(true);
 }
 
 // Hand the link to the OS share sheet where there is one (every iOS and Android

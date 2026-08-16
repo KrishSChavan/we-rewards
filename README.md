@@ -279,7 +279,11 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   unhandled rejections to `POST /api/client-error` (unauthenticated,
   size-capped, rate-limited). Rows carry a `source` (`server` / `student` /
   `vendor` / `admin`), message, stack, path, and best-effort user id. Stored in
-  `error_logs` (migration-013), server-only writes, no client read path.
+  `error_logs` (migration-013), server-only writes, no client read path. Read a
+  page at a time (`?source=&limit=&offset=`, newest first) and answered as
+  `{ errors, total, offset, limit }`, where `total` counts the log under the same
+  `source` filter — the same envelope `/students`, `/referrals` and `/grants`
+  return, so the dashboard can say how much it is not showing.
 
 ## Vendor deals (campaigns)
 

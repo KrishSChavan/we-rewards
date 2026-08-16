@@ -93,6 +93,38 @@ export function pageParams(query, { def, max }) {
   return { limit, offset };
 }
 
+// PostgREST's code for "you asked for a range that starts past the end".
+const RANGE_PAST_END = 'PGRST103';
+
+/**
+ * One page of rows plus the exact total, for a list the operator can page
+ * through.
+ *
+ * `build(selectOptions)` must return a FRESH query each call — its select, its
+ * filters and its order, but no range. It is called twice at most.
+ *
+ * The second call only happens on a page that starts past the end of the list.
+ * PostgREST answers that with 416/PGRST103 rather than an empty page, and
+ * postgrest-js drops the Content-Range that came with it, so such a request
+ * arrives back here as a failure carrying neither rows nor a total. It isn't a
+ * failure: "rows 500 to 549 of a 40-row log" has an honest empty answer, and
+ * returning it as one is what keeps a stale Show more (or a hand-typed offset)
+ * from turning into a 500. The total is re-read with a HEAD count, which costs
+ * one cheap round trip on a page that had no rows to send anyway.
+ */
+export async function pageOf(build, { limit, offset }) {
+  const { data, error, count } = await build({ count: 'exact' }).range(offset, offset + limit - 1);
+  if (!error) {
+    const rows = data ?? [];
+    return { rows, total: count ?? rows.length };
+  }
+  if (error.code !== RANGE_PAST_END) throw error;
+
+  const { count: total, error: countError } = await build({ count: 'exact', head: true });
+  if (countError) throw countError;
+  return { rows: [], total: total ?? 0 };
+}
+
 /**
  * GET /api/admin/overview
  * Platform-wide health for the operator: lifetime totals (vendors, students,
@@ -1173,18 +1205,16 @@ const GRANT_PAGE_MAX = 200;
  */
 router.get('/referrals', async (req, res, next) => {
   try {
-    const { limit, offset } = pageParams(req.query, { def: REFERRAL_PAGE, max: REFERRAL_PAGE_MAX });
-    const { data: rows, error, count } = await supabaseAdmin
+    const page = pageParams(req.query, { def: REFERRAL_PAGE, max: REFERRAL_PAGE_MAX });
+    const { limit, offset } = page;
+    const { rows, total } = await pageOf((opts) => supabaseAdmin
       .from('referrals')
       .select(
         'id, referrer_id, friend_id, code, status, friend_points, referrer_points, qualified_at, paid_at, created_at',
-        { count: 'exact' },
+        opts,
       )
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-    if (error) throw error;
-    const total = count ?? rows?.length ?? 0;
-    if (!rows?.length) return res.json({ referrals: [], total, offset, limit });
+      .order('created_at', { ascending: false }), page);
+    if (!rows.length) return res.json({ referrals: [], total, offset, limit });
 
     const ids = [...new Set(rows.flatMap((r) => [r.referrer_id, r.friend_id]))];
     const { data: people, error: pErr } = await supabaseAdmin
@@ -1249,15 +1279,13 @@ router.post('/referrals/settle', async (req, res, next) => {
  */
 router.get('/grants', async (req, res, next) => {
   try {
-    const { limit, offset } = pageParams(req.query, { def: GRANT_PAGE, max: GRANT_PAGE_MAX });
-    const { data: rows, error, count } = await supabaseAdmin
+    const page = pageParams(req.query, { def: GRANT_PAGE, max: GRANT_PAGE_MAX });
+    const { limit, offset } = page;
+    const { rows, total } = await pageOf((opts) => supabaseAdmin
       .from('community_grants')
-      .select('id, user_id, points, kind, reason, granted_by, created_at', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-    if (error) throw error;
-    const total = count ?? rows?.length ?? 0;
-    if (!rows?.length) return res.json({ grants: [], total, offset, limit });
+      .select('id, user_id, points, kind, reason, granted_by, created_at', opts)
+      .order('created_at', { ascending: false }), page);
+    if (!rows.length) return res.json({ grants: [], total, offset, limit });
 
     // user_id is null for grants whose student has since deleted their account
     // (ON DELETE SET NULL — the row outlives them so the budget still adds up).
@@ -1510,20 +1538,17 @@ export function safeSearch(raw) {
  */
 router.get('/students', async (req, res, next) => {
   try {
-    const { limit, offset } = pageParams(req.query, { def: STUDENT_PAGE, max: STUDENT_PAGE_MAX });
+    const page = pageParams(req.query, { def: STUDENT_PAGE, max: STUDENT_PAGE_MAX });
+    const { limit, offset } = page;
     const q = safeSearch(req.query.q);
 
-    let sel = supabaseAdmin
-      .from('profiles')
-      .select('user_id, name, email, created_at', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-    if (q) sel = sel.or(`name.ilike.*${q}*,email.ilike.*${q}*`);
-
-    const { data, error, count } = await sel;
-    if (error) throw error;
-
-    const rows = data ?? [];
+    const { rows, total } = await pageOf((opts) => {
+      const sel = supabaseAdmin
+        .from('profiles')
+        .select('user_id, name, email, created_at', opts)
+        .order('created_at', { ascending: false });
+      return q ? sel.or(`name.ilike.*${q}*,email.ilike.*${q}*`) : sel;
+    }, page);
     const ids = rows.map((r) => r.user_id);
     // Two reads for the whole page, not two per student.
     const [bal, comm] = ids.length ? await Promise.all([
@@ -1552,7 +1577,7 @@ router.get('/students', async (req, res, next) => {
         spots: agg.get(r.user_id)?.spots ?? 0,
         community: community.get(r.user_id) ?? 0,
       })),
-      total: count ?? rows.length,
+      total,
       offset,
       limit,
       query: q,
@@ -1796,31 +1821,32 @@ const ERROR_PAGE_MAX = 200;
  */
 router.get('/errors', async (req, res, next) => {
   try {
-    const { limit, offset } = pageParams(req.query, { def: ERROR_PAGE, max: ERROR_PAGE_MAX });
+    const page = pageParams(req.query, { def: ERROR_PAGE, max: ERROR_PAGE_MAX });
+    const { limit, offset } = page;
     const source = req.query.source;
+    const filtered = source && ['server', 'student', 'vendor', 'admin'].includes(source);
 
-    let q = supabaseAdmin
-      .from('error_logs')
-      .select(
-        'id, source, message, stack, path, method, status, user_id, user_agent, context, created_at',
-        { count: 'exact' },
-      )
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-    if (source && ['server', 'student', 'vendor', 'admin'].includes(source)) {
-      q = q.eq('source', source);
-    }
-    const { data, error, count } = await q;
-    if (error) throw error;
+    // The source filter is part of the query the count is taken from, so `total`
+    // is the size of the log the dashboard is actually looking at, not the size
+    // of the whole table.
+    const { rows, total } = await pageOf((opts) => {
+      const q = supabaseAdmin
+        .from('error_logs')
+        .select(
+          'id, source, message, stack, path, method, status, user_id, user_agent, context, created_at',
+          opts,
+        )
+        .order('created_at', { ascending: false });
+      return filtered ? q.eq('source', source) : q;
+    }, page);
 
-    const rows = data ?? [];
     const actors = await resolveActors(rows.map((r) => r.user_id));
     res.json({
       errors: rows.map((r) => ({
         ...r,
         actor: r.user_id ? actors.get(r.user_id) ?? { id: r.user_id, role: 'unknown' } : null,
       })),
-      total: count ?? rows.length,
+      total,
       offset,
       limit,
     });

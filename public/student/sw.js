@@ -1,7 +1,9 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v62';   // v62: the three earn buttons are one row of icon tiles; each button's explanatory line now lives in the sheet it opens (invite's, being live state with no sheet, moved to the aria-label)
+const CACHE = 'werewards-v64';   // v64: home fits the screen — ranked earn actions collapse to one row of three on a phone too short for them (measured, not @media, because 100dvh is dead on the floor Safari), and the install nudge is one line instead of three
+// v63: the earn actions are ranked — earn code keeps a full-width row, receipt and invite share the one beneath it (receipt takes the whole row when there is no invite)
+// v62: the three earn buttons are one row of icon tiles; each button's explanatory line now lives in the sheet it opens (invite's, being live state with no sheet, moved to the aria-label)
 // v61: boot names the script that didn't load instead of dying on it; the boot guard recognises more engines' wording for a parse failure (app.js + boot-guard.js)
 // v60: Activity filters by spot (a chip row built from the rows that arrived) and pages back 30 days at a time with "Load older"
 // v59: the map entry point is a labelled "Map 🗺️" pill; a spot's screen gets a pinned "Show in map" bar that opens the map on that spot's pin

@@ -403,6 +403,20 @@ function listCountText({ shown, loaded, total, filtered }) {
   return partial ? `${num(loaded)} of ${num(total)}` : `${num(loaded)} shown`;
 }
 
+// Rows arriving from a later page, added to the ones already held.
+//
+// These logs are ordered newest first and paged by offset, so a row written
+// between two requests shifts the window and the next page can open with a row
+// that is already on screen. Dropping the repeat on arrival matters most in the
+// error log, where a row rendered twice would also be counted twice and read as
+// "×2" — one failure reported as two. (The mirror case, rows deleted between
+// pages, skips a row instead; that needs cursor paging, which these lists don't
+// have and, at one operator watching one log, don't yet need.)
+function appendPage(current, incoming) {
+  const seen = new Set(current.map((r) => r.id));
+  return current.concat((incoming ?? []).filter((r) => !seen.has(r.id)));
+}
+
 // A list's own error line: shown when a page fails to load, hidden again by the
 // render that follows the next success.
 function showListError(id, message) {
@@ -496,7 +510,12 @@ function listTools(cfg) {
       const shown = tools.visible();
       if (shown.length) {
         cfg.paint(shown);
-      } else if (query) {
+      } else if (!loaded.length) {
+        // Nothing loaded is nothing to search: the list's own empty state is the
+        // honest line even with a term still in the box (the operator has just
+        // cleared the log, say), and "no match in 0 rows" would not be.
+        wrap.innerHTML = cfg.empty();
+      } else {
         wrap.innerHTML = '';
         const p = document.createElement('p');
         p.className = 'muted';
@@ -504,8 +523,6 @@ function listTools(cfg) {
           ? `No ${cfg.noun} matches that search in the ${num(loaded.length)} loaded. Show more to look further back.`
           : `No ${cfg.noun} matches that search.`;
         wrap.appendChild(p);
-      } else {
-        wrap.innerHTML = cfg.empty();
       }
       tools.refresh(shown.length);
     },
@@ -580,7 +597,10 @@ function wireLists() {
     listId: 'referral-list',
     noun: 'referral',
     rows: () => referrals,
-    text: (r) => [r.referrer, r.friend, r.code, r.status].filter(Boolean).join(' '),
+    // Both the stored status and the word the badge shows for it: an operator
+    // hunting the unpaid ones types "waiting", which is not a value in the data.
+    text: (r) => [r.referrer, r.friend, r.code, r.status, (REFERRAL_STATUS[r.status] ?? [])[0]]
+      .filter(Boolean).join(' '),
     paint: paintReferralRows,
     empty: () => `<p class="muted">No referrals yet. They appear here as soon as a student uses someone's invite link.</p>`,
     total: () => referralsTotal,
@@ -592,8 +612,12 @@ function wireLists() {
     listId: 'grant-list',
     noun: 'payout',
     rows: () => grants,
-    text: (g) => [g.student, GRANT_KINDS[g.kind] ?? g.kind, g.reason, g.grantedBy]
-      .filter(Boolean).join(' '),
+    // grantedBy is searched as the row shows it: an automatic payout is stored
+    // as "system" and displayed as "automatic", and either should find it.
+    text: (g) => [
+      g.student, GRANT_KINDS[g.kind] ?? g.kind, g.reason,
+      g.grantedBy === 'system' ? 'system automatic' : g.grantedBy,
+    ].filter(Boolean).join(' '),
     paint: paintGrantRows,
     empty: () => '<p class="muted">Nothing paid out yet.</p>',
     total: () => grantsTotal,
@@ -1708,7 +1732,7 @@ async function loadReferrals({ append = false } = {}) {
     if (!res.ok) throw new Error(`referrals ${res.status}`);
     const d = await res.json();
     if (seq !== referralReqSeq) return false;         // a newer load already won
-    referrals = append ? referrals.concat(d.referrals ?? []) : (d.referrals ?? []);
+    referrals = append ? appendPage(referrals, d.referrals) : (d.referrals ?? []);
     referralsTotal = d.total ?? referrals.length;
     renderReferrals();
     return true;
@@ -1728,7 +1752,7 @@ async function loadGrants({ append = false } = {}) {
     if (!res.ok) throw new Error(`grants ${res.status}`);
     const d = await res.json();
     if (seq !== grantReqSeq) return false;
-    grants = append ? grants.concat(d.grants ?? []) : (d.grants ?? []);
+    grants = append ? appendPage(grants, d.grants) : (d.grants ?? []);
     grantsTotal = d.total ?? grants.length;
     renderGrants();
     return true;
@@ -2892,7 +2916,7 @@ async function loadErrors({ append = false } = {}) {
     // Dropped if the operator switched source (or hit refresh) while this was in
     // flight — otherwise a page of "vendor" errors appends to the "server" list.
     if (seq !== errorReqSeq) return false;
-    errors = append ? errors.concat(d.errors ?? []) : (d.errors ?? []);
+    errors = append ? appendPage(errors, d.errors) : (d.errors ?? []);
     errorsTotal = d.total ?? errors.length;
     renderErrors();
     return true;
@@ -3167,8 +3191,14 @@ async function deleteError(id, row, ev) {
     errorsTotal = Math.max(0, errorsTotal - 1);
     row.remove();
     refreshErrorCard();                                 // keep the top tile in sync
-    if (!errorTools.visible().length) renderErrors();   // repaint → empty state
-    else errorTools.refresh();
+    if (errorTools.visible().length) errorTools.refresh();
+    // Dismissing the last LOADED row while the log still has rows behind it
+    // refills from the top, as this did before it was paged: otherwise the card
+    // would read "No errors logged" directly above a live "Show more (N left)".
+    // A filter hiding the rest is a different thing, and falls through to the
+    // repaint so it can say so.
+    else if (!errors.length && errorsTotal > 0) loadErrors();
+    else renderErrors();
   } catch {
     btn.disabled = false;
   }
