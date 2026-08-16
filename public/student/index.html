@@ -394,17 +394,34 @@
                 </span>
               </button>
 
-              <!-- The two ways to earn, stacked directly under the balance they
-                   feed. The wrapper groups them so the receipt button (when it
-                   ships) rides along without becoming a second block in
-                   .home-stack. See .home-actions. -->
+              <!-- The ways to earn, as ONE row directly under the balance they
+                   feed. They used to be three full-width rows, which spent about
+                   150px of a screen that is tuned to fit exactly once (see
+                   .home-main's gap arithmetic) on copy the sheets behind them
+                   were already repeating. Three across gives that height back to
+                   the carousel and gives a fourth way to earn somewhere to land:
+                   a column, not another row. See .home-actions.
+
+                   Each tile is now icon + label. The explanatory line each
+                   button used to carry lives in the sheet it opens —
+                   #earn-modal's .mc-sub and #receipt-modal's .detail-desc were
+                   already saying the same thing in the same words. Invite is the
+                   exception: it has no sheet of its own (it goes straight to the
+                   OS share sheet), and its line is live referral state rather
+                   than fixed copy, so it rides on the button's aria-label, which
+                   loadReferral() keeps in step.
+
+                   The full label stays the accessible name on all three. The
+                   visible text is short because 360px divided three ways is
+                   ~99px per tile, not because the shorter wording is better. -->
               <div class="home-actions">
                 <!-- The code itself lives in a full-screen sheet (#earn-modal)
                      rather than sitting on the home screen as a QR nobody is
                      scanning yet. This button is the only way in. -->
-                <button id="show-code-btn" class="show-code-btn" type="button"
+                <button id="show-code-btn" class="earn-tile show-code-btn" type="button"
+                        aria-label="Show earn code"
                         aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
-                  <span class="scb-icon" aria-hidden="true">
+                  <span class="et-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <rect x="3" y="3" width="7" height="7" rx="1.6" />
                       <rect x="14" y="3" width="7" height="7" rx="1.6" />
@@ -413,47 +430,42 @@
                       <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
                     </svg>
                   </span>
-                  <span class="scb-text">
-                    <span class="scb-title">Show earn code</span>
-                    <span class="scb-sub">Have it scanned at the counter</span>
-                  </span>
-                  <span class="scb-arrow" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M6 14.5 12 8.5l6 6" />
-                    </svg>
-                  </span>
+                  <!-- aria-hidden because the button already has its full name
+                       from aria-label; without this a screen reader reads the
+                       abbreviation after the sentence it abbreviates. Same on
+                       the two tiles below. -->
+                  <span class="et-title" aria-hidden="true">Earn code</span>
                 </button>
 
                 <!-- The other way in: you already paid and walked off without
                      showing the code, so the paper receipt becomes the proof.
                      Opens the receipt sheet: photo → server OCR → points. -->
-                <button id="scan-receipt-btn" class="scan-receipt-btn" type="button"
+                <button id="scan-receipt-btn" class="earn-tile scan-receipt-btn" type="button"
+                        aria-label="Scan a receipt"
                         aria-haspopup="dialog" aria-expanded="false" aria-controls="receipt-modal">
-                  <span class="srb-icon" aria-hidden="true">
+                  <span class="et-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <!-- receipt with the torn bottom edge, two lines of print -->
                       <path d="M6 2.8h12v18.4l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z" />
                       <path d="M9.4 8.4h5.2M9.4 12.4h5.2" />
                     </svg>
                   </span>
-                  <span class="srb-text">
-                    <span class="srb-title">Scan a receipt</span>
-                    <span class="srb-sub">Already paid? Snap it for points</span>
-                  </span>
-                  <span class="srb-arrow" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M9.5 6 15.5 12l-6 6" />
-                    </svg>
-                  </span>
+                  <span class="et-title" aria-hidden="true">Receipt</span>
                 </button>
 
                 <!-- The third way to earn: bring someone. Hidden unless a
                      referral program is actually running (loadReferral decides),
                      because a button promising a bonus nobody will be paid is
                      worse than no button. Tapping it hands the share link to the
-                     OS share sheet, or copies it where there isn't one. -->
-                <button id="invite-btn" class="scan-receipt-btn invite-btn" type="button" hidden>
-                  <span class="srb-icon" aria-hidden="true">
+                     OS share sheet, or copies it where there isn't one.
+
+                     The aria-label here is a placeholder: loadReferral rewrites
+                     it with the live line ("2 joined · 1 yet to buy anything")
+                     at the same moment it unhides the tile, so this wording is
+                     only ever the name of a button nobody can reach. -->
+                <button id="invite-btn" class="earn-tile invite-btn" type="button"
+                        aria-label="Invite a friend" hidden>
+                  <span class="et-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <!-- one person, plus a second being added -->
                       <path d="M9.5 11.4a3.6 3.6 0 1 0 0-7.2 3.6 3.6 0 0 0 0 7.2z" />
@@ -461,15 +473,7 @@
                       <path d="M18.6 8.2v5.2M21.2 10.8H16" />
                     </svg>
                   </span>
-                  <span class="srb-text">
-                    <span class="srb-title">Invite a friend</span>
-                    <span id="invite-sub" class="srb-sub">You both get points</span>
-                  </span>
-                  <span class="srb-arrow" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M9.5 6 15.5 12l-6 6" />
-                    </svg>
-                  </span>
+                  <span class="et-title" aria-hidden="true">Invite</span>
                 </button>
               </div>
 

@@ -5087,7 +5087,14 @@ async function loadReferral() {
   } else {
     sub = `${joined} joined · ${earned} points earned`;
   }
-  $('invite-sub').textContent = sub;
+  // The tile has no room for this line and no sheet to move it into — tapping
+  // goes straight to the OS share sheet — so it becomes the button's accessible
+  // name instead of a subtitle. Rewritten here rather than left in the markup
+  // because every one of these sentences is live state, and a stale "You both
+  // get points" announced over "2 joined · 1 yet to buy anything" is worse than
+  // no line at all. Set BEFORE unhiding, so the tile is never reachable under
+  // the placeholder name.
+  btn.setAttribute('aria-label', `Invite a friend — ${sub}`);
   btn.hidden = false;
 }
 
