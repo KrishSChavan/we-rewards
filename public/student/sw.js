@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v60';   // v60: Activity filters by spot (a chip row built from the rows that arrived) and pages back 30 days at a time with "Load older"
+const CACHE = 'werewards-v61';   // v61: boot names the script that didn't load instead of dying on it; the boot guard recognises more engines' wording for a parse failure (app.js + boot-guard.js)
+// v60: Activity filters by spot (a chip row built from the rows that arrived) and pages back 30 days at a time with "Load older"
 // v59: the map entry point is a labelled "Map 🗺️" pill; a spot's screen gets a pinned "Show in map" bar that opens the map on that spot's pin
 // v58: Spots tab (searchable directory + saved spots); Home carousel is Recent spots / Recommended; #vendor moved out of the tab track to an overlay so it slides in over any tab
 // v51: receipt scans go through the AI reader (forgery check + extraction), tesseract as fallback

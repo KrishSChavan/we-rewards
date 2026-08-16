@@ -499,16 +499,25 @@ h1, h3 { margin: 0; }
 .poster-meta { color: var(--muted); font-size: 0.75rem; }
 .poster-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
-/* ---------- students (roster + detail dialog) ---------- */
-.student-search { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.85rem; }
-.student-q {
-  flex: 1 1 auto; min-width: 0; font: inherit; font-size: 0.9rem;
+/* ---------- shared list tools (filter + paging) ----------
+   One row above a list: its filter and the Clear that empties it. The count sits
+   in the card head with the other counts, and Show more goes under the list, so
+   this row only ever holds those two controls. It wraps anyway: a 360px card
+   cannot hold a usable input and a button side by side. Started life as the
+   students roster's own search row, which is why the declarations are identical. */
+.list-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; }
+.list-q {
+  flex: 1 1 14rem; min-width: 0; font: inherit; font-size: 0.9rem;
   padding: 0.55rem 0.7rem; border-radius: 10px;
   background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
 }
-.student-q::placeholder { color: var(--muted); }
-.student-q:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.list-q::placeholder { color: var(--muted); }
+.list-q:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Below .btn-compact (which zeroes every margin) on purpose: same specificity,
+   so source order is what keeps a Show more off the last row of its list. */
+.list-more { margin-top: 0.75rem; }
 
+/* ---------- students (roster + detail dialog) ---------- */
 .student-list { display: grid; gap: 0.4rem; margin-top: 0.75rem; }
 /* Each row is a button: the whole row opens that student's card. */
 .student-row {
@@ -526,7 +535,6 @@ h1, h3 { margin: 0; }
    which shrinks and ellipsizes; a text line out here would pin the row wider
    than a phone (flex items don't shrink below their content). */
 .student-pts { font-weight: 800; font-size: 0.9rem; flex-shrink: 0; white-space: nowrap; }
-#students-more { margin-top: 0.75rem; }
 
 /* The detail dialog is taller than the other cards and read-only, so it scrolls
    inside itself rather than pushing the overlay's grid centring around. */

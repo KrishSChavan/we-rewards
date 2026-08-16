@@ -14,6 +14,19 @@ let applications = [];  // pending vendor applications (the Applications tab)
 let incentives = [];    // operator-created deals (the Incentives tab)
 let referrals = [];     // newest referrals, both sides named
 let grants = [];        // the community-point payout ledger
+let errors = [];        // the page(s) of the error log pulled so far
+// Rows the server has for the three lists it pages, which is not the same as the
+// number of rows loaded — that gap is what "Show more (N left)" counts.
+let errorsTotal = 0;
+let referralsTotal = 0;
+let grantsTotal = 0;
+// One filter-and-page header per list, built in wireLists() once the shell is in
+// the DOM. Null until then: nothing renders before boot has run.
+let vendorTools = null;
+let appTools = null;
+let errorTools = null;
+let refTools = null;
+let grantTools = null;
 let poster = null;      // the published scan-here QR file, or null
 let pendingPoster = null; // a file chosen but not published yet
 let vapidKey = null;    // server's public VAPID key; null = push disabled
@@ -21,11 +34,54 @@ let pushEndpoint = null;
 let pushInitDone = false;
 const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now" is tapped
 
+// Mutually exclusive views under one topbar; `hidden` is the source of truth
+// (same convention as the #login/#dash panels). Driven off one list so adding a
+// tab is adding its name here plus the matching #tab-/#view- ids in the markup.
+// Up here rather than beside setView() because crashContext() reads it to say
+// which view was open, and boot() can file a report while this file is still
+// evaluating — declared below the boot IIFE it would be in its temporal dead
+// zone at that moment, and the throw is swallowed, so the report would quietly
+// arrive missing the context it exists for.
+const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'students'];
+
 const $ = (id) => document.getElementById(id);
 
 /* ---------- boot ---------- */
 
+// The globals boot() dereferences without asking first, and the <script> at the
+// foot of index.html that defines each. supabase-js is the only one: this app
+// vendors nothing else.
+const BOOT_SCRIPTS = { supabase: '/admin/supabase.js' };
+
+// #login and every #view-* section ship `hidden`, so a boot that dies before
+// render() leaves this page blank with nothing to read. Put the sign-in card
+// back carrying the reason.
+function bootFailed(message) {
+  const el = $('login-error');
+  el.textContent = message;
+  el.hidden = false;
+  $('login').hidden = false;
+}
+
 (async function boot() {
+  // Before the first line that could throw. This used to sit ~80 lines down,
+  // after the whole wiring block, which meant a boot that died on the
+  // createClient below reported NOTHING: the listeners that would have filed it
+  // were installed by code the throw had already skipped.
+  installErrorReporter();
+
+  // Each <script> on the page is its own fetch, and any one of them can go
+  // missing: a dropped connection, a 5xx from the dyno, a crawler's renderer
+  // deciding it has fetched enough for one page. The global is then simply
+  // absent, and the first line below that touches it throws a TypeError naming
+  // admin.js and never naming the file that actually went missing.
+  const missing = Object.entries(BOOT_SCRIPTS).filter(([g]) => !window[g]).map(([, file]) => file);
+  if (missing.length) {
+    reportClientError(`boot aborted: ${missing.join(', ')} did not load`);
+    bootFailed('Couldn’t load the dashboard. Check the connection and reload this page.');
+    return;
+  }
+
   const pub = await (await fetch('/api/public-config')).json();
   // Distinct storage key so signing into the admin dash never collides with a
   // student or vendor session on the same device.
@@ -105,8 +161,7 @@ const $ = (id) => document.getElementById(id);
   $('poster-remove').addEventListener('click', removePoster);
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
-
-  installErrorReporter();
+  wireLists();   // the five filter/paging headers, before anything renders
 
   sb.auth.onAuthStateChange((_e, session) => render(session));
   const { data } = await sb.auth.getSession();
@@ -208,10 +263,8 @@ async function loadAll() {
 
 /* ---------- view tabs ---------- */
 
-// Mutually exclusive views under one topbar; `hidden` is the source of truth
-// (same convention as the #login/#dash panels). Driven off one list so adding a
-// tab is adding its name here plus the matching #tab-/#view- ids in the markup.
-const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'students'];
+// VIEWS is declared with the module state at the top of this file, not here —
+// see the note there.
 
 function setView(view) {
   const target = VIEWS.includes(view) ? view : 'dashboard';
@@ -272,11 +325,13 @@ function renderOverview(d) {
 // The top "Errors · 24h" tile: 24h count, all-time subtotal, and a red alert
 // border when there's anything in the last 24h. Split out so a log deletion can
 // refresh just this tile (via refreshErrorCard) without rebuilding the dashboard.
-function renderErrorCard(errors) {
-  const err24 = errors?.last24h ?? 0;
+// `counts`, not `errors`: the module-level `errors` is the log's loaded rows,
+// and this takes the server's count block, which is a different thing entirely.
+function renderErrorCard(counts) {
+  const err24 = counts?.last24h ?? 0;
   $('tot-errors').textContent = num(err24);
   $('tot-errors-card').classList.toggle('is-alert', err24 > 0);
-  $('tot-errors-sub').textContent = `${num(errors?.total)} all-time`;
+  $('tot-errors-sub').textContent = `${num(counts?.total)} all-time`;
 }
 
 // Re-pull the error counts after a delete so the top tile stays in sync with the
@@ -320,6 +375,232 @@ function renderTopVendors(list) {
     </div>`).join('');
 }
 
+/* ---------- shared list tools: filter, count, paging ----------
+
+   Five operator lists — vendors, applications, the error log, referrals and the
+   payout ledger — used to render every row they were handed, with no way to find
+   one and no way to reach past the newest page. This is the header they now
+   share: a text filter, a count that says what it is counting, and, on the three
+   logs the server pages, a Show more. Each list keeps its own row renderer, so
+   nothing about a row has changed; only the chrome around it is shared.
+
+   The filter searches what the browser has LOADED. For vendors and applications
+   that is the whole table (both routes return everything), so it is exact. For
+   the three logs it is the pages pulled so far, which is why their count names
+   the loaded set and Show more sits directly underneath: the operator can always
+   widen what is being searched, and is never told "no match" when the truthful
+   answer is "not in the part I have". Searching those server-side instead would
+   be more than a query parameter, because the names being searched on referrals
+   and payouts live in profiles, not in either table. */
+
+const LIST_DEBOUNCE = 200;   // ms of quiet after a keystroke before re-filtering
+
+// "3 of 50" beats "3": the second number is what tells the operator whether a
+// miss means "not here" or "not here yet".
+function listCountText({ shown, loaded, total, filtered }) {
+  const partial = total > loaded;
+  if (filtered) return `${num(shown)} of ${num(loaded)}${partial ? ` loaded · ${num(total)} total` : ''}`;
+  return partial ? `${num(loaded)} of ${num(total)}` : `${num(loaded)} shown`;
+}
+
+// A list's own error line: shown when a page fails to load, hidden again by the
+// render that follows the next success.
+function showListError(id, message) {
+  const el = $(id);
+  el.textContent = message;
+  el.hidden = false;
+}
+
+/**
+ * Wire one list's header and hand back the handle its renderers call.
+ *
+ * cfg:
+ *   key         id prefix — <key>-q, <key>-q-clear, <key>-count, <key>-more
+ *   listId      the row container
+ *   noun        singular, for the "no match" line ("No vendor matches…")
+ *   rows()      every row loaded, in display order
+ *   text(row)   that row as one searchable string
+ *   paint(rows) the list's own renderer, given the rows that survived the filter
+ *   empty()     HTML for "nothing here at all" (author-written, hence innerHTML)
+ *   count()     optional: the unfiltered count text, where a list has a better
+ *               one than "N shown" (vendors' on/off split, the apps queue)
+ *   total()     optional: how many rows the server has, when it pages
+ *   loadMore()  optional: fetch the next page; resolves falsy if it failed
+ */
+function listTools(cfg) {
+  const input = $(`${cfg.key}-q`);
+  const clearBtn = $(`${cfg.key}-q-clear`);
+  const countEl = $(`${cfg.key}-count`);
+  const moreBtn = cfg.loadMore ? $(`${cfg.key}-more`) : null;
+  const wrap = $(cfg.listId);
+  let query = '';
+  let timer = null;
+  let busy = false;
+
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const next = input.value.trim();
+      if (next === query) return;   // a trailing space is not a new search
+      query = next;
+      clearBtn.hidden = !query;
+      tools.paint();
+    }, LIST_DEBOUNCE);
+  });
+
+  clearBtn.addEventListener('click', () => {
+    clearTimeout(timer);            // a pending keystroke must not re-apply itself
+    input.value = '';
+    clearBtn.hidden = true;
+    query = '';
+    tools.paint();
+    input.focus();
+  });
+
+  if (moreBtn) {
+    moreBtn.addEventListener('click', async () => {
+      if (busy) return;             // one page in flight at a time
+      busy = true;
+      moreBtn.disabled = true;
+      const label = moreBtn.textContent;
+      moreBtn.textContent = 'Loading…';
+      try {
+        await cfg.loadMore();       // repaints through the list's own render fn
+      } finally {
+        busy = false;
+        moreBtn.disabled = false;
+        // A successful page has already relabelled the button with the new
+        // remainder; only a failed one is still sitting on "Loading…".
+        if (moreBtn.textContent === 'Loading…') moreBtn.textContent = label;
+      }
+    });
+  }
+
+  const tools = {
+    // Every term has to appear somewhere in the row, so "casey paid" narrows the
+    // result the way an operator expects rather than widening it.
+    visible() {
+      const rows = cfg.rows();
+      if (!query) return rows;
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      return rows.filter((row) => {
+        const hay = cfg.text(row).toLowerCase();
+        return terms.every((term) => hay.includes(term));
+      });
+    },
+
+    // The whole list: rows through the list's own renderer, then the count and
+    // the pager. Every render* function ends here.
+    paint() {
+      const loaded = cfg.rows();
+      const shown = tools.visible();
+      if (shown.length) {
+        cfg.paint(shown);
+      } else if (query) {
+        wrap.innerHTML = '';
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.textContent = tools.total() > loaded.length
+          ? `No ${cfg.noun} matches that search in the ${num(loaded.length)} loaded. Show more to look further back.`
+          : `No ${cfg.noun} matches that search.`;
+        wrap.appendChild(p);
+      } else {
+        wrap.innerHTML = cfg.empty();
+      }
+      tools.refresh(shown.length);
+    },
+
+    total() { return cfg.total ? cfg.total() : cfg.rows().length; },
+
+    // Count and pager only. For callers that have already changed the DOM
+    // themselves (a dismissed error, an accepted application) and must not have
+    // the list repainted out from under the row they just removed.
+    refresh(shownCount) {
+      const loaded = cfg.rows().length;
+      const total = tools.total();
+      const shown = shownCount == null ? tools.visible().length : shownCount;
+      if (!loaded) countEl.textContent = '';
+      else if (!query && cfg.count) countEl.textContent = cfg.count();
+      else countEl.textContent = listCountText({ shown, loaded, total, filtered: !!query });
+
+      if (moreBtn) {
+        const left = Math.max(0, total - loaded);
+        moreBtn.hidden = left <= 0;
+        moreBtn.textContent = `Show more (${num(left)} left)`;
+      }
+    },
+  };
+
+  return tools;
+}
+
+/** The five headers, built once the shell is in the DOM (see boot). */
+function wireLists() {
+  vendorTools = listTools({
+    key: 'vendors',
+    listId: 'vendor-list',
+    noun: 'vendor',
+    rows: () => vendors,
+    text: (v) => `${v.name} ${v.slug} ${v.address ?? ''}`,
+    paint: paintVendorRows,
+    empty: () => '<p class="muted">No vendors yet.</p>',
+    count: vendorCountText,
+  });
+
+  appTools = listTools({
+    key: 'apps',
+    listId: 'app-list',
+    noun: 'application',
+    rows: () => applications,
+    text: (a) => [a.business_name, a.contact_name, a.email, a.phone, a.address, a.message]
+      .filter(Boolean).join(' '),
+    paint: paintApplicationRows,
+    empty: () => '<p class="muted">No pending applications. Share <strong>/join</strong> with prospective vendors.</p>',
+    count: () => (applications.length ? `${applications.length} pending` : ''),
+  });
+
+  errorTools = listTools({
+    key: 'errors',
+    listId: 'error-list',
+    noun: 'error',
+    rows: () => errors,
+    // What an operator types is the message they can see, the path, the source
+    // badge, or the person who hit it — so all four are searchable, plus the
+    // plain-language action the row shows in place of the raw path.
+    text: (e) => [e.source, e.message, e.method, e.path, e.status, e.actor?.email, describeAction(e)]
+      .filter(Boolean).join(' '),
+    paint: paintErrorRows,
+    empty: () => `<p class="muted">No errors logged${errorSource ? ` for “${escapeHtml(errorSource)}”` : ''}. 🎉</p>`,
+    total: () => errorsTotal,
+    loadMore: () => loadErrors({ append: true }),
+  });
+
+  refTools = listTools({
+    key: 'ref',
+    listId: 'referral-list',
+    noun: 'referral',
+    rows: () => referrals,
+    text: (r) => [r.referrer, r.friend, r.code, r.status].filter(Boolean).join(' '),
+    paint: paintReferralRows,
+    empty: () => `<p class="muted">No referrals yet. They appear here as soon as a student uses someone's invite link.</p>`,
+    total: () => referralsTotal,
+    loadMore: () => loadReferrals({ append: true }),
+  });
+
+  grantTools = listTools({
+    key: 'grants',
+    listId: 'grant-list',
+    noun: 'payout',
+    rows: () => grants,
+    text: (g) => [g.student, GRANT_KINDS[g.kind] ?? g.kind, g.reason, g.grantedBy]
+      .filter(Boolean).join(' '),
+    paint: paintGrantRows,
+    empty: () => '<p class="muted">Nothing paid out yet.</p>',
+    total: () => grantsTotal,
+    loadMore: () => loadGrants({ append: true }),
+  });
+}
+
 /* ---------- vendor on/off control ---------- */
 
 async function loadVendors() {
@@ -359,18 +640,16 @@ const vendorInfoHtml = (v) =>
   `<span class="vendor-meta">${escapeHtml(v.slug)} · ${num(v.points_per_dollar)} pts/$</span>`;
 
 function renderVendors() {
-  const wrap = $('vendor-list');
-  const countEl = $('vendors-count');
   $('vendor-error').hidden = true;
-  if (!vendors.length) {
-    countEl.textContent = '';
-    wrap.innerHTML = `<p class="muted">No vendors yet.</p>`;
-    return;
-  }
-  countEl.textContent = vendorCountText();
+  vendorTools.paint();
+}
 
+// Rows only. The count, the empty state and the filter belong to the shared list
+// tools, which hand this the vendors that survived the filter.
+function paintVendorRows(list) {
+  const wrap = $('vendor-list');
   wrap.innerHTML = '';
-  vendors.forEach((v) => {
+  list.forEach((v) => {
     const row = document.createElement('div');
     row.className = 'vendor-row';
 
@@ -518,7 +797,7 @@ async function toggleVendor(v, toggle, row) {
     // too. Repaint just this row and refresh the count — focus stays on the switch.
     Object.assign(v, updated);
     paintVendorRow(row, toggle, v);
-    $('vendors-count').textContent = vendorCountText();
+    vendorTools.refresh();
     toggle.disabled = false;
   } catch {
     showVendorError();
@@ -545,11 +824,12 @@ async function deleteVendor(v, btn, row) {
     if (res.status === 403) return denyAccess();
     if (!res.ok) { showVendorError(); btn.disabled = false; return; }
     // Drop it from the in-memory roster and the DOM, then refresh the count. If
-    // that was the last vendor, re-render to show the "No vendors yet." state.
+    // that leaves nothing on screen, re-render for the empty (or "no match")
+    // state; otherwise leave the surviving rows exactly as they are.
     vendors = vendors.filter((x) => x.id !== v.id);
     row.remove();
-    if (!vendors.length) renderVendors();
-    else $('vendors-count').textContent = vendorCountText();
+    if (!vendorTools.visible().length) renderVendors();
+    else vendorTools.refresh();
   } catch {
     showVendorError();
     btn.disabled = false;
@@ -1184,13 +1464,14 @@ async function loadApplications() {
   renderApplications();
 }
 
-// The red bubble on the Applications tab: pending count, hidden at zero.
+// The red bubble on the Applications tab: pending count, hidden at zero. Always
+// the whole queue, never the filtered view — the badge is what tells the operator
+// there is work waiting on a tab they are not looking at. The count beside the
+// card title is the shared list tools' job.
 function updateAppsBadge() {
   const badge = $('apps-badge');
   badge.textContent = applications.length > 99 ? '99+' : String(applications.length);
   badge.hidden = applications.length === 0;
-  $('apps-count').textContent = applications.length
-    ? `${applications.length} pending` : '';
 }
 
 function showAppsError(msg) {
@@ -1204,15 +1485,15 @@ function showAppsError(msg) {
 // check here keeps a bad row from ever becoming a live URL.
 function renderApplications() {
   updateAppsBadge();
-  const wrap = $('app-list');
   $('apps-error').hidden = true;
-  wrap.innerHTML = '';
-  if (!applications.length) {
-    wrap.innerHTML = `<p class="muted">No pending applications. Share <strong>/join</strong> with prospective vendors.</p>`;
-    return;
-  }
+  appTools.paint();
+}
 
-  applications.forEach((a) => {
+// Rows only — see paintVendorRows for why the chrome isn't here.
+function paintApplicationRows(list) {
+  const wrap = $('app-list');
+  wrap.innerHTML = '';
+  list.forEach((a) => {
     const row = document.createElement('div');
     row.className = 'app-row';
 
@@ -1297,7 +1578,10 @@ function removeApplicationRow(a, row) {
   applications = applications.filter((x) => x.id !== a.id);
   row.remove();
   updateAppsBadge();
-  if (!applications.length) renderApplications();
+  // Repaint only when nothing is left on screen. Rebuilding the list would tear
+  // out the Accept/Reject buttons of a neighbouring row mid-decision.
+  if (!appTools.visible().length) renderApplications();
+  else appTools.refresh();
 }
 
 // Accept = onboard now: the server creates the login (from the password chosen
@@ -1404,20 +1688,55 @@ async function loadIncentives() {
   renderIncentives();
 }
 
-async function loadReferrals() {
-  const res = await authFetch('/api/admin/referrals');
-  if (res.status === 403) return denyAccess();
-  if (!res.ok) return;
-  referrals = await res.json();
-  renderReferrals();
+/* Both ledgers are loaded a page at a time, newest first, and both are appended
+   to rather than replaced when the operator asks for more. Each request carries
+   a sequence number and a reply that isn't the newest is dropped: "Settle now"
+   reloads the referral list from the top, and without the guard a page still in
+   flight from a Show more could land afterwards and staple stale rows onto a
+   list that has already been rebuilt. Same guard, same reason, as loadStudents. */
+const REFERRAL_PAGE = 50;
+const GRANT_PAGE = 50;
+let referralReqSeq = 0;
+let grantReqSeq = 0;
+
+async function loadReferrals({ append = false } = {}) {
+  const seq = ++referralReqSeq;
+  const offset = append ? referrals.length : 0;
+  try {
+    const res = await authFetch(`/api/admin/referrals?limit=${REFERRAL_PAGE}&offset=${offset}`);
+    if (res.status === 403) { denyAccess(); return false; }
+    if (!res.ok) throw new Error(`referrals ${res.status}`);
+    const d = await res.json();
+    if (seq !== referralReqSeq) return false;         // a newer load already won
+    referrals = append ? referrals.concat(d.referrals ?? []) : (d.referrals ?? []);
+    referralsTotal = d.total ?? referrals.length;
+    renderReferrals();
+    return true;
+  } catch {
+    if (seq !== referralReqSeq) return false;
+    showListError('ref-error', 'Couldn’t load referrals. Check your connection and try again.');
+    return false;
+  }
 }
 
-async function loadGrants() {
-  const res = await authFetch('/api/admin/grants');
-  if (res.status === 403) return denyAccess();
-  if (!res.ok) return;
-  grants = await res.json();
-  renderGrants();
+async function loadGrants({ append = false } = {}) {
+  const seq = ++grantReqSeq;
+  const offset = append ? grants.length : 0;
+  try {
+    const res = await authFetch(`/api/admin/grants?limit=${GRANT_PAGE}&offset=${offset}`);
+    if (res.status === 403) { denyAccess(); return false; }
+    if (!res.ok) throw new Error(`grants ${res.status}`);
+    const d = await res.json();
+    if (seq !== grantReqSeq) return false;
+    grants = append ? grants.concat(d.grants ?? []) : (d.grants ?? []);
+    grantsTotal = d.total ?? grants.length;
+    renderGrants();
+    return true;
+  } catch {
+    if (seq !== grantReqSeq) return false;
+    showListError('grants-error', 'Couldn’t load the payout log. Check your connection and try again.');
+    return false;
+  }
 }
 
 /** The program panel for a kind shows the ACTIVE one if there is one, else the
@@ -1729,17 +2048,15 @@ const REFERRAL_STATUS = {
 };
 
 function renderReferrals() {
-  const wrap = $('referral-list');
   $('ref-error').hidden = true;
+  refTools.paint();
+}
+
+// Rows only — see paintVendorRows for why the chrome isn't here.
+function paintReferralRows(list) {
+  const wrap = $('referral-list');
   wrap.innerHTML = '';
-  $('ref-count').textContent = referrals.length ? `${referrals.length} shown` : '';
-
-  if (!referrals.length) {
-    wrap.innerHTML = `<p class="muted">No referrals yet. They appear here as soon as a student uses someone's invite link.</p>`;
-    return;
-  }
-
-  referrals.forEach((r) => {
+  list.forEach((r) => {
     const row = document.createElement('div');
     row.className = 'referral-row';
 
@@ -1868,16 +2185,15 @@ const GRANT_KINDS = {
 };
 
 function renderGrants() {
+  $('grants-error').hidden = true;
+  grantTools.paint();
+}
+
+// Rows only — see paintVendorRows for why the chrome isn't here.
+function paintGrantRows(list) {
   const wrap = $('grant-list');
   wrap.innerHTML = '';
-  $('grants-count').textContent = grants.length ? `${grants.length} shown` : '';
-
-  if (!grants.length) {
-    wrap.innerHTML = `<p class="muted">Nothing paid out yet.</p>`;
-    return;
-  }
-
-  grants.forEach((g) => {
+  list.forEach((g) => {
     const row = document.createElement('div');
     row.className = 'grant-row';
 
@@ -2555,15 +2871,36 @@ function setErrorSource(src) {
   errorSource = src || '';
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.classList.toggle('is-active', (b.dataset.src || '') === errorSource));
-  loadErrors();
+  loadErrors();   // a different source is a different log: start from its top
 }
 
-async function loadErrors() {
-  const q = errorSource ? `?source=${encodeURIComponent(errorSource)}&limit=100` : '?limit=100';
-  const res = await authFetch('/api/admin/errors' + q);
-  if (res.status === 403) return denyAccess(); // safety net; overview already gates
-  if (!res.ok) return;
-  renderErrors(await res.json());
+// One page of the log. 100 rows is what this dashboard has always loaded; what
+// is new is that there is now a way to ask for the next 100 rather than being
+// silently capped at whatever the newest page happened to hold.
+const ERROR_PAGE = 100;
+let errorReqSeq = 0;
+
+async function loadErrors({ append = false } = {}) {
+  const seq = ++errorReqSeq;
+  const offset = append ? errors.length : 0;
+  const src = errorSource ? `&source=${encodeURIComponent(errorSource)}` : '';
+  try {
+    const res = await authFetch(`/api/admin/errors?limit=${ERROR_PAGE}&offset=${offset}${src}`);
+    if (res.status === 403) { denyAccess(); return false; }  // safety net; overview already gates
+    if (!res.ok) throw new Error(`errors ${res.status}`);
+    const d = await res.json();
+    // Dropped if the operator switched source (or hit refresh) while this was in
+    // flight — otherwise a page of "vendor" errors appends to the "server" list.
+    if (seq !== errorReqSeq) return false;
+    errors = append ? errors.concat(d.errors ?? []) : (d.errors ?? []);
+    errorsTotal = d.total ?? errors.length;
+    renderErrors();
+    return true;
+  } catch {
+    if (seq !== errorReqSeq) return false;
+    showListError('errors-error', 'Couldn’t load the error log. Check your connection and try again.');
+    return false;
+  }
 }
 
 /* What a failing request was FOR, in the operator's language. A row that reads
@@ -2707,14 +3044,19 @@ function fact(label, value, cls) {
   return `<div class="err-fact${cls ? ` ${cls}` : ''}"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
 }
 
-function renderErrors(items) {
+function renderErrors() {
+  $('errors-error').hidden = true;
+  errorTools.paint();
+}
+
+// Rows only — see paintVendorRows for why the chrome isn't here.
+function paintErrorRows(items) {
   const wrap = $('error-list');
-  if (!items.length) {
-    wrap.innerHTML = `<p class="muted">No errors logged${errorSource ? ` for “${errorSource}”` : ''}. 🎉</p>`;
-    return;
-  }
-  // How often the same failure appears in what we just loaded. One row saying
+  // How often the same failure appears in what is on screen. One row saying
   // "×14" is the difference between a fluke and something actively broken.
+  // Counted over the rows being shown, so the number keeps matching the card's
+  // own wording ("×N marks a failure that appears more than once in this view")
+  // when a filter is narrowing the view.
   const repeats = new Map();
   items.forEach((e) => {
     const k = `${e.source}|${e.message}`;
@@ -2818,9 +3160,15 @@ async function deleteError(id, row, ev) {
     const res = await authFetch(`/api/admin/errors/${id}`, { method: 'DELETE' });
     if (res.status === 403) return denyAccess();
     if (!res.ok) { btn.disabled = false; return; }
+    // Drop it from the loaded page and the DOM. The row is removed rather than
+    // the list repainted so that any other row the operator has expanded stays
+    // open; the total comes down with it so "Show more (N left)" stays honest.
+    errors = errors.filter((x) => x.id !== id);
+    errorsTotal = Math.max(0, errorsTotal - 1);
     row.remove();
     refreshErrorCard();                                 // keep the top tile in sync
-    if (!$('error-list').children.length) loadErrors(); // re-fetch → "No errors" state
+    if (!errorTools.visible().length) renderErrors();   // repaint → empty state
+    else errorTools.refresh();
   } catch {
     btn.disabled = false;
   }
@@ -2861,17 +3209,49 @@ function crashContext(extra) {
   return ctx;
 }
 
+// Module scope rather than a closure inside installErrorReporter(), because
+// boot() files one of these by hand when it finds a script missing (see there).
+//
+// Plain fetch, not authFetch: this now runs before boot() has built `sb`, and
+// authFetch dereferences it unconditionally. /api/client-error is
+// unauthenticated anyway (the token is only ever used to attribute a report to
+// a user), so an anonymous post is a slightly thinner row, not a lost one.
+async function reportClientError(message, stack, context) {
+  let auth = {};
+  try {
+    const { data } = (await sb?.auth?.getSession?.()) ?? {};
+    if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
+  } catch { /* not signed in yet */ }
+  fetch('/api/client-error', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify({ source: 'admin', message, stack, url: location.pathname, context: crashContext(context) }),
+  }).catch(() => {});
+}
+
+// An error thrown inside a CROSS-ORIGIN script reaches this handler stripped to
+// the bare string "Script error." with line 0, column 0 and no `error` object:
+// browsers will not leak another origin's source, and there is no way to opt
+// back in from this side. Every script this page loads is same-origin, so one of
+// these is never our code — it is a content blocker, an extension, or an in-app
+// browser's injected wrapper throwing in its own script. The report would carry
+// no message, no file, no line and no stack, which in this very dashboard is a
+// row that can only ever be read and closed again, so it is dropped rather than
+// filed.
+//
+// If our own bundles ever move to another origin (a CDN host), their real
+// errors would start arriving looking exactly like this — the fix then is
+// crossorigin="anonymous" on the tags plus Access-Control-Allow-Origin on the
+// responses, NOT loosening the test below.
+const isOpaqueCrossOriginError = (e) => /^script error\.?$/i.test(e.message || '') && !e.error;
+
 function installErrorReporter() {
-  const send = (message, stack, context) => {
-    authFetch('/api/client-error', {
-      method: 'POST',
-      body: JSON.stringify({ source: 'admin', message, stack, url: location.pathname, context: crashContext(context) }),
-    }).catch(() => {});
-  };
-  window.addEventListener('error', (e) =>
-    send(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno }));
+  window.addEventListener('error', (e) => {
+    if (isOpaqueCrossOriginError(e)) return;
+    reportClientError(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno });
+  });
   window.addEventListener('unhandledrejection', (e) =>
-    send(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
+    reportClientError(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
 }
 
 function escapeHtml(s) {

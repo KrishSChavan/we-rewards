@@ -104,19 +104,28 @@
       <div class="card" id="errors-card" tabindex="-1">
         <div class="card-head">
           <h3>Error log</h3>
-          <div class="err-filters">
-            <button class="err-filter is-active" data-src="">All</button>
-            <button class="err-filter" data-src="server">Server</button>
-            <button class="err-filter" data-src="student">Student</button>
-            <button class="err-filter" data-src="vendor">Vendor</button>
-            <button class="err-filter" data-src="admin">Admin</button>
+          <div class="card-head-actions">
+            <span id="errors-count" class="chart-max"></span>
+            <div class="err-filters">
+              <button class="err-filter is-active" data-src="">All</button>
+              <button class="err-filter" data-src="server">Server</button>
+              <button class="err-filter" data-src="student">Student</button>
+              <button class="err-filter" data-src="vendor">Vendor</button>
+              <button class="err-filter" data-src="admin">Admin</button>
+            </div>
           </div>
         </div>
         <div class="card-note-row">
           <p class="muted">Server 500s and client crashes, newest first. Tap a row to see what the request was for, who hit it, what it carried, and the stack — <strong>Copy details</strong> puts all of it on the clipboard. <strong>×N</strong> marks a failure that appears more than once in this view.</p>
           <button id="clear-errors-btn" class="btn-clear" type="button">Clear all</button>
         </div>
+        <div class="list-tools">
+          <input id="errors-q" class="list-q" type="search" placeholder="Search by message, page or person" autocomplete="off" spellcheck="false" aria-label="Search the error log" />
+          <button id="errors-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
+        </div>
+        <p id="errors-error" class="field-error" role="alert" hidden></p>
         <div id="error-list" class="error-list"></div>
+        <button id="errors-more" class="btn-ghost btn-compact list-more" type="button" hidden>Show more</button>
       </div>
 
       <!-- today -->
@@ -161,6 +170,10 @@
           </div>
         </div>
         <p class="muted"><strong>Add vendor</strong> onboards one on the spot, the same as accepting an application. <strong>Edit</strong> changes a vendor's name, its points rate, and its reward items. Toggle a vendor off to cut it off completely: hidden from students and its terminal is blocked. Points and history are kept, so turning it back on restores everything. <strong>Delete</strong> wipes a vendor and its data (logo, rewards, balances, login) for good; past transactions stay but show as a generic “Vendor”, and that can’t be undone.</p>
+        <div class="list-tools">
+          <input id="vendors-q" class="list-q" type="search" placeholder="Search by name, slug or address" autocomplete="off" spellcheck="false" aria-label="Search vendors" />
+          <button id="vendors-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
+        </div>
         <p id="vendor-error" class="field-error" role="alert" hidden></p>
         <div id="vendor-list" class="vendor-list"></div>
       </div>
@@ -182,13 +195,13 @@
           </div>
         </div>
         <p class="muted">Everyone who has signed up, newest first. Search by name or email (the whole roster is searched, not just what is loaded), then tap a student to see their points, visits, activity and account state. Read-only: nothing on this screen changes a balance.</p>
-        <div class="student-search">
-          <input id="student-q" class="student-q" type="search" placeholder="Search name or email" autocomplete="off" spellcheck="false" aria-label="Search students" />
+        <div class="list-tools">
+          <input id="student-q" class="list-q" type="search" placeholder="Search name or email" autocomplete="off" spellcheck="false" aria-label="Search students" />
           <button id="student-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
         </div>
         <p id="students-error" class="field-error" role="alert" hidden></p>
         <div id="student-list" class="student-list"></div>
-        <button id="students-more" class="btn-ghost btn-compact" type="button" hidden>Show more</button>
+        <button id="students-more" class="btn-ghost btn-compact list-more" type="button" hidden>Show more</button>
       </div>
     </div>
 
@@ -200,6 +213,10 @@
           <span id="apps-count" class="chart-max"></span>
         </div>
         <p class="muted">Applications from the public page at <strong>/join</strong>, oldest first. <strong>Accept</strong> onboards the vendor on the spot, so their terminal login works immediately with the password they chose. <strong>Reject</strong> permanently deletes the application and everything in it.</p>
+        <div class="list-tools">
+          <input id="apps-q" class="list-q" type="search" placeholder="Search by business, contact or email" autocomplete="off" spellcheck="false" aria-label="Search applications" />
+          <button id="apps-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
+        </div>
         <p id="apps-error" class="field-error" role="alert" hidden></p>
         <div id="app-list" class="app-list"></div>
       </div>
@@ -349,8 +366,13 @@
           </div>
         </div>
         <p class="muted"><strong>Waiting</strong> means the friend signed up but hasn't bought anything yet, so the referrer hasn't been paid. Settlement runs by itself every 45 seconds; <strong>Settle now</strong> just doesn't make you wait for it.</p>
+        <div class="list-tools">
+          <input id="ref-q" class="list-q" type="search" placeholder="Search by email, code or status" autocomplete="off" spellcheck="false" aria-label="Search referrals" />
+          <button id="ref-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
+        </div>
         <p id="ref-error" class="field-error" role="alert" hidden></p>
         <div id="referral-list" class="referral-list"></div>
+        <button id="ref-more" class="btn-ghost btn-compact list-more" type="button" hidden>Show more</button>
       </div>
 
       <!-- manual grant -->
@@ -388,7 +410,13 @@
           <span id="grants-count" class="chart-max"></span>
         </div>
         <p class="muted">Every community point this system has handed out, newest first. Automatic referral payouts show as <strong>system</strong>.</p>
+        <div class="list-tools">
+          <input id="grants-q" class="list-q" type="search" placeholder="Search by student, reason or kind" autocomplete="off" spellcheck="false" aria-label="Search the payout log" />
+          <button id="grants-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
+        </div>
+        <p id="grants-error" class="field-error" role="alert" hidden></p>
         <div id="grant-list" class="grant-list"></div>
+        <button id="grants-more" class="btn-ghost btn-compact list-more" type="button" hidden>Show more</button>
       </div>
     </div>
 

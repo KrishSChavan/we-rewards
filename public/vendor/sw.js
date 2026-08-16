@@ -63,7 +63,12 @@
 // v22: Settings split into three regions by save model — Your spot (batched,
 // with Save settings inside it), Access (staff PIN now self-saving, password,
 // sign out) and Downloads (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v22';
+// v23: a terminal whose supabase.js didn't arrive puts the sign-in card back
+// with the reason instead of showing a white screen, and the boot guard
+// recognises more engines' wording for a parse failure, so a counter iPad too
+// old to parse terminal.js is told so instead of being offered a Try again
+// button that can only fail again (terminal.js + boot-guard.js).
+const CACHE = 'werewards-terminal-v23';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

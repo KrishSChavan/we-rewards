@@ -77,6 +77,23 @@ export function validNewVendor(body) {
 }
 
 /**
+ * `?limit=&offset=` for one page of a list, clamped to something a server can
+ * answer. Shared by every paged operator list (students, errors, referrals,
+ * grants) so "Show more" means the same thing on all of them, and so no route
+ * can be talked into a whole-table read by a hand-typed URL.
+ *
+ * Anything unreadable falls back to the caller's default rather than 400ing: a
+ * missing or junk page number is a UI bug, and answering it with the first page
+ * keeps the operator looking at data instead of an error.
+ */
+export function pageParams(query, { def, max }) {
+  const q = query ?? {};
+  const limit = Math.min(max, Math.max(1, Math.floor(Number(q.limit) || def)));
+  const offset = Math.max(0, Math.floor(Number(q.offset) || 0));
+  return { limit, offset };
+}
+
+/**
  * GET /api/admin/overview
  * Platform-wide health for the operator: lifetime totals (vendors, students,
  * transactions), today / 7-day / 30-day activity (awards, redemptions, points,
@@ -1136,8 +1153,19 @@ router.delete('/incentives/:id', async (req, res, next) => {
   }
 });
 
+/* ---------- the two ledgers behind the Incentives tab ----------
+   Both are logs that only ever grow, so both are paged the same way the roster
+   is: one page per request, newest first, with an exact `total` so the dashboard
+   can say how much it is NOT showing rather than leave the operator guessing
+   whether the last row is the last row. */
+const REFERRAL_PAGE = 50;
+const REFERRAL_PAGE_MAX = 200;
+const GRANT_PAGE = 50;
+const GRANT_PAGE_MAX = 200;
+
 /**
- * GET /api/admin/referrals — the newest referrals with both sides named.
+ * GET /api/admin/referrals?limit=&offset= — the newest referrals with both sides
+ * named, one page at a time.
  * Two follow-up reads rather than an embedded join: referrals has two FKs to
  * profiles, so PostgREST can't tell which relationship an embed means without
  * naming the constraint, and naming it here would couple this route to a
@@ -1145,14 +1173,18 @@ router.delete('/incentives/:id', async (req, res, next) => {
  */
 router.get('/referrals', async (req, res, next) => {
   try {
-    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
-    const { data: rows, error } = await supabaseAdmin
+    const { limit, offset } = pageParams(req.query, { def: REFERRAL_PAGE, max: REFERRAL_PAGE_MAX });
+    const { data: rows, error, count } = await supabaseAdmin
       .from('referrals')
-      .select('id, referrer_id, friend_id, code, status, friend_points, referrer_points, qualified_at, paid_at, created_at')
+      .select(
+        'id, referrer_id, friend_id, code, status, friend_points, referrer_points, qualified_at, paid_at, created_at',
+        { count: 'exact' },
+      )
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .range(offset, offset + limit - 1);
     if (error) throw error;
-    if (!rows?.length) return res.json([]);
+    const total = count ?? rows?.length ?? 0;
+    if (!rows?.length) return res.json({ referrals: [], total, offset, limit });
 
     const ids = [...new Set(rows.flatMap((r) => [r.referrer_id, r.friend_id]))];
     const { data: people, error: pErr } = await supabaseAdmin
@@ -1172,19 +1204,24 @@ router.get('/referrals', async (req, res, next) => {
     if (gErr) throw gErr;
     const friendPaid = new Set((paid ?? []).map((g) => g.ref_id));
 
-    res.json(rows.map((r) => ({
-      id: r.id,
-      code: r.code,
-      status: r.status,
-      referrer: who.get(r.referrer_id)?.email ?? '(deleted)',
-      friend: who.get(r.friend_id)?.email ?? '(deleted)',
-      friendPoints: r.friend_points,
-      referrerPoints: r.referrer_points,
-      friendPaid: friendPaid.has(r.id),
-      qualifiedAt: r.qualified_at,
-      paidAt: r.paid_at,
-      createdAt: r.created_at,
-    })));
+    res.json({
+      referrals: rows.map((r) => ({
+        id: r.id,
+        code: r.code,
+        status: r.status,
+        referrer: who.get(r.referrer_id)?.email ?? '(deleted)',
+        friend: who.get(r.friend_id)?.email ?? '(deleted)',
+        friendPoints: r.friend_points,
+        referrerPoints: r.referrer_points,
+        friendPaid: friendPaid.has(r.id),
+        qualifiedAt: r.qualified_at,
+        paidAt: r.paid_at,
+        createdAt: r.created_at,
+      })),
+      total,
+      offset,
+      limit,
+    });
   } catch (err) {
     next(err);
   }
@@ -1205,20 +1242,22 @@ router.post('/referrals/settle', async (req, res, next) => {
 });
 
 /**
- * GET /api/admin/grants — the community-point payout log, newest first.
+ * GET /api/admin/grants?limit=&offset= — the community-point payout log, newest
+ * first, one page at a time.
  * This is the answer to "where did these points come from", so it is deliberately
  * the raw ledger rather than a per-student rollup.
  */
 router.get('/grants', async (req, res, next) => {
   try {
-    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
-    const { data: rows, error } = await supabaseAdmin
+    const { limit, offset } = pageParams(req.query, { def: GRANT_PAGE, max: GRANT_PAGE_MAX });
+    const { data: rows, error, count } = await supabaseAdmin
       .from('community_grants')
-      .select('id, user_id, points, kind, reason, granted_by, created_at')
+      .select('id, user_id, points, kind, reason, granted_by, created_at', { count: 'exact' })
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .range(offset, offset + limit - 1);
     if (error) throw error;
-    if (!rows?.length) return res.json([]);
+    const total = count ?? rows?.length ?? 0;
+    if (!rows?.length) return res.json({ grants: [], total, offset, limit });
 
     // user_id is null for grants whose student has since deleted their account
     // (ON DELETE SET NULL — the row outlives them so the budget still adds up).
@@ -1233,15 +1272,20 @@ router.get('/grants', async (req, res, next) => {
       for (const p of people ?? []) who.set(p.user_id, p.email);
     }
 
-    res.json(rows.map((r) => ({
-      id: r.id,
-      points: r.points,
-      kind: r.kind,
-      reason: r.reason,
-      grantedBy: r.granted_by,
-      student: r.user_id ? (who.get(r.user_id) ?? '(unknown)') : '(deleted account)',
-      createdAt: r.created_at,
-    })));
+    res.json({
+      grants: rows.map((r) => ({
+        id: r.id,
+        points: r.points,
+        kind: r.kind,
+        reason: r.reason,
+        grantedBy: r.granted_by,
+        student: r.user_id ? (who.get(r.user_id) ?? '(unknown)') : '(deleted account)',
+        createdAt: r.created_at,
+      })),
+      total,
+      offset,
+      limit,
+    });
   } catch (err) {
     next(err);
   }
@@ -1466,8 +1510,7 @@ export function safeSearch(raw) {
  */
 router.get('/students', async (req, res, next) => {
   try {
-    const limit = Math.min(STUDENT_PAGE_MAX, Math.max(1, Number(req.query.limit) || STUDENT_PAGE));
-    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const { limit, offset } = pageParams(req.query, { def: STUDENT_PAGE, max: STUDENT_PAGE_MAX });
     const q = safeSearch(req.query.q);
 
     let sel = supabaseAdmin
@@ -1734,35 +1777,53 @@ async function resolveActors(userIds) {
   return actors;
 }
 
+const ERROR_PAGE = 50;
+const ERROR_PAGE_MAX = 200;
+
 /**
- * GET /api/admin/errors?source=&limit=
- * The most recent error_logs rows (server 500s + client-reported errors),
- * newest first. Optional `source` filter (server|student|vendor|admin).
+ * GET /api/admin/errors?source=&limit=&offset=
+ * One page of error_logs rows (server 500s + client-reported errors), newest
+ * first. Optional `source` filter (server|student|vendor|admin).
+ *
+ * `total` counts the whole log under the same source filter, so the dashboard's
+ * "Show more" can say how many rows it has not fetched yet. Paged rather than
+ * limit-only because the operator hunting a failure from Tuesday needs to reach
+ * past the newest page, and re-requesting the same rows with a bigger limit to
+ * get there is a read the database doesn't need to do twice.
  *
  * Each row carries an `actor` (who hit it) so the dashboard can say who and
  * where, not just what — see resolveActors above.
  */
 router.get('/errors', async (req, res, next) => {
   try {
-    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+    const { limit, offset } = pageParams(req.query, { def: ERROR_PAGE, max: ERROR_PAGE_MAX });
     const source = req.query.source;
 
     let q = supabaseAdmin
       .from('error_logs')
-      .select('id, source, message, stack, path, method, status, user_id, user_agent, context, created_at')
+      .select(
+        'id, source, message, stack, path, method, status, user_id, user_agent, context, created_at',
+        { count: 'exact' },
+      )
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .range(offset, offset + limit - 1);
     if (source && ['server', 'student', 'vendor', 'admin'].includes(source)) {
       q = q.eq('source', source);
     }
-    const { data, error } = await q;
+    const { data, error, count } = await q;
     if (error) throw error;
 
-    const actors = await resolveActors((data ?? []).map((r) => r.user_id));
-    res.json((data ?? []).map((r) => ({
-      ...r,
-      actor: r.user_id ? actors.get(r.user_id) ?? { id: r.user_id, role: 'unknown' } : null,
-    })));
+    const rows = data ?? [];
+    const actors = await resolveActors(rows.map((r) => r.user_id));
+    res.json({
+      errors: rows.map((r) => ({
+        ...r,
+        actor: r.user_id ? actors.get(r.user_id) ?? { id: r.user_id, role: 'unknown' } : null,
+      })),
+      total: count ?? rows.length,
+      offset,
+      limit,
+    });
   } catch (err) {
     next(err);
   }

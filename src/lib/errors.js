@@ -77,6 +77,27 @@ export function requestContext(req) {
   return Object.keys(ctx).length ? ctx : null;
 }
 
+/* ---------- crawlers ----------
+   Search crawlers run the client apps for real, and the apps break on them in
+   ways no person will ever see. Googlebot's renderer drops subresources it
+   decides it doesn't need for indexing, so /supabase.js simply isn't there when
+   the student app's boot() reaches window.supabase, and every crawl of the
+   landing page files the same TypeError. Nothing in that report is a bug anyone
+   can fix, and a recurring row nobody can close is what teaches an operator to
+   stop reading the error log.
+
+   Only crawlers that EXECUTE JAVASCRIPT can reach /api/client-error at all, so
+   this is an explicit list of those rather than a loose /bot/ pattern — that
+   one matches the CUBOT phones too, and silently dropping a real student's
+   crash report is a far more expensive mistake than missing a crawler. Add
+   names here as they turn up in the log. */
+const CRAWLER_UA = /googlebot|google-inspectiontool|google web preview|storebot-google|bingbot|applebot|duckduckbot|yandex(bot|mobilebot)|petalbot|bytespider|baiduspider|ahrefsbot|semrushbot|headlesschrome|chrome-lighthouse|lighthouse|pagespeed/i;
+
+/** True for a user agent that identifies itself as a JS-executing crawler. */
+export function isCrawler(userAgent) {
+  return CRAWLER_UA.test(String(userAgent || ''));
+}
+
 /**
  * @param {object} e
  * @param {'server'|'student'|'vendor'|'admin'} e.source

@@ -111,9 +111,21 @@
   // not the same news for the person holding the device: one means this browser
   // can never run the app, the other means try again. Only claim the former when
   // the browser actually said so.
+  //
+  // MATCH LOOSELY. Every engine words this differently and the ones this file
+  // exists for are the ones nobody here can open a console on, so the test has
+  // to cover phrasings we have not seen. `syntax\s*error` rather than
+  // `SyntaxError` is the whole reason this was rewritten: an old engine
+  // reporting the plain two-word "syntax error (…/no-zoom.js#6)" fell through
+  // to the "check your connection" screen, which hands a device that can never
+  // run the app a Try again button that can only ever fail again.
+  //
+  // A false positive here costs a working browser the wrong explanation once; a
+  // false negative costs an old one an infinite retry loop. Lean loose.
   function isSyntaxError() {
     if (!firstError) { return false; }
-    return /SyntaxError|Unexpected token|Unexpected identifier|Parse error/i.test(firstError.message);
+    return /syntax\s*error|unexpected token|unexpected identifier|unexpected end of (input|script)|parse error|expected identifier|invalid or unexpected token|illegal character/i
+      .test(firstError.message);
   }
 
   function report() {

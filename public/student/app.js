@@ -39,6 +39,15 @@ let historyLoaded = false;  // has the history tab fetched at least once?
 let paneSlide = null;       // the in-flight #home <-> #vendor slide, so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
 let pendingDealLink = null;       // a ?deal=/?deals= notification tap, held until the app is ready
+// Consent-gate state (the gate itself is far below, see ensureConsent). It is
+// declared up here with the rest of the module's state rather than beside the
+// feature because Splash.giveUp() reads consentChecking, and boot() can call
+// that synchronously while this file is still evaluating — a `let` declared
+// below the boot IIFE would be in its temporal dead zone at that moment and
+// throw a ReferenceError out of the very path that exists to handle failure.
+let consentOk = false;            // server confirmed agreement to the CURRENT version
+let consentChecking = false;      // in-flight guard: auth events can fire in bursts
+let consentIsRevision = false;
 // Carousel page dots (see renderVendorDots). The window is at most DOT_CAP wide;
 // dotStart is its first index, so the row only ever holds DOT_CAP buttons however
 // many spots there are.
@@ -101,21 +110,43 @@ function crashContext(extra) {
   return ctx;
 }
 
+// Module scope rather than a closure inside installErrorReporter(), because
+// boot() files one of these by hand when it finds a script missing (see there).
+async function reportClientError(message, stack, context) {
+  let auth = {};
+  try {
+    const { data } = (await sb?.auth?.getSession?.()) ?? {};
+    if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
+  } catch { /* not signed in yet */ }
+  fetch('/api/client-error', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify({ source: 'student', message, stack, url: location.pathname, context: crashContext(context) }),
+  }).catch(() => {});
+}
+
+// An error thrown inside a CROSS-ORIGIN script reaches this handler stripped to
+// the bare string "Script error." with line 0, column 0 and no `error` object:
+// browsers will not leak another origin's source, and there is no way to opt
+// back in from this side. Every script this page loads is same-origin (see the
+// block at the foot of index.html), so one of these is never our code — it is a
+// content blocker, a Safari extension, or an in-app browser's injected wrapper
+// throwing in its own script. The report would carry no message, no file, no
+// line and no stack, which in /admin is a row that can only ever be read and
+// closed again, so it is dropped instead of filed.
+//
+// If our own bundles ever move to another origin (a CDN host), their real
+// errors would start arriving looking exactly like this — the fix then is
+// crossorigin="anonymous" on the tags plus Access-Control-Allow-Origin on the
+// responses, NOT loosening the test below.
+const isOpaqueCrossOriginError = (e) => /^script error\.?$/i.test(e.message || '') && !e.error;
+
 function installErrorReporter() {
-  const send = async (message, stack, context) => {
-    let auth = {};
-    try {
-      const { data } = (await sb?.auth?.getSession?.()) ?? {};
-      if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
-    } catch { /* not signed in yet */ }
-    fetch('/api/client-error', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify({ source: 'student', message, stack, url: location.pathname, context: crashContext(context) }),
-    }).catch(() => {});
-  };
-  window.addEventListener('error', (e) => send(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno }));
-  window.addEventListener('unhandledrejection', (e) => send(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
+  window.addEventListener('error', (e) => {
+    if (isOpaqueCrossOriginError(e)) return;
+    reportClientError(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno });
+  });
+  window.addEventListener('unhandledrejection', (e) => reportClientError(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
 }
 
 /* ---------- install-funnel analytics ---------- */
@@ -165,32 +196,61 @@ const Splash = (() => {
     }, Math.max(0, MIN_MS - (Date.now() - shownAt)));
   }
 
-  // If boot() dies before render() ever runs — /api/public-config down, the
-  // supabase CDN blocked — nothing would ever call hide() and the splash would
-  // sit there for good. Fall back to the landing page carrying the same message
-  // a failed consent check shows.
-  function armBackstop() {
-    backstop = setTimeout(() => {
-      if (leaving) return;
-      $('landing').hidden = false;
-      // A consent check still in flight isn't a failure, just a slow one, and it
-      // ends by calling render() itself. Uncover it without claiming it broke.
-      if (!consentChecking) {
-        $('auth-error').textContent = 'Couldn’t reach WeRewards. Check your connection and try again.';
-        $('auth-error').hidden = false;
-      }
-      hide();
-    }, MAX_MS);
+  // If boot() dies before render() ever runs — /api/public-config down, a
+  // vendored script that never arrived — nothing would ever call hide() and the
+  // splash would sit there for good. Fall back to the landing page carrying the
+  // same message a failed consent check shows.
+  function giveUp() {
+    if (leaving) return;
+    $('landing').hidden = false;
+    // A consent check still in flight isn't a failure, just a slow one, and it
+    // ends by calling render() itself. Uncover it without claiming it broke.
+    if (!consentChecking) {
+      $('auth-error').textContent = 'Couldn’t reach WeRewards. Check your connection and try again.';
+      $('auth-error').hidden = false;
+    }
+    hide();
   }
 
-  return { hide, armBackstop };
+  function armBackstop() {
+    backstop = setTimeout(giveUp, MAX_MS);
+  }
+
+  // giveUp is exported so boot() can take this exit the moment it KNOWS it can't
+  // continue, rather than leaving the student watching the splash for the rest
+  // of MAX_MS. Same screen either way, so the two can't drift apart.
+  return { hide, armBackstop, giveUp };
 })();
 
 /* ---------- boot ---------- */
 
+// The globals boot() dereferences without asking first, and the <script> at the
+// foot of index.html that defines each. Only these two: the other vendored
+// libraries (qrcode, jsQR, Leaflet, socket.io) are reached lazily from a screen
+// that opens later, and drawMockQr already drops its block when the encoder
+// isn't there. Aborting the whole app because the map library is missing would
+// be worse than the missing map.
+const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt.js' };
+
 (async function boot() {
   installErrorReporter();
   Splash.armBackstop();            // nothing below this may leave the splash up forever
+
+  // Each <script> on the page is its own fetch, and any one of them can go
+  // missing: a dropped connection, a 5xx from the dyno, an extension that
+  // blocks it, or a crawler's renderer deciding it has fetched enough for one
+  // page (Googlebot does exactly this, which is where the reports of
+  // "Cannot read properties of undefined (reading 'createClient')" came from).
+  // The global is then simply absent, and the first line below that touches it
+  // throws a TypeError naming app.js and never naming the file that actually
+  // went missing. Ask up front instead: the log gets the filename, and the
+  // student gets the try-again screen now rather than after the 9s backstop.
+  const missing = Object.entries(BOOT_SCRIPTS).filter(([g]) => !window[g]).map(([, file]) => file);
+  if (missing.length) {
+    reportClientError(`boot aborted: ${missing.join(', ')} did not load`);
+    Splash.giveUp();
+    return;
+  }
   capturePunchLink();              // stash a camera-scanned ?punch= link BEFORE anything can navigate it away
   captureReferralLink();           // same, for a friend's ?ref= invite link
   pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
@@ -688,9 +748,8 @@ async function exportMyData() {
    CONSENT_REQUIRED, so this modal isn't the security boundary — it's the way to
    satisfy one. Declining deletes the auth user, leaving nothing behind. */
 
-let consentOk = false;        // server confirmed agreement to the CURRENT version
-let consentChecking = false;  // in-flight guard: auth events can fire in bursts
-let consentIsRevision = false;
+// consentOk / consentChecking / consentIsRevision are declared with the rest of
+// the module state at the top of this file, not here — see the note there.
 
 async function ensureConsent(session) {
   if (consentChecking) return;

@@ -82,21 +82,43 @@ function crashContext(extra) {
   return ctx;
 }
 
+// Module scope rather than a closure inside installErrorReporter(), because
+// boot() files one of these by hand when it finds a script missing (see there).
+async function reportClientError(message, stack, context) {
+  let auth = {};
+  try {
+    const { data } = (await sb?.auth?.getSession?.()) ?? {};
+    if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
+  } catch { /* not signed in yet */ }
+  fetch('/api/client-error', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify({ source: 'vendor', message, stack, url: location.pathname, context: crashContext(context) }),
+  }).catch(() => {});
+}
+
+// An error thrown inside a CROSS-ORIGIN script reaches this handler stripped to
+// the bare string "Script error." with line 0, column 0 and no `error` object:
+// browsers will not leak another origin's source, and there is no way to opt
+// back in from this side. Every script this page loads is same-origin (see the
+// block at the foot of index.html), so one of these is never our code — it is a
+// content blocker, an extension, or an in-app browser's injected wrapper
+// throwing in its own script. The report would carry no message, no file, no
+// line and no stack, which in /admin is a row that can only ever be read and
+// closed again, so it is dropped instead of filed.
+//
+// If our own bundles ever move to another origin (a CDN host), their real
+// errors would start arriving looking exactly like this — the fix then is
+// crossorigin="anonymous" on the tags plus Access-Control-Allow-Origin on the
+// responses, NOT loosening the test below.
+const isOpaqueCrossOriginError = (e) => /^script error\.?$/i.test(e.message || '') && !e.error;
+
 function installErrorReporter() {
-  const send = async (message, stack, context) => {
-    let auth = {};
-    try {
-      const { data } = (await sb?.auth?.getSession?.()) ?? {};
-      if (data?.session) auth = { Authorization: `Bearer ${data.session.access_token}` };
-    } catch { /* not signed in yet */ }
-    fetch('/api/client-error', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify({ source: 'vendor', message, stack, url: location.pathname, context: crashContext(context) }),
-    }).catch(() => {});
-  };
-  window.addEventListener('error', (e) => send(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno }));
-  window.addEventListener('unhandledrejection', (e) => send(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
+  window.addEventListener('error', (e) => {
+    if (isOpaqueCrossOriginError(e)) return;
+    reportClientError(e.message || 'error', e.error?.stack, { line: e.lineno, col: e.colno });
+  });
+  window.addEventListener('unhandledrejection', (e) => reportClientError(String(e.reason?.message || e.reason || 'unhandledrejection'), e.reason?.stack));
 }
 
 const screens = [
@@ -107,8 +129,46 @@ const screens = [
 
 /* ---------- boot ---------- */
 
+// The globals boot() dereferences without asking first, and the <script> at the
+// foot of index.html that defines each. Only supabase-js: jsQR is already behind
+// a `typeof jsQR === 'function'` check in the scan loop, and qrcode is reached
+// from the poster download, so a counter that can still take payments should not
+// be shut down because a QR library went missing.
+const BOOT_SCRIPTS = { supabase: '/terminal/supabase.js' };
+
+// Every <section class="screen"> ships `hidden`, so a boot that dies before
+// show() runs leaves the iPad white with nothing to read and no way to guess
+// what happened. This is the counter's version of the student app's Splash
+// fallback: put the sign-in card back on screen carrying the reason. It unhides
+// the section directly rather than calling show(), which reads scanUi — a const
+// declared far below this IIFE, and therefore in its temporal dead zone while
+// this file is still evaluating.
+function bootFailed(message) {
+  const el = $('login-error');
+  el.textContent = message;
+  el.hidden = false;
+  $('screen-login').hidden = false;
+}
+
 (async function boot() {
   installErrorReporter();
+
+  // Each <script> on the page is its own fetch, and any one of them can go
+  // missing: a dropped connection, a 5xx from the dyno, cafe wifi that answers
+  // a captive-portal page instead of the file. The global is then simply
+  // absent, and the first line below that touches it throws a TypeError naming
+  // terminal.js and never naming the file that actually went missing. Ask up
+  // front instead, so the log gets the filename and the vendor gets a sentence
+  // rather than a white screen.
+  const missing = Object.entries(BOOT_SCRIPTS).filter(([g]) => !window[g]).map(([, file]) => file);
+  if (missing.length) {
+    reportClientError(`boot aborted: ${missing.join(', ')} did not load`);
+    // No Try again button here, unlike the student app's landing: nothing on
+    // this screen is wired up yet, so reloading is the only thing that can help.
+    bootFailed('Couldn’t load the terminal. Check the connection and reload this page.');
+    return;
+  }
+
   const pub = await (await fetch('/api/public-config')).json();
   // Separate storage key from the student app (same origin + project) so a
   // vendor sign-in never clobbers a student session on the same device.

@@ -39,7 +39,18 @@
 // every signed-up student (GET /api/admin/students) and a read-only card per
 // student (GET /api/admin/students/:id) with balances, visits, activity,
 // referral position and account state (index.html + admin.js + admin.css).
-const CACHE = 'werewards-admin-v17';
+// v18: the crash reporter is installed FIRST, so a boot that dies on a missing
+// script is reported at all; that boot now puts the sign-in card back with the
+// reason rather than leaving the page blank; and the boot guard recognises more
+// engines' wording for a parse failure, so a device too old to run admin.js gets
+// the "too old" screen instead of a Try again button that can only fail again
+// (admin.js + boot-guard.js).
+// v19: every operator list can now be searched and paged. Vendors, applications,
+// the error log, referrals and the payout log each got the filter row the student
+// roster already had, plus a count that says what it is counting; the three logs
+// the server pages gained a "Show more" and an exact total behind it
+// (index.html + admin.js + admin.css).
+const CACHE = 'werewards-admin-v19';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

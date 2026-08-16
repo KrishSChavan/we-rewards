@@ -17,7 +17,7 @@ import applyRoutes from './src/routes/apply.js';
 import { supabaseAdmin } from './src/lib/supabase.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
-import { logError, requestContext } from './src/lib/errors.js';
+import { logError, requestContext, isCrawler } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
 import { isUuid } from './src/lib/ids.js';
 import { loadVendorLogo } from './src/lib/cache.js';
@@ -716,6 +716,11 @@ app.post('/api/client-error', async (req, res) => {
   if (!CLIENT_ERROR_SOURCES.has(b.source)) {
     return res.status(400).json({ error: 'BAD_SOURCE' });
   }
+  // Crawlers render these pages and break on them in ways no student ever sees
+  // (see isCrawler). Accepted and dropped, not rejected: filtering here rather
+  // than in the four client reporters means the boot guard is covered too, and
+  // that is the one reporter that runs on a browser we can't ship a fix to.
+  if (isCrawler(req.headers['user-agent'])) return res.status(204).end();
   let userId = null;
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (token) {
