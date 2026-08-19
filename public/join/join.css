@@ -97,14 +97,14 @@ textarea { resize: vertical; min-height: 4.5rem; }
    A <fieldset> so the legend labels the group for a screen reader; its default
    border/padding are stripped because the card already provides the frame. */
 .tag-field { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
-.tag-field legend { padding: 0; font-weight: 700; font-size: 1rem; }
+.tag-field legend { padding: 0; font-weight: 700; font-size: 1rem; margin-bottom: 10px; }
 .tag-grid { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 
 /* The whole pill is the label, so the tap target is the pill and not the 13px
    box inside it. The checkbox itself stays a real focusable control — only its
    appearance is borrowed by the pill via :has(). */
 .tag-opt {
-  display: inline-flex; align-items: center; gap: 0.4rem;
+  display: inline-flex; align-items: center; gap: 0.4rem; flex-direction: row;
   padding: 0.45rem 0.8rem; border-radius: 999px;
   border: 2.5px solid var(--sky-line); background: var(--card);
   font-size: 0.95rem; font-weight: 700; cursor: pointer;
