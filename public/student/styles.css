@@ -2344,7 +2344,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font-size: 0.72rem; font-weight: 900; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--muted);
 }
-.filter-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.filter-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; justify-content: center; }
 
 /* The <label> IS the chip, so the tap target is the whole pill rather than the
    ~13px box inside it — and the input stays a real radio/checkbox, keeping
