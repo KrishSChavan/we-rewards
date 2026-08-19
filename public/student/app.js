@@ -3179,6 +3179,34 @@ function mountRows(container, vendors) {
   return want;
 }
 
+/**
+ * Exactly the spots the tab is showing right now — filter, then search.
+ *
+ * That order is deliberate: the filter is an explicit choice the student can
+ * see in the pill, so a search running outside it would quietly return spots
+ * they had just asked to exclude. When nothing matches, spotsEmptyText names
+ * the filter so the empty state reads as "not in Recent" rather than "does not
+ * exist".
+ *
+ * Shared by the three places that must agree on this set — the list itself, the
+ * sheet's "Show N spots" footer, and the random pick. They were three copies of
+ * these eight lines, which is three chances for the number in the footer, the
+ * rows behind it, and the spot the dice lands on to disagree.
+ *
+ * Includes the vendors renderSpots() lifts into the NEW strip: those are still
+ * on screen, just in a different container, and a random pick that could not
+ * land on them would be lying about its pool.
+ */
+function shownSpots() {
+  const base = spotsFilterList();
+  if (!spotsQuery.trim()) return base;
+  // filterVendors() returns RELEVANCE order over the whole catalogue, which is
+  // what a query wants; intersecting preserves that ranking while honouring the
+  // pill. A Set because this is otherwise quadratic on every keystroke.
+  const allowed = new Set(base.map((v) => String(v.vendorId)));
+  return filterVendors(spotsQuery).filter((v) => allowed.has(String(v.vendorId)));
+}
+
 function renderSpots() {
   const list = $('spots-list');
   const skel = $('spots-skel');
@@ -3210,21 +3238,8 @@ function renderSpots() {
     if (!live.has(id)) { row.remove(); spotRows.delete(id); }
   });
 
-  // The filter picks the set; the search narrows it. That order is deliberate —
-  // the filter is an explicit choice the student can see in the pill, so a
-  // search running outside it would quietly return spots they had just asked to
-  // exclude. When nothing matches, spotsEmptyText names the filter so the empty
-  // state reads as "not in Recent" rather than "does not exist".
   const q = spotsQuery.trim();
-  const base = spotsFilterList();
-  let shown = base;
-  if (q) {
-    // filterVendors() returns RELEVANCE order over the whole catalogue, which is
-    // what a query wants; intersecting preserves that ranking while honouring
-    // the pill. A Set because this is otherwise quadratic on every keystroke.
-    const allowed = new Set(base.map((v) => String(v.vendorId)));
-    shown = filterVendors(spotsQuery).filter((v) => allowed.has(String(v.vendorId)));
-  }
+  const shown = shownSpots();
 
   // The NEW strip only exists on the unfiltered, unsearched view — once the
   // student has narrowed things deliberately, a strip of unrelated spots is
@@ -3265,6 +3280,9 @@ function renderSpots() {
     ? `${total} ${total === 1 ? 'spot' : 'spots'} found`
     : '';
   $('spots-search-clear').hidden = !q;
+  // shown.length, not want.length: the NEW strip's rows are on screen too, and
+  // they are in the pool the dice draws from.
+  syncRandomBtn(shown.length);
 
   // Last: the pill names the active filter, which is downstream of the state
   // this render just applied.
@@ -3274,6 +3292,111 @@ function renderSpots() {
   // runs on every socket push, where walking the modal's inputs to set state
   // nobody can see is pure waste.
   if (!$('spots-filter-modal').hidden) syncFilterSheet();
+}
+
+/* ---------- "Pick a random spot" ----------
+   Draws from shownSpots(), so the pick is always one of the spots on screen —
+   narrow to $ coffee places and the dice can only land on a $ coffee place.
+   That is the whole feature: the filter sheet answers "which of these", this
+   answers "I don't care, choose".
+
+   THE WAIT IS DELIBERATE AND IT IS NOT HIDING ANY WORK. The catalogue is
+   already in memory and Math.random() returns before the tap's own ripple
+   finishes, so a button that navigated on the click would read as a mis-tap —
+   the spot screen would simply appear, with nothing connecting it to the thing
+   that was pressed. The roll spends that second flashing candidate NAMES, which
+   also happens to be the only honest evidence the pick respected the filter:
+   every name that goes past is one the student could have got.
+
+   Cancelled from resetSpots() on sign-out, or the timer would fire into the
+   next student's session and open a spot from the previous one's list. */
+
+const ROLL_STEPS = 11;        // names flashed before it lands
+const ROLL_FAST = 55;         // ms between the first few…
+const ROLL_SLOW = 190;        // …and the last, so it visibly comes to rest
+const ROLL_HOLD = 320;        // how long the winner sits there before it opens
+
+let rollTimer = null;
+let rolling = false;
+let randomIdleLabel = '';     // read off the markup at wire time so the two can't drift
+
+/**
+ * Show or hide the button. Called from renderSpots with what it just mounted.
+ *
+ * Hidden below two spots for the same reason the carousel hides its dots at
+ * one: there is no choice to make, and a control that can only return the row
+ * directly beneath it is worse than no control. That also covers the skeleton —
+ * an unloaded catalogue is zero spots — so there is no separate loading branch.
+ *
+ * Never touches the button mid-roll. renderSpots() runs on every socket push,
+ * and a balance landing while the names are cycling would otherwise yank the
+ * control out from under a student who is watching it.
+ */
+function syncRandomBtn(count) {
+  if (rolling) return;
+  const btn = $('spots-random');
+  if (btn) btn.hidden = count < 2;
+}
+
+/** Back to idle. Safe to call when nothing is rolling. */
+function stopRoll() {
+  clearTimeout(rollTimer);
+  rollTimer = null;
+  rolling = false;
+  const btn = $('spots-random');
+  if (!btn) return;
+  btn.classList.remove('is-rolling', 'is-landed');
+  btn.removeAttribute('aria-busy');
+  btn.disabled = false;
+  $('spots-random-label').textContent = randomIdleLabel;
+}
+
+function pickRandomSpot() {
+  if (rolling) return;
+  const pool = shownSpots();
+  if (pool.length < 2) return;
+
+  const winner = pool[Math.floor(Math.random() * pool.length)];
+  const btn = $('spots-random');
+  const label = $('spots-random-label');
+  rolling = true;
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  btn.classList.add('is-rolling');
+
+  const land = () => {
+    label.textContent = winner.name;
+    btn.classList.remove('is-rolling');
+    btn.classList.add('is-landed');
+    rollTimer = setTimeout(() => {
+      stopRoll();
+      // openVendor() already no-ops on an id it cannot find, which is the guard
+      // for a winner the server dropped from the catalogue mid-roll.
+      openVendor(winner.vendorId, TAB.spots);
+    }, ROLL_HOLD);
+  };
+
+  // Reduced motion gets the pause without the flicker — a label changing eleven
+  // times in under a second is precisely the effect that setting asks us not to
+  // produce. The wait stays, because the wait is what makes the result read as
+  // a draw rather than as a link.
+  if (reducedMotion()) {
+    label.textContent = 'Picking…';
+    rollTimer = setTimeout(land, 700);
+    return;
+  }
+
+  let step = 0;
+  const tick = () => {
+    label.textContent = pool[Math.floor(Math.random() * pool.length)].name;
+    step += 1;
+    if (step >= ROLL_STEPS) { land(); return; }
+    // Eased, not evenly spaced: constant intervals read as a progress bar,
+    // slowing down reads as a wheel losing momentum.
+    const t = step / ROLL_STEPS;
+    rollTimer = setTimeout(tick, ROLL_FAST + (ROLL_SLOW - ROLL_FAST) * t * t);
+  };
+  tick();
 }
 
 /**
@@ -3438,16 +3561,10 @@ function syncFilterSheet() {
   $('filter-clear').hidden = activeFilterCount() === 0;
 
   // The footer button counts what the student would be left with, so the sheet
-  // answers "how many" before they dismiss it to find out. Counted the same way
-  // renderSpots builds the list — filter first, then narrow by the query — or
-  // the number here and the rows behind the sheet could disagree.
-  const q = spotsQuery.trim();
-  const base = spotsFilterList();
-  let n = base.length;
-  if (q) {
-    const allowed = new Set(base.map((v) => String(v.vendorId)));
-    n = filterVendors(spotsQuery).filter((v) => allowed.has(String(v.vendorId))).length;
-  }
+  // answers "how many" before they dismiss it to find out. shownSpots() is the
+  // same list renderSpots() mounts, so this number and the rows behind the
+  // sheet cannot disagree.
+  const n = shownSpots().length;
   $('filter-done').textContent = n === 1 ? 'Show 1 spot' : `Show ${n} spots`;
 }
 
@@ -3541,6 +3658,11 @@ function wireSpots() {
   // later without this having to be remembered again. Everything above a row
   // (the search field, the filter pill) fails the .spot-row test and falls
   // through untouched.
+  // Its own listener rather than another branch in the row delegation below:
+  // the button is not a .spot-row and would fall straight through it.
+  randomIdleLabel = $('spots-random-label').textContent;
+  $('spots-random').addEventListener('click', pickRandomSpot);
+
   $('spots').addEventListener('click', (e) => {
     const row = e.target.closest('.spot-row');
     if (!row) return;
@@ -3567,6 +3689,10 @@ function wireSpots() {
 
 /** Sign-out unpaint: the next student must not read the previous one's list. */
 function resetSpots() {
+  // Before anything else: a roll left running would fire into the next
+  // student's session and open a spot off the previous one's list.
+  stopRoll();
+  $('spots-random').hidden = true;
   spotsQuery = '';
   spotsFilter = 'all';
   spotsCuisine.clear();
