@@ -13,14 +13,11 @@ import { rollupVendorAnalytics } from '../lib/analytics.js';
 import { validReward, validRatio } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
+import { validLogo } from '../lib/logo.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
 
-// Logo is a base64 data-URL, resized to ~128px client-side. Cap the stored
-// string (~375KB decoded) so a hand-crafted request can't bloat the row.
-const LOGO_MAX_CHARS = 500_000;
-const LOGO_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
 
 // A staff PIN session (from verify-pin) stays valid for one shift.
 const PIN_SESSION_HOURS = 8;
@@ -1017,16 +1014,12 @@ function validSettings(body) {
     updates.address = a || null; // '' clears the address (and its coordinates)
   }
 
-  // logo: null/'' clears it; otherwise a small base64 image data-URL.
+  // logo: null/'' clears it; otherwise a small base64 image data-URL. Same rule
+  // as the operator's two doors and /join — see src/lib/logo.js.
   if (body && Object.prototype.hasOwnProperty.call(body, 'logo')) {
-    const logo = body.logo;
-    if (logo == null || logo === '') {
-      updates.logo = null;
-    } else if (typeof logo === 'string' && logo.length <= LOGO_MAX_CHARS && LOGO_DATA_URL.test(logo)) {
-      updates.logo = logo;
-    } else {
-      return { error: 'Logo must be a small PNG, JPEG, or WebP image.' };
-    }
+    const l = validLogo(body.logo);
+    if (l.error) return { error: l.error };
+    updates.logo = l.value;
   }
 
   if (body?.pin != null && body.pin !== '') {

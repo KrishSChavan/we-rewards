@@ -380,6 +380,15 @@ h1, h3 { margin: 0; }
   border: 1px solid var(--line); background: var(--panel-2) center / contain no-repeat;
 }
 .nv-logo-preview.is-empty { border-style: dashed; }
+/* A pick (or a Remove) waiting on the Edit dialog's "Save logo". Colour only —
+   it composes with .is-empty rather than competing with it, because the two set
+   different longhands (border-color vs border-style). */
+.nv-logo-preview.is-pending { border-color: var(--accent); border-width: 2px; }
+/* The Edit dialog's logo row sits inside a .vendor-edit-section, which already
+   carries the section's own top margin, so the row does not add one of its own.
+   Its note follows the .vendor-edit-note idiom the other three sections use. */
+.vendor-edit-section .nv-logo-row { margin-top: 0.5rem; }
+.vendor-edit-section .nv-logo-row + .vendor-edit-note { display: inline-block; margin-top: 0.45rem; }
 #new-vendor-error { margin-top: 1rem; }
 
 /* ---------- vendor applications ---------- */

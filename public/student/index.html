@@ -523,28 +523,53 @@
                    split (see there). Nothing inside carries an auto of its own. -->
               <div class="home-spots">
 
-              <!-- The heading and the filter share one row: the home screen
-                   splits its leftover height three ways (see .home-main), so a
-                   search bar on its own line is a whole row of that budget spent
-                   on a control most students with three spots don't need. It
-                   only appears once the row is long enough to be worth
-                   searching — app.js → VENDOR_SEARCH_MIN. -->
+              <!-- ---------- which spots the row is showing ----------
+                   The heading and the Map pill share one row. There WAS a search
+                   field between them, and it is gone: at 320px the row leaves it
+                   a content box of about 22px once the heading and the pill have
+                   taken theirs, which is not a field, it is a rumour of one. It
+                   was also the wrong search — typing in it replaced the recent
+                   row with a 12-card directory paged 8 dots at a time, which is
+                   the exact failure the recent row exists to fix (app.js →
+                   "Home's carousel"). The Spots tab does that job properly, with
+                   a full-width field, hearts, balances and cuisine/price chips,
+                   and it is one tap away on a permanent bottom-nav button.
+
+                   What replaced it is the heading itself. The row's contents
+                   were already decided for the student — recent spots if they
+                   had any, recommendations if they didn't — with no way back
+                   once the first purchase landed. Now the heading is the
+                   control: it names what is showing and opens a two-item menu
+                   to change it.
+
+                   A menu rather than two words side by side, because
+                   "RECOMMENDED" spelled out does not fit beside "RECENT" and the
+                   Map pill on a 320px phone, and a picker that has to abbreviate
+                   the thing it is picking is a picker that has outgrown its row.
+                   The button is hidden entirely — leaving a plain heading — when
+                   there is nothing to switch BETWEEN, the same rule
+                   #filter-cuisine-group follows on the Spots tab. -->
               <div class="home-sub-row">
                 <!-- Written by applyVendorFilter: "RECENT SPOTS" once there is
                      activity to show, "RECOMMENDED" for a student who has none
-                     yet, and "ALL SPOTS" while a search is live. -->
-                <p id="home-sub" class="home-sub">RECENT SPOTS</p>
-                <div id="vendor-search-wrap" class="vendor-search" hidden>
-                  <span class="vendor-search-icon" aria-hidden="true">🔍</span>
-                  <!-- type=search for the phone keyboard's "search" key; the
-                       autocorrect/capitalize opt-outs stop iOS rewriting a
-                       half-typed shop name out from under the filter. -->
-                  <input id="vendor-search" class="vendor-search-input" type="search"
-                         placeholder="Search spots" aria-label="Search vendors"
-                         aria-controls="vendor-carousel"
-                         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-                  <button id="vendor-search-clear" class="vendor-search-clear" type="button"
-                          aria-label="Clear search" hidden>✕</button>
+                     yet or who asked for it. aria-expanded and the menu below
+                     are managed by app.js → openHomeLensMenu. -->
+                <button id="home-sub" class="home-sub" type="button"
+                        aria-haspopup="true" aria-expanded="false" aria-controls="home-lens-menu">
+                  <span id="home-sub-label" class="home-sub-label">RECENT SPOTS</span>
+                  <span id="home-sub-caret" class="home-sub-caret" aria-hidden="true">▾</span>
+                </button>
+                <!-- Anchored to the heading rather than a bottom sheet: two
+                     options do not earn a body-level overlay with a focus trap,
+                     and the menu wants to appear WHERE the word it changes is.
+                     Rebuilt-in-place, never rebuilt from scratch — the items are
+                     static and only their aria-checked moves. -->
+                <div id="home-lens-menu" class="home-lens-menu" role="menu"
+                     aria-labelledby="home-sub" hidden>
+                  <button class="home-lens-item" type="button" role="menuitemradio"
+                          aria-checked="true" data-lens="recent">Recent spots</button>
+                  <button class="home-lens-item" type="button" role="menuitemradio"
+                          aria-checked="false" data-lens="recommended">Recommended</button>
                 </div>
                 <!-- Every spot on one map. A pill sharing this row rather than a
                      row of its own because .home-main splits its leftover height
@@ -553,9 +578,9 @@
                      at all. The word leads and the 🗺️ trails it — the label is
                      what makes the control readable, the glyph is decoration, so
                      it carries aria-hidden and the button keeps its own label.
-                     margin-left:auto in the CSS keeps it hard right on the
-                     screens where the search box is below VENDOR_SEARCH_MIN and
-                     therefore hidden. Hidden until a spot has coordinates. -->
+                     margin-left:auto in the CSS is what holds it against the
+                     right edge: nothing else in this row is flexible.
+                     Hidden until a spot has coordinates. -->
                 <button id="map-open-btn" class="map-open-btn" type="button"
                         aria-label="See all vendors on a map" hidden><span class="map-open-label">Map</span><span class="map-open-icon" aria-hidden="true">🗺️</span></button>
               </div>
@@ -599,11 +624,13 @@
               </div>
               <!-- vendor cards render here: horizontal, scroll-snapped -->
               <div id="vendor-carousel" class="vendor-carousel" hidden></div>
-              <!-- Filtering swaps the cards out silently, so the result count is
-                   announced here instead. Off-screen, not [hidden]: a hidden
-                   live region is not announced at all. Written only while a
-                   query is active, or every socket push would talk. -->
-              <p id="vendor-search-status" class="sr-only" role="status" aria-live="polite"></p>
+              <!-- Switching the row swaps the cards out silently, so what
+                   happened is announced here instead. Off-screen, not [hidden]:
+                   a hidden live region is not announced at all. Written ONLY
+                   when the student picks from the menu — an idle live region
+                   that re-announced on every socket push would talk over
+                   everything else they are doing. -->
+              <p id="home-spots-status" class="sr-only" role="status" aria-live="polite"></p>
               <!-- page dots for the carousel above: a window of at most 8, with
                    the edge dot shrunk on whichever side has more spots past it.
                    Built by renderVendorDots(); hidden below 2 spots, since one
@@ -624,10 +651,13 @@
              and "which of these opened most recently" is not a question anyone
              is asking of a list they came here to search.
 
-             Rows are built by renderSpots() in app.js. The search field is
-             always present here (unlike Home's, which only appears past
-             VENDOR_SEARCH_MIN) — a list you opened deliberately is one you may
-             well have opened in order to search it. -->
+             Rows are built by renderSpots() in app.js. This is where searching
+             lives, and the only place it does: Home carried a field of its own
+             until the row it sat in stopped having the width for one, and this
+             is the surface that was already doing the job better — full-width,
+             always present, with hearts, balances and the cuisine/price chips
+             beside it. A list you opened deliberately is one you may well have
+             opened in order to search it. -->
         <section class="tab-page" id="tab-spots" aria-label="Spots">
           <div id="spots">
             <header class="page-head">

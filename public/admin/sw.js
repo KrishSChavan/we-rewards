@@ -50,7 +50,10 @@
 // roster already had, plus a count that says what it is counting; the three logs
 // the server pages gained a "Show more" and an exact total behind it
 // (index.html + admin.js + admin.css).
-const CACHE = 'werewards-admin-v19';
+// v20: the Edit dialog gained a Logo section — pick, Remove and "Save logo"
+// against PATCH /api/admin/vendors/:id, with the current artwork read back from
+// the new GET /api/admin/vendors/:id/logo (index.html + admin.js + admin.css)
+const CACHE = 'werewards-admin-v20';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',

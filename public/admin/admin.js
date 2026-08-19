@@ -133,6 +133,10 @@ function bootFailed(message) {
   $('vendor-name-save').addEventListener('click', saveVendorName);
   $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
   $('vendor-sells-save').addEventListener('click', saveVendorSells);
+  $('vendor-logo-pick').addEventListener('click', () => $('vendor-logo-file').click());
+  $('vendor-logo-file').addEventListener('change', onVendorLogoPick);
+  $('vendor-logo-clear').addEventListener('click', () => stageVendorLogo(null, 'Removed. Save to apply.'));
+  $('vendor-logo-save').addEventListener('click', saveVendorLogo);
   // Delegated: both grids are rebuilt from scratch on every open, so a listener
   // bound to the checkboxes themselves would have to be rebound each time.
   $('vendor-edit-cuisine').addEventListener('change', (e) => syncCuisineCap(e.currentTarget));
@@ -1126,6 +1130,125 @@ async function saveVendorSells() {
   }
 }
 
+/* ---------- the vendor's logo, operator-side ----------
+   The vendor has this control too, in their own terminal Settings, and the
+   server takes the same value from both (src/lib/logo.js). This exists because
+   most vendors never open Settings: a logo emailed or handed over at onboarding
+   otherwise has no way into the app.
+
+   Staged, not saved on pick. The file picker sets `editLogo` and lights the
+   Save button; nothing reaches the server until it is pressed. That matches the
+   three sections above it, and it means Remove is undoable by closing the
+   dialog rather than by finding the original file again. `staged` is a separate
+   flag from `value` because null is a real staged value — it is what a Remove
+   stages — and `value === null` alone cannot tell "cleared" from "untouched".
+
+   Reuses shrinkImage / LOGO_MAX_PX / LOGO_MAX_FILE from the Add-vendor form
+   below: same 128px pipeline, same 8 MB source cap, one implementation. */
+
+let editLogo = { value: null, staged: false };
+
+// Called on every open, BEFORE the fetch: the dialog is reused, so without this
+// the previous vendor's artwork is what the operator sees for as long as the
+// request takes.
+function resetVendorLogoSection(v) {
+  editLogo = { value: null, staged: false };
+  // The staged-pick highlight is a CLASS on a reused element, so it outlives the
+  // close that discarded the pick — the next vendor would open with someone
+  // else's artwork ringed as if it were waiting to be saved.
+  $('vendor-logo-preview').classList.remove('is-pending');
+  paintVendorLogo(null, v.has_logo ? 'loading' : 'none');
+  setNote($('vendor-logo-note'), '', null);
+  $('vendor-logo-save').disabled = true;
+}
+
+// `state` is what the preview should SAY when there is no image to show:
+// 'loading' while the fetch is out, 'none' for a vendor with no artwork.
+function paintVendorLogo(dataUrl, state) {
+  const box = $('vendor-logo-preview');
+  box.style.backgroundImage = dataUrl ? `url('${dataUrl}')` : 'none';
+  box.classList.toggle('is-empty', !dataUrl);
+  // The preview is the only report of what this vendor currently has, so its
+  // accessible name has to carry the state rather than being decorative.
+  box.setAttribute('aria-label', dataUrl ? 'Current logo' : (state === 'loading' ? 'Logo: loading' : 'No logo'));
+  // Remove is for taking artwork away; with nothing there it would be a button
+  // that does nothing to a vendor who has nothing.
+  $('vendor-logo-clear').hidden = !dataUrl;
+}
+
+async function loadVendorLogo(vendorId) {
+  try {
+    const res = await authFetch(`/api/admin/vendors/${vendorId}/logo`);
+    if (res.status === 403) return denyAccess();
+    // The dialog may have been closed, or reopened on a DIFFERENT vendor, while
+    // this was in flight. Painting either way would show one vendor's artwork
+    // over another's name.
+    if (!editVendor || editVendor.v.id !== vendorId) return;
+    if (!res.ok) { setNote($('vendor-logo-note'), 'Couldn’t load the current logo.', 'err'); return; }
+    const data = await res.json().catch(() => ({}));
+    // A pick made while the fetch was out wins: the operator's intent is newer
+    // than the server's answer.
+    if (editLogo.staged) return;
+    paintVendorLogo(data.logo || null, 'none');
+  } catch {
+    if (editVendor && editVendor.v.id === vendorId) {
+      setNote($('vendor-logo-note'), 'Couldn’t load the current logo.', 'err');
+    }
+  }
+}
+
+function stageVendorLogo(dataUrl, message) {
+  editLogo = { value: dataUrl, staged: true };
+  paintVendorLogo(dataUrl, 'none');
+  $('vendor-logo-preview').classList.toggle('is-pending', true);
+  setNote($('vendor-logo-note'), message, null);
+  $('vendor-logo-save').disabled = false;
+}
+
+async function onVendorLogoPick(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';                   // let the same file be re-picked later
+  if (!file) return;
+  if (file.size > LOGO_MAX_FILE) {
+    setNote($('vendor-logo-note'), 'That image is too large. Pick one under 8 MB.', 'err');
+    return;
+  }
+  try {
+    const { dataUrl } = await shrinkImage(file, LOGO_MAX_PX);
+    stageVendorLogo(dataUrl, 'Not saved yet.');
+  } catch {
+    setNote($('vendor-logo-note'), 'Couldn’t read that image. Try a PNG or JPG, since HEIC and PDF files aren’t supported.', 'err');
+  }
+}
+
+async function saveVendorLogo() {
+  if (!editVendor || !editLogo.staged) return;
+  const btn = $('vendor-logo-save');
+  const note = $('vendor-logo-note');
+  const sent = editLogo.value;
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
+      method: 'PATCH',
+      // null CLEARS the logo — the route reads the KEY's presence, not its
+      // value, so this has to be sent rather than omitted.
+      body: JSON.stringify({ logo: sent }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    Object.assign(editVendor.v, data);        // keep the in-memory roster in sync (incl. has_logo)
+    editLogo = { value: null, staged: false };
+    $('vendor-logo-preview').classList.toggle('is-pending', false);
+    paintVendorLogo(sent, 'none');
+    setNote(note, sent ? 'Saved' : 'Logo removed', 'ok');
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
 let editVendor = null;   // { v, infoEl } while the dialog is open
 
 // Paint a small inline status note: 'ok' | 'err' | null (neutral).
@@ -1150,14 +1273,20 @@ function openVendorModal(v, infoEl) {
   $('vendor-edit-error').hidden = true;
   $('vendor-reward-list').innerHTML = '';
   showRewardsMsg('Loading items…');
+  resetVendorLogoSection(v);
   $('vendor-modal').hidden = false;
   $('vendor-edit-ratio').focus();
   loadVendorRewards(v.id);
+  // Only when the roster says there is artwork to fetch. has_logo rides along on
+  // GET /admin/vendors precisely so this dialog can skip the request for the
+  // majority of vendors, who have no logo at all.
+  if (v.has_logo) loadVendorLogo(v.id);
 }
 
 function closeVendorModal() {
   $('vendor-modal').hidden = true;
   editVendor = null;
+  editLogo = { value: null, staged: false };
 }
 
 function showRewardsMsg(text) {
@@ -3111,6 +3240,7 @@ const ERROR_ACTIONS = [
   [/^\/api\/admin\/overview/,        'Admin · loading platform stats'],
   [/^\/api\/admin\/vendors\/[^/]+\/rewards/, 'Admin · editing a vendor’s rewards'],
   [/^\/api\/admin\/vendors\/[^/]+\/reset-code/, 'Admin · minting a vendor password-reset code'],
+  [/^\/api\/admin\/vendors\/[^/]+\/logo/, 'Admin · loading a vendor’s logo'],
   [/^\/api\/admin\/vendors/,         'Admin · adding, editing or removing a vendor'],
   [/^\/api\/admin\/applications/,    'Admin · vendor applications'],
   [/^\/api\/admin\/incentives/,      'Admin · signup / referral incentives'],

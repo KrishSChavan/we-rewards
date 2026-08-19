@@ -266,8 +266,15 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   vendors by revenue.
 - `GET /api/admin/vendors` + `PATCH /api/admin/vendors/:id` — the vendor control
   panel: flip a vendor's `active` kill-switch (off = hidden from students and its
-  terminal blocked, but all data kept, so it's reversible) or set its street
-  address. `DELETE /api/admin/vendors/:id` **hard-deletes** a vendor — cascades
+  terminal blocked, but all data kept, so it's reversible), set its street
+  address, rename it, retune its rate, tag what it sells, or replace its `logo`
+  (the same base64 data-URL the vendor's own terminal Settings writes — validated
+  once for all four doors in `src/lib/logo.js`; `null` clears it, and `has_logo`
+  is a generated column so it follows automatically). `GET
+  /api/admin/vendors/:id/logo` reads the current artwork back for the editor —
+  the public `/api/vendor-logo/:id` can't be used for that, since it withholds
+  the image for an inactive vendor and is cached for an hour.
+  `DELETE /api/admin/vendors/:id` **hard-deletes** a vendor — cascades
   away its rewards / balances / staff links and clears the logo, while
   transactions are kept but anonymized (`vendor_id → null`, migration-017) so a
   student's history renders the gone vendor as a generic "Vendor". It also

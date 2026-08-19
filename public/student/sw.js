@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v67';   // v67: the random pick lands in a bottom sheet over a dimmed list ("Check it out" / dismiss) instead of navigating straight into the spot; dismissing it is what re-arms the picker
+const CACHE = 'werewards-v68';   // v68: Home's search field is gone (the Spots tab owns searching) and the heading it shared a row with is now a two-item menu — Recent spots / Recommended; addresses render title-cased with E/W/N/S for the compass words
 // v66: Spots tab gained a "Pick a random spot" button under the search box — draws from shownSpots(), the same filter+search pipeline the list itself renders
 // v65: the Spots filter is a sheet, not a select — the list picker now combines with cuisine and price chips (migration-042), and the chips are built from the tags the loaded spots actually carry rather than a list shipped here
 // v63: the earn actions are ranked — earn code keeps a full-width row, receipt and invite share the one beneath it (receipt takes the whole row when there is no invite)

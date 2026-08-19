@@ -16,7 +16,12 @@ let allVendors = [];  // every active vendor + this student's balance at each
 // allVendors; the lookups-by-id keep using allVendors, because a spot you have
 // filtered out of view is still a spot you have points at.
 let shownVendors = [];
-let vendorQuery = '';       // the raw search box text ('' = no filter)
+// Which list the home carousel is showing, when the student has said. null is
+// the normal state and means "whatever the data says" — recent spots if there
+// are any, recommendations if there are not. Deliberately in memory only, and
+// deliberately NOT persisted: it is a way of looking at the row, not a setting,
+// the same call spotsFilter makes and for the same reason.
+let homeLens = null;        // null | 'recent' | 'recommended'
 // Card elements survive filtering, keyed by vendor id. Re-rendering the row
 // from HTML on every keystroke would rebuild every card's 4-tile map mosaic —
 // 120 <img> for 30 spots — so cards are built once and MOVED instead.
@@ -345,11 +350,23 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // this by name when the nudge opens or closes, since either changes the home
   // screen's height by a whole block.
   window.syncHomeDensity = syncHomeDensity;
-  // Filter the spots. Same story as the two above: the field is a stable element
-  // that is only hidden, never replaced, so these bind exactly once.
-  $('vendor-search').addEventListener('input', onVendorSearchInput);
-  $('vendor-search').addEventListener('keydown', onVendorSearchKey);
-  $('vendor-search-clear').addEventListener('click', () => clearVendorSearch());
+  // Which spots the row shows. Same story as the two above: the heading is a
+  // stable element that is only relabelled, never replaced, so this binds once.
+  $('home-sub').addEventListener('click', toggleHomeLensMenu);
+  // Delegated to the menu, not bound per item: the items are static markup, and
+  // this way the data-lens attribute stays the only thing that maps a row to a
+  // mode.
+  $('home-lens-menu').addEventListener('click', (e) => {
+    const item = e.target.closest('.home-lens-item');
+    if (item) pickHomeLens(item.dataset.lens);
+  });
+  // Anything outside the menu closes it. Capture, so a tap that also does
+  // something else (a card, the Map pill) still puts the menu away first.
+  document.addEventListener('pointerdown', (e) => {
+    if ($('home-lens-menu').hidden) return;
+    if (e.target.closest('#home-lens-menu') || e.target.closest('#home-sub')) return;
+    closeHomeLensMenu();
+  }, true);
   // spots map: the 🗺️ opens every pin; a card's map thumbnail opens it focused
   // on that one (see onVendorTap). ✕ / Esc close it, and Esc puts the pin sheet
   // away first if one is up.
@@ -459,6 +476,9 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     // outright — otherwise one press would also close sheets the student can't
     // even see, and they'd come back to Home with the hub collapsed.
     if (!$('map-modal').hidden) { onMapEscape(); return; }
+    // Before the sheets: the lens menu is the shallowest thing on screen, and a
+    // press that closed a sheet *and* this would be one press doing two jobs.
+    if (!$('home-lens-menu').hidden) { closeHomeLensMenu(); return; }
     closeEarnSheet();
     closeReceiptSheet();
     closeDealsSheet();
@@ -596,7 +616,7 @@ function render(session) {
     showCommunityAmount(false); // …and back behind its placeholder, or the next student reads that 0 as theirs
     resetTier();            // …as is the tier chip on the pill above it
     allVendors = [];
-    resetVendorSearch();        // …and unpaint the cards, or the next student reads them
+    resetVendorRow();           // …and unpaint the cards, or the next student reads them
     resetSpots();               // …and the directory, which carries their saved spots
     vendor = null;
     historyLoaded = false;
@@ -2728,7 +2748,122 @@ function shortAddress(address) {
   const parts = full.split(',').map((p) => p.trim()).filter(Boolean);
   while (parts.length && ADDR_TAIL_PART.test(parts[parts.length - 1])) parts.pop();
   const out = parts.join(', ').replace(ADDR_TAIL_RUN, '').replace(/[\s,]+$/, '').trim();
-  return out || full;
+  return formatAddress(out || full);
+}
+
+/* ---------- how an address is spelled ----------
+   Addresses are typed by whoever onboarded the vendor, and they arrive in every
+   spelling a person uses: "123 east college ave", "123 EAST COLLEGE AVE",
+   "1234 N. Atherton Street". The card gives the line one row and no more, so
+   the spelling decides both whether it reads as an address and whether it fits.
+
+   DISPLAY-only, the same seam shortAddress() above already is, and for the same
+   reason: the STORED text is what openMaps() hands the platform's maps app, and
+   rewriting a query someone else has to resolve is not worth a tidier card. It
+   is also what buildVendorIndex() reads — and that indexes both spellings of a
+   compass word (see there), so "east college" and "e college" find the same
+   shop whichever way the address happens to be stored.
+
+   Two rules:
+
+     1. Every word starts with a capital — but ONLY a word that is entirely
+        lower case is touched. A word already carrying a capital past its first
+        letter was typed that way on purpose, and a title-caser is precisely
+        what gets those wrong: "McAllister" (a real street here) would become
+        "Mcallister", "O'Brien" would become "O'brien". A SHORT all-caps word is
+        left for the same reason — "PSU", "HUB", "BJC" and "PA" are how those
+        are written, and "Psu Hub" is not an improvement on anything.
+
+     2. A compass word standing on its own becomes its letter: "East College
+        Ave" → "E College Ave". The match is EXACT, and that is the whole
+        safeguard — State College has a Northland Center, a Westerly Parkway, a
+        Southgate Drive and an Easterly Parkway, and not one of them is a
+        direction. A trailing period leaves with the word ("S." → "S"), since
+        "S. Allen St" and "S Allen St" are the same address and only one of them
+        is short.
+
+   The collateral, named so nobody re-derives it: a street whose NAME is a bare
+   compass word ("120 North St") abbreviates too. It stays unambiguous to a
+   reader and to the maps app, which gets the stored text anyway.
+
+   Words with a digit in them never go through rule 1 — "3rd" must not become
+   "3Rd" — and are handled first. */
+
+const ADDR_DIRECTIONS = { east: 'E', west: 'W', north: 'N', south: 'S' };
+// Words that are upper case in an address however they were typed. The
+// preserve-what-was-typed rule below can only recognise an acronym that ARRIVED
+// as one, so an address typed entirely in lower case ("state college, pa") needs
+// this short list to keep its state code from becoming "Pa". Deliberately not a
+// general abbreviation dictionary: every entry is something that appears in a US
+// postal address and nowhere else, so none of them can collide with a shop or a
+// street name.
+const ADDR_ALWAYS_UPPER = new Set(['pa', 'us', 'usa', 'po', 'ne', 'nw', 'se', 'sw']);
+// Spelled out rather than \p{L}: unicode property escapes need the /u flag and
+// a Safari past this app's floor. Same call, and the same range, as
+// vendorMonogram() above.
+const ADDR_WORD_PARTS = /^([^0-9A-Za-zÀ-ɏ]*)([\s\S]*?)([^0-9A-Za-zÀ-ɏ]*)$/;
+const ADDR_ORDINAL = /^[0-9]+(?:st|nd|rd|th)$/i;
+
+// Capitalise the first letter, and the first letter after a hyphen — "bell-vue"
+// is two names. After an apostrophe only when more than one letter follows, so
+// "o'brien" gets its B while "vito's" keeps its lower-case s.
+function addrTitleCase(core) {
+  const lower = core.toLowerCase();
+  let out = '';
+  for (let i = 0; i < lower.length; i += 1) {
+    const prev = i === 0 ? '' : lower[i - 1];
+    const boundary = i === 0
+      || prev === '-' || prev === '–'
+      || ((prev === "'" || prev === '\u2019') && lower.length - i > 1);
+    out += boundary ? lower[i].toUpperCase() : lower[i];
+  }
+  return out;
+}
+
+// One whitespace-separated word, with whatever punctuation is welded to it. The
+// punctuation is peeled off so the core can be matched EXACTLY (rule 2 depends
+// on that) and put back afterwards — "Ave," has to keep its comma and "(rear)"
+// its brackets.
+function addrWord(word, shouted) {
+  const m = ADDR_WORD_PARTS.exec(word);
+  if (!m) return word;
+  const [, lead, core, trail] = m;
+  if (!core) return word;
+
+  // Rule 2 first: a direction is a whole word, so no other rule can apply to
+  // it. Addresses already stored short come through here too, which is what
+  // drops the period a card has no room for.
+  const dir = ADDR_DIRECTIONS[core.toLowerCase()]
+    || (/^[ewns]$/i.test(core) ? core.toUpperCase() : '');
+  if (dir) return lead + dir + (trail === '.' ? '' : trail);
+
+  if (ADDR_ALWAYS_UPPER.has(core.toLowerCase())) return lead + core.toUpperCase() + trail;
+
+  // "3rd" keeps its lower-case suffix; everything else carrying a digit gets
+  // upper case, which is what turns a unit "4b" into "4B" and a route "us-322"
+  // into "US-322".
+  if (/[0-9]/.test(core)) {
+    return lead + (ADDR_ORDINAL.test(core) ? core.toLowerCase() : core.toUpperCase()) + trail;
+  }
+
+  if (!shouted) {
+    if (/[A-ZÀ-Þ]/.test(core.slice(1))) return word;                    // McAllister, O'Brien
+    if (core === core.toUpperCase() && core.length <= 4) return word;   // PSU, HUB, PA
+  }
+  return lead + addrTitleCase(core) + trail;
+}
+
+/** Rules 1 and 2 over a whole address. Pure; safe to run twice. */
+function formatAddress(text) {
+  const s = String(text ?? '');
+  if (!s) return '';
+  // An address in ALL CAPS is shouting, not acronyms: nothing inside it can be
+  // told apart from "PSU", so the whole thing is title-cased. Only a MIXED-case
+  // address keeps its short all-caps words, which is the one way "PSU HUB"
+  // survives without "123 COLLEGE AVE" surviving with it.
+  const shouted = s === s.toUpperCase();
+  // Capturing split, so the original spacing is rebuilt rather than guessed at.
+  return s.split(/(\s+)/).map((w) => (w && !/\s/.test(w) ? addrWord(w, shouted) : w)).join('');
 }
 
 // A vendor's earn rate, worded for a student. points_per_dollar crosses the
@@ -3838,9 +3973,17 @@ const RECENT_HEADING = 'RECENT SPOTS';
 /**
  * The vendors the carousel shows, and what to call the row.
  * Returns { list, heading, mode }.
+ *
+ * Pure, and it stays pure: `homeLens` is READ here and only ever written by the
+ * menu's own handlers (pickHomeLens / resetVendorRow). A student who asked for
+ * RECENT and then went quiet for a week self-heals below — the empty recent set
+ * falls through to the recommendations rather than the lens being rewritten out
+ * from under them, so the choice comes back the moment they shop again.
  */
 function recentVendors() {
-  const recent = allVendors.filter((v) => v.recent);
+  // Asked for recommendations explicitly: skip the recent branch entirely,
+  // however much activity there is.
+  const recent = homeLens === 'recommended' ? [] : allVendors.filter((v) => v.recent);
   if (recent.length) {
     // Saved first, then the rest; alphabetical within each group so the order
     // is stable between loads rather than reshuffling on every socket push.
@@ -3906,8 +4049,7 @@ function renderVendors() {
   showVendorSkeleton(false);
   syncVendorCards();
   buildVendorIndex();
-  syncVendorSearchRow();
-  applyVendorFilter();
+  applyVendorFilter();          // …which ends in syncHomeLens(), so the heading follows the data
   // The directory shares allVendors with the carousel, so it repaints on the
   // same data — including every socket-driven balance push.
   renderSpots();
@@ -3921,51 +4063,119 @@ function renderVendors() {
   syncHomeDensity();
 }
 
-// The one place the visible row is decided. `reset` is for a query change: the
+// The one place the visible row is decided. `reset` is for a lens change: the
 // list under the finger just became a different list, so being parked on card 7
 // of the old one is meaningless — go back to the start. A socket push must NOT
 // pass it, or an award landing while you browse would yank you to the first card.
 function applyVendorFilter(reset = false) {
   const wrap = $('vendor-carousel');
-  const q = vendorQuery.trim();
-  if (q) {
-    // A live query searches EVERY spot, not just the recent ones. Searching a
-    // row that has been narrowed to a handful would answer "no spots match" for
-    // a place that plainly exists, which reads as a bug rather than as a
-    // filter — and the Spots tab is one tap away for the full list anyway.
-    shownVendors = filterVendors(vendorQuery);
-    $('home-sub').textContent = 'ALL SPOTS';
-  } else {
-    const { list, heading } = recentVendors();
-    shownVendors = list;
-    $('home-sub').textContent = heading;
-  }
+  const { list, heading, mode } = recentVendors();
+  shownVendors = list;
+  $('home-sub-label').textContent = heading;
+  syncHomeLens(mode);
   paintVendorRow();
   wrap.classList.toggle('single', shownVendors.length === 1);   // lone vendor → full width
 
   const empty = $('vendors-empty');
   empty.hidden = shownVendors.length > 0;
-  if (!shownVendors.length) {
-    empty.textContent = allVendors.length
-      ? `No spots match “${q}”.`
-      : 'No spots yet, check back soon!';
+  // `allVendors.length` guarded, not just `shownVendors`: loadVendors' catch
+  // writes a connection error into this same element WITHOUT going through
+  // render(), and overwriting it with a claim about the catalogue would turn a
+  // true "check your connection" into a false "there are no spots".
+  if (!shownVendors.length && allVendors.length === 0) {
+    empty.textContent = 'No spots yet, check back soon!';
   }
-  // Only while filtering: an idle live region that re-announces on every socket
-  // push would talk over everything else the student is doing.
-  $('vendor-search-status').textContent = vendorQuery.trim()
-    ? `${shownVendors.length} ${shownVendors.length === 1 ? 'spot' : 'spots'} found`
-    : '';
 
   if (reset) wrap.scrollLeft = 0;   // before the dots: they read the row back
   renderVendorDots();               // the pager rebuilds with the row it pages through
 }
 
-/* ---------- home: search the spots ----------
-   A student with 30 spots cannot page a carousel 8 dots at a time, so the row
-   gets a filter. The matching itself is an index, not a scan: an inverted index
-   over the spot names and addresses, held in a trie keyed by character, so a
-   keystroke costs the length of the word being typed instead of a pass over
-   every vendor.
+/* ---------- home: which list, and who decides ----------
+   The row has two possible contents — the spots you have been to lately, and a
+   set of recommendations — and until now the DATA chose, permanently: one
+   purchase flipped a student to RECENT and there was no way back to
+   RECOMMENDED for as long as they kept shopping. That is fine as a default and
+   wrong as a rule, so the heading became the control.
+
+   `homeLens` is the override and null is the normal state, which is what keeps
+   the default behaviour intact for a student who never opens the menu.
+
+   The menu is only offered when there is something to switch BETWEEN. A student
+   with no recent activity has one meaningful list, and a picker whose second
+   option produces an empty carousel is worse than no picker — same rule the
+   Spots tab's cuisine group follows ("a group with nothing in it is a promise
+   the data can't keep"). */
+
+/** True when the student has spots the RECENT list would actually contain. */
+const hasRecentSpots = () => allVendors.some((v) => v.recent);
+
+// Paints the heading's control state. Runs from applyVendorFilter, so it is
+// re-evaluated on every socket push — which is exactly when a last visit can
+// age out of the 7-day window and take the choice away again.
+//
+// `mode` is what recentVendors() actually RESOLVED to, not what homeLens asked
+// for, and the difference is the whole reason it is a parameter. A student who
+// picked Recent and then went quiet for a week still has homeLens === 'recent'
+// while the row has fallen through to the recommendations — ticking "Recent
+// spots" there would have the menu disagree with the heading directly above it.
+function syncHomeLens(mode) {
+  const offered = hasRecentSpots();
+  const btn = $('home-sub');
+  btn.classList.toggle('is-static', !offered);
+  btn.setAttribute('aria-haspopup', offered ? 'true' : 'false');
+  // The menu can be up when the last recent spot ages out from under it. Close
+  // it rather than leave a menu whose owner has stopped being a menu button.
+  // Focus goes back to the heading, which is still there, so this cannot strand
+  // a keyboard or switch user on an element that just became display:none.
+  if (!offered && !$('home-lens-menu').hidden) closeHomeLensMenu(true);
+  Array.from($('home-lens-menu').children).forEach((item) => {
+    item.setAttribute('aria-checked', item.dataset.lens === mode ? 'true' : 'false');
+  });
+}
+
+function toggleHomeLensMenu() {
+  if ($('home-lens-menu').hidden) openHomeLensMenu();
+  else closeHomeLensMenu();
+}
+
+function openHomeLensMenu() {
+  if (!hasRecentSpots()) return;    // nothing to switch between; the heading is just a heading
+  $('home-lens-menu').hidden = false;
+  $('home-sub').setAttribute('aria-expanded', 'true');
+}
+
+function closeHomeLensMenu(refocus = false) {
+  if ($('home-lens-menu').hidden) return;
+  $('home-lens-menu').hidden = true;
+  $('home-sub').setAttribute('aria-expanded', 'false');
+  // Only on a deliberate dismiss (Esc, a pick). A tap elsewhere on the page has
+  // already decided where focus belongs, and yanking it back to the heading
+  // would undo that.
+  if (refocus) $('home-sub').focus();
+}
+
+function pickHomeLens(lens) {
+  if (lens !== 'recent' && lens !== 'recommended') return;
+  homeLens = lens;
+  closeHomeLensMenu(true);
+  applyVendorFilter(true);          // a different list — start at card 1
+  // Written ONLY here. The cards swap silently, and this is the one moment a
+  // student asked for that to happen, so it is the one moment worth saying it
+  // out loud; on every other repaint the region stays quiet.
+  const n = shownVendors.length;
+  $('home-spots-status').textContent =
+    `${$('home-sub-label').textContent.toLowerCase()}, ${n} ${n === 1 ? 'spot' : 'spots'}`;
+}
+
+/* ---------- searching the spots ----------
+   The Spots tab's field, and the only search in the app now that Home's is gone
+   (see index.html → .home-sub-row). It stays here, above the home code that used
+   to be its first caller, because the ranking rules below were written against
+   the vendor list and are read alongside it.
+
+   The matching is an index, not a scan: an inverted index over the spot names
+   and addresses, held in a trie keyed by character, so a keystroke costs the
+   length of the word being typed instead of a pass over every vendor.
 
    Each token is inserted at every start position, not just at 0 — that is what
    makes "bucks" find Starbucks. It costs O(len^2) characters per token at BUILD
@@ -3981,13 +4191,29 @@ function applyVendorFilter(reset = false) {
    Ranking then runs over MATCHES ONLY — never the full list — which is why the
    .some() calls in scoreVendor are not the for-loop this is meant to replace. */
 
-const VENDOR_SEARCH_MIN = 5;   // spots before the field is worth the row it costs
 const SEARCH_SUFFIX_CAP = 24;  // start positions indexed per token (a bound on the O(len^2))
 // Fold to a comparable form: case and accents are not something a student typing
 // one-handed should have to match ("Café" and "cafe" are the same shop).
 const SEARCH_SPLIT = /[^\p{L}\p{N}]+/u;
 const searchFold = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
 const searchTokens = (s) => searchFold(s).split(SEARCH_SPLIT).filter(Boolean);
+
+// The address, tokenised for the index, with every compass word carrying BOTH
+// its spellings. The card shows "E College Ave" (formatAddress, above) while the
+// column may well hold "East College Ave", or the other way round — so a student
+// typing what they can see has to find the shop either way. Indexing both is a
+// build-time cost paid once per vendor list; the alternative is rewriting the
+// query on every keystroke, and that only works in one direction.
+const ADDR_SEARCH_ALIAS = { east: 'e', west: 'w', north: 'n', south: 's', e: 'east', w: 'west', n: 'north', s: 'south' };
+function addressSearchTokens(address) {
+  const tokens = searchTokens(address);
+  const out = tokens.slice();
+  tokens.forEach((t) => {
+    const alias = ADDR_SEARCH_ALIAS[t];
+    if (alias && !out.includes(alias)) out.push(alias);
+  });
+  return out;
+}
 
 const trieNode = () => ({ kids: new Map(), ids: new Set() });
 // recs[i] describes allVendors[i]: folded name, its words, and the address's.
@@ -4026,7 +4252,7 @@ function buildVendorIndex() {
   const root = trieNode();
   const recs = allVendors.map((v, i) => {
     const nameTokens = searchTokens(v.name);
-    const addrTokens = searchTokens(v.address);
+    const addrTokens = addressSearchTokens(v.address);
     nameTokens.forEach((t) => trieAdd(root, t, i));
     addrTokens.forEach((t) => trieAdd(root, t, i));
     // "Joe's Coffee" is two tokens to a tokenizer and one word to anyone typing
@@ -4086,51 +4312,15 @@ function filterVendors(query) {
     .map((m) => allVendors[m.i]);
 }
 
-// Hidden under VENDOR_SEARCH_MIN spots — but never while a query is live, or a
-// list shrinking under you (a spot going inactive mid-search) would take the
-// field away with the filter still applied and no way to clear it.
-function syncVendorSearchRow() {
-  $('vendor-search-wrap').hidden = allVendors.length < VENDOR_SEARCH_MIN && !vendorQuery;
-}
-
-// One filter per frame at most. The index lookup is cheap; the DOM moves behind
-// it are not free, and a fast typist can outrun a frame.
-let searchRaf = 0;
-function onVendorSearchInput() {
-  if (searchRaf) return;
-  searchRaf = requestAnimationFrame(() => {
-    searchRaf = 0;
-    const next = $('vendor-search').value;
-    if (next === vendorQuery) return;
-    vendorQuery = next;
-    $('vendor-search-clear').hidden = !next;
-    applyVendorFilter(true);
-  });
-}
-
-function onVendorSearchKey(e) {
-  if (e.key === 'Escape' && $('vendor-search').value) {
-    e.stopPropagation();     // …and not also close whatever sheet the global handler finds
-    clearVendorSearch();
-  } else if (e.key === 'Enter') {
-    e.preventDefault();      // no form to submit; the row is already filtered
-    $('vendor-search').blur();   // what the phone keyboard's "search" key is for: put it away
-  }
-}
-
-function clearVendorSearch(refocus = true) {
-  cancelAnimationFrame(searchRaf); searchRaf = 0;   // a queued keystroke would restore the query
-  $('vendor-search').value = '';
-  $('vendor-search-clear').hidden = true;
-  if (vendorQuery) { vendorQuery = ''; applyVendorFilter(true); }
-  if (refocus) $('vendor-search').focus();
-}
-
 // Sign-out: the next student must not find the last one's spots — the same
 // reason dropHistory() unpaints the activity list.
-function resetVendorSearch() {
-  clearVendorSearch(false);
-  syncVendorSearchRow();
+function resetVendorRow() {
+  homeLens = null;
+  closeHomeLensMenu();
+  // The live region is written on a pick and never cleared by one, so without
+  // this the next student signs in to the previous one's spot count sitting in
+  // a role="status" node.
+  $('home-spots-status').textContent = '';
   vendorCards.forEach((card) => card.remove());
   vendorCards.clear();
   vendorIndex.root = trieNode();

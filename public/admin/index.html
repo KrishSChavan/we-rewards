@@ -169,7 +169,7 @@
             <button id="vendor-add-btn" class="btn-ghost btn-compact" type="button">+ Add vendor</button>
           </div>
         </div>
-        <p class="muted"><strong>Add vendor</strong> onboards one on the spot, the same as accepting an application. <strong>Edit</strong> changes a vendor's name, its points rate, and its reward items. Toggle a vendor off to cut it off completely: hidden from students and its terminal is blocked. Points and history are kept, so turning it back on restores everything. <strong>Delete</strong> wipes a vendor and its data (logo, rewards, balances, login) for good; past transactions stay but show as a generic “Vendor”, and that can’t be undone.</p>
+        <p class="muted"><strong>Add vendor</strong> onboards one on the spot, the same as accepting an application. <strong>Edit</strong> changes a vendor's name, its points rate, what it sells, its logo, and its reward items. Toggle a vendor off to cut it off completely: hidden from students and its terminal is blocked. Points and history are kept, so turning it back on restores everything. <strong>Delete</strong> wipes a vendor and its data (logo, rewards, balances, login) for good; past transactions stay but show as a generic “Vendor”, and that can’t be undone.</p>
         <div class="list-tools">
           <input id="vendors-q" class="list-q" type="search" placeholder="Search by name, slug or address" autocomplete="off" spellcheck="false" aria-label="Search vendors" />
           <button id="vendors-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
@@ -506,11 +506,13 @@
 
   <!-- ===== VENDOR EDITOR ===== -->
   <!-- Opened from a vendor row's "Edit" button. The operator edits the vendor's
-       display name, its points-per-dollar rate and its reward items in place.
-       The server reuses the vendor terminal's own validators (src/lib/rewards.js)
-       for the pricing half, so nothing an operator saves here could be rejected
-       by the vendor's Settings screen. The name has no vendor-side editor at all:
-       this dialog is the only place it can be changed. -->
+       display name, its points-per-dollar rate, what it sells, its logo and its
+       reward items in place.
+       The server reuses the vendor terminal's own validators (src/lib/rewards.js,
+       src/lib/logo.js) for the pricing and artwork halves, so nothing an operator
+       saves here could be rejected by the vendor's Settings screen. The name has
+       no vendor-side editor at all: this dialog is the only place it can be
+       changed. -->
   <!-- ===== STUDENT DETAIL ===== -->
   <!-- Everything the platform knows about one student, from
        GET /api/admin/students/:id. Read-only, so it has no save path and no
@@ -572,6 +574,38 @@
           <span id="vendor-sells-note" class="vendor-edit-note"></span>
         </div>
         <p class="vendor-edit-hint">Feeds the filter on the students' Spots tab. Up to 3 tags. An untagged spot is not "cheap" — it is simply left out of a filtered view, so it is worth filling in.</p>
+      </div>
+
+      <!-- The vendor's artwork, operator-side. The vendor already has this
+           control in their own terminal Settings, and most of them never open
+           it — a logo emailed to the operator otherwise has no route into the
+           app short of talking someone through the terminal over the phone.
+
+           The pick is STAGED, not saved on choose: every other section in this
+           dialog is pick-then-Save, and staging means a mis-tapped Remove costs
+           a Close rather than the vendor's artwork. The note says so out loud
+           while something is waiting.
+
+           The preview is role="img" with a name that tracks the state, not
+           aria-hidden like #nv-logo-preview above: on the Add form the operator
+           has just chosen the file and knows what is in it, whereas here the
+           preview is the only report of what the vendor currently HAS. -->
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">Logo</p>
+        <div class="nv-logo-row">
+          <div id="vendor-logo-preview" class="nv-logo-preview is-empty" role="img" aria-label="Logo: loading"></div>
+          <div class="nv-logo-actions">
+            <button id="vendor-logo-pick" class="vr-save" type="button">Choose image</button>
+            <button id="vendor-logo-clear" class="vr-cancel" type="button" hidden>Remove</button>
+            <button id="vendor-logo-save" class="vr-save" type="button" disabled>Save logo</button>
+          </div>
+        </div>
+        <!-- role="status", unlike the three notes above it: this one carries the
+             file-picker's rejections ("that image is too large"), and a note
+             that only appears is a note a screen-reader operator never hears. -->
+        <span id="vendor-logo-note" class="vendor-edit-note" role="status"></span>
+        <input id="vendor-logo-file" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+        <p class="vendor-edit-hint">Square PNG or JPG. It is shrunk to 128px before it is stored. Students' phones cache the old one for up to an hour, and briefly longer on a phone that has already seen it, so a swap takes a little while to reach everyone.</p>
       </div>
 
       <div class="vendor-edit-section">

@@ -922,12 +922,97 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* The spots block owns the third auto. No inline margin: the carousel bleeds
    edge to edge and each child brings its own 1.3rem gutter. */
 .home-spots { margin: 0 0 auto; }
-/* The heading and the vendor filter share one line. The ROW owns the margins —
+/* The heading and the Map pill share one line. The ROW owns the margins —
    including the 0.9rem top that is one of the four constants above — so the
-   search field appearing or disappearing can never change the home screen's
-   vertical rhythm. */
-.home-sub-row { display: flex; align-items: center; gap: 0.75rem; margin: 0.9rem 1.3rem 0.85rem; }
-.home-sub { flex: 0 0 auto; font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; color: var(--muted); }
+   heading changing width (or the pill appearing) can never change the home
+   screen's vertical rhythm.
+
+   NO flex `gap` here, and that is load-bearing rather than a style choice. Flex
+   gap is Safari 14.1 and the build synthesises margin equivalents behind
+   :root.no-flex-gap (scripts/build-client.js) — but it emits them at the END of
+   the stylesheet as `.home-sub-row > * + * { margin-left: … }`, which is later
+   and no less specific than .map-open-btn's `margin-left: auto`, so below the
+   floor the pill would stop hugging the right edge and sit against the heading.
+   Nothing in this row is flexible any more, so there is no slack for a flex
+   layout to absorb and the auto margin is the ONLY thing holding the pill
+   right. Same conclusion, and the same reasoning, as .spots-sub-row.
+
+   position: relative because the lens menu is anchored to this row. */
+.home-sub-row {
+  position: relative;
+  display: flex; align-items: center;
+  margin: 0.9rem 1.3rem 0.85rem;
+}
+/* The heading, which is also the control that changes it. Sized like a heading
+   and not like a button: no border, no fill, and the only ink is the word.
+
+   appearance: none is not optional — a bare <button> keeps
+   -webkit-appearance: push-button on iOS, which imposes an internal box of its
+   own and pushes the label off the row's centre line. Every other button here
+   escapes that by having a border and a background; this one, like .vdot, has
+   neither and has to say so.
+
+   No font-size on the BUTTON: it goes on the label span, exactly as
+   .map-open-btn / .map-open-label do in this same row, so the row keeps one
+   type scale whatever a UA's default button size happens to be. */
+.home-sub {
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+  height: 2.3rem;                       /* the Map pill's height, so the pill alone sets the row */
+  padding: 0; margin: 0;
+  background: none; border: 0; color: var(--muted);
+  appearance: none; -webkit-appearance: none;
+  touch-action: manipulation; cursor: pointer;
+}
+.home-sub-label { font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; }
+/* Rotates when the menu is up, so the caret reports state rather than just
+   pointing. 0.55rem: at the label's own size it reads as a second word. */
+.home-sub-caret {
+  margin-left: 0.3rem; font-size: 0.55rem; line-height: 1;
+  transition: transform 120ms ease;
+}
+.home-sub[aria-expanded="true"] { color: var(--ink); }
+.home-sub[aria-expanded="true"] .home-sub-caret { transform: rotate(180deg); }
+/* Nothing to switch between: the heading goes back to being a heading. The
+   caret is what disappears, not the word — see index.html. */
+.home-sub.is-static { cursor: default; }
+.home-sub.is-static .home-sub-caret { display: none; }
+.home-sub:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; border-radius: 6px; }
+
+/* ---------- the lens menu ----------
+   Anchored under the heading, not a bottom sheet: two options do not earn a
+   body-level overlay with a focus trap, and the menu belongs where the word it
+   changes is. Left-aligned to the heading and allowed to be wider than it —
+   "Recommended" is longer than "RECENT SPOTS" is at this letter-spacing.
+
+   z-index above the carousel below it, which scroll-snaps and would otherwise
+   paint over a menu that overhangs it. */
+.home-lens-menu {
+  position: absolute; top: calc(100% - 0.35rem); left: 0; z-index: 30;
+  min-width: 11rem;
+  display: flex; flex-direction: column;
+  padding: 0.3rem;
+  background: var(--card);
+  border: 2.5px solid var(--edge); border-radius: 0.9rem;
+  box-shadow: 0 5px 0 var(--edge);
+}
+.home-lens-menu[hidden] { display: none; }
+.home-lens-item {
+  font: inherit; font-size: 0.85rem; font-weight: 800;
+  text-align: left; color: var(--ink);
+  padding: 0.55rem 0.6rem; border-radius: 0.6rem;
+  background: none; border: 0;
+  appearance: none; -webkit-appearance: none;
+  touch-action: manipulation; cursor: pointer;
+}
+/* The chosen one: a filled row rather than a tick, which would need a column of
+   its own. --brand fill under --card text, the same pair .filter-chip.is-on uses
+   and for the reason documented there — the two tokens FLIP TOGETHER between
+   themes (brand navy→pale-blue exactly as card white→dark-navy), so the contrast
+   survives dark mode. --navy and --sky do not flip, and either on its own prints
+   dark-on-dark. */
+.home-lens-item[aria-checked="true"] { background: var(--brand); color: var(--card); }
+.home-lens-item:focus-visible { outline: 3px solid var(--brand); outline-offset: -1px; }
 
 /* ---------- home: community points card ----------
    The cross-vendor wallet, and the only balance on this screen not tied to one
@@ -1323,39 +1408,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .receipt-view { display: flex; flex-direction: column; align-items: center; gap: 0.7rem; width: 100%; }
 
-/* ---------- home: filter the spots ----------
-   A pill on the heading's row, in the same sticker language as everything else
-   here but without the hard shadow: it is a field, not a thing you press.
-   flex: 1 with min-width: 0 so it takes the rest of the line and no more — the
-   heading keeps its natural width on a 320px screen instead of being squeezed
-   into two lines. */
-.vendor-search {
-  flex: 1 1 auto; min-width: 0;
-  display: flex; align-items: center; gap: 0.4rem;
-  padding: 0.3rem 0.5rem 0.3rem 0.65rem;
-  background: var(--card);
-  border: 2.5px solid var(--edge); border-radius: 999px;
-  transition: border-color 90ms ease, box-shadow 90ms ease;
-}
-.vendor-search[hidden] { display: none; }
-/* --brand, not --navy: the selected-row treatment used elsewhere pairs navy
-   with a light fill, and navy on its own disappears against the dark card. */
-.vendor-search:focus-within { border-color: var(--brand); box-shadow: inset 0 0 0 1.5px var(--brand); }
+/* ---------- the shared bits of a search field ----------
+   Home's own search field is gone (see index.html → .home-sub-row for why), but
+   these two are NOT its leftovers: the Spots tab's always-present field wears
+   both — #spots-search-clear is a .vendor-search-clear, and .spots-search-row
+   restyles .vendor-search-icon further down. They keep the name they were given
+   when Home was the only caller. */
 .vendor-search-icon { flex: 0 0 auto; font-size: 0.85rem; line-height: 1; opacity: 0.75; }
-.vendor-search-input {
-  flex: 1 1 auto; min-width: 0;
-  /* 1rem = 16px is the floor that stops iOS Safari zooming the page in on
-     focus. user-scalable=no does not cover that case (see no-zoom.js), and the
-     zoom it triggers leaves the app scrolled sideways with no way back. */
-  font: inherit; font-size: 1rem; font-weight: 700; color: var(--ink);
-  background: none; border: 0; outline: none;
-  padding: 0.15rem 0;
-  -webkit-appearance: none; appearance: none;
-}
-.vendor-search-input::placeholder { color: var(--muted); font-weight: 600; }
-/* the platform's own clear affordance — we ship one that matches the app */
-.vendor-search-input::-webkit-search-cancel-button,
-.vendor-search-input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
 .vendor-search-clear {
   flex: 0 0 auto;
   width: 1.6rem; height: 1.6rem; border-radius: 999px;
@@ -3106,9 +3165,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    default grey furniture. */
 
 /* --- the "Map 🗺️" entry point, sharing the heading's row --- */
-/* margin-left:auto rather than a spacer: .vendor-search is flex:1 and eats the
-   slack when it is showing, but it is [hidden] below VENDOR_SEARCH_MIN spots,
-   and without the auto margin this would slide left to hug the heading.
+/* margin-left:auto rather than a spacer, and rather than a flex gap: nothing
+   else in .home-sub-row is flexible, so this margin is the ONLY thing holding
+   the pill against the right edge. See .home-sub-row on why the row deliberately
+   has no `gap` for the no-flex-gap fallback to override.
 
    A pill, not a circle: the width is whatever the label plus the glyph needs, and
    the row's height is unchanged (2.3rem was the circle's diameter and is now the
@@ -3126,8 +3186,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   cursor: pointer;
   transition: transform 90ms ease, box-shadow 90ms ease;
 }
-/* The word sits on the heading row's own type scale (.home-sub is 0.8rem/900),
-   so it reads as part of that line rather than as a shrunken button label. */
+/* The word sits on the heading row's own type scale (.home-sub-label is
+   0.8rem/900), so it reads as part of that line rather than as a shrunken
+   button label — and, like that one, the size is on the LABEL and not on the
+   button, so a UA's default button font can't drag the row out of true. */
 .map-open-label { font-size: 0.8rem; font-weight: 900; letter-spacing: 0.08em; }
 .map-open-icon { margin-left: 0.35rem; font-size: 1.05rem; }
 .map-open-btn[hidden] { display: none; }

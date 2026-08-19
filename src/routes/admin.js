@@ -17,6 +17,7 @@ import {
 import { emitBalance } from '../lib/realtime.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
+import { validLogo } from '../lib/logo.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -26,15 +27,14 @@ const ADDRESS_MAX = 300;   // keep a pasted essay out of the column and the geoc
 
 // Keep in sync with src/routes/apply.js — the operator's "Add vendor" form is
 // the same onboarding as an accepted /join application, so what one accepts the
-// other must accept too (and the logo caps must match src/routes/vendor.js,
-// since all three run the same client-side shrink-to-128px pipeline).
+// other must accept too. The logo rule is no longer among these: it moved to
+// src/lib/logo.js, which all four doors import, because "keep in sync" had
+// already failed there once (see that file).
 const NAME_MAX = 80;
 const EMAIL_MAX = 254;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 72;   // bcrypt reads 72 bytes; refuse longer, never truncate
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const LOGO_MAX_CHARS = 500_000;
-const LOGO_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
 
 // How long a minted password-reset code stays usable. Long enough to finish the
 // phone call and walk to the terminal, short enough that a code read out and
@@ -64,21 +64,19 @@ export function validNewVendor(body) {
   const email = String(b.email ?? '').trim().toLowerCase();
   const password = typeof b.password === 'string' ? b.password : '';
   const address = String(b.address ?? '').trim();
-  const logo = b.logo == null || b.logo === '' ? null : String(b.logo);
+  const logo = validLogo(b.logo);
 
   if (!EMAIL_RE.test(email) || email.length > EMAIL_MAX) return { error: 'Enter a valid email address.' };
   if (password.length < PASSWORD_MIN) return { error: `Password must be at least ${PASSWORD_MIN} characters.` };
   if (password.length > PASSWORD_MAX) return { error: `Password must be ${PASSWORD_MAX} characters or fewer.` };
   if (address.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
-  if (logo !== null && (logo.length > LOGO_MAX_CHARS || !LOGO_DATA_URL.test(logo))) {
-    return { error: 'Logo image looks invalid, try re-picking it.' };
-  }
+  if (logo.error) return { error: logo.error };
 
   // Not validated, NORMALISED (migration-042): both are optional pickers, and
   // an unrecognised tag drops out rather than 400ing a form the operator has
   // otherwise filled in correctly. See src/lib/cuisines.js.
   return {
-    name: n.value, email, password, address: address || null, logo,
+    name: n.value, email, password, address: address || null, logo: logo.value,
     cuisine: normalizeCuisine(b.cuisine),
     priceLevel: normalizePriceLevel(b.priceLevel),
   };
@@ -223,7 +221,11 @@ router.get('/vendors', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('vendors')
-      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, created_at')
+      // has_logo, never `logo`: the flag is a generated column (migration-016)
+      // that exists so a list can say whether there is artwork without dragging
+      // a 500 KB base64 blob per row through the response. The bytes themselves
+      // are fetched one vendor at a time by GET /vendors/:id/logo below.
+      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
       .order('created_at', { ascending: false });
     if (error) throw error;
 
@@ -538,7 +540,8 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
 });
 
 /**
- * PATCH /api/admin/vendors/:id  { name?, active?, address?, pointsPerDollar? }
+ * PATCH /api/admin/vendors/:id
+ *   { name?, active?, address?, pointsPerDollar?, cuisine?, priceLevel?, logo? }
  * Operator edits for one vendor. Independent updates:
  *  - `name` is the vendor's display name, everywhere it appears: the student
  *    app's card, its transaction history, the terminal header, and the operator
@@ -558,6 +561,19 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
  *  - `pointsPerDollar` is the vendor's earn ratio, same bounds as the vendor's
  *    own Settings save (validRatio, shared in src/lib/rewards.js). The terminal
  *    picks it up on its next /api/vendor/config fetch.
+ *  - `cuisine` / `priceLevel` are what the place sells (migration-042).
+ *    Normalised rather than rejected — see below.
+ *  - `logo` is the vendor's artwork, the same base64 data-URL the vendor's own
+ *    Settings tab writes and the same one "Add vendor" accepts (src/lib/logo.js
+ *    is the shared rule). `null` or `''` CLEARS it; omitting the key leaves it
+ *    alone. This is the operator's copy of a control the vendor already has,
+ *    and it exists because most vendors never open Settings: a logo mailed to
+ *    the operator otherwise has no way into the app short of the vendor being
+ *    talked through the terminal over the phone.
+ *
+ *    `has_logo` is deliberately NOT written. It is `generated always as (logo is
+ *    not null) stored` (migration-016), so writing the column is what maintains
+ *    the flag, and an explicit update would be rejected by Postgres.
  */
 router.patch('/vendors/:id', async (req, res, next) => {
   try {
@@ -616,8 +632,19 @@ router.patch('/vendors/:id', async (req, res, next) => {
       updates.price_level = normalizePriceLevel(body.priceLevel);
     }
 
+    // `hasOwnProperty`, not a null check, for the same reason as priceLevel but
+    // one step further: BOTH null and '' are meaningful values here (they clear
+    // the logo), so the only thing that distinguishes "remove it" from "leave it
+    // alone" is whether the key was sent at all. This is the same test
+    // validSettings uses on the vendor's own side.
+    if (Object.prototype.hasOwnProperty.call(body, 'logo')) {
+      const l = validLogo(body.logo);
+      if (l.error) return res.status(400).json({ error: 'BAD_REQUEST', message: l.error });
+      updates.logo = l.value;
+    }
+
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, pointsPerDollar, cuisine, and/or priceLevel).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -631,7 +658,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
       .from('vendors')
       .update(updates)
       .eq('id', req.params.id)
-      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, created_at')
+      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
@@ -667,6 +694,39 @@ async function vendorExists(req, res) {
   }
   return true;
 }
+
+/**
+ * GET /api/admin/vendors/:id/logo → { logo: string|null }
+ * The artwork itself, for the Edit dialog's preview. One lazy request per modal
+ * open, the same shape as loadVendorRewards below it.
+ *
+ * WHY NOT `<img src="/api/vendor-logo/:id">`, which already serves this image as
+ * real bytes and out of a cache. Because loadVendorLogo() answers null for an
+ * INACTIVE vendor (src/lib/cache.js), and a vendor toggled off is precisely the
+ * one an operator opens this dialog to fix — the preview would go blank and read
+ * as "no logo", which is the one thing it must never say wrongly.
+ *
+ * The second reason is freshness. That route sets max-age=3600 with a
+ * stale-while-revalidate window on top, so the operator's own browser can go on
+ * showing the artwork they just replaced. Everything under /api is Cache-Control:
+ * no-store (server.js), so this JSON read is current by construction. It is the
+ * heavier of the two per open — uncached, and base64 is 4/3 the size of the
+ * bytes — and that is the price of both properties.
+ */
+router.get('/vendors/:id/logo', async (req, res, next) => {
+  try {
+    if (!(await vendorExists(req, res))) return;
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .select('logo')
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (error) throw error;
+    res.json({ logo: data?.logo ?? null });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /** GET /api/admin/vendors/:id/rewards — all of one vendor's items incl. inactive. */
 router.get('/vendors/:id/rewards', async (req, res, next) => {

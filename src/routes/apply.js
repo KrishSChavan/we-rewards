@@ -11,6 +11,7 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { notifyAdmins } from '../lib/push.js';
 import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
+import { validLogo } from '../lib/logo.js';
 
 const router = Router();
 
@@ -24,10 +25,7 @@ const PASSWORD_MAX = 72;
 const PHONE_RE = /^[\d\s()+.-]{7,20}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Keep in sync with the logo caps in src/routes/vendor.js — the /join page
-// runs the same client-side shrink-to-128px pipeline as the terminal Settings.
-const LOGO_MAX_CHARS = 500_000;
-const LOGO_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+
 
 /** Validate the raw body → { fields } ready to insert, or { error } to 400. */
 function validApplication(body) {
@@ -39,7 +37,7 @@ function validApplication(body) {
   const password = typeof b.password === 'string' ? b.password : '';
   const address = String(b.address ?? '').trim();
   const message = String(b.message ?? '').trim();
-  const logo = b.logo == null ? null : String(b.logo);
+  const logo = validLogo(b.logo);
 
   if (!businessName || businessName.length > NAME_MAX) return { error: `Business name is required (max ${NAME_MAX} characters).` };
   if (!contactName || contactName.length > NAME_MAX) return { error: `Contact name is required (max ${NAME_MAX} characters).` };
@@ -49,9 +47,7 @@ function validApplication(body) {
   if (password.length > PASSWORD_MAX) return { error: `Password must be ${PASSWORD_MAX} characters or fewer.` };
   if (address.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
   if (message.length > MESSAGE_MAX) return { error: `Message must be ${MESSAGE_MAX} characters or fewer.` };
-  if (logo !== null && (logo.length > LOGO_MAX_CHARS || !LOGO_DATA_URL.test(logo))) {
-    return { error: 'Logo image looks invalid, try re-picking it.' };
-  }
+  if (logo.error) return { error: logo.error };
 
   return {
     fields: {
@@ -61,7 +57,7 @@ function validApplication(body) {
       email,
       address: address || null,
       message: message || null,
-      logo,
+      logo: logo.value,
       // Optional, and never a reason to bounce an application (migration-042).
       // Everything above this line is something we need in order to reach the
       // applicant or create their login; these two only decide which filter
