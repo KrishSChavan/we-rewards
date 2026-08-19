@@ -43,6 +43,7 @@ export const CUISINES = [
   { value: 'italian',      label: 'Italian' },
   { value: 'bbq',          label: 'BBQ' },
   { value: 'wings',        label: 'Wings' },
+  { value: 'bar',          label: 'Bar' },
   { value: 'seafood',      label: 'Seafood' },
   { value: 'vegetarian',   label: 'Vegetarian' },
   { value: 'deli',         label: 'Deli' },
