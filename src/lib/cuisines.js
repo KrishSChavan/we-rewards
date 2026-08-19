@@ -42,10 +42,12 @@ export const CUISINES = [
   { value: 'mediterranean', label: 'Mediterranean' },
   { value: 'italian',      label: 'Italian' },
   { value: 'bbq',          label: 'BBQ' },
+  { value: 'chicken',      label: 'Chicken' },
   { value: 'wings',        label: 'Wings' },
   { value: 'bar',          label: 'Bar' },
   { value: 'seafood',      label: 'Seafood' },
   { value: 'vegetarian',   label: 'Vegetarian' },
+  { value: 'vegan',        label: 'Vegan' },
   { value: 'deli',         label: 'Deli' },
   { value: 'convenience',  label: 'Convenience' },
 ];
