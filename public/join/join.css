@@ -11,6 +11,7 @@
   --navy: #12294b;
   --navy-press: #0b1c36;
   --sky-line: #a9c4e4;
+  --sky: #dce8f6;              /* --sky-line's tint, for a ticked cuisine pill */
   --error: #a93226;
   --muted: #5a6678;
   font-size: 16px;
@@ -76,17 +77,48 @@ form { display: flex; flex-direction: column; gap: 1.05rem; margin-top: 0.6rem; 
 label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; font-size: 1rem; }
 .opt { color: var(--muted); font-weight: 500; font-style: normal; font-size: 0.85rem; }
 
-input[type="text"], input[type="email"], input[type="tel"], input[type="password"], textarea {
+input[type="text"], input[type="email"], input[type="tel"], input[type="password"], textarea, select {
   font: inherit; font-size: 1.15rem; font-weight: 500; padding: 0.85rem;
   border: 2.5px solid var(--ink); border-radius: 0.6rem;
   background: var(--card); color: var(--ink); width: 100%;
 }
-input:focus, textarea:focus { outline: none; border-color: var(--navy); box-shadow: 0 0 0 2px var(--sky-line); }
+/* The price picker keeps its native arrow and native mobile wheel — this is a
+   form, not a designed surface, and there is nothing to gain from rebuilding a
+   control the applicant's own OS renders better. */
+select { appearance: auto; -webkit-appearance: menulist; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--navy); box-shadow: 0 0 0 2px var(--sky-line); }
 textarea { resize: vertical; min-height: 4.5rem; }
 
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem; }
 
 .hint { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+
+/* cuisine checkboxes — a wrapping row of pills, filled from /api/cuisines.
+   A <fieldset> so the legend labels the group for a screen reader; its default
+   border/padding are stripped because the card already provides the frame. */
+.tag-field { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.tag-field legend { padding: 0; font-weight: 700; font-size: 1rem; }
+.tag-grid { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+
+/* The whole pill is the label, so the tap target is the pill and not the 13px
+   box inside it. The checkbox itself stays a real focusable control — only its
+   appearance is borrowed by the pill via :has(). */
+.tag-opt {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.45rem 0.8rem; border-radius: 999px;
+  border: 2.5px solid var(--sky-line); background: var(--card);
+  font-size: 0.95rem; font-weight: 700; cursor: pointer;
+  user-select: none; -webkit-user-select: none;
+}
+.tag-opt input { accent-color: var(--navy); margin: 0; }
+/* :has() is Safari 15.4+ / Chrome 105+. Below that the pill simply doesn't
+   change colour and the checkbox's own tick carries the state — the control
+   still works, it is just plainer, which is the right way for this to degrade. */
+.tag-opt:has(input:checked) { border-color: var(--navy); background: var(--sky); }
+.tag-opt:has(input:focus-visible) { box-shadow: 0 0 0 2px var(--sky-line); }
+/* At the cap, unticked options are disabled — say so visually, or the dead tap
+   reads as a broken checkbox. */
+.tag-opt.is-disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* logo picker — square preview beside the choose/remove buttons */
 .logo-field { display: flex; align-items: flex-start; gap: 1rem; }

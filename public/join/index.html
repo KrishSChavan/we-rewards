@@ -58,6 +58,35 @@
           <span class="hint">Shown as a map on your card in the student app.</span>
         </label>
 
+        <!-- What the shop SELLS. Everything above this point is how we reach
+             you or make your login; these two decide which filters your spot
+             answers to on the students' Spots tab, which is the difference
+             between being found by someone who wants coffee and being found
+             only by someone who already knows your name.
+
+             Both optional, and the whole block is removed if /api/cuisines
+             can't be reached — an application must never fail to submit over
+             a field that only affects filtering. -->
+        <fieldset id="cuisine-field" class="tag-field" hidden>
+          <legend>What do you sell? <em class="opt">(pick up to <span id="cuisine-max">3</span>)</em></legend>
+          <!-- Checkboxes, built from the server's vocabulary rather than
+               hardcoded here, so adding a tag is one edit in
+               src/lib/cuisines.js and not three. -->
+          <div id="f-cuisine" class="tag-grid"></div>
+          <span class="hint">Students use these to filter the spots list. Pick the ones a customer would actually search for.</span>
+        </fieldset>
+
+        <label>Typical price <em class="opt">(optional)</em>
+          <select id="f-price">
+            <option value="" selected>Prefer not to say</option>
+            <option value="1">$ — most orders under $10</option>
+            <option value="2">$$ — around $10–20</option>
+            <option value="3">$$$ — around $20–35</option>
+            <option value="4">$$$$ — $35 and up</option>
+          </select>
+          <span class="hint">Roughly what one person spends on a normal order. Only used for filtering.</span>
+        </label>
+
         <div class="logo-field">
           <div id="logo-preview" class="logo-preview is-empty" aria-hidden="true"></div>
           <div class="logo-actions">

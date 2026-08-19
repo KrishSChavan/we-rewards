@@ -353,7 +353,12 @@ export function loadVendorCatalogue() {
       .from('vendors')
       // created_at rides along so the app can mark a spot as newly joined. It
       // is already the sort key; it just was never selected.
-      .select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, created_at, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)')
+      // cuisine + price_level (migration-042) feed the Spots tab's filter
+      // sheet. Both are small scalars on a row that is already being read, so
+      // they ride along here rather than justifying a second query — and
+      // because the sheet's chips are derived from the catalogue itself, a
+      // vendor tagging themselves becomes filterable on the next cache turn.
+      .select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, cuisine, price_level, created_at, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)')
       .eq('active', true)
       .order('created_at', { ascending: false });
     if (error) throw error;

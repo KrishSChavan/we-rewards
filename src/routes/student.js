@@ -300,6 +300,17 @@ router.get('/balances', requireConsent, async (req, res, next) => {
             visits: visitMap[v.id] ?? 0,
           },
           // ---- what the Spots tab and the Recent row are built from ----
+          // What the place SELLS (migration-042) — the only two facts here that
+          // describe the spot rather than this student's history with it, and
+          // the whole basis of the filter sheet's cuisine and price rows.
+          //
+          // An empty array and a null are meaningfully different from an absent
+          // key: they mean "this vendor has not said", which the sheet treats as
+          // "excluded from a cuisine/price filter" rather than as a match. Sent
+          // for every vendor so the client never has to distinguish untagged
+          // from unloaded.
+          cuisine: Array.isArray(v.cuisine) ? v.cuisine : [],
+          priceLevel: v.price_level ?? null,
           // The heart's state (migration-041).
           favorite: favoriteSet.has(v.id),
           // Any activity in the last RECENT_WINDOW_DAYS: bought, redeemed, or

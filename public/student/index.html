@@ -638,31 +638,36 @@
                    whole job is the list. -->
               <div class="spots-sub-row">
                 <p class="page-sub">Everywhere you can earn</p>
-                <!-- A real <select>, styled to a pill rather than rebuilt as a
-                     custom popup. It is three mutually exclusive options with no
-                     custom rendering inside them, which is exactly what a select
-                     is for — and it arrives with keyboard support, screen-reader
-                     semantics, outside-click and Esc dismissal, and the native
-                     iOS picker, none of which a hand-rolled menu gets for free.
-                     Only the closed state needs styling, and that is fully
-                     reachable with appearance: none. -->
+                <!-- This was a real <select> for as long as the filter was
+                     three mutually exclusive options, which is exactly what a
+                     select is for. Cuisine and price broke that: they combine
+                     (coffee AND cheap), they combine WITH the list picker, and
+                     a select cannot express any of it — <select multiple> is a
+                     desktop scroll box no phone renders usefully.
+
+                     So: a pill that opens a sheet of checkboxes, and the sheet
+                     re-implements by hand every free behaviour the select was
+                     chosen for — Esc, backdrop dismiss, focus into the panel
+                     and back onto the pill, aria-expanded, a labelled dialog.
+                     That work is the actual cost of this change, and it is why
+                     the "Show" group inside is still native radios: that part
+                     is still mutually exclusive, and native radios keep their
+                     arrow-key navigation and grouped announcement for free. -->
                 <div class="spots-filter">
-                  <!-- Favorites sits directly after All: it is the only option
-                       the student curates by hand, and it is what the heart on
-                       every row feeds. Recent and Top keep their order below it. -->
-                  <select id="spots-filter" class="spots-filter-select" aria-label="Filter spots">
-                    <option value="all" selected>All</option>
-                    <option value="favorites">Favorites</option>
-                    <option value="recent">Recent</option>
-                    <option value="top">Top</option>
-                  </select>
-                  <!-- Decorative: the select owns the interaction, so this must
-                       not eat the tap (pointer-events: none in the CSS). -->
-                  <span class="spots-filter-chev" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M6 9.5 12 15.5l6-6" />
-                    </svg>
-                  </span>
+                  <button id="spots-filter-btn" class="spots-filter-btn" type="button"
+                          aria-haspopup="dialog" aria-expanded="false" aria-controls="spots-filter-modal">
+                    <span class="spots-filter-ico" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                        <path d="M4 7h16M7 12h10M10 17h4" />
+                      </svg>
+                    </span>
+                    <!-- Names the CURRENT filter, not the control: a pill that
+                         says "Favorites" tells a student why the list is short
+                         without opening anything. Falls back to "Filter" only
+                         when nothing is narrowed. Written by syncFilterPill(). -->
+                    <span id="spots-filter-label" class="spots-filter-label">Filter</span>
+                    <span id="spots-filter-count" class="spots-filter-count" hidden></span>
+                  </button>
                 </div>
               </div>
             </header>
@@ -1273,6 +1278,63 @@
       <div id="receipt-success-view" class="receipt-view" hidden>
         <p id="receipt-success-line" class="detail-desc"></p>
         <button id="receipt-done" class="btn-redeem" type="button">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- Spots filter sheet ----------
+       Three groups, applied together: the list picker (mutually exclusive),
+       cuisine, and price. Changes take effect LIVE on the list behind the
+       sheet rather than waiting for an Apply — on a phone the result is a tap
+       away from being visible, and an Apply button turns every adjustment into
+       two taps and a guess. The footer button is therefore a dismiss that
+       happens to carry the count, which is the only thing an Apply would have
+       told them anyway.
+
+       The cuisine chips are built by renderFilterSheet() from the cuisines the
+       loaded spots ACTUALLY carry — not from a fixed list — so the sheet can
+       never offer "Seafood" on a campus with no seafood on it, and a vendor
+       tagging themselves becomes filterable with no client release. The price
+       row is fixed, because $ to $$$$ is the whole scale. -->
+  <div id="spots-filter-modal" class="overlay sheet" hidden>
+    <div class="detail-card filter-card" role="dialog" aria-modal="true" aria-labelledby="filter-title">
+      <button id="filter-close" class="detail-close" aria-label="Close">✕</button>
+      <h2 id="filter-title" class="detail-title">Filter spots</h2>
+
+      <fieldset class="filter-group">
+        <legend class="filter-legend">Show</legend>
+        <div id="filter-show" class="filter-chips">
+          <label class="filter-chip"><input type="radio" name="spots-show" value="all" checked /><span>All</span></label>
+          <label class="filter-chip"><input type="radio" name="spots-show" value="favorites" /><span>♥ Saved</span></label>
+          <label class="filter-chip"><input type="radio" name="spots-show" value="recent" /><span>Recent</span></label>
+          <label class="filter-chip"><input type="radio" name="spots-show" value="top" /><span>Top</span></label>
+        </div>
+      </fieldset>
+
+      <!-- Hidden entirely when not one loaded spot has a cuisine tag. An empty
+           group is a promise the data can't keep. -->
+      <fieldset id="filter-cuisine-group" class="filter-group" hidden>
+        <legend class="filter-legend">Food</legend>
+        <div id="filter-cuisine" class="filter-chips"></div>
+      </fieldset>
+
+      <fieldset id="filter-price-group" class="filter-group" hidden>
+        <legend class="filter-legend">Price</legend>
+        <div id="filter-price" class="filter-chips">
+          <label class="filter-chip"><input type="checkbox" name="spots-price" value="1" /><span>$</span></label>
+          <label class="filter-chip"><input type="checkbox" name="spots-price" value="2" /><span>$$</span></label>
+          <label class="filter-chip"><input type="checkbox" name="spots-price" value="3" /><span>$$$</span></label>
+          <label class="filter-chip"><input type="checkbox" name="spots-price" value="4" /><span>$$$$</span></label>
+        </div>
+        <!-- Said out loud because it is the one rule here a student could read
+             the wrong way: an untagged spot vanishing under a price filter is
+             the filter working, not the spot being gone. -->
+        <p class="filter-note">Spots that haven't set a price are hidden while this is on.</p>
+      </fieldset>
+
+      <div class="filter-actions">
+        <button id="filter-clear" class="detail-textbtn" type="button" hidden>Clear all</button>
+        <button id="filter-done" class="btn-redeem" type="button">Show spots</button>
       </div>
     </div>
   </div>

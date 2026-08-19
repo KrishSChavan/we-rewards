@@ -73,6 +73,68 @@ async function shrinkImage(file, maxPx) {
   return { dataUrl: canvas.toDataURL('image/png') };
 }
 
+/* ---- what the shop sells (migration-042) ----
+   The vocabulary comes from the server (/api/cuisines) rather than being
+   hardcoded here, so a new tag is one edit in src/lib/cuisines.js and reaches
+   this form, the admin editors, and the students' filter chips without three
+   separate releases.
+
+   BEST-EFFORT BY DESIGN. If the request fails the fieldset simply stays hidden
+   and the application submits without cuisine tags — this is an optional field
+   that affects filtering, and no applicant should be blocked from reaching us
+   because a fetch didn't land. */
+
+let cuisineMax = 3;
+
+function pickedCuisine() {
+  return [...document.querySelectorAll('#f-cuisine input:checked')].map((el) => el.value);
+}
+
+// Past the cap, disable what ISN'T ticked rather than refusing the tick or
+// silently dropping it on submit — the limit is then visible on the control
+// itself, before the applicant has invested anything in the choice.
+function syncCuisineCap() {
+  const atCap = pickedCuisine().length >= cuisineMax;
+  document.querySelectorAll('#f-cuisine input').forEach((el) => {
+    el.disabled = atCap && !el.checked;
+    el.closest('.tag-opt')?.classList.toggle('is-disabled', el.disabled);
+  });
+}
+
+async function loadCuisines() {
+  let list = [];
+  try {
+    const res = await fetch('/api/cuisines');
+    if (!res.ok) return;
+    const body = await res.json();
+    list = Array.isArray(body?.cuisines) ? body.cuisines : [];
+    if (Number.isInteger(body?.max) && body.max > 0) cuisineMax = body.max;
+  } catch {
+    return;                       // offline or a bad response — leave it hidden
+  }
+  if (!list.length) return;
+
+  const box = $('f-cuisine');
+  box.innerHTML = '';
+  list.forEach((c) => {
+    const label = document.createElement('label');
+    label.className = 'tag-opt';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = c.value;
+    const span = document.createElement('span');
+    // textContent, not innerHTML: the labels are ours today, but this is a
+    // response body being written into the DOM and it costs nothing to keep it
+    // un-injectable.
+    span.textContent = c.label;
+    label.append(input, span);
+    box.append(label);
+  });
+  $('cuisine-max').textContent = String(cuisineMax);
+  box.addEventListener('change', syncCuisineCap);
+  $('cuisine-field').hidden = false;
+}
+
 /* ---- submit ---- */
 
 function showFormError(msg) {
@@ -118,6 +180,10 @@ async function submit(e) {
         address: $('f-address').value.trim(),
         message: $('f-message').value.trim(),
         logo: logoValue,
+        // '' when they skipped it (or when the fieldset never loaded), which
+        // the server reads as "not said" rather than as a price of zero.
+        cuisine: pickedCuisine(),
+        priceLevel: $('f-price').value || null,
       }),
     });
 
@@ -148,3 +214,4 @@ $('logo-pick').addEventListener('click', () => $('logo-file').click());
 $('logo-file').addEventListener('change', onLogoPick);
 $('logo-remove').addEventListener('click', () => { logoValue = null; setLogoPreview(null); });
 $('apply-form').addEventListener('submit', submit);
+void loadCuisines();

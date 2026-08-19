@@ -16,6 +16,7 @@ import {
 } from '../lib/qr-poster.js';
 import { emitBalance } from '../lib/realtime.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
+import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -73,7 +74,14 @@ export function validNewVendor(body) {
     return { error: 'Logo image looks invalid, try re-picking it.' };
   }
 
-  return { name: n.value, email, password, address: address || null, logo };
+  // Not validated, NORMALISED (migration-042): both are optional pickers, and
+  // an unrecognised tag drops out rather than 400ing a form the operator has
+  // otherwise filled in correctly. See src/lib/cuisines.js.
+  return {
+    name: n.value, email, password, address: address || null, logo,
+    cuisine: normalizeCuisine(b.cuisine),
+    priceLevel: normalizePriceLevel(b.priceLevel),
+  };
 }
 
 /**
@@ -215,7 +223,7 @@ router.get('/vendors', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('vendors')
-      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, created_at')
+      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, created_at')
       .order('created_at', { ascending: false });
     if (error) throw error;
 
@@ -296,7 +304,7 @@ function slugify(name) {
  * leaves a clean slate to retry from. Returns { vendor, linkedExisting }, or
  * { conflict: true } when the taken email's account vanished mid-flight.
  */
-async function onboardVendor({ name, email, password, passwordHash, address, logo }) {
+async function onboardVendor({ name, email, password, passwordHash, address, logo, cuisine, priceLevel }) {
   let userId;
   let linkedExisting = false;
 
@@ -342,6 +350,12 @@ async function onboardVendor({ name, email, password, passwordHash, address, log
           latitude: coords?.lat ?? null,
           longitude: coords?.lng ?? null,
           logo: logo ?? null,
+          // Normalised at the door rather than trusted (migration-042): both
+          // doors into this function carry operator- or applicant-typed values,
+          // and a vendor onboarded with junk here would be quietly unfilterable
+          // rather than visibly broken.
+          cuisine: normalizeCuisine(cuisine),
+          price_level: normalizePriceLevel(priceLevel),
         })
         .select('id, name, slug')
         .single();
@@ -401,6 +415,8 @@ router.post('/vendors', async (req, res, next) => {
       password: v.password,
       address: v.address,
       logo: v.logo,
+      cuisine: v.cuisine,
+      priceLevel: v.priceLevel,
     });
     if (result.conflict) {
       return res.status(409).json({
@@ -581,8 +597,27 @@ router.patch('/vendors/:id', async (req, res, next) => {
       updates.points_per_dollar = r.value;
     }
 
+    // What the place sells (migration-042). Both are normalised rather than
+    // rejected — see src/lib/cuisines.js on why an unknown tag is dropped
+    // instead of failing the whole save.
+    //
+    // `!= null` deliberately admits `[]`, which is how the operator CLEARS the
+    // tags: an empty array is a real value here, not a missing one.
+    if (body.cuisine != null) {
+      if (!Array.isArray(body.cuisine)) {
+        return res.status(400).json({ error: 'BAD_REQUEST', message: 'cuisine must be an array of tags.' });
+      }
+      updates.cuisine = normalizeCuisine(body.cuisine);
+    }
+
+    // `!== undefined`, NOT `!= null`: null is the value that clears a price
+    // back to untagged, and `!= null` would silently ignore exactly that.
+    if (body.priceLevel !== undefined) {
+      updates.price_level = normalizePriceLevel(body.priceLevel);
+    }
+
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, and/or pointsPerDollar).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, pointsPerDollar, cuisine, and/or priceLevel).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -596,7 +631,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
       .from('vendors')
       .update(updates)
       .eq('id', req.params.id)
-      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, created_at')
+      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, created_at')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
@@ -826,7 +861,7 @@ router.get('/applications', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('vendor_applications')
-      .select('id, business_name, contact_name, phone, email, address, logo, message, created_at')
+      .select('id, business_name, contact_name, phone, email, address, logo, message, cuisine, price_level, created_at')
       .order('created_at', { ascending: true });
     if (error) throw error;
     res.json(data ?? []);
@@ -857,7 +892,7 @@ router.post('/applications/:id/accept', async (req, res, next) => {
 
     const { data: app, error: appErr } = await supabaseAdmin
       .from('vendor_applications')
-      .select('id, business_name, email, password_hash, address, logo')
+      .select('id, business_name, email, password_hash, address, logo, cuisine, price_level')
       .eq('id', req.params.id)
       .maybeSingle();
     if (appErr) throw appErr;
@@ -870,6 +905,11 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       passwordHash: app.password_hash,
       address: app.address,
       logo: app.logo,
+      // What they told us on /join, carried straight onto the vendors row so a
+      // newly accepted spot is filterable on the Spots tab immediately rather
+      // than sitting untagged until someone edits it (migration-042).
+      cuisine: app.cuisine,
+      priceLevel: app.price_level,
     });
     // The taken email's account vanished mid-accept. Nothing was created, so
     // leave the application queued for a retry.

@@ -132,6 +132,11 @@ function bootFailed(message) {
   $('vendor-edit-close').addEventListener('click', closeVendorModal);
   $('vendor-name-save').addEventListener('click', saveVendorName);
   $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
+  $('vendor-sells-save').addEventListener('click', saveVendorSells);
+  // Delegated: both grids are rebuilt from scratch on every open, so a listener
+  // bound to the checkboxes themselves would have to be rebound each time.
+  $('vendor-edit-cuisine').addEventListener('change', (e) => syncCuisineCap(e.currentTarget));
+  $('nv-cuisine').addEventListener('change', (e) => syncCuisineCap(e.currentTarget));
   $('vendor-reward-add').addEventListener('click', addRewardDraft);
   $('vendor-modal').addEventListener('click', (e) => {
     if (e.target === $('vendor-modal')) closeVendorModal();  // backdrop only, not the card
@@ -256,6 +261,9 @@ async function loadAll() {
       // Only if the operator has actually opened the roster: a page of students
       // is two extra queries, and boot shouldn't pay for a screen nobody is on.
       students.length ? loadStudents({ reset: true }) : null,
+      // Unauthenticated and tiny, but it belongs to a dialog only an admin can
+      // open, so it rides along here rather than firing on the sign-in screen.
+      loadCuisineVocab(),
     ]);
     initPush();   // best-effort, runs once — after admin access is confirmed
   }
@@ -1013,6 +1021,111 @@ async function copyResetCode() {
    the same thing. The NAME has no terminal-side editor at all — this is the only
    place it can be changed. */
 
+/* ---------- cuisine tags + price tier (migration-042) ----------
+   Two surfaces need the same checkbox grid — the Edit dialog and the Add-vendor
+   form — so the grid is built by one function against whichever container it is
+   handed. The vocabulary comes from /api/cuisines rather than being duplicated
+   here: it is the same list src/lib/cuisines.js validates writes against, so a
+   grid built from anything else could offer a tag the server then drops.
+
+   Loaded once at boot and cached. On failure the grids stay empty and the price
+   selects still work — an operator can always set a price, and cuisine can be
+   filled in after a reload. */
+
+let cuisineVocab = [];
+let cuisineMax = 3;
+
+async function loadCuisineVocab() {
+  try {
+    const res = await fetch('/api/cuisines');
+    if (!res.ok) return;
+    const body = await res.json();
+    if (Array.isArray(body?.cuisines)) cuisineVocab = body.cuisines;
+    if (Number.isInteger(body?.max) && body.max > 0) cuisineMax = body.max;
+  } catch { /* leave the grids empty — see above */ }
+}
+
+/**
+ * Display name for a stored tag.
+ *
+ * Falls back to the slug itself when the vocab hasn't loaded (or has since
+ * dropped the tag) — a row reading "bubble-tea" is worse than "Bubble tea" and
+ * fine next to a blank.
+ */
+function cuisineLabel(value) {
+  return cuisineVocab.find((c) => c.value === value)?.label ?? value;
+}
+
+/** Ticked values in one grid, in the vocabulary's order. */
+function pickedCuisine(container) {
+  return [...container.querySelectorAll('input:checked')].map((el) => el.value);
+}
+
+// At the cap, disable what ISN'T ticked. The alternative — accepting the tick
+// and dropping it on save — hides the limit until after the operator has
+// committed to a choice, and looks like the server losing data.
+function syncCuisineCap(container) {
+  const atCap = pickedCuisine(container).length >= cuisineMax;
+  container.querySelectorAll('input').forEach((el) => {
+    el.disabled = atCap && !el.checked;
+    el.closest('.tag-opt')?.classList.toggle('is-disabled', el.disabled);
+  });
+}
+
+/** (Re)build a grid, ticking `selected`. Safe to call before the vocab lands. */
+function buildCuisineGrid(container, selected) {
+  const on = new Set(Array.isArray(selected) ? selected : []);
+  container.innerHTML = '';
+  cuisineVocab.forEach((c) => {
+    const label = document.createElement('label');
+    label.className = 'tag-opt';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = c.value;
+    input.checked = on.has(c.value);
+    const span = document.createElement('span');
+    span.textContent = c.label;      // response text → textContent, never innerHTML
+    label.append(input, span);
+    container.append(label);
+  });
+  syncCuisineCap(container);
+}
+
+// One save for both controls — they answer the same question about the shop.
+async function saveVendorSells() {
+  if (!editVendor) return;
+  const btn = $('vendor-sells-save');
+  const note = $('vendor-sells-note');
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
+      method: 'PATCH',
+      // priceLevel is sent as null (not omitted) when the select is blank —
+      // that is how the operator CLEARS a price back to untagged, and the route
+      // distinguishes the two.
+      body: JSON.stringify({
+        cuisine: pickedCuisine($('vendor-edit-cuisine')),
+        priceLevel: $('vendor-edit-price').value || null,
+      }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    Object.assign(editVendor.v, data);        // keep the in-memory roster in sync
+    // Repaint from what came BACK, not from what was sent: the server drops
+    // unknown tags and clamps the list, so the grid should show what is now
+    // stored rather than what was asked for.
+    buildCuisineGrid($('vendor-edit-cuisine'), editVendor.v.cuisine);
+    $('vendor-edit-price').value = editVendor.v.price_level ?? '';
+    setNote(note, 'Saved', 'ok');
+    btn.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
 let editVendor = null;   // { v, infoEl } while the dialog is open
 
 // Paint a small inline status note: 'ok' | 'err' | null (neutral).
@@ -1029,6 +1142,11 @@ function openVendorModal(v, infoEl) {
   setNote($('vendor-name-note'), '', null);
   $('vendor-edit-ratio').value = Number(v.points_per_dollar);
   setNote($('vendor-ratio-note'), '', null);
+  // Straight off the roster row — GET /admin/vendors already selects both, so
+  // opening the dialog costs no extra request.
+  buildCuisineGrid($('vendor-edit-cuisine'), v.cuisine);
+  $('vendor-edit-price').value = v.price_level ?? '';
+  setNote($('vendor-sells-note'), '', null);
   $('vendor-edit-error').hidden = true;
   $('vendor-reward-list').innerHTML = '';
   showRewardsMsg('Loading items…');
@@ -1301,6 +1419,10 @@ const LOGO_MAX_FILE = 8 * 1024 * 1024;   // reject huge source files up front
 
 function openNewVendorModal() {
   closeNewVendorModal();          // always open on a clean, empty form
+  // Rebuilt per open rather than once at boot: the vocab may not have landed
+  // the first time the dashboard painted, and this is the cheap way to be right
+  // either way.
+  buildCuisineGrid($('nv-cuisine'), []);
   $('new-vendor-modal').hidden = false;
   $('nv-name').focus();
 }
@@ -1425,6 +1547,8 @@ async function createVendor(e) {
         password: $('nv-password').value,
         address: $('nv-address').value.trim(),
         logo: newVendorLogo,
+        cuisine: pickedCuisine($('nv-cuisine')),
+        priceLevel: $('nv-price').value || null,
       }),
     });
     if (res.status === 403) return denyAccess();
@@ -1556,6 +1680,19 @@ function paintApplicationRows(list) {
       addr.className = 'app-meta';
       addr.textContent = a.address;
       info.appendChild(addr);
+    }
+    // What they said they sell (migration-042). Shown because it is part of
+    // deciding — "Coffee · $" tells the operator what this place IS faster than
+    // the business name usually does. Accepting copies both onto the vendor.
+    const sells = [
+      (a.cuisine ?? []).map(cuisineLabel).join(', '),
+      a.price_level ? '$'.repeat(a.price_level) : '',
+    ].filter(Boolean).join(' · ');
+    if (sells) {
+      const el = document.createElement('span');
+      el.className = 'app-meta';
+      el.textContent = sells;
+      info.appendChild(el);
     }
 
     const when = document.createElement('span');

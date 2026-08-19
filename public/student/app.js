@@ -463,6 +463,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     closeReceiptSheet();
     closeDealsSheet();
     closeMoveSheet();
+    closeFilterSheet();
     closePunchScanSheet();
     closePunchModal();
     closeInfo('tier-info', 'tier-info-btn');
@@ -2908,6 +2909,15 @@ let spotsQuery = '';
 // it is a way of looking at the list, not a setting, and a student who comes
 // back tomorrow should get the whole directory rather than yesterday's lens.
 let spotsFilter = 'all';
+// Cuisine tags and price tiers the student has ticked in the filter sheet
+// (migration-042). Sets, because both are membership tests run once per vendor
+// per render and the answer is "is this one of them".
+//
+// They are a SEPARATE axis from spotsFilter above, not more values of it: a
+// student can ask for saved AND coffee AND cheap, and each narrows the last.
+// In memory only, for the same reason spotsFilter is — see above.
+const spotsCuisine = new Set();
+const spotsPrice = new Set();
 // Rows are pooled by vendor id, exactly like the carousel's cards: a keystroke
 // re-orders the list rather than rebuilding it, so a row keeps its loaded logo
 // and its heart doesn't flicker mid-save.
@@ -2987,6 +2997,10 @@ function recommendedList() {
  * carousel's own ordering would change underneath it.
  */
 function spotsFilterList() {
+  return applySpotsTags(baseSpotsList());
+}
+
+function baseSpotsList() {
   if (spotsFilter === 'favorites') {
     return allVendors.filter((v) => v.favorite).sort(spotsOrder);
   }
@@ -2997,8 +3011,88 @@ function spotsFilterList() {
   return allVendors.slice().sort(spotsOrder);
 }
 
+/**
+ * Narrow a list by the ticked cuisine tags and price tiers (migration-042).
+ *
+ * The two axes are ANDed with each other and ORed within themselves, which is
+ * what a chip row means to the person tapping it: ticking Coffee and Pizza asks
+ * for either, ticking Coffee and $ asks for both. Nothing ticked in an axis
+ * means that axis is not asking anything, NOT that it matches nothing.
+ *
+ * An UNTAGGED spot fails a filter it can't answer. `{}` never contains coffee
+ * and a null price is not $$, so a vendor who hasn't said drops out of a
+ * narrowed view rather than being shown on the chance they might qualify — the
+ * filter has to mean what it says, and spotsEmptyText explains the case where
+ * that empties the list. Untagged spots are untouched with nothing ticked,
+ * which is the default and the overwhelmingly common view.
+ *
+ * Order is preserved: this filters, it never re-sorts.
+ */
+function applySpotsTags(list) {
+  if (!spotsCuisine.size && !spotsPrice.size) return list;
+  return list.filter((v) => {
+    if (spotsCuisine.size && !(v.cuisine ?? []).some((c) => spotsCuisine.has(c))) return false;
+    if (spotsPrice.size && !spotsPrice.has(Number(v.priceLevel))) return false;
+    return true;
+  });
+}
+
+/** How many separate things the student has narrowed by. Drives the pill. */
+function activeFilterCount() {
+  return (spotsFilter === 'all' ? 0 : 1) + spotsCuisine.size + spotsPrice.size;
+}
+
+/* ---------- naming a tag ----------
+   Prettifying the slug ("bubble-tea" → "Bubble tea") is right for every tag in
+   src/lib/cuisines.js except the acronyms, so only those are listed here. A tag
+   added there and not here still renders sensibly — the drift this can produce
+   is cosmetic, never functional, which is the whole reason the chips are built
+   from the data rather than from a copy of the vocabulary shipped in this file. */
+const CUISINE_EXCEPTIONS = { bbq: 'BBQ' };
+
+function cuisineLabel(slug) {
+  return CUISINE_EXCEPTIONS[slug]
+    ?? String(slug).replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase());
+}
+
+const priceLabel = (n) => '$'.repeat(Number(n) || 0);
+
+/** Every narrowing currently on, in the order the sheet lists them. */
+function activeFilterNames() {
+  const showing = { favorites: 'Saved', recent: 'Recent', top: 'Top' }[spotsFilter];
+  return [
+    ...(showing ? [showing] : []),
+    ...[...spotsCuisine].map(cuisineLabel),
+    ...[...spotsPrice].map(priceLabel),
+  ];
+}
+
+/** Just the tag axes, phrased for a sentence: "coffee or pizza", "$ or $$". */
+function filterTagSummary() {
+  const parts = [
+    ...[...spotsCuisine].map((c) => cuisineLabel(c).toLowerCase()),
+    ...[...spotsPrice].map(priceLabel),
+  ];
+  if (parts.length <= 1) return parts[0] ?? '';
+  return `${parts.slice(0, -1).join(', ')} or ${parts[parts.length - 1]}`;
+}
+
 /** What to say when the current filter (plus any query) matches nothing. */
 function spotsEmptyText(query) {
+  // The tag axes are checked FIRST and answer for the whole empty state. When
+  // they are on they are overwhelmingly the reason the list is empty, and every
+  // message below would actively mislead: "No saved spots yet, tap the heart to
+  // save one" is wrong advice for a student who has saved six spots, none of
+  // which happen to sell coffee.
+  if (spotsCuisine.size || spotsPrice.size) {
+    const what = filterTagSummary();
+    if (query) return `Nothing matching “${query}” in ${what}.`;
+    // Names the exclusion rule, because a spot the student KNOWS is in the app
+    // going missing under a price filter otherwise reads as a bug rather than
+    // as the filter doing its job.
+    return `Nothing here for ${what} yet. Spots that haven't said what they sell are hidden while a filter is on.`;
+  }
+
   if (query) {
     if (spotsFilter === 'favorites') return `None of your saved spots match “${query}”.`;
     if (spotsFilter === 'recent') return `No recent spots match “${query}”.`;
@@ -3138,7 +3232,10 @@ function renderSpots() {
   // the main list wherever their name sorts.
   const strip = $('spots-new');
   const stripList = $('spots-new-list');
-  const newOnes = (!q && spotsFilter === 'all') ? newVendors() : [];
+  // activeFilterCount() rather than `spotsFilter === 'all'`: a cuisine or price
+  // chip narrows the view just as deliberately as the list picker does, and a
+  // strip of unrelated new spots is exactly as much noise in that view.
+  const newOnes = (!q && !activeFilterCount()) ? newVendors() : [];
   const lifted = new Set(newOnes.map((v) => String(v.vendorId)));
 
   // Mount into the strip first, so a row moving between the two containers has
@@ -3164,10 +3261,19 @@ function renderSpots() {
   // took whose only visible result is the list changing under them, and a screen
   // reader gets no cue from that on its own. Silent otherwise: an idle live
   // region that re-announced on every socket push would talk over everything.
-  $('spots-search-status').textContent = (q || spotsFilter !== 'all')
+  $('spots-search-status').textContent = (q || activeFilterCount())
     ? `${total} ${total === 1 ? 'spot' : 'spots'} found`
     : '';
   $('spots-search-clear').hidden = !q;
+
+  // Last: the pill names the active filter, which is downstream of the state
+  // this render just applied.
+  syncFilterPill();
+  // The sheet only when it is actually up. Its chips are rebuilt from scratch
+  // on open, so a closed sheet has nothing worth keeping current — and this
+  // runs on every socket push, where walking the modal's inputs to set state
+  // nobody can see is pure waste.
+  if (!$('spots-filter-modal').hidden) syncFilterSheet();
 }
 
 /**
@@ -3246,18 +3352,179 @@ function onSpotsSearchInput() {
   });
 }
 
-function wireSpots() {
-  // `change`, not `input`: on iOS a <select> fires input for every value the
-  // picker wheel passes through, so the list would re-render several times per
-  // spin before the student has committed to anything.
-  $('spots-filter').addEventListener('change', (e) => {
-    spotsFilter = e.target.value;
-    renderSpots();
-    // Back to the top: the list under the finger just became a different list,
-    // so being scrolled to where row 30 used to be is meaningless. Same reason
-    // applyVendorFilter resets the carousel on a query change.
-    $('tab-spots').scrollTop = 0;
+/* ---------- the filter sheet ----------
+   The pill's label does the work a closed <select> used to do for free: name
+   what the list is currently showing, so a student who opens the tab to a short
+   list can see why without opening anything. One name plus a count for the
+   rest — three chip names would not fit the pill on any phone. */
+
+function syncFilterPill() {
+  const names = activeFilterNames();
+  const btn = $('spots-filter-btn');
+  const count = $('spots-filter-count');
+  $('spots-filter-label').textContent = names[0] ?? 'Filter';
+  // "+2", not "3": the label already accounts for the first one, and a bare 3
+  // beside the word "Saved" reads as three saved spots.
+  count.textContent = names.length > 1 ? `+${names.length - 1}` : '';
+  count.hidden = names.length <= 1;
+  btn.classList.toggle('is-on', names.length > 0);
+  btn.setAttribute('aria-label', names.length
+    ? `Filter spots. Showing ${names.join(', ')}.`
+    : 'Filter spots');
+}
+
+/**
+ * The cuisines worth offering: every tag the loaded spots actually carry.
+ *
+ * Union'd with what is already ticked, so a chip cannot disappear out from
+ * under the filter it is applying — if the last coffee shop is deactivated
+ * while Coffee is ticked, the chip has to stay visible or the student is left
+ * with an empty list and no way to see why.
+ */
+function availableCuisines() {
+  const seen = new Set(spotsCuisine);
+  allVendors.forEach((v) => (v.cuisine ?? []).forEach((c) => seen.add(c)));
+  // By label, not by slug: the student reads labels, and the vocabulary's own
+  // order (src/lib/cuisines.js) is a server-side judgement the client can't see.
+  return [...seen].sort((a, b) => cuisineLabel(a).localeCompare(cuisineLabel(b)));
+}
+
+/** True if any loaded spot has said what it costs (or a tier is ticked). */
+function anyPriceTagged() {
+  return spotsPrice.size > 0 || allVendors.some((v) => v.priceLevel != null);
+}
+
+// Chips are rebuilt only when the SET of them changes, not on every render:
+// this runs on every socket push, and replacing the nodes each time would drop
+// a chip mid-tap and lose focus inside an open sheet.
+let cuisineChipSig = '';
+
+function syncFilterSheet() {
+  const cuisines = availableCuisines();
+  const sig = cuisines.join(',');
+  if (sig !== cuisineChipSig) {
+    cuisineChipSig = sig;
+    const box = $('filter-cuisine');
+    box.innerHTML = '';
+    cuisines.forEach((c) => {
+      const label = document.createElement('label');
+      label.className = 'filter-chip';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = 'spots-cuisine';
+      input.value = c;
+      const span = document.createElement('span');
+      span.textContent = cuisineLabel(c);
+      label.append(input, span);
+      box.append(label);
+    });
+  }
+
+  // A group with nothing in it is a promise the data can't keep — hide the
+  // whole thing rather than show an empty row under a heading.
+  $('filter-cuisine-group').hidden = cuisines.length === 0;
+  $('filter-price-group').hidden = !anyPriceTagged();
+
+  // Push state INTO the controls, so the sheet always opens agreeing with the
+  // list. paintFilterChip carries the .is-on class the styling actually uses —
+  // see the :has() note in styles.css.
+  document.querySelectorAll('#spots-filter-modal input').forEach((el) => {
+    if (el.name === 'spots-show') el.checked = el.value === spotsFilter;
+    else if (el.name === 'spots-cuisine') el.checked = spotsCuisine.has(el.value);
+    else if (el.name === 'spots-price') el.checked = spotsPrice.has(Number(el.value));
+    el.closest('.filter-chip')?.classList.toggle('is-on', el.checked);
   });
+
+  $('filter-clear').hidden = activeFilterCount() === 0;
+
+  // The footer button counts what the student would be left with, so the sheet
+  // answers "how many" before they dismiss it to find out. Counted the same way
+  // renderSpots builds the list — filter first, then narrow by the query — or
+  // the number here and the rows behind the sheet could disagree.
+  const q = spotsQuery.trim();
+  const base = spotsFilterList();
+  let n = base.length;
+  if (q) {
+    const allowed = new Set(base.map((v) => String(v.vendorId)));
+    n = filterVendors(spotsQuery).filter((v) => allowed.has(String(v.vendorId))).length;
+  }
+  $('filter-done').textContent = n === 1 ? 'Show 1 spot' : `Show ${n} spots`;
+}
+
+function readFilterSheet() {
+  spotsCuisine.clear();
+  spotsPrice.clear();
+  document.querySelectorAll('#spots-filter-modal input:checked').forEach((el) => {
+    if (el.name === 'spots-show') spotsFilter = el.value;
+    else if (el.name === 'spots-cuisine') spotsCuisine.add(el.value);
+    else if (el.name === 'spots-price') spotsPrice.add(Number(el.value));
+  });
+}
+
+// Applied LIVE, with no Apply button: the list is one tap behind the sheet on a
+// phone, and making every adjustment cost two taps and a guess is worse than
+// re-rendering a list that is already cheap to re-render (rows are pooled).
+function onFilterChange() {
+  readFilterSheet();
+  renderSpots();
+  // The list under the sheet just became a different list, so being scrolled to
+  // where row 30 used to be is meaningless. Same reason applyVendorFilter
+  // resets the carousel on a query change.
+  $('tab-spots').scrollTop = 0;
+}
+
+function openFilterSheet() {
+  syncFilterSheet();
+  const ov = $('spots-filter-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;              // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('spots-filter-btn').setAttribute('aria-expanded', 'true');
+  // Focus lands INSIDE the dialog, or a keyboard student's next Tab walks the
+  // page behind it. The close button rather than the first chip: landing on a
+  // radio would announce the group as if it were the point of opening.
+  $('filter-close').focus();
+}
+
+function closeFilterSheet() {
+  const ov = $('spots-filter-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;   // already closing/closed
+  ov.classList.remove('is-open');
+  $('spots-filter-btn').setAttribute('aria-expanded', 'false');
+  // Focus back on the control that opened it — a dialog that dumps focus onto
+  // <body> leaves a keyboard student at the top of the document.
+  $('spots-filter-btn').focus();
+  setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
+}
+
+// Hard reset, no animation — for sign-out, same reason as dropMoveSheet().
+function dropFilterSheet() {
+  const ov = $('spots-filter-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('spots-filter-btn').setAttribute('aria-expanded', 'false');
+}
+
+function clearFilters() {
+  spotsFilter = 'all';
+  spotsCuisine.clear();
+  spotsPrice.clear();
+  renderSpots();                    // repaints the chips through syncFilterSheet
+  $('tab-spots').scrollTop = 0;
+}
+
+function wireSpots() {
+  $('spots-filter-btn').addEventListener('click', openFilterSheet);
+  $('filter-close').addEventListener('click', closeFilterSheet);
+  $('filter-done').addEventListener('click', closeFilterSheet);
+  $('filter-clear').addEventListener('click', clearFilters);
+  // Backdrop only, not the card — the same dismiss every other overlay here has.
+  $('spots-filter-modal').addEventListener('click', (e) => {
+    if (e.target === $('spots-filter-modal')) closeFilterSheet();
+  });
+  // Delegated: the cuisine chips are rebuilt whenever the catalogue's tag set
+  // changes, so listeners bound to the inputs would have to be rebound with them.
+  $('spots-filter-modal').addEventListener('change', onFilterChange);
 
   $('spots-search').addEventListener('input', onSpotsSearchInput);
   $('spots-search-clear').addEventListener('click', () => {
@@ -3302,8 +3569,14 @@ function wireSpots() {
 function resetSpots() {
   spotsQuery = '';
   spotsFilter = 'all';
-  const filter = $('spots-filter');
-  if (filter) filter.value = 'all';   // the <select> keeps its own state
+  spotsCuisine.clear();
+  spotsPrice.clear();
+  dropFilterSheet();                  // may be open over the landing page
+  // The chips keep their own checked state, and the signature guard would skip
+  // rebuilding them for the next student if the tag set happened to match.
+  cuisineChipSig = '';
+  $('filter-cuisine').innerHTML = '';
+  syncFilterPill();
   const input = $('spots-search');
   if (input) input.value = '';
   spotRows.forEach((row) => row.remove());

@@ -10,6 +10,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { notifyAdmins } from '../lib/push.js';
+import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
 
 const router = Router();
 
@@ -61,6 +62,14 @@ function validApplication(body) {
       address: address || null,
       message: message || null,
       logo,
+      // Optional, and never a reason to bounce an application (migration-042).
+      // Everything above this line is something we need in order to reach the
+      // applicant or create their login; these two only decide which filter
+      // chips their spot answers to, and an applicant who skips them — or an
+      // older cached /join page that doesn't ask — still onboards fine and can
+      // be tagged from /admin afterwards.
+      cuisine: normalizeCuisine(b.cuisine),
+      price_level: normalizePriceLevel(b.priceLevel),
     },
     password,
   };

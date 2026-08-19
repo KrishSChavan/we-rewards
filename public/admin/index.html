@@ -552,6 +552,28 @@
         <p class="vendor-edit-hint">A $10 purchase at rate 10 earns 100 points. Allowed: 0.5 to 1000.</p>
       </div>
 
+      <!-- What the place sells (migration-042). One save button for both
+           controls: they are the same question ("what is this shop") asked two
+           ways, and a separate Save under each would be two buttons doing one
+           job. Filled by openVendorModal from the roster row we already hold —
+           no extra fetch. -->
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">What they sell</p>
+        <div id="vendor-edit-cuisine" class="tag-grid" role="group" aria-label="Cuisine tags"></div>
+        <div class="vendor-ratio-row vendor-sells-row">
+          <select id="vendor-edit-price" class="vendor-edit-input" aria-label="Typical price">
+            <option value="">Price: not set</option>
+            <option value="1">$ — under $10</option>
+            <option value="2">$$ — $10–20</option>
+            <option value="3">$$$ — $20–35</option>
+            <option value="4">$$$$ — $35+</option>
+          </select>
+          <button id="vendor-sells-save" class="vr-save" type="button">Save</button>
+          <span id="vendor-sells-note" class="vendor-edit-note"></span>
+        </div>
+        <p class="vendor-edit-hint">Feeds the filter on the students' Spots tab. Up to 3 tags. An untagged spot is not "cheap" — it is simply left out of a filtered view, so it is worth filling in.</p>
+      </div>
+
       <div class="vendor-edit-section">
         <p class="vendor-edit-label">Reward items</p>
         <p class="vendor-edit-hint">Each item needs a point cost, a visit cost, or both. Clear a cost field to drop that way to pay. The switch hides an item from students without deleting it.</p>
@@ -608,6 +630,19 @@
           <label class="vendor-edit-label" for="nv-address">Street address <em class="nv-opt">(optional)</em></label>
           <input id="nv-address" class="nv-input" type="text" maxlength="300" autocomplete="off" placeholder="123 College Ave, State College, PA" />
           <span class="vendor-edit-hint">Shown as a tappable map on the vendor's card in the student app.</span>
+        </div>
+
+        <div class="nv-field">
+          <span class="vendor-edit-label">What they sell <em class="nv-opt">(optional)</em></span>
+          <div id="nv-cuisine" class="tag-grid" role="group" aria-label="Cuisine tags"></div>
+          <select id="nv-price" class="nv-input nv-price" aria-label="Typical price">
+            <option value="">Price: not set</option>
+            <option value="1">$ — under $10</option>
+            <option value="2">$$ — $10–20</option>
+            <option value="3">$$$ — $20–35</option>
+            <option value="4">$$$$ — $35+</option>
+          </select>
+          <span class="vendor-edit-hint">Up to 3 tags. Students filter the Spots tab on these; both can be set later from Edit.</span>
         </div>
 
         <div class="nv-field">

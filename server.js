@@ -15,6 +15,7 @@ import vendorRecoverRoutes from './src/routes/vendor-recover.js';
 import adminRoutes from './src/routes/admin.js';
 import applyRoutes from './src/routes/apply.js';
 import { supabaseAdmin } from './src/lib/supabase.js';
+import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError, requestContext, isCrawler } from './src/lib/errors.js';
@@ -705,6 +706,18 @@ app.use('/api/vendor/recover', vendorRecoverRoutes);  // public — locked-out v
 app.use('/api/vendor', vendorRoutes);   // vendor-authenticated endpoints
 app.use('/api/admin', adminRoutes);     // operator-only (ADMIN_EMAILS) analytics + errors
 app.use('/api/apply', applyRoutes);     // public vendor applications (rate-limited above)
+
+// The cuisine vocabulary, for the two surfaces that have to OFFER it: the
+// public /join application and the admin vendor editors. Public because /join
+// is, and there is nothing here a competitor could not read off the filter
+// sheet anyway — it is a list of words.
+//
+// The student app deliberately does NOT call this: its filter chips come from
+// the cuisines the visible spots actually carry, so it needs no second request
+// on the critical path and can never offer a chip that matches nothing.
+app.get('/api/cuisines', (_req, res) => {
+  res.json({ cuisines: CUISINES, max: MAX_CUISINES });
+});
 
 // Client crash reporting: the student PWA and vendor terminal post uncaught
 // errors here so they land in the same error_logs the /admin page reads.

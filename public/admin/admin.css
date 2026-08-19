@@ -299,6 +299,33 @@ h1, h3 { margin: 0; }
 .vendor-edit-note.is-ok { color: var(--good); }
 .vendor-edit-note.is-err { color: var(--bad); }
 
+/* ---------- cuisine tags + price tier (migration-042) ---------- */
+/* Shared by the Edit dialog and the Add-vendor form — both grids are built by
+   buildCuisineGrid() from the same /api/cuisines vocabulary. */
+.tag-grid { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }
+/* The label IS the pill, so the tap target is the pill rather than the small
+   box inside it; the checkbox stays a real focusable control. */
+.tag-opt {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.3rem 0.6rem; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--ink);
+  font-size: 0.78rem; font-weight: 600; cursor: pointer;
+  user-select: none; -webkit-user-select: none;
+}
+.tag-opt input { accent-color: var(--accent); margin: 0; }
+/* :has() is Chrome 105+ / Safari 15.4+. Below that the pill just doesn't tint
+   and the checkbox's own tick carries the state — plainer, still correct. */
+.tag-opt:has(input:checked) { border-color: var(--accent); }
+.tag-opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* At the 3-tag cap the unticked options are disabled; say so, or the dead click
+   reads as a broken checkbox. */
+.tag-opt.is-disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* The price row's select holds a sentence ("$$ — $10–20"), not the 4-character
+   number .vendor-edit-input is sized for, so it opts out of that 7rem. */
+.vendor-sells-row #vendor-edit-price { width: auto; flex: 0 1 14rem; }
+.nv-price { margin-top: 0.15rem; }
+
 .vendor-reward-list { display: grid; gap: 0.45rem; margin: 0.5rem 0; }
 .vr-row {
   display: grid; grid-template-columns: 2.9rem minmax(0, 1fr) 4.6rem 4.6rem;
