@@ -464,6 +464,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     closeDealsSheet();
     closeMoveSheet();
     closeFilterSheet();
+    closePickSheet();
     closePunchScanSheet();
     closePunchModal();
     closeInfo('tier-info', 'tier-info-btn');
@@ -3308,16 +3309,28 @@ function renderSpots() {
    also happens to be the only honest evidence the pick respected the filter:
    every name that goes past is one the student could have got.
 
+   THE RESULT IS A SHEET, NOT A NAVIGATION. A draw is a suggestion, and landing
+   the student on the spot's own screen makes declining it a back-tap — the same
+   gesture as undoing a mistake. openPickSheet() offers it over a dimmed list
+   instead, with "Check it out" as the only forward move.
+
+   `picking` spans BOTH the roll and the sheet it opens, because the button has
+   to hold the name it landed on for that whole stretch and must not take a
+   second tap until the first result has been decided about. Closing the sheet
+   is what releases it — which makes closing the only route back to a fresh
+   draw, and is why nothing here needs a "pick again" button.
+
    Cancelled from resetSpots() on sign-out, or the timer would fire into the
    next student's session and open a spot from the previous one's list. */
 
 const ROLL_STEPS = 11;        // names flashed before it lands
 const ROLL_FAST = 55;         // ms between the first few…
 const ROLL_SLOW = 190;        // …and the last, so it visibly comes to rest
-const ROLL_HOLD = 320;        // how long the winner sits there before it opens
+const ROLL_HOLD = 340;        // the name sits on the button before the sheet arrives
 
 let rollTimer = null;
-let rolling = false;
+let picking = false;
+let pickedVendor = null;      // what the sheet is currently offering
 let randomIdleLabel = '';     // read off the markup at wire time so the two can't drift
 
 /**
@@ -3328,38 +3341,42 @@ let randomIdleLabel = '';     // read off the markup at wire time so the two can
  * directly beneath it is worse than no control. That also covers the skeleton —
  * an unloaded catalogue is zero spots — so there is no separate loading branch.
  *
- * Never touches the button mid-roll. renderSpots() runs on every socket push,
- * and a balance landing while the names are cycling would otherwise yank the
- * control out from under a student who is watching it.
+ * Never touches the button while a pick is live. renderSpots() runs on every
+ * socket push, and a balance landing mid-roll — or while the sheet is up —
+ * would otherwise wipe the name the student is looking at.
  */
 function syncRandomBtn(count) {
-  if (rolling) return;
+  if (picking) return;
   const btn = $('spots-random');
   if (btn) btn.hidden = count < 2;
 }
 
-/** Back to idle. Safe to call when nothing is rolling. */
+/** Back to idle: a fresh draw is one tap away again. Safe to call when idle. */
 function stopRoll() {
   clearTimeout(rollTimer);
   rollTimer = null;
-  rolling = false;
+  picking = false;
+  pickedVendor = null;
   const btn = $('spots-random');
   if (!btn) return;
   btn.classList.remove('is-rolling', 'is-landed');
   btn.removeAttribute('aria-busy');
   btn.disabled = false;
   $('spots-random-label').textContent = randomIdleLabel;
+  // The pool can have moved while the sheet was up — on a socket push the sync
+  // above deliberately ignored — so re-decide visibility now that it may act.
+  syncRandomBtn(shownSpots().length);
 }
 
 function pickRandomSpot() {
-  if (rolling) return;
+  if (picking) return;
   const pool = shownSpots();
   if (pool.length < 2) return;
 
   const winner = pool[Math.floor(Math.random() * pool.length)];
   const btn = $('spots-random');
   const label = $('spots-random-label');
-  rolling = true;
+  picking = true;
   btn.disabled = true;
   btn.setAttribute('aria-busy', 'true');
   btn.classList.add('is-rolling');
@@ -3368,12 +3385,11 @@ function pickRandomSpot() {
     label.textContent = winner.name;
     btn.classList.remove('is-rolling');
     btn.classList.add('is-landed');
-    rollTimer = setTimeout(() => {
-      stopRoll();
-      // openVendor() already no-ops on an id it cannot find, which is the guard
-      // for a winner the server dropped from the catalogue mid-roll.
-      openVendor(winner.vendorId, TAB.spots);
-    }, ROLL_HOLD);
+    btn.removeAttribute('aria-busy');
+    // The name holds on the button for a beat before the sheet covers the list,
+    // so the two read as one event rather than as a button press and then an
+    // unrelated dialog. It stays there for as long as the sheet is up.
+    rollTimer = setTimeout(() => { rollTimer = null; openPickSheet(winner); }, ROLL_HOLD);
   };
 
   // Reduced motion gets the pause without the flicker — a label changing eleven
@@ -3397,6 +3413,83 @@ function pickRandomSpot() {
     rollTimer = setTimeout(tick, ROLL_FAST + (ROLL_SLOW - ROLL_FAST) * t * t);
   };
   tick();
+}
+
+/** Fill the sheet from the vendor it landed on, and slide it up. */
+function openPickSheet(v) {
+  pickedVendor = v;
+
+  // The same two-way mark buildSpotRow() puts on every row, so the spot the
+  // sheet names is recognisably the row it came out of.
+  $('pick-mark').innerHTML = v.hasLogo
+    ? `<span class="spot-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
+    : `<span class="spot-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
+  $('pick-title').textContent = v.name;
+
+  // Cuisine and price (migration-042) as one line of "what this place is" — the
+  // only surface that SHOWS the tags rather than filtering on them, because
+  // after a blind draw "Coffee · Vegan · $$" is what decides whether to accept
+  // it. Hidden rather than left blank when the vendor has declared neither: an
+  // empty line under the name reads as something that failed to render.
+  const tags = (v.cuisine ?? []).map(cuisineLabel);
+  if (v.priceLevel) tags.push(priceLabel(v.priceLevel));
+  $('pick-tags').textContent = tags.join(' · ');
+  $('pick-tags').hidden = tags.length === 0;
+
+  const bal = Number(v.balance) || 0;
+  $('pick-rate').textContent = [
+    earnRateText(v.pointsPerDollar),
+    bal > 0 ? `You have ${bal} pts here.` : '',
+  ].filter(Boolean).join(' · ');
+
+  const ov = $('spots-pick-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;              // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('spots-random').setAttribute('aria-expanded', 'true');
+  // The CLOSE button, not "Check it out": the dialog is labelled by the spot's
+  // name, so focus landing inside announces the pick, and an Enter on the way
+  // in does not commit to a navigation nobody has agreed to yet. Same call the
+  // filter sheet makes, for the same reason.
+  $('pick-close').focus();
+}
+
+/**
+ * Close it and hand the picker back.
+ *
+ * The stopRoll() here is what makes dismissing the sheet the way to draw again:
+ * the button is disabled from the moment it is tapped until this runs.
+ *
+ * `{ focus: false }` on the "Check it out" path only — the spot's own screen is
+ * about to take focus, and putting it back on the picker first makes a screen
+ * reader announce a control that is already sliding away.
+ */
+function closePickSheet(opts) {
+  const ov = $('spots-pick-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;   // already closing/closed
+  ov.classList.remove('is-open');
+  $('spots-random').setAttribute('aria-expanded', 'false');
+  setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
+  const restore = opts?.focus !== false;
+  stopRoll();
+  if (restore) $('spots-random').focus();
+}
+
+/** Hard reset, no animation — for sign-out, same as dropFilterSheet(). */
+function dropPickSheet() {
+  const ov = $('spots-pick-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('spots-random').setAttribute('aria-expanded', 'false');
+}
+
+/** The one forward move out of the sheet. */
+function checkOutPick() {
+  const v = pickedVendor;             // read before closePickSheet clears it
+  closePickSheet({ focus: false });
+  // After the sheet has slid away rather than under it — the same beat
+  // openVendor gets when the map sheet hands a spot over.
+  if (v) setTimeout(() => openVendor(v.vendorId, TAB.spots), 260);
 }
 
 /**
@@ -3662,6 +3755,12 @@ function wireSpots() {
   // the button is not a .spot-row and would fall straight through it.
   randomIdleLabel = $('spots-random-label').textContent;
   $('spots-random').addEventListener('click', pickRandomSpot);
+  $('pick-close').addEventListener('click', () => closePickSheet());
+  $('pick-go').addEventListener('click', checkOutPick);
+  // Backdrop only, not the card — the same dismiss every other overlay here has.
+  $('spots-pick-modal').addEventListener('click', (e) => {
+    if (e.target === $('spots-pick-modal')) closePickSheet();
+  });
 
   $('spots').addEventListener('click', (e) => {
     const row = e.target.closest('.spot-row');
@@ -3698,6 +3797,7 @@ function resetSpots() {
   spotsCuisine.clear();
   spotsPrice.clear();
   dropFilterSheet();                  // may be open over the landing page
+  dropPickSheet();                    // …and so may the random pick
   // The chips keep their own checked state, and the signature guard would skip
   // rebuilding them for the next student if the tag set happened to match.
   cuisineChipSig = '';

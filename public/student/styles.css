@@ -2477,6 +2477,41 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .spots-random.is-rolling { color: var(--muted); }
 .spots-random.is-rolling .spots-random-ico { animation: diceRoll 0.55s linear infinite; }
 .spots-random.is-landed { border-color: var(--brand); }
+/* ---------- the random-pick sheet ----------
+   Content-sized rather than inheriting .detail-card's 42vh floor: this carries
+   one spot, and half a screen of empty card under a single name reads as
+   something that failed to load. Staying short is also the point — the picker
+   button and the top of the dimmed list stay visible above it, which is what
+   connects the result to the control that produced it and to the pool it was
+   drawn from. */
+.pick-card { min-height: auto; gap: 0.4rem; padding-top: 1.9rem; }
+
+.pick-eyebrow {
+  font-size: 0.72rem; font-weight: 900; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--muted);
+}
+
+/* The row's mark at sheet scale. The .spot-logo / .spot-mono inside are the
+   same two elements buildSpotRow() makes, sized up by this container so neither
+   needs a second set of rules. */
+.pick-mark {
+  width: 4rem; height: 4rem; margin: 0.2rem 0 0.15rem;
+  border-radius: 1rem; overflow: hidden;
+  background: var(--plate);
+  border: 2.5px solid var(--edge);
+  display: flex; align-items: center; justify-content: center;
+}
+.pick-mark .spot-mono { font-size: 1.35rem; }
+
+/* Cuisine + price. --brand rather than --muted: this is the line that answers
+   "do I want this", so it outranks the earn rate under it. */
+.pick-tags { font-size: 0.88rem; font-weight: 800; color: var(--brand); }
+/* Companion to the hidden attribute, in case this ever grows a display rule —
+   an author `display:` silently beats [hidden], which has bitten here before. */
+.pick-tags[hidden] { display: none; }
+
+.pick-card .btn-redeem { margin-top: 0.9rem; }
+
 @keyframes diceRoll { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .spots-random.is-rolling .spots-random-ico { animation: none; }

@@ -690,7 +690,8 @@
 
                  Starts hidden and stays hidden below two spots (syncRandomBtn);
                  same call the carousel's dots make at one dot. -->
-            <button id="spots-random" class="spots-random" type="button" hidden>
+            <button id="spots-random" class="spots-random" type="button" hidden
+                    aria-haspopup="dialog" aria-expanded="false" aria-controls="spots-pick-modal">
               <span class="spots-random-ico" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
                      stroke-linecap="round" stroke-linejoin="round">
@@ -1362,6 +1363,36 @@
         <button id="filter-clear" class="detail-textbtn" type="button" hidden>Clear all</button>
         <button id="filter-done" class="btn-redeem" type="button">Show spots</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ---------- the random pick ----------
+       Where "Pick a random spot" lands. A sheet rather than a jump straight
+       into the spot's own screen: the draw is a suggestion, and a suggestion
+       you can decline with a dismiss is a different thing from a navigation you
+       have to undo with a back-tap.
+
+       The backdrop dims the list but does NOT reach the picker button above it,
+       which goes on showing the name it landed on for as long as this is up —
+       so the sheet and the control that produced it read as one action rather
+       than as a dialog that appeared on its own.
+
+       Dismissing it (✕, backdrop, Esc) hands the picker back, and that is the
+       only route to a fresh draw: the button stays disabled from the tap until
+       this closes, so there is no way to roll twice without deciding about the
+       first result. Rides the shared .overlay.sheet / .detail-card mechanics;
+       .pick-card is only the size trim. -->
+  <div id="spots-pick-modal" class="overlay sheet" hidden>
+    <div class="detail-card pick-card" role="dialog" aria-modal="true" aria-labelledby="pick-title">
+      <button id="pick-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="pick-eyebrow">Your random pick</p>
+      <span id="pick-mark" class="pick-mark" aria-hidden="true"></span>
+      <!-- The dialog's accessible name, so focus entering it announces the spot
+           rather than the close button it lands on. -->
+      <h2 id="pick-title" class="detail-title"></h2>
+      <p id="pick-tags" class="pick-tags" hidden></p>
+      <p id="pick-rate" class="detail-desc"></p>
+      <button id="pick-go" class="btn-redeem" type="button">Check it out</button>
     </div>
   </div>
 
