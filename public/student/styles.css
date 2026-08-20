@@ -957,12 +957,20 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    type scale whatever a UA's default button size happens to be. */
 .home-sub {
   flex: 0 0 auto;
-  display: flex; align-items: center;
-  height: 2.3rem;                       /* the Map pill's height, so the pill alone sets the row */
-  padding: 0; margin: 0;
-  background: none; border: 0; color: var(--muted);
-  appearance: none; -webkit-appearance: none;
-  touch-action: manipulation; cursor: pointer;
+  display: flex;
+  align-items: center;
+  height: 2.3rem;
+  padding: 10px;
+  margin: 0;
+  background: none;
+  border: 2px var(--muted) solid;
+  border-radius: 25px;
+  color: var(
+  --muted);
+  appearance: none;
+  -webkit-appearance: none;
+  touch-action: manipulation;
+  cursor: pointer;
 }
 .home-sub-label { font-weight: 900; letter-spacing: 0.16em; font-size: 0.8rem; }
 /* Rotates when the menu is up, so the caret reports state rather than just
