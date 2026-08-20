@@ -17,6 +17,11 @@
 if (window.__wrBooted) window.__wrBooted();
 
 let sb = null;             // supabase client
+let accountId = null;      // signed-in auth user id — keys the remembered store
+let locations = [];        // every store this login runs (GET /api/vendor/locations)
+let vendorId = null;       // the store this terminal is ringing up for, sent as
+                           // X-Vendor-Id on every /api/vendor/* call
+let storeSwitching = false;  // a store switch is mid-flight (guards double-taps)
 let config = null;         // vendor config from /api/vendor/config
 let rewards = [];          // vendor's rewards from /api/vendor/rewards
 let mode = 'scan';         // 'scan' | 'punch' | 'manage' | 'deals' | 'stats' | 'settings'
@@ -48,6 +53,8 @@ let undoLastTimer = null;
 let undoExpiryTimer = null; // hides "Undo last" when the 1-min window elapses
 let settingsBaseline = null; // keyed snapshot of the Settings form at load/save, for the unsaved-changes guard
 let pendingMode = null;    // tab the vendor tried to open while Settings had unsaved edits
+let pendingLeave = null;   // same, for a leave that isn't a tab: a store switch
+                           // waiting on the unsaved-Settings guard, as a callback
 // Idempotency for awards: reuse one token across a retry of the SAME award
 // (customer + amount) so the server can dedupe if a network drop hid a success.
 // { key, token } — kept only while the last attempt failed at the network layer.
@@ -184,6 +191,10 @@ function bootFailed(message) {
   $('recover-confirm').addEventListener('keydown', (e) => e.key === 'Enter' && submitRecover());
   // Show the code the way it was read out (grouped, upper case) while it's typed.
   $('recover-code').addEventListener('input', (e) => { e.target.value = formatResetCodeInput(e.target.value); });
+  // The vendor name doubles as the store switcher for a login that runs several
+  // locations; it ships disabled, so this does nothing until paintStoreSwitcher
+  // finds a second store.
+  $('store-btn').addEventListener('click', toggleStoreMenu);
   $('tab-scan').addEventListener('click', () => switchMode('scan'));
   $('tab-punch').addEventListener('click', () => switchMode('punch'));
   $('tab-manage').addEventListener('click', () => switchMode('manage'));
@@ -391,27 +402,288 @@ async function submitRecover() {
 }
 
 async function enterApp() {
-  const res = await authFetch('/api/vendor/config');
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    await sb.auth.signOut();
-    // A vendor toggled off by the operator returns VENDOR_DISABLED with a clear
-    // message; anything else falls back to the generic not-linked copy. Show the
-    // server's message when we have one so a deactivated vendor knows why.
-    $('login-error').textContent = data?.message || 'This account is not linked to a vendor.';
-    $('login-error').hidden = false;
-    show('screen-login');
-    return;
-  }
-  config = await res.json();
-  $('vendor-name').textContent = config.name;
-  $('signout-vendor').textContent = config.name;   // Settings → Sign out card
+  const { data } = await sb.auth.getSession();
+  accountId = data?.session?.user?.id ?? null;
+
+  // WHICH STORE first, before anything else asks the server for vendor data:
+  // every /api/vendor/* call carries the choice as X-Vendor-Id, and a login
+  // that runs several stores and names none is answered VENDOR_AMBIGUOUS.
+  vendorId = null;                    // so /locations isn't asked with a stale one
+  locations = await fetchLocations();
+  vendorId = chooseStore(savedStore());
+
+  if (!(await loadConfig())) return;   // it has already said why, on the login card
+
+  paintStoreSwitcher();
+  $('signout-vendor').textContent = config.name;   // Settings -> Sign out card
   $('shell').hidden = false;
   $('screen-login').hidden = true;
   syncPunchTab();
   refreshRewards();
   refreshLastActivity();
   enterScan();
+}
+
+/**
+ * Load /config for the current vendorId into `config`. Returns false - having
+ * put the sign-in card back up carrying the reason - when this login cannot
+ * open a terminal at all.
+ */
+async function loadConfig() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await authFetch('/api/vendor/config');
+    if (res.ok) {
+      config = await res.json();
+      rememberStore();
+      return true;
+    }
+    const data = await res.json().catch(() => ({}));
+
+    // The remembered store was switched off, or this login lost access to it,
+    // while the app was closed - and there is another one to fall back to. Take
+    // it, instead of bouncing a vendor who does still have somewhere to sell
+    // from. Once only: a second failure is not about which store was picked.
+    const alt = locations.find((l) => l.active && l.id !== vendorId);
+    if (!attempt && alt && (data.error === 'VENDOR_DISABLED' || data.error === 'VENDOR_AMBIGUOUS')) {
+      vendorId = alt.id;
+      continue;
+    }
+
+    // VENDOR_AMBIGUOUS with nothing to fall back to means the store LIST didn't
+    // load (offline, or a 5xx), not that the account is unusable - so the
+    // session stays and the message is one the vendor can act on. Every other
+    // answer is about the ACCOUNT (not staff of any vendor, vendor switched
+    // off), and there the session has to end for the sign-in card to be honest.
+    if (data.error === 'VENDOR_AMBIGUOUS') {
+      $('login-error').textContent = 'Couldn’t load your stores. Check the connection and try again.';
+    } else {
+      await sb.auth.signOut();
+      $('login-error').textContent = data?.message || 'This account is not linked to a vendor.';
+    }
+    $('login-error').hidden = false;
+    $('shell').hidden = true;
+    show('screen-login');
+    return false;
+  }
+  return false;   // unreachable: the loop either returns or falls into the branch above
+}
+
+/* ---------- store switcher (multi-location logins) ----------
+
+   vendor_staff is a join table, so one login can be staff of several vendors:
+   a chain, or an owner running two shops (migration-043). The server resolves
+   which one a request means from the X-Vendor-Id header and answers
+   VENDOR_AMBIGUOUS without it; everything below is the terminal's half of that.
+
+   Locations are INDEPENDENT vendors: separate points, items, deals, stats,
+   earning rate and staff PIN. So switching is a full reload of everything this
+   terminal knows, not a filter over shared data. See applyStoreSwitch.        */
+
+// Remembered per ACCOUNT (two vendors sharing one iPad must not inherit each
+// other's pick) and per DEVICE (the whole point is that the till bolted to the
+// Downtown counter opens on Downtown every morning).
+const storeKey = () => `wrw-terminal-store:${accountId ?? 'anon'}`;
+
+function savedStore() {
+  try { return localStorage.getItem(storeKey()); } catch { return null; }   // private mode
+}
+
+function rememberStore() {
+  if (!vendorId || !accountId) return;
+  try { localStorage.setItem(storeKey(), vendorId); } catch { /* private mode */ }
+}
+
+async function fetchLocations() {
+  try {
+    const res = await authFetch('/api/vendor/locations');
+    if (!res.ok) return [];
+    const body = await res.json();
+    return Array.isArray(body?.locations) ? body.locations : [];
+  } catch {
+    // Offline or a 5xx. A single-location login still works from here (the
+    // server resolves its one link without being told), and loadConfig turns a
+    // multi-location one into a message rather than a sign-out.
+    return [];
+  }
+}
+
+/** The store to open on: the remembered one while it is still usable, else the
+ *  first one this login runs. Null when the list didn't load. */
+function chooseStore(savedId) {
+  const usable = locations.filter((l) => l.active);
+  const saved = usable.find((l) => l.id === savedId);
+  return (saved ?? usable[0] ?? locations[0])?.id ?? null;
+}
+
+// What to call a store on one line. The business name is the SAME string for
+// every location of a chain, so the label is what actually identifies it, and
+// the name is the fallback for the single-location vendor that has no label.
+const storeTitle = (l) => l.locationLabel || l.name;
+
+// The header's version, which has room for both halves: "JOE’S PIZZA · DOWNTOWN".
+const configTitle = () =>
+  (config?.locationLabel ? `${config.name} · ${config.locationLabel}` : (config?.name ?? ''));
+
+/** Repaint the header name and, for a multi-location login, the store menu. */
+function paintStoreSwitcher() {
+  const btn = $('store-btn');
+  const many = locations.length > 1;
+
+  $('vendor-name').textContent = configTitle();
+  // Disabled = the single-location case: the plain name this bar always showed,
+  // not a control and not a tab stop.
+  btn.disabled = !many;
+  $('store-caret').hidden = !many;
+  closeStoreMenu();
+
+  const menu = $('store-menu');
+  menu.innerHTML = '';
+  if (!many) return;
+
+  locations.forEach((l) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `store-item${l.id === vendorId ? ' is-current' : ''}`;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(l.id === vendorId));
+    // A store the operator switched off: listed so its absence isn't a mystery,
+    // but not selectable. requireVendor answers VENDOR_DISABLED, and the till
+    // would land on a screen it can't use.
+    item.disabled = !l.active;
+
+    const text = document.createElement('span');
+    text.className = 'store-item-text';
+    const name = document.createElement('span');
+    name.className = 'store-item-name';
+    name.textContent = storeTitle(l);
+    text.appendChild(name);
+
+    // The tiebreak line. Two locations may legally carry the same label (or
+    // none at all), and the address is the one thing that is always different.
+    const sub = l.address || (l.locationLabel ? l.name : '');
+    if (sub) {
+      const s = document.createElement('span');
+      s.className = 'store-item-sub';
+      s.textContent = sub;
+      text.appendChild(s);
+    }
+
+    const off = document.createElement('span');
+    off.className = 'store-item-off';
+    off.textContent = 'OFF';
+    off.hidden = l.active;
+
+    const mark = document.createElement('span');
+    mark.className = 'store-item-mark';
+    mark.textContent = '✓';
+    mark.hidden = l.id !== vendorId;
+
+    item.append(text, off, mark);
+    item.addEventListener('click', () => requestStoreSwitch(l.id));
+    menu.appendChild(item);
+  });
+}
+
+function openStoreMenu() {
+  if (locations.length < 2) return;
+  $('store-menu').hidden = false;
+  $('store-btn').setAttribute('aria-expanded', 'true');
+  // Dismiss on the next tap anywhere else, or on Escape. Capture phase, so a
+  // control that stops propagation still closes the menu; and registering it
+  // from inside the opening click is safe, since document's capture listeners
+  // for that event have already run by the time the button's handler does.
+  document.addEventListener('click', onStoreOutsideTap, true);
+  document.addEventListener('keydown', onStoreMenuKey, true);
+}
+
+function closeStoreMenu() {
+  $('store-menu').hidden = true;
+  $('store-btn').setAttribute('aria-expanded', 'false');
+  document.removeEventListener('click', onStoreOutsideTap, true);
+  document.removeEventListener('keydown', onStoreMenuKey, true);
+}
+
+function toggleStoreMenu() {
+  if ($('store-menu').hidden) openStoreMenu();
+  else closeStoreMenu();
+}
+
+function onStoreOutsideTap(e) {
+  if (!$('store-switch').contains(e.target)) closeStoreMenu();
+}
+
+function onStoreMenuKey(e) {
+  if (e.key === 'Escape') { closeStoreMenu(); $('store-btn').focus(); }
+}
+
+/** A store was picked. Nothing has moved yet: unsaved Settings edits belong to
+ *  the store being LEFT, so the same guard that protects a tab switch protects
+ *  this one. */
+function requestStoreSwitch(id) {
+  closeStoreMenu();
+  if (storeSwitching || busy || id === vendorId) return;
+  const target = locations.find((l) => l.id === id);
+  if (!target || !target.active) return;
+
+  if (mode === 'settings' && isSettingsDirty()) {
+    pendingMode = null;
+    pendingLeave = () => applyStoreSwitch(id);
+    $('settings-guard').hidden = false;
+    return;
+  }
+  applyStoreSwitch(id);
+}
+
+/** Point the whole terminal at another store. */
+async function applyStoreSwitch(id) {
+  if (storeSwitching) return;
+  storeSwitching = true;
+
+  const previousId = vendorId;
+  const previousConfig = config;
+  vendorId = id;
+
+  // Everything this terminal holds is about ONE store: the PIN session, the
+  // items list, the deal history, a half-finished award, the undo window. None
+  // of it carries over. The PIN gate re-arming is the load-bearing part - pin
+  // sessions are keyed (vendor_id, user_id) server-side, so the old token is
+  // rejected at the new store anyway, and this is what stops the terminal
+  // discovering that halfway through a redemption.
+  clearVendorState();
+
+  let res = null;
+  let data = {};
+  try {
+    res = await authFetch('/api/vendor/config');
+    data = await res.json().catch(() => ({}));
+  } catch { /* offline - handled below */ }
+
+  if (!res?.ok) {
+    // Put the terminal back on the store it was working from rather than
+    // stranding it between two.
+    vendorId = previousId;
+    config = previousConfig;
+    storeSwitching = false;
+    repaintForStore();
+    flood('error', 'COULDN’T SWITCH', data?.message || 'Check the connection and try again.');
+    return;
+  }
+
+  config = data;
+  rememberStore();
+  storeSwitching = false;
+  repaintForStore();
+  flood('success', 'STORE CHANGED', `Now ringing up for ${configTitle()}.`, null, 1800);
+}
+
+/** Redraw every part of the shell that names or reads the current store. */
+function repaintForStore() {
+  paintStoreSwitcher();
+  $('signout-vendor').textContent = config?.name ?? '';
+  syncPunchTab();
+  refreshRewards();
+  refreshLastActivity();
+  enterScan();   // land on SCAN: un-gated, and where a till wants to be anyway
 }
 
 /* ---------- helpers ---------- */
@@ -423,6 +695,12 @@ async function authFetch(path, opts = {}) {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${data?.session?.access_token ?? ''}`,
+      // WHICH STORE this request is about. One login can be staff of several
+      // (migration-043), and requireVendor answers VENDOR_AMBIGUOUS rather than
+      // guessing. Omitted until a store is chosen, which is also the right
+      // header for the single-location vendor: the server resolves their one
+      // link on its own, so the terminal never has to have loaded the list.
+      ...(vendorId ? { 'X-Vendor-Id': vendorId } : {}),
       // The server enforces the staff PIN on redeem/manage routes; send the
       // session token when we have one (harmless on routes that ignore it).
       ...(pinToken ? { 'X-Vendor-Pin': pinToken } : {}),
@@ -2539,7 +2817,10 @@ function settingsSnapshot() {
     ratio: $('set-ratio').value.trim(),
     exact: switchOn($('set-exact')),
     tiers: collectTiers(),
-    address: $('set-address').value.trim(),
+    // Keyed by the CARD they live on (data-card="address"), which is what gives
+    // each card its own unsaved-edit highlight — so the location label, which
+    // sits on that card, is part of the same slice rather than one of its own.
+    address: { street: $('set-address').value.trim(), label: $('set-location-label').value.trim() },
     logo: logoValue,
     // Just the switch since migration-029: the card's target and reward are
     // gone, replaced by a per-reward punch price on the ITEMS tab. The key stays
@@ -2580,16 +2861,26 @@ function refreshSettingsDirty() {
 
 function closeSettingsGuard() {
   $('settings-guard').hidden = true;
-  pendingMode = null;   // "Keep editing" — cancel the pending tab switch
+  pendingMode = null;    // "Keep editing" — cancel the pending tab switch
+  pendingLeave = null;   // … or the pending store switch
 }
 
 // Discard: revert every field to the last-loaded server state, then leave.
 function guardDiscardAndLeave() {
-  const target = pendingMode;
+  const target = pendingLeave ?? pendingMode;
   $('settings-guard').hidden = true;
   pendingMode = null;
+  pendingLeave = null;
   renderSettings(loadedSettings);   // reverts fields + re-baselines to clean
-  if (target) proceedSwitchMode(target);
+  if (target) leaveTo(target);
+}
+
+// Where the guard hands control once it's done: a tab (a mode string, the only
+// kind of leaving there used to be) or an arbitrary action (a store switch,
+// which has no mode of its own).
+function leaveTo(target) {
+  if (typeof target === 'function') target();
+  else proceedSwitchMode(target);
 }
 
 // Save & leave: persist, then navigate once the save succeeds. A failed save
@@ -2599,9 +2890,10 @@ async function guardSaveAndLeave() {
   // overlay would already be gone — the tap would neither save nor navigate.
   // Keep the guard up instead so the next tap goes through.
   if (busy) return;
-  const target = pendingMode;
+  const target = pendingLeave ?? pendingMode;
   $('settings-guard').hidden = true;
   pendingMode = null;
+  pendingLeave = null;
   await saveSettings(target);
 }
 
@@ -2627,6 +2919,7 @@ function renderSettings(s) {
   setSwitch($('set-exact'), s.allowExactEntry !== false);
   setSwitch($('set-punch'), s.punchEnabled === true);
   $('set-address').value = s.address ?? '';
+  $('set-location-label').value = s.locationLabel ?? '';
   logoValue = s.logo ?? null;
   logoChanged = false;
   setLogoPreview(logoValue);
@@ -2787,6 +3080,9 @@ async function saveSettings(afterTarget) {
     allowExactEntry: switchOn($('set-exact')),
     tiers: collectTiers(),
     address: $('set-address').value.trim(),
+    // '' clears the label back to unlabelled, which is where a vendor who has
+    // only ever had one location stays.
+    locationLabel: $('set-location-label').value.trim(),
     punchEnabled: switchOn($('set-punch')),
   };
   if (logoChanged) body.logo = logoValue;   // null clears it; a data-URL sets it
@@ -2833,6 +3129,15 @@ async function pushSettings(body, afterTarget) {
     // new ratio / exact-entry / PIN state immediately.
     const cfg = await authFetch('/api/vendor/config');
     if (cfg.ok) config = await cfg.json();
+    // The store's label and address are edited on this same form, and both are
+    // what the switcher shows — so a save can rename this location in the
+    // header and in the menu, without a reload to notice.
+    const here = locations.find((l) => l.id === config?.vendorId);
+    if (here) {
+      here.locationLabel = config.locationLabel ?? null;
+      here.address = data.address || null;
+    }
+    paintStoreSwitcher();
     syncPunchTab();   // the PUNCH tab appears/disappears with the toggle
 
     if (data.pinChanged) {
@@ -2846,8 +3151,9 @@ async function pushSettings(body, afterTarget) {
       pinToken = null;
       flood('success', 'SETTINGS SAVED', 'New PIN set. Re-enter it to continue.', () => switchMode('scan'));
     } else if (afterTarget) {
-      // "Save & leave" — head to the tab the vendor was trying to reach.
-      flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => proceedSwitchMode(afterTarget));
+      // "Save & leave" — head to the tab the vendor was trying to reach, or run
+      // whatever else they were leaving for (a store switch passes a callback).
+      flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => leaveTo(afterTarget));
     } else {
       flood('success', 'SETTINGS SAVED', 'Your changes are live.', () => renderSettings(loadedSettings));
     }
@@ -3005,14 +3311,22 @@ async function signOut() {
   resetToLogin();
 }
 
-// Forget everything about the signed-out vendor and show the sign-in card, so
-// the next sign-in on this shared terminal starts clean.
-function resetToLogin() {
+/**
+ * Forget everything the terminal knows about ONE store.
+ *
+ * Shared by signing out (resetToLogin, below, which then also clears the login
+ * form and the account itself) and by switching stores on the same login
+ * (applyStoreSwitch). Every field here is per-vendor either way: a PIN session,
+ * an items list, a deal history or a half-finished redemption that survived
+ * into another store would belong to the wrong one.
+ */
+function clearVendorState() {
   config = null;
   rewards = [];
   loadedSettings = null;
   settingsBaseline = null;   // form's gone — nothing left to guard (incl. beforeunload)
   pendingMode = null;
+  pendingLeave = null;
   logoValue = null;
   logoChanged = false;
   // Drop the PIN session: whoever signs in next re-enters the staff PIN.
@@ -3039,12 +3353,18 @@ function resetToLogin() {
   clearTimeout(undoLastTimer);
   clearTimeout(undoExpiryTimer);
   renderUndoLast();
+  // The other tabs' caches (rewards is cleared at the top). Each refetches when
+  // its tab is opened, but the painted DOM outlives the data — without this,
+  // the first frame after a switch shows the store you just left.
+  dealHistory = [];
+  dealQuota = null;
+  recentItems = [];
   refreshSettingsDirty();   // clears the tab dot, Save ring and per-card highlights
   mode = 'scan';
   setTabs('scan');
 
-  // Don't leave the previous vendor's PIN / password keystrokes sitting in the
-  // hidden form fields; renderSettings() re-clears them on the next sign-in too.
+  // Don't leave the previous store's PIN / password keystrokes sitting in the
+  // hidden form fields; renderSettings() re-clears them on the next load too.
   $('set-pin').value = '';
   $('set-pin-msg').hidden = true;
   $('set-pw-new').value = '';
@@ -3052,6 +3372,21 @@ function resetToLogin() {
   $('set-pw-msg').hidden = true;
   $('settings-error').hidden = true;
   $('signout-msg').hidden = true;
+}
+
+// Forget the signed-out vendor entirely and show the sign-in card, so the next
+// sign-in on this shared terminal starts clean.
+function resetToLogin() {
+  clearVendorState();
+  // The account and its stores, which outlive any one store and so are not part
+  // of clearVendorState. The REMEMBERED store id in localStorage is keyed by
+  // account and deliberately survives: it is this device's answer to "which
+  // till is this", not a leftover of the session.
+  accountId = null;
+  locations = [];
+  vendorId = null;
+  storeSwitching = false;
+  paintStoreSwitcher();   // back to a plain, disabled, empty name
 
   $('login-email').value = '';
   $('login-password').value = '';

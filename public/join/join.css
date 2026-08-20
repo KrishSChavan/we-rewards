@@ -151,6 +151,40 @@ textarea { resize: vertical; min-height: 4.5rem; }
 .btn-primary:active { background: var(--navy-press); }
 .btn-primary:disabled { opacity: 0.35; cursor: default; }
 
+/* ---------- more locations (migration-043) ----------
+   One application can name several branches; each gets its own vendors row and
+   they all share one login. Framed as cards so it reads as a list of places
+   rather than one long form that happens to repeat itself. */
+
+.loc-heading {
+  font-weight: 900; font-size: 0.78rem; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--navy);
+}
+
+#extra-locations { display: flex; flex-direction: column; gap: 0.9rem; }
+#extra-locations:empty { display: none; }
+
+.loc-row {
+  display: flex; flex-direction: column; gap: 0.9rem;
+  padding: 0.9rem;
+  border: 2px solid var(--sky-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.loc-row-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+
+.btn-add-location {
+  align-self: flex-start;
+  padding: 0.6rem 0.9rem;
+  font: inherit; font-weight: 700;
+  color: var(--navy); background: none;
+  border: 2px dashed var(--sky-line); border-radius: 10px;
+  cursor: pointer;
+}
+.btn-add-location:active { background: var(--sky); }
+.btn-add-location:disabled { opacity: 0.35; cursor: default; }
+
 .fine-print { color: var(--muted); font-size: 0.8rem; line-height: 1.4; }
 
 .done-card { text-align: left; }

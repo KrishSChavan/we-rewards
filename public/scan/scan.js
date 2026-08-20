@@ -33,6 +33,11 @@
 if (window.__wrBooted) window.__wrBooted();
 
 var config = null;             // vendor config from /api/vendor/config
+var accountId = null;          // signed-in auth user id - keys the remembered store
+var locations = [];            // every store this login runs (GET /api/vendor/locations)
+var vendorId = null;           // the store this screen is ringing up for, sent as
+                               // X-Vendor-Id on every /api/vendor/* call
+var storeSwitching = false;    // a store switch is mid-flight (guards double-taps)
 var currentEarnCode = null;    // customer's 6-digit earn code on the award pad
 var currentMultiplier = 1;     // scanned customer's tier multiplier (1x/1.5x/2x)
 var pendingRedeemCode = null;  // 4-digit redeem code awaiting vendor confirmation
@@ -213,6 +218,10 @@ function wireEvents() {
   $('recover-btn').addEventListener('click', submitRecover);
   $('recover-confirm').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitRecover(); });
   $('recover-code').addEventListener('input', function (e) { e.target.value = formatResetCodeInput(e.target.value); });
+  // The vendor name doubles as the store switcher for a login that runs several
+  // locations; it ships disabled, so this does nothing until paintStoreSwitcher
+  // finds a second store.
+  $('store-btn').addEventListener('click', toggleStoreMenu);
   $('signout-btn').addEventListener('click', openSignOutConfirm);
   $('signout-cancel').addEventListener('click', closeSignOutConfirm);
   $('signout-go').addEventListener('click', signOut);
@@ -336,19 +345,290 @@ async function submitRecover() {
 }
 
 async function enterApp() {
-  var res = await authFetch('/api/vendor/config');
-  if (!res.ok) {
-    var data = await res.json().catch(function () { return {}; });
-    await signOutAuth();
-    $('login-error').textContent = (data && data.message) || 'This account is not linked to a vendor.';
-    $('login-error').hidden = false;
-    show('screen-login');
-    return;
-  }
-  config = await res.json();
-  $('vendor-name').textContent = config.name;
+  accountId = accountFromToken(await getAccessToken());
+
+  // WHICH STORE first, before anything else asks the server for vendor data:
+  // every /api/vendor/* call carries the choice as X-Vendor-Id, and a login
+  // that runs several stores and names none is answered VENDOR_AMBIGUOUS.
+  vendorId = null;
+  locations = await fetchLocations();
+  vendorId = chooseStore(savedStore());
+
+  if (!(await loadConfig())) return;   // it has already said why, on the login card
+
+  paintStoreSwitcher();
   $('shell').hidden = false;
   $('screen-login').hidden = true;
+  refreshLastActivity();
+  enterScan();
+}
+
+/**
+ * Load /config for the current vendorId into `config`. Returns false - having
+ * put the sign-in card back up carrying the reason - when this login cannot use
+ * this screen at all.
+ */
+async function loadConfig() {
+  var attempt;
+  for (attempt = 0; attempt < 2; attempt++) {
+    var res = await authFetch('/api/vendor/config');
+    if (res.ok) {
+      config = await res.json();
+      rememberStore();
+      return true;
+    }
+    var data = await res.json().catch(function () { return {}; });
+
+    // The remembered store was switched off, or this login lost access to it,
+    // while the app was closed - and there is another one to fall back to. Take
+    // it rather than bouncing a vendor who does still have somewhere to sell
+    // from. Once only: a second failure is not about which store was picked.
+    var alt = null;
+    locations.forEach(function (l) { if (!alt && l.active && l.id !== vendorId) alt = l; });
+    if (!attempt && alt && (data.error === 'VENDOR_DISABLED' || data.error === 'VENDOR_AMBIGUOUS')) {
+      vendorId = alt.id;
+      continue;
+    }
+
+    // VENDOR_AMBIGUOUS with nothing to fall back to means the store LIST did not
+    // load, not that the account is unusable, so the session stays and the
+    // message is one the vendor can act on. Every other answer is about the
+    // ACCOUNT, and there the session has to end for the sign-in card to be
+    // telling the truth.
+    if (data.error === 'VENDOR_AMBIGUOUS') {
+      $('login-error').textContent = 'Couldn’t load your stores. Check the connection and try again.';
+    } else {
+      await signOutAuth();
+      $('login-error').textContent = (data && data.message) || 'This account is not linked to a vendor.';
+    }
+    $('login-error').hidden = false;
+    $('shell').hidden = true;
+    show('screen-login');
+    return false;
+  }
+  return false;
+}
+
+/* ---------- store switcher (multi-location logins) ----------
+
+   vendor_staff is a join table, so one login can be staff of several vendors
+   (migration-043). The server picks which one a request means from the
+   X-Vendor-Id header and answers VENDOR_AMBIGUOUS without it, so this screen
+   needs the same switcher the full terminal has, or a chain cannot sign in here
+   at all. Kept deliberately close to terminal.js, minus the tabs this app does
+   not have. NO DESTRUCTURING anywhere below: this file is lowered to safari12,
+   which esbuild refuses to transform destructuring for. */
+
+// Remembered per ACCOUNT and per DEVICE, same as the terminal: the till by the
+// Downtown register opens on Downtown, and two vendors sharing an iPad do not
+// inherit each other's pick.
+function storeKey() {
+  return 'wrw-scan-store:' + (accountId || 'anon');
+}
+
+function savedStore() {
+  try { return localStorage.getItem(storeKey()); } catch (e) { return null; }
+}
+
+function rememberStore() {
+  if (!vendorId || !accountId) return;
+  try { localStorage.setItem(storeKey(), vendorId); } catch (e) { /* private mode */ }
+}
+
+/* Who is signed in, read out of the access token's `sub` claim. There is no
+   supabase-js here to ask, and the stored session is only the raw tokens.
+   Decoded with a regex rather than JSON.parse: a JWT payload is base64url of
+   UTF-8 and atob hands back bytes, so a name or email with an accent in it
+   would break the parse of a token that is otherwise perfectly good. */
+function accountFromToken(token) {
+  try {
+    var part = String(token || '').split('.')[1];
+    if (!part) return null;
+    var b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    var m = atob(b64).match(/"sub"\s*:\s*"([^"]+)"/);
+    return m ? m[1] : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchLocations() {
+  try {
+    var res = await authFetch('/api/vendor/locations');
+    if (!res.ok) return [];
+    var body = await res.json();
+    return body && Array.isArray(body.locations) ? body.locations : [];
+  } catch (e) {
+    // Offline or a 5xx. A single-location login still works from here: the
+    // server resolves its one link without being told.
+    return [];
+  }
+}
+
+/** The store to open on: the remembered one while it is still usable, else the
+ *  first one this login runs. Null when the list did not load. */
+function chooseStore(savedId) {
+  var usable = locations.filter(function (l) { return l.active; });
+  var saved = null;
+  var i;
+  for (i = 0; i < usable.length; i++) if (usable[i].id === savedId) saved = usable[i];
+  var pick = saved || usable[0] || locations[0] || null;
+  return pick ? pick.id : null;
+}
+
+// What to call a store on one line. Every location of a chain carries the same
+// business name, so the label is what actually identifies it.
+function storeTitle(l) {
+  return l.locationLabel || l.name;
+}
+
+function configTitle() {
+  if (!config) return '';
+  return config.locationLabel ? config.name + ' · ' + config.locationLabel : config.name;
+}
+
+function paintStoreSwitcher() {
+  var btn = $('store-btn');
+  var many = locations.length > 1;
+
+  $('vendor-name').textContent = configTitle();
+  btn.disabled = !many;
+  $('store-caret').hidden = !many;
+  closeStoreMenu();
+
+  var menu = $('store-menu');
+  menu.innerHTML = '';
+  if (!many) return;
+
+  locations.forEach(function (l) {
+    var current = l.id === vendorId;
+    var item = document.createElement('button');
+    item.type = 'button';
+    item.className = current ? 'store-item is-current' : 'store-item';
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(current));
+    // Switched off by the operator: listed so its absence is not a mystery, but
+    // not selectable (requireVendor would answer VENDOR_DISABLED).
+    item.disabled = !l.active;
+
+    var text = document.createElement('span');
+    text.className = 'store-item-text';
+    var name = document.createElement('span');
+    name.className = 'store-item-name';
+    name.textContent = storeTitle(l);
+    text.appendChild(name);
+
+    // The tiebreak line: two branches may carry the same label, or none, and
+    // the address is the one thing that is always different.
+    var sub = l.address || (l.locationLabel ? l.name : '');
+    if (sub) {
+      var s = document.createElement('span');
+      s.className = 'store-item-sub';
+      s.textContent = sub;
+      text.appendChild(s);
+    }
+
+    var off = document.createElement('span');
+    off.className = 'store-item-off';
+    off.textContent = 'OFF';
+    off.hidden = l.active;
+
+    var mark = document.createElement('span');
+    mark.className = 'store-item-mark';
+    mark.textContent = '✓';
+    mark.hidden = !current;
+
+    item.appendChild(text);
+    item.appendChild(off);
+    item.appendChild(mark);
+    item.addEventListener('click', function () { requestStoreSwitch(l.id); });
+    menu.appendChild(item);
+  });
+}
+
+function openStoreMenu() {
+  if (locations.length < 2) return;
+  $('store-menu').hidden = false;
+  $('store-btn').setAttribute('aria-expanded', 'true');
+  // Capture phase, so a control that stops propagation still dismisses it.
+  // Registering from inside the opening click is safe: document's capture
+  // listeners for that event have already run by the time this handler does.
+  document.addEventListener('click', onStoreOutsideTap, true);
+  document.addEventListener('keydown', onStoreMenuKey, true);
+}
+
+function closeStoreMenu() {
+  $('store-menu').hidden = true;
+  $('store-btn').setAttribute('aria-expanded', 'false');
+  document.removeEventListener('click', onStoreOutsideTap, true);
+  document.removeEventListener('keydown', onStoreMenuKey, true);
+}
+
+function toggleStoreMenu() {
+  if ($('store-menu').hidden) openStoreMenu();
+  else closeStoreMenu();
+}
+
+function onStoreOutsideTap(e) {
+  if (!$('store-switch').contains(e.target)) closeStoreMenu();
+}
+
+function onStoreMenuKey(e) {
+  if (e.key === 'Escape') { closeStoreMenu(); $('store-btn').focus(); }
+}
+
+function requestStoreSwitch(id) {
+  closeStoreMenu();
+  if (storeSwitching || busy || id === vendorId) return;
+  var target = null;
+  locations.forEach(function (l) { if (l.id === id) target = l; });
+  if (!target || !target.active) return;
+  applyStoreSwitch(id);
+}
+
+/** Point the whole screen at another store. */
+async function applyStoreSwitch(id) {
+  if (storeSwitching) return;
+  storeSwitching = true;
+
+  var previousId = vendorId;
+  var previousConfig = config;
+  vendorId = id;
+
+  // Everything held here is about ONE store: the PIN session, a half-finished
+  // award, the undo window. The PIN gate re-arming is the load-bearing part,
+  // since pin sessions are keyed (vendor_id, user_id) server-side and the old
+  // token is rejected at the new store anyway.
+  clearVendorState();
+
+  var res = null;
+  var data = {};
+  try {
+    res = await authFetch('/api/vendor/config');
+    data = await res.json().catch(function () { return {}; });
+  } catch (e) { /* offline - handled below */ }
+
+  if (!res || !res.ok) {
+    // Put the screen back on the store it was working from rather than
+    // stranding it between two.
+    vendorId = previousId;
+    config = previousConfig;
+    storeSwitching = false;
+    repaintForStore();
+    flood('error', 'COULDN’T SWITCH', (data && data.message) || 'Check the connection and try again.');
+    return;
+  }
+
+  config = data;
+  rememberStore();
+  storeSwitching = false;
+  repaintForStore();
+  flood('success', 'STORE CHANGED', 'Now ringing up for ' + configTitle() + '.', null, 1800);
+}
+
+function repaintForStore() {
+  paintStoreSwitcher();
   refreshLastActivity();
   enterScan();
 }
@@ -359,6 +639,11 @@ async function authFetch(path, opts) {
   opts = opts || {};
   var token = await getAccessToken();
   var headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (token || '') };
+  // WHICH STORE this request is about. One login can be staff of several
+  // (migration-043) and requireVendor answers VENDOR_AMBIGUOUS rather than
+  // guessing. Omitted until a store is chosen, which is also right for the
+  // single-location vendor: the server resolves their one link on its own.
+  if (vendorId) headers['X-Vendor-Id'] = vendorId;
   if (pinToken) headers['X-Vendor-Pin'] = pinToken;
   if (opts.headers) {
     for (var k in opts.headers) headers[k] = opts.headers[k];
@@ -1229,7 +1514,15 @@ async function signOut() {
   resetToLogin();
 }
 
-function resetToLogin() {
+/**
+ * Forget everything this screen knows about ONE store.
+ *
+ * Shared by signing out (resetToLogin, below) and by switching stores on the
+ * same login (applyStoreSwitch). Every field here is per-vendor either way: a
+ * PIN session or a half-finished redemption that survived into another store
+ * would belong to the wrong one.
+ */
+function clearVendorState() {
   config = null;
   pinUnlocked = false;
   pinToken = null;
@@ -1246,6 +1539,18 @@ function resetToLogin() {
   clearTimeout(undoLastTimer);
   clearTimeout(undoExpiryTimer);
   renderUndoLast();
+}
+
+function resetToLogin() {
+  clearVendorState();
+  // The account and its stores, which outlive any one store. The REMEMBERED
+  // store id in localStorage is keyed by account and deliberately survives: it
+  // is this device's answer to "which till is this", not a leftover session.
+  accountId = null;
+  locations = [];
+  vendorId = null;
+  storeSwitching = false;
+  paintStoreSwitcher();   // back to a plain, disabled, empty name
 
   $('login-email').value = '';
   $('login-password').value = '';

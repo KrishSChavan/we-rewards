@@ -95,7 +95,18 @@
   <!-- ===== APP SHELL: one screen, no tabs ===== -->
   <div id="shell" hidden>
     <header id="topbar">
-      <span id="vendor-name" class="vendor-name"></span>
+      <!-- One login can run several locations (migration-043), and the vendor
+           name IS the switcher, exactly as in the full terminal: disabled and
+           visually untouched for the single-location vendor, a menu button with
+           a caret for a chain. -->
+      <div id="store-switch" class="store-switch">
+        <button id="store-btn" class="vendor-name store-btn" type="button"
+                aria-haspopup="listbox" aria-expanded="false" aria-controls="store-menu" disabled>
+          <span id="vendor-name" class="store-name"></span>
+          <span id="store-caret" class="store-caret" aria-hidden="true" hidden>▾</span>
+        </button>
+        <div id="store-menu" class="store-menu" role="listbox" aria-label="Choose a store" hidden></div>
+      </div>
       <button id="signout-btn" class="btn-ghost btn-compact" type="button">Sign out</button>
     </header>
 

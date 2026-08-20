@@ -30,6 +30,10 @@
       <p class="lede">Tell us about your business! We review every application. Once you're approved, you can sign in to your terminal right away with the email and password you choose below.</p>
 
       <form id="apply-form" novalidate>
+        <!-- Location one. Its heading only appears once a second location is
+             added, so the form a single-shop applicant fills in is exactly the
+             form that was here before multi-location (migration-043). -->
+        <p id="loc1-heading" class="loc-heading" hidden>Location 1</p>
         <label>Business name
           <input id="f-business" type="text" maxlength="80" autocomplete="organization" required />
         </label>
@@ -56,6 +60,13 @@
         <label>Street address <em class="opt">(optional)</em>
           <input id="f-address" type="text" maxlength="300" autocomplete="street-address" placeholder="123 College Ave, State College, PA" />
           <span class="hint">Shown as a map on your card in the student app.</span>
+        </label>
+
+        <!-- Only meaningful once there are two locations to tell apart, so it
+             stays out of the way until there are. -->
+        <label id="loc1-label-field" hidden>Location name <em class="opt">(optional)</em>
+          <input id="f-location-label" type="text" maxlength="40" autocomplete="off" placeholder="Downtown" />
+          <span class="hint">What your staff call this branch. It's what the store switcher in your terminal shows. Customers never see it.</span>
         </label>
 
         <!-- What the shop SELLS. Everything above this point is how we reach
@@ -101,6 +112,34 @@
           <input id="logo-file" type="file" accept="image/png,image/jpeg,image/webp" hidden />
         </div>
 
+        <!-- ===== MORE LOCATIONS =====
+             One application, one login, one vendors row per location. Each
+             location asks only for what actually DIFFERS between branches:
+             what you sell, your price range and your logo are collected once
+             above and carried onto every location by the server. -->
+        <div id="extra-locations"></div>
+        <button id="add-location" class="btn-add-location" type="button">+ Add another location</button>
+        <p class="hint">Running more than one shop? Add them here and they all share this one sign-in. You'll get a store switcher at the top of your terminal to move between them. Each location keeps its own points, items and stats.</p>
+
+        <!-- Cloned by join.js for each location after the first. -->
+        <template id="location-template">
+          <div class="loc-row">
+            <div class="loc-row-top">
+              <p class="loc-heading" data-loc-heading></p>
+              <button class="btn-small btn-small-danger" type="button" data-loc-remove>Remove</button>
+            </div>
+            <label>Business name
+              <input type="text" maxlength="80" autocomplete="off" data-loc-name />
+            </label>
+            <label>Location name <em class="opt">(optional)</em>
+              <input type="text" maxlength="40" autocomplete="off" placeholder="Campus" data-loc-label />
+            </label>
+            <label>Street address <em class="opt">(optional)</em>
+              <input type="text" maxlength="300" autocomplete="off" placeholder="123 College Ave, State College, PA" data-loc-address />
+            </label>
+          </div>
+        </template>
+
         <label>Anything we should know? <em class="opt">(optional)</em>
           <textarea id="f-message" maxlength="500" rows="3" placeholder="Hours, what you sell, questions for us…"></textarea>
         </label>
@@ -116,6 +155,7 @@
       <p class="brand">WEREWARDS</p>
       <h1>Application received 🎉</h1>
       <p class="lede">Thanks! We review every application by hand. Once you're approved, sign in to your terminal at <strong>/terminal</strong> with the email and password you just chose.</p>
+      <p id="done-locations" class="lede" hidden></p>
     </section>
 
   </main>

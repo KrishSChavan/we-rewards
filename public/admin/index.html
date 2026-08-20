@@ -544,6 +544,20 @@
         <p class="vendor-edit-hint">What students and the terminal see. The short id beside it in the roster is fixed and does not follow a rename.</p>
       </div>
 
+      <!-- Which BRANCH this row is (migration-043). Only earns its keep when one
+           login runs several locations, which all carry the same business name;
+           it is what their terminal's store switcher shows. Never seen by
+           students. -->
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">Location name</p>
+        <div class="vendor-ratio-row">
+          <input id="vendor-edit-location" class="vendor-edit-input vendor-edit-name" type="text" maxlength="40" autocomplete="off" placeholder="Downtown" aria-label="Location name" />
+          <button id="vendor-location-save" class="vr-save" type="button">Save</button>
+          <span id="vendor-location-note" class="vendor-edit-note"></span>
+        </div>
+        <p class="vendor-edit-hint">Only for a vendor running more than one location on one login: it is how their staff tell the branches apart in the terminal's store switcher. Leave blank for a single-location vendor. Students never see it.</p>
+      </div>
+
       <div class="vendor-edit-section">
         <p class="vendor-edit-label">Points per dollar</p>
         <div class="vendor-ratio-row">
@@ -664,6 +678,12 @@
           <label class="vendor-edit-label" for="nv-address">Street address <em class="nv-opt">(optional)</em></label>
           <input id="nv-address" class="nv-input" type="text" maxlength="300" autocomplete="off" placeholder="123 College Ave, State College, PA" />
           <span class="vendor-edit-hint">Shown as a tappable map on the vendor's card in the student app.</span>
+        </div>
+
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="nv-location">Location name <em class="nv-opt">(optional)</em></label>
+          <input id="nv-location" class="nv-input" type="text" maxlength="40" autocomplete="off" placeholder="Downtown" />
+          <span class="vendor-edit-hint">Only if this vendor runs several locations. Using an email that already runs one links this location to that same sign-in, and the label is how their staff tell the two apart in the terminal's store switcher.</span>
         </div>
 
         <div class="nv-field">

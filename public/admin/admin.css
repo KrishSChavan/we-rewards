@@ -180,6 +180,20 @@ h1, h3 { margin: 0; }
 .vendor-name { font-weight: 700; font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vendor-meta { color: var(--muted); font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Which branch a row is, when one login runs several (migration-043). A chip
+   rather than another meta line: two rows of a chain differ ONLY by this, so it
+   has to be the thing the eye lands on, not the thing it has to hunt for. */
+.vendor-loc {
+  align-self: flex-start;
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--line, currentColor);
+  border-radius: 4px;
+  color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+
 /* toggle: a track + sliding knob, with an ON/OFF word beside it */
 .vendor-toggle {
   display: inline-flex; align-items: center; gap: 0.5rem; flex-shrink: 0;
@@ -411,6 +425,15 @@ h1, h3 { margin: 0; }
 .app-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
 .app-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app-meta { color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+
+/* The locations one application asks for (migration-043). Indented under the
+   card's own details so it reads as "and these are the shops", not as more
+   contact fields. */
+.app-locations { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.5rem; }
+.app-location {
+  font-size: 0.78rem; overflow-wrap: anywhere;
+  padding-left: 0.6rem; border-left: 2px solid var(--line, currentColor);
+}
 .app-meta a { color: var(--accent); text-decoration: none; }
 .app-meta a:hover { text-decoration: underline; }
 .app-when { color: var(--muted); font-size: 0.72rem; white-space: nowrap; flex-shrink: 0; }

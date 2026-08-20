@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
-import { requireVendor, requirePin } from '../middleware/auth.js';
+import { requireUser, requireVendor, requirePin } from '../middleware/auth.js';
 import { emitBalance, emitPunch, emitDeal } from '../lib/realtime.js';
 import { CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS } from '../lib/campaigns.js';
 import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WINDOW_SECONDS } from '../lib/punch.js';
@@ -17,6 +17,8 @@ import { validLogo } from '../lib/logo.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
+// Max stored location label — same cap as vendors.location_label (apply.js / admin.js).
+const LABEL_MAX = 40;
 
 
 // A staff PIN session (from verify-pin) stays valid for one shift.
@@ -30,6 +32,52 @@ const PIN_SESSION_HOURS = 8;
 const MAX_AWARD_DOLLARS = 200;
 
 const router = Router();
+
+/**
+ * GET /api/vendor/locations
+ * Every store this login is staff of — the list behind the terminal's store
+ * switcher (migration-043).
+ *
+ * MOUNTED BEFORE requireVendor, and gated on requireUser instead, because it is
+ * the one call that must work when the account is ambiguous. requireVendor
+ * answers VENDOR_AMBIGUOUS to a multi-location login that hasn't named a store,
+ * and naming one is exactly what this endpoint exists to make possible — asking
+ * it through that gate would be a chicken-and-egg 400.
+ *
+ * Inactive stores are LISTED, flagged rather than filtered. An operator
+ * kill-switch is a thing the vendor needs told about (requireVendor answers
+ * VENDOR_DISABLED if they pick one), and silently dropping it would show a
+ * one-location vendor an empty switcher with nothing to explain it.
+ */
+router.get('/locations', requireUser, async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('vendor_staff')
+      .select('vendor_id, role, vendors(id, name, location_label, address, active, created_at)')
+      .eq('user_id', req.user.id);
+    if (error) throw error;
+
+    const locations = (data ?? [])
+      .map((s) => s.vendors)
+      .filter(Boolean)
+      // Oldest first: the store a vendor opened first stays at the top of the
+      // switcher for good, so the list doesn't reshuffle under the staff when
+      // another location is added.
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+      .map((v) => ({
+        id: v.id,
+        name: v.name,
+        locationLabel: v.location_label ?? null,
+        address: v.address ?? null,
+        active: v.active !== false,
+      }));
+
+    res.json({ locations });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.use(requireVendor);
 
 // ---- short-code resolution (replaces the old signed QR tokens) ----
@@ -72,6 +120,9 @@ router.get('/config', (req, res) => {
   res.json({
     vendorId: v.id,
     name: v.name,
+    // Which branch this terminal is ringing up for (migration-043). Null for a
+    // single-location vendor, where the header shows the plain business name.
+    locationLabel: v.location_label ?? null,
     pointsPerDollar: Number(v.points_per_dollar),
     allowExactEntry: v.allow_exact_entry,
     tiers: v.tiers ?? [],
@@ -1014,6 +1065,14 @@ function validSettings(body) {
     updates.address = a || null; // '' clears the address (and its coordinates)
   }
 
+  // What this branch is called in the store switcher (migration-043). '' clears
+  // it back to unlabelled, which is what a single-location vendor stays at.
+  if (body?.locationLabel != null) {
+    const l = String(body.locationLabel).trim();
+    if (l.length > LABEL_MAX) return { error: `The location name must be ${LABEL_MAX} characters or fewer.` };
+    updates.location_label = l || null;
+  }
+
   // logo: null/'' clears it; otherwise a small base64 image data-URL. Same rule
   // as the operator's two doors and /join — see src/lib/logo.js.
   if (body && Object.prototype.hasOwnProperty.call(body, 'logo')) {
@@ -1045,6 +1104,7 @@ const settingsView = (v) => ({
   tiers: v.tiers ?? [],
   hasPin: Boolean(v.pin_hash),
   address: v.address ?? '',
+  locationLabel: v.location_label ?? '',
   logo: v.logo ?? null,
   punchEnabled: Boolean(v.punch_enabled),
 });

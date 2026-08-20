@@ -18,7 +18,7 @@
 // v3: the boot guard recognises more engines' wording for a parse failure. This
 // mount is the one aimed at devices old enough to hit that path, so the screen
 // it shows has to be the right one (boot-guard.js).
-const CACHE = 'werewards-scan-v3';
+const CACHE = 'werewards-scan-v4';
 const SHELL = [
   '/scan/', '/scan/boot-guard.js', '/scan/scan.css', '/scan/scan.js',
   '/scan/jsQR.js', '/scan/no-zoom.js', '/scan/manifest.json',

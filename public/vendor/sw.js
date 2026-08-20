@@ -73,7 +73,7 @@
 // seventh tab extends the scroll rather than growing the header into the
 // viewfinder. Bottom bar on phones scrolls only once labels would clip
 // (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v24';
+const CACHE = 'werewards-terminal-v25';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

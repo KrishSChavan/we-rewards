@@ -32,6 +32,7 @@ const ADDRESS_MAX = 300;   // keep a pasted essay out of the column and the geoc
 // already failed there once (see that file).
 const NAME_MAX = 80;
 const EMAIL_MAX = 254;
+const LABEL_MAX = 40;      // same cap as vendors.location_label (apply.js / vendor.js)
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 72;   // bcrypt reads 72 bytes; refuse longer, never truncate
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -64,12 +65,14 @@ export function validNewVendor(body) {
   const email = String(b.email ?? '').trim().toLowerCase();
   const password = typeof b.password === 'string' ? b.password : '';
   const address = String(b.address ?? '').trim();
+  const label = String(b.locationLabel ?? '').trim();
   const logo = validLogo(b.logo);
 
   if (!EMAIL_RE.test(email) || email.length > EMAIL_MAX) return { error: 'Enter a valid email address.' };
   if (password.length < PASSWORD_MIN) return { error: `Password must be at least ${PASSWORD_MIN} characters.` };
   if (password.length > PASSWORD_MAX) return { error: `Password must be ${PASSWORD_MAX} characters or fewer.` };
   if (address.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
+  if (label.length > LABEL_MAX) return { error: `The location name must be ${LABEL_MAX} characters or fewer.` };
   if (logo.error) return { error: logo.error };
 
   // Not validated, NORMALISED (migration-042): both are optional pickers, and
@@ -79,6 +82,7 @@ export function validNewVendor(body) {
     name: n.value, email, password, address: address || null, logo: logo.value,
     cuisine: normalizeCuisine(b.cuisine),
     priceLevel: normalizePriceLevel(b.priceLevel),
+    locationLabel: label || null,
   };
 }
 
@@ -225,7 +229,7 @@ router.get('/vendors', async (req, res, next) => {
       // that exists so a list can say whether there is artwork without dragging
       // a 500 KB base64 blob per row through the response. The bytes themselves
       // are fetched one vendor at a time by GET /vendors/:id/logo below.
-      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
+      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
       .order('created_at', { ascending: false });
     if (error) throw error;
 
@@ -286,13 +290,107 @@ function slugify(name) {
   return s || 'vendor';
 }
 
+// The columns a sibling location inherits when one login runs several stores
+// (migration-043): how the terminal prices and rings up a sale, and nothing
+// else. Deliberately NOT here: pin_hash (each till gets its own PIN, or none),
+// address/logo/cuisine/price_level (per-location by definition), and anything
+// that is content rather than configuration.
+const INHERITED_CONFIG = ['points_per_dollar', 'tiers', 'allow_exact_entry', 'punch_enabled'];
+
+/** Just the inheritable columns of a vendors row, ready to spread into an insert. */
+const pickConfig = (row) => Object.fromEntries(INHERITED_CONFIG.map((k) => [k, row[k]]));
+
 /**
- * Onboard a vendor: auth login → vendors row → vendor_staff link, the same three
+ * The config a NEW location for this login should start from: its owner's
+ * oldest existing vendor, or null when this login runs nothing yet (→ table
+ * defaults).
+ *
+ * Oldest rather than newest because that is the one the vendor set up by hand
+ * and has been trading on; the newest may itself be a location that inherited
+ * from somewhere and tells us nothing new.
+ */
+async function inheritedConfig(userId) {
+  const { data, error } = await supabaseAdmin
+    .from('vendor_staff')
+    .select(`vendors(created_at, ${INHERITED_CONFIG.join(', ')})`)
+    .eq('user_id', userId);
+  if (error) throw error;
+
+  const rows = (data ?? [])
+    .map((s) => s.vendors)
+    .filter(Boolean)
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  return rows.length ? pickConfig(rows[0]) : null;
+}
+
+/**
+ * Insert ONE vendors row and return it (with the inheritable columns, so the
+ * caller can hand them to the next location).
+ *
+ * @param loc  { name, address?, logo?, cuisine?, priceLevel?, locationLabel? }
+ * @param config  inherited economics to spread in, or null for table defaults
+ * @param slugStart  Map<base, next attempt> shared across one onboarding
+ */
+async function createVendorRow(loc, config, slugStart) {
+  // A geocode miss is never fatal (matches onboard-vendor.js / PATCH vendors):
+  // the address is kept, the student card just shows no map until it's edited.
+  // One location at a time rather than Promise.all over a chain: Nominatim's
+  // usage policy asks for a request a second, and an accept is a single
+  // operator click, not a hot path.
+  const coords = loc.address ? await geocode(loc.address) : null;
+
+  // Slug collisions get a numeric suffix (local-eats, local-eats-2, …). Every
+  // location of a chain after the first collides by construction, since they
+  // share a business name — hence slugStart, which resumes where the previous
+  // sibling landed instead of re-walking the taken suffixes from zero. Still
+  // bounded, so a pathological name can't loop forever.
+  const base = slugify(loc.name);
+  const first = slugStart.get(base) ?? 0;
+  for (let attempt = first; attempt < first + 25; attempt++) {
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .insert({
+        // Spread FIRST so nothing inherited can overwrite this location's own
+        // identity below (an inherited row carries no name/slug today, and this
+        // is what keeps that true if INHERITED_CONFIG ever grows).
+        ...(config ?? {}),
+        name: loc.name,
+        slug: attempt ? `${base}-${attempt + 1}` : base,
+        // Which branch this row is, when one login runs several (migration-043).
+        // Null for the single-location vendor that is still the common case.
+        location_label: loc.locationLabel ?? null,
+        address: loc.address ?? null,
+        latitude: coords?.lat ?? null,
+        longitude: coords?.lng ?? null,
+        logo: loc.logo ?? null,
+        // Normalised at the door rather than trusted (migration-042): every
+        // door into this function carries operator- or applicant-typed values,
+        // and a vendor onboarded with junk here would be quietly unfilterable
+        // rather than visibly broken.
+        cuisine: normalizeCuisine(loc.cuisine),
+        price_level: normalizePriceLevel(loc.priceLevel),
+      })
+      .select(`id, name, slug, location_label, ${INHERITED_CONFIG.join(', ')}`)
+      .single();
+    if (!error) { slugStart.set(base, attempt + 1); return data; }
+    if (error.code !== '23505') throw error;
+  }
+  throw new Error('SLUG_EXHAUSTED');
+}
+
+/**
+ * Onboard a vendor: auth login → vendors row(s) → vendor_staff link(s), the same
  * steps as scripts/onboard-vendor.js. `passwordHash` (an application's stored
  * bcrypt hash) and `password` (plaintext the operator just typed) are the two
- * ways to set the login's credential; pass exactly one. Ratio/tiers stay at
- * table defaults and pin_hash stays null (redeem is ungated until the vendor
- * sets a PIN in terminal Settings).
+ * ways to set the login's credential; pass exactly one. pin_hash stays null
+ * (redeem is ungated until the vendor sets a PIN in terminal Settings).
+ *
+ * MULTI-LOCATION (migration-043): `locations` names further branches the same
+ * owner is opening — one vendors row each, every one linked to the SAME login,
+ * so the terminal's store switcher has something to switch between. The
+ * locations stay fully independent vendors (separate points, items, deals,
+ * stats, PIN); what they share is a login and, via INHERITED_CONFIG, the
+ * economics they open on.
  *
  * Dual-role accounts (migration-035): when the email already has an account
  * (typically a student who wants to run a vendor under the same login), that
@@ -303,10 +401,14 @@ function slugify(name) {
  * Callers get `linkedExisting: true` so they can say so.
  *
  * Each later step unwinds the earlier ones on failure, so a failed onboard
- * leaves a clean slate to retry from. Returns { vendor, linkedExisting }, or
+ * leaves a clean slate to retry from. Returns { vendor, vendors, linkedExisting }
+ * — `vendor` is location one, for the callers that only ever make one — or
  * { conflict: true } when the taken email's account vanished mid-flight.
  */
-async function onboardVendor({ name, email, password, passwordHash, address, logo, cuisine, priceLevel }) {
+async function onboardVendor({
+  name, email, password, passwordHash, address, logo, cuisine, priceLevel,
+  locationLabel = null, locations = [],
+}) {
   let userId;
   let linkedExisting = false;
 
@@ -332,54 +434,52 @@ async function onboardVendor({ name, email, password, passwordHash, address, log
     userId = userData.user.id;
   }
 
-  // A geocode miss is never fatal (matches onboard-vendor.js / PATCH vendors):
-  // the address is kept, the student card just shows no map until it's edited.
-  const coords = address ? await geocode(address) : null;
+  // The economics every location created here starts from. An account that
+  // already runs a store inherits THAT store's settings, because a chain's
+  // third shop opening on the default 10 points/$ while the other two run on 5
+  // is a silent mispricing rather than a fresh start; a brand-new login takes
+  // the table defaults and its second location copies its first, so the stores
+  // in one application always agree with each other.
+  //
+  // CONFIG ONLY. Reward items, deals, balances, history and the staff PIN are
+  // per-location and start empty, so one store's menu never turns up on
+  // another's ITEMS tab and its PIN never unlocks another's till.
+  let config = await inheritedConfig(userId);
 
-  // Slug collisions get a numeric suffix (local-eats, local-eats-2, …). Bounded
-  // so a pathological name can't loop forever; on exhaustion or any other
-  // failure, unwind so a retry starts clean.
-  const base = slugify(name);
-  let vendor = null;
+  // Locations sharing a business name (which is most of a chain) all slugify to
+  // the same base. Remembering where the last one landed keeps the collision
+  // retry linear instead of re-walking every taken suffix per location.
+  const slugStart = new Map();
+
+  const created = [];
   try {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const { data, error } = await supabaseAdmin
-        .from('vendors')
-        .insert({
-          name,
-          slug: attempt ? `${base}-${attempt + 1}` : base,
-          address: address ?? null,
-          latitude: coords?.lat ?? null,
-          longitude: coords?.lng ?? null,
-          logo: logo ?? null,
-          // Normalised at the door rather than trusted (migration-042): both
-          // doors into this function carry operator- or applicant-typed values,
-          // and a vendor onboarded with junk here would be quietly unfilterable
-          // rather than visibly broken.
-          cuisine: normalizeCuisine(cuisine),
-          price_level: normalizePriceLevel(priceLevel),
-        })
-        .select('id, name, slug')
-        .single();
-      if (!error) { vendor = data; break; }
-      if (error.code !== '23505') throw error;
-    }
-    if (!vendor) throw new Error('SLUG_EXHAUSTED');
+    // Location one is this call's own arguments; the rest came from a /join
+    // application that named several (migration-043).
+    const all = [{ name, address, logo, cuisine, priceLevel, locationLabel }, ...locations];
+    for (const loc of all) {
+      const row = await createVendorRow(loc, config, slugStart);
+      created.push(row);
+      config ??= pickConfig(row);   // location one sets the pattern for its siblings
 
-    const { error: staffErr } = await supabaseAdmin
-      .from('vendor_staff')
-      .insert({ vendor_id: vendor.id, user_id: userId, role: 'owner' });
-    if (staffErr) throw staffErr;
+      const { error: staffErr } = await supabaseAdmin
+        .from('vendor_staff')
+        .insert({ vendor_id: row.id, user_id: userId, role: 'owner' });
+      if (staffErr) throw staffErr;
+    }
 
     // A new spot should appear for students on their next load, not up to the
     // catalogue TTL later. See src/lib/cache.js.
     invalidateVendorCaches();
   } catch (err) {
-    if (vendor) {
-      await supabaseAdmin.from('vendors').delete().eq('id', vendor.id).then(() => {}, () => {});
+    // Unwind EVERY row this call made, not only the one that failed. A
+    // half-onboarded chain is worse than none: the application is still queued
+    // (it is deleted last, by the caller), so a retry would create the earlier
+    // locations a second time, and the vendor would sign in to duplicates.
+    for (const row of created) {
+      await supabaseAdmin.from('vendors').delete().eq('id', row.id).then(() => {}, () => {});
       // The rollback is also a write — if the insert above got far enough to
       // populate the cache, the deleted vendor must not survive in it.
-      invalidateVendorCaches(vendor.id);
+      invalidateVendorCaches(row.id);
     }
     // Unwind only a login WE created. A linked pre-existing account (a
     // student's, possibly) must survive a failed onboard untouched.
@@ -387,7 +487,7 @@ async function onboardVendor({ name, email, password, passwordHash, address, log
     throw err;
   }
 
-  return { vendor, linkedExisting };
+  return { vendor: created[0], vendors: created, linkedExisting };
 }
 
 /**
@@ -419,6 +519,11 @@ router.post('/vendors', async (req, res, next) => {
       logo: v.logo,
       cuisine: v.cuisine,
       priceLevel: v.priceLevel,
+      // Adding a second location for an email that already runs one is exactly
+      // this form filled in again: onboardVendor links the existing login
+      // rather than failing, and the label is what tells the two apart in the
+      // terminal's store switcher (migration-043).
+      locationLabel: v.locationLabel,
     });
     if (result.conflict) {
       return res.status(409).json({
@@ -607,6 +712,16 @@ router.patch('/vendors/:id', async (req, res, next) => {
       updates.address = a || null;
     }
 
+    // Which branch this row is, for a login that runs several (migration-043).
+    // `!= null` admits '', which is how the label is CLEARED back to unlabelled.
+    if (body.locationLabel != null) {
+      const l = String(body.locationLabel).trim();
+      if (l.length > LABEL_MAX) {
+        return res.status(400).json({ error: 'BAD_REQUEST', message: `The location name must be ${LABEL_MAX} characters or fewer.` });
+      }
+      updates.location_label = l || null;
+    }
+
     if (body.pointsPerDollar != null) {
       const r = validRatio(body.pointsPerDollar);
       if (r.error) return res.status(400).json({ error: 'BAD_REQUEST', message: r.error });
@@ -644,7 +759,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
     }
 
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, locationLabel, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -658,7 +773,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
       .from('vendors')
       .update(updates)
       .eq('id', req.params.id)
-      .select('id, name, slug, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
+      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
@@ -921,7 +1036,7 @@ router.get('/applications', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('vendor_applications')
-      .select('id, business_name, contact_name, phone, email, address, logo, message, cuisine, price_level, created_at')
+      .select('id, business_name, contact_name, phone, email, address, location_label, locations, logo, message, cuisine, price_level, created_at')
       .order('created_at', { ascending: true });
     if (error) throw error;
     res.json(data ?? []);
@@ -952,14 +1067,14 @@ router.post('/applications/:id/accept', async (req, res, next) => {
 
     const { data: app, error: appErr } = await supabaseAdmin
       .from('vendor_applications')
-      .select('id, business_name, email, password_hash, address, logo, cuisine, price_level')
+      .select('id, business_name, email, password_hash, address, location_label, locations, logo, cuisine, price_level')
       .eq('id', req.params.id)
       .maybeSingle();
     if (appErr) throw appErr;
     // Already accepted/rejected (double-click, or a second admin got there first).
     if (!app) return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
 
-    const { vendor, linkedExisting, conflict } = await onboardVendor({
+    const { vendor, vendors, linkedExisting, conflict } = await onboardVendor({
       name: app.business_name,
       email: app.email,
       passwordHash: app.password_hash,
@@ -970,6 +1085,12 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       // than sitting untagged until someone edits it (migration-042).
       cuisine: app.cuisine,
       priceLevel: app.price_level,
+      // One application, one login, one vendors row PER LOCATION
+      // (migration-043). `locations` is [] for the single-location application
+      // that is still the common case, which makes this the same onboarding it
+      // always was.
+      locationLabel: app.location_label,
+      locations: Array.isArray(app.locations) ? app.locations : [],
     });
     // The taken email's account vanished mid-accept. Nothing was created, so
     // leave the application queued for a retry.
@@ -986,7 +1107,9 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       .eq('id', app.id);
     if (delErr) throw delErr; // vendor IS onboarded; surfacing the 500 beats hiding a stuck row
 
-    res.json({ ok: true, vendor, linkedExisting });
+    // `vendors` is every location this accept created, so the dashboard can say
+    // "3 locations added" rather than naming only the first.
+    res.json({ ok: true, vendor, vendors, linkedExisting });
   } catch (err) {
     next(err);
   }

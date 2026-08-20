@@ -63,9 +63,92 @@ button { font-family: inherit; border: none; cursor: pointer; }
   padding: 0.9rem 1.4rem;
   background: var(--card);
   border-bottom: 3px solid var(--ink);
+  /* The store menu hangs out of this bar and over the screen below it, so the
+     header has to be its own stacking context ABOVE #main - without this the
+     menu paints behind the scan viewfinder. Still under .overlay (40) and
+     .flood (50), which must cover everything. */
+  position: relative; z-index: 35;
 }
 
 .vendor-name { font-weight: 900; letter-spacing: 0.04em; font-size: 1.15rem; text-transform: uppercase; }
+/* ---------- store switcher ----------
+
+   One login can run several locations (migration-043). The vendor name in the
+   header IS the control: disabled and visually untouched for the single-location
+   vendor, a menu button with a caret for a chain. Nothing else in the bar moves
+   either way. Mirrors the same block in terminal.css; see there. */
+
+.store-switch { position: relative; min-width: 0; }
+
+.store-btn {
+  display: flex; align-items: center; gap: 0.4rem;
+  max-width: 100%;
+  background: none; border: none; padding: 0;
+  color: inherit; text-align: left;
+  /* Deliberately NOT `font: inherit`. The element also carries .vendor-name,
+     which is where the weight, size, tracking and casing come from; the
+     shorthand would land later in this file and reset all four back to the body
+     font, quietly un-bolding the one word in the header. The family alone is
+     already handled by the global `button` rule above. */
+}
+/* Disabled = the single-location case, i.e. the plain name this bar always had.
+   Not greyed out and not a tab stop: there is nothing to reach. */
+.store-btn:disabled { cursor: default; opacity: 1; }
+
+.store-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.store-caret { font-size: 0.75em; line-height: 1; flex: none; }
+.store-caret[hidden] { display: none; }
+
+.store-btn[aria-expanded="true"] .store-caret { transform: rotate(180deg); }
+
+.store-menu {
+  position: absolute; top: calc(100% + 0.55rem); left: 0; z-index: 1;
+  /* Plain lengths, no min()/max(): these sheets are lowered to safari11, which
+     doesn't understand CSS math functions, and esbuild doesn't polyfill them.
+     The phone block below narrows the cap for a small viewport. */
+  min-width: 14rem; max-width: 22rem;
+  max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--card);
+  border: 3px solid var(--ink);
+  box-shadow: 0 10px 0 rgba(16, 29, 51, 0.12);
+}
+/* .store-menu is display:block when open, so [hidden] needs saying explicitly. */
+.store-menu[hidden] { display: none; }
+
+.store-item {
+  display: flex; align-items: center; gap: 0.7rem;
+  width: 100%; padding: 0.7rem 0.85rem;
+  background: none; border: none; border-bottom: 2px solid var(--sky-line);
+  text-align: left; color: inherit;
+}
+.store-item:last-child { border-bottom: none; }
+.store-item:active { background: var(--sky); }
+.store-item.is-current { background: var(--sky); }
+
+.store-item-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; flex: 1; }
+.store-item-name {
+  font-weight: 900; font-size: 0.95rem; letter-spacing: 0.04em; text-transform: uppercase;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The address is the tiebreak when two locations carry the same label (or none),
+   so it wraps rather than truncating to an ambiguous prefix. */
+.store-item-sub { font-size: 0.78rem; font-weight: 700; color: var(--muted); }
+
+.store-item-mark { flex: none; font-weight: 900; color: var(--success); }
+.store-item-mark[hidden] { display: none; }
+
+/* A store the operator switched off. Listed rather than hidden — see
+   GET /api/vendor/locations — but not selectable: requireVendor would answer
+   VENDOR_DISABLED and strand the till on a screen it can't use. */
+.store-item:disabled { cursor: default; }
+.store-item:disabled .store-item-name { color: var(--muted); }
+.store-item-off {
+  flex: none; font-size: 0.68rem; font-weight: 900; letter-spacing: 0.06em;
+  padding: 0.15rem 0.4rem; border: 2px solid var(--muted); color: var(--muted);
+}
+.store-item-off[hidden] { display: none; }
+
 
 .tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
@@ -976,6 +1059,12 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
     border-bottom-width: 2.5px;
   }
   .vendor-name { font-size: 0.95rem; letter-spacing: 0.1em; }
+  /* Narrower viewport: cap the menu and enlarge the rows (this layout is the
+     one used one-handed, and picking the wrong store rings a sale up on the
+     wrong till). */
+  .store-menu { max-width: 88vw; }
+  .store-item { padding: 0.85rem; }
+  .store-item-name { font-size: 1rem; }
 
   /* ---------- tabs: fixed bottom bar ----------
      z-index 30 keeps it under .overlay (40), .flood (50) and the punch

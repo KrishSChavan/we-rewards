@@ -121,7 +121,21 @@
   <!-- ===== APP SHELL ===== -->
   <div id="shell" hidden>
     <header id="topbar">
-      <span id="vendor-name" class="vendor-name"></span>
+      <!-- One login can run several locations (migration-043), and the vendor
+           name IS the switcher: it is already the thing in this bar that says
+           which store you are ringing up for, and on a phone the tab row is a
+           fixed bottom bar with no room beside it for a second control. A
+           single-location vendor — nearly all of them — gets exactly what was
+           here before: the plain name, no caret, nothing to tap (the button is
+           disabled, so it isn't a tab stop either). -->
+      <div id="store-switch" class="store-switch">
+        <button id="store-btn" class="vendor-name store-btn" type="button"
+                aria-haspopup="listbox" aria-expanded="false" aria-controls="store-menu" disabled>
+          <span id="vendor-name" class="store-name"></span>
+          <span id="store-caret" class="store-caret" aria-hidden="true" hidden>▾</span>
+        </button>
+        <div id="store-menu" class="store-menu" role="listbox" aria-label="Choose a store" hidden></div>
+      </div>
       <!-- The tab row is ONE line that scrolls sideways — it never wraps and it
            never squeezes a label. The terminal runs on phones and on iPads of
            several sizes, so "how many tabs fit" has a different answer on every
@@ -474,6 +488,10 @@
                 <input id="set-address" type="text" autocomplete="off" maxlength="300" placeholder="123 College Ave, State College, PA" />
               </label>
               <p class="manage-note">Shown as a tappable map on your customers' cards, and tapping it opens directions in their maps app. Leave blank to hide the map.</p>
+              <label class="settings-field">Location name <span class="settings-optional">(optional)</span>
+                <input id="set-location-label" type="text" autocomplete="off" maxlength="40" placeholder="Downtown" />
+              </label>
+              <p class="manage-note">Only needed if you run more than one location on this login. It's what the store switcher at the top of this screen shows, so staff can tell your branches apart at a glance. Customers never see it.</p>
             </div>
 
             <div class="stats-card" data-card="logo">

@@ -11,6 +11,13 @@
  * --address is optional; if given, it's geocoded (Nominatim) so the student app
  * can show a map on the vendor card. The vendor can also set/edit it later in the
  * terminal Settings tab.
+ *
+ * --location is optional too, and only earns its keep when one login runs
+ * several shops (migration-043): it is the short label ("Downtown", "Campus")
+ * their terminal's store switcher shows, since every location of a chain
+ * carries the same --name. Note that createUser below FAILS on an email that
+ * already has an account, so adding a second location to an existing login is a
+ * job for /admin's Add vendor (which links instead), not for this script.
  */
 import bcrypt from 'bcryptjs';
 import { createClient } from '@supabase/supabase-js';
@@ -52,6 +59,7 @@ const { data: vendor, error: vendErr } = await supabase
     slug: args.slug,
     points_per_dollar: Number(args.ratio),
     pin_hash: await bcrypt.hash(String(args.pin), 10),
+    location_label: args.location ? String(args.location).trim() : null,
     address,
     latitude: coords?.lat ?? null,
     longitude: coords?.lng ?? null,

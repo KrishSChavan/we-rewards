@@ -235,13 +235,33 @@ export async function requireAdmin(req, res, next) {
 }
 
 /**
+ * Which vendor a request is about, given this account's staff links and the
+ * X-Vendor-Id header. Returns the chosen link, or null when the request hasn't
+ * said and there is more than one answer. Pure, so every branch is testable
+ * without a database.
+ *
+ * ONE LINK → that one, header ignored. A single-location vendor's terminal never
+ * has to know its own vendor id, which is what keeps every client that predates
+ * multi-location working unchanged — and a stale remembered id (the vendor sold
+ * a shop, the operator unlinked one) can't lock the survivor out either.
+ *
+ * SEVERAL LINKS → the header must name one this account actually holds. Never
+ * guessed: picking whichever row the database listed first would ring a sale up
+ * at the wrong store, and the vendor would have no way to tell.
+ */
+export function chooseVendorLink(links, requestedId) {
+  if (links.length === 1) return links[0];
+  if (!requestedId) return null;
+  return links.find((s) => s.vendor_id === requestedId) ?? null;
+}
+
+/**
  * requireUser + confirms the user is staff of a vendor.
  * Attaches req.vendor = the vendor row.
  *
- * An account may be staff of more than one vendor (multi-location owners). We
- * resolve deterministically rather than picking an arbitrary row: exactly one
- * link → use it; multiple links → the client must name the vendor via an
- * `X-Vendor-Id` header (validated against membership), else it's ambiguous.
+ * An account may be staff of more than one vendor (multi-location owners, see
+ * migration-043). chooseVendorLink above resolves which one; GET
+ * /api/vendor/locations is how a client learns what it may name.
  */
 export async function requireVendor(req, res, next) {
   try {
@@ -260,18 +280,12 @@ export async function requireVendor(req, res, next) {
       return res.status(403).json({ error: 'NOT_VENDOR', message: 'This account is not linked to a vendor.' });
     }
 
-    let chosen;
-    if (links.length === 1) {
-      chosen = links[0];
-    } else {
-      const requested = req.headers['x-vendor-id'];
-      chosen = requested ? links.find((s) => s.vendor_id === requested) : null;
-      if (!chosen) {
-        return res.status(400).json({
-          error: 'VENDOR_AMBIGUOUS',
-          message: 'This account manages multiple vendors, specify which one.',
-        });
-      }
+    const chosen = chooseVendorLink(links, req.headers['x-vendor-id']);
+    if (!chosen) {
+      return res.status(400).json({
+        error: 'VENDOR_AMBIGUOUS',
+        message: 'This account manages multiple vendors, specify which one.',
+      });
     }
 
     // Operator kill-switch: a vendor toggled off in the admin portal is fully

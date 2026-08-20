@@ -131,6 +131,7 @@ function bootFailed(message) {
   });
   $('vendor-edit-close').addEventListener('click', closeVendorModal);
   $('vendor-name-save').addEventListener('click', saveVendorName);
+  $('vendor-location-save').addEventListener('click', saveVendorLocationLabel);
   $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
   $('vendor-sells-save').addEventListener('click', saveVendorSells);
   $('vendor-logo-pick').addEventListener('click', () => $('vendor-logo-file').click());
@@ -581,8 +582,13 @@ function wireLists() {
     listId: 'app-list',
     noun: 'application',
     rows: () => applications,
-    text: (a) => [a.business_name, a.contact_name, a.email, a.phone, a.address, a.message]
-      .filter(Boolean).join(' '),
+    // Every location is searchable, not just the first: an operator looking up
+    // "Campus" must find the chain that named a Campus branch on page two of
+    // its application (migration-043).
+    text: (a) => [
+      a.business_name, a.contact_name, a.email, a.phone, a.address, a.location_label, a.message,
+      ...(Array.isArray(a.locations) ? a.locations : []).flatMap((l) => [l.name, l.locationLabel, l.address]),
+    ].filter(Boolean).join(' '),
     paint: paintApplicationRows,
     empty: () => '<p class="muted">No pending applications. Share <strong>/join</strong> with prospective vendors.</p>',
     count: () => (applications.length ? `${applications.length} pending` : ''),
@@ -673,6 +679,10 @@ function showVendorError() {
 // ratio save (which repaints the meta in place so the roster shows the new rate).
 const vendorInfoHtml = (v) =>
   `<span class="vendor-name">${escapeHtml(v.name)}</span>` +
+  // Which branch this row is, when one login runs several (migration-043).
+  // Without it two locations of a chain are the same name twice, told apart
+  // only by a slug suffix nobody can read as a place.
+  (v.location_label ? `<span class="vendor-loc">${escapeHtml(v.location_label)}</span>` : '') +
   `<span class="vendor-meta">${escapeHtml(v.slug)} · ${num(v.points_per_dollar)} pts/$</span>`;
 
 function renderVendors() {
@@ -1263,6 +1273,8 @@ function openVendorModal(v, infoEl) {
   $('vendor-edit-title').textContent = `Edit: ${v.name}`;
   $('vendor-edit-name').value = v.name ?? '';
   setNote($('vendor-name-note'), '', null);
+  $('vendor-edit-location').value = v.location_label ?? '';
+  setNote($('vendor-location-note'), '', null);
   $('vendor-edit-ratio').value = Number(v.points_per_dollar);
   setNote($('vendor-ratio-note'), '', null);
   // Straight off the roster row — GET /admin/vendors already selects both, so
@@ -1321,6 +1333,36 @@ async function saveVendorName() {
     $('vendor-edit-name').value = editVendor.v.name;
     $('vendor-edit-title').textContent = `Edit: ${editVendor.v.name}`;
     repaintVendorLabels(editVendor.v, editVendor.infoEl);
+    setNote(note, 'Saved', 'ok');
+    btn.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
+// Set (or clear) which BRANCH a vendor row is, for a login that runs several
+// (migration-043). Same shape as saveVendorName above; '' clears the label back
+// to unlabelled, which is where a single-location vendor stays.
+async function saveVendorLocationLabel() {
+  if (!editVendor) return;
+  const btn = $('vendor-location-save');
+  const note = $('vendor-location-note');
+  const locationLabel = $('vendor-edit-location').value.trim();
+
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ locationLabel }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    Object.assign(editVendor.v, data);                             // keep the in-memory roster in sync
+    editVendor.infoEl.innerHTML = vendorInfoHtml(editVendor.v);    // roster row shows the new label
+    $('vendor-edit-location').value = editVendor.v.location_label ?? '';
     setNote(note, 'Saved', 'ok');
     btn.disabled = false;
   } catch {
@@ -1675,6 +1717,8 @@ async function createVendor(e) {
         email,
         password: $('nv-password').value,
         address: $('nv-address').value.trim(),
+        // Blank for the single-location vendor, which is nearly all of them.
+        locationLabel: $('nv-location').value.trim(),
         logo: newVendorLogo,
         cuisine: pickedCuisine($('nv-cuisine')),
         priceLevel: $('nv-price').value || null,
@@ -1831,6 +1875,31 @@ function paintApplicationRows(list) {
     top.append(logo, info, when);
     row.appendChild(top);
 
+    // Every location this ONE application asks for (migration-043). Accepting
+    // creates a vendors row for each, all linked to the same login, so the
+    // operator has to be able to see what they are agreeing to before they
+    // click. Location one is the row's own columns; the rest ride in `locations`.
+    const extra = Array.isArray(a.locations) ? a.locations : [];
+    if (extra.length) {
+      const box = document.createElement('div');
+      box.className = 'app-locations';
+      const head = document.createElement('span');
+      head.className = 'app-meta';
+      head.textContent = `${extra.length + 1} locations, one sign-in:`;
+      box.appendChild(head);
+      [{ name: a.business_name, locationLabel: a.location_label, address: a.address }, ...extra]
+        .forEach((l, i) => {
+          const line = document.createElement('span');
+          line.className = 'app-location';
+          // textContent, and every part optional: only `name` is required of a
+          // location, and this is applicant-typed text either way.
+          const bits = [l.locationLabel, l.name, l.address].filter(Boolean);
+          line.textContent = `${i + 1}. ${bits.join(' · ')}`;
+          box.appendChild(line);
+        });
+      row.appendChild(box);
+    }
+
     if (a.message) {
       const msg = document.createElement('p');
       msg.className = 'app-message';
@@ -1877,8 +1946,13 @@ function removeApplicationRow(a, row) {
 // Accept = onboard now: the server creates the login (from the password chosen
 // when applying), the vendor row, and the staff link, then deletes the application.
 async function acceptApplication(a, row, accept, reject, err) {
+  // One application can name several locations (migration-043), and accepting
+  // it creates one vendor per location. Say how many before the click, not after.
+  const count = (Array.isArray(a.locations) ? a.locations.length : 0) + 1;
   if (!confirm(
-    `Accept “${a.business_name}”?\n\nThis creates the vendor immediately, so they can sign in to the terminal right away with the email and password from their application.`
+    count > 1
+      ? `Accept “${a.business_name}”?\n\nThis creates ${count} vendors, one per location, all sharing the login from their application. Each keeps its own points, items, deals and stats, and their terminal gets a switcher to move between them.`
+      : `Accept “${a.business_name}”?\n\nThis creates the vendor immediately, so they can sign in to the terminal right away with the email and password from their application.`
   )) return;
 
   err.hidden = true;

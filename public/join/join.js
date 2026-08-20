@@ -135,6 +135,53 @@ async function loadCuisines() {
   $('cuisine-field').hidden = false;
 }
 
+/* ---- more locations (migration-043) ----
+   One application, one login, one vendors row per location. Each added row asks
+   only for what actually DIFFERS between branches: what the shop sells, its
+   price range and its logo are collected once above and carried onto every
+   location by the server, because a chain is a chain.
+
+   The locations stay independent vendors once accepted (own points, items,
+   deals, stats and staff PIN); what they share is the sign-in, and the store
+   switcher at the top of the terminal moves between them. */
+
+const MAX_LOCATIONS = 12;   // keep in sync with src/routes/apply.js
+
+const locationRows = () => [...document.querySelectorAll('#extra-locations .loc-row')];
+
+// Renumber the headings, show/hide the bits of location one that only make
+// sense when it has siblings, and stop the list at the cap.
+function syncLocations() {
+  const rows = locationRows();
+  $('loc1-heading').hidden = rows.length === 0;
+  $('loc1-label-field').hidden = rows.length === 0;
+  rows.forEach((row, i) => { row.querySelector('[data-loc-heading]').textContent = `Location ${i + 2}`; });
+  $('add-location').disabled = rows.length + 1 >= MAX_LOCATIONS;
+}
+
+function addLocation() {
+  if (locationRows().length + 1 >= MAX_LOCATIONS) return;
+  const row = $('location-template').content.firstElementChild.cloneNode(true);
+  // Locations of a chain share a business name, so prefill it. Someone opening
+  // a genuinely different brand under the same login types over it.
+  row.querySelector('[data-loc-name]').value = $('f-business').value.trim();
+  row.querySelector('[data-loc-remove]').addEventListener('click', () => {
+    row.remove();
+    syncLocations();
+  });
+  $('extra-locations').appendChild(row);
+  syncLocations();
+  row.querySelector('[data-loc-label]').focus();
+}
+
+function collectLocations() {
+  return locationRows().map((row) => ({
+    name: row.querySelector('[data-loc-name]').value.trim(),
+    locationLabel: row.querySelector('[data-loc-label]').value.trim(),
+    address: row.querySelector('[data-loc-address]').value.trim(),
+  }));
+}
+
 /* ---- submit ---- */
 
 function showFormError(msg) {
@@ -153,6 +200,9 @@ function firstProblem() {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test($('f-email').value.trim())) return 'Enter a valid email address.';
   if ($('f-password').value.length < 8) return 'Password must be at least 8 characters.';
   if ($('f-password').value.length > 72) return 'Password must be 72 characters or fewer.';
+  // Counting from 2: location one is the form above these rows.
+  const blank = collectLocations().findIndex((l) => !l.name);
+  if (blank >= 0) return `Enter a business name for location ${blank + 2}.`;
   return null;
 }
 
@@ -178,6 +228,10 @@ async function submit(e) {
         email: $('f-email').value.trim(),
         password: $('f-password').value,
         address: $('f-address').value.trim(),
+        locationLabel: $('f-location-label').value.trim(),
+        // Everything after the first location. [] is the single-shop
+        // application, which is what this endpoint has always taken.
+        locations: collectLocations(),
         message: $('f-message').value.trim(),
         logo: logoValue,
         // '' when they skipped it (or when the fieldset never loaded), which
@@ -188,6 +242,12 @@ async function submit(e) {
     });
 
     if (res.ok) {
+      const count = collectLocations().length + 1;
+      if (count > 1) {
+        const note = $('done-locations');
+        note.textContent = `All ${count} locations are on this one sign-in. Once you're approved, a store switcher at the top of the terminal moves between them, and each one keeps its own points, items and stats.`;
+        note.hidden = false;
+      }
       $('form-card').hidden = true;
       $('done-card').hidden = false;
       window.scrollTo({ top: 0 });
@@ -214,4 +274,6 @@ $('logo-pick').addEventListener('click', () => $('logo-file').click());
 $('logo-file').addEventListener('change', onLogoPick);
 $('logo-remove').addEventListener('click', () => { logoValue = null; setLogoPreview(null); });
 $('apply-form').addEventListener('submit', submit);
+$('add-location').addEventListener('click', addLocation);
+syncLocations();
 void loadCuisines();
