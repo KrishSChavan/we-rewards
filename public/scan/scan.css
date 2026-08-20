@@ -240,6 +240,18 @@ button { font-family: inherit; border: none; cursor: pointer; }
   font-weight: 900; line-height: 1.02; text-align: center; letter-spacing: 0.02em;
 }
 
+/* Which store this till is ringing up for, restated above the scan title. Sized
+   as a label rather than a heading: it is the answer to a question staff only
+   ask when something looks wrong, so it has to be legible without competing
+   with the instruction below it. :empty pulls it out of the layout entirely
+   before paintStoreSwitcher runs, because .screen is a flex column with a gap
+   and an empty <p> would still take a gap’s worth of space. */
+.scan-store {
+  font-size: 1rem; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); text-align: center;
+}
+.scan-store:empty { display: none; }
+
 /* Customer / redemption code entry — the typed fallback behind the QR camera
    scanner (revealed by "Enter code manually" or when the camera fails). */
 .code-entry {
@@ -371,6 +383,19 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .balance-chip[hidden] { display: none; }
 .balance-chip span:first-child { font-size: 2.2rem; font-weight: 900; }
 .chip-label { font-weight: 700; color: var(--navy); }
+
+/* The figure beside this chip is the POOL’s balance, not this location’s
+   (migration-044): a customer who has never been to this branch can walk up
+   with the chain’s points. Shown only for a store the operator has put in a
+   pool, which today is none of them. display:inline-block is an author rule and
+   beats the UA sheet’s [hidden], so the companion below is what actually hides
+   it — same trap as .balance-chip above. */
+.shared-chip {
+  display: inline-block; background: var(--navy); color: #fff;
+  font-size: 0.7rem; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 0.2rem 0.4rem; border-radius: 0.4rem;
+}
+.shared-chip[hidden] { display: none; }
 
 /* customer's earn multiplier from their 30-day tier (next to the balance) */
 .head-chips { display: flex; align-items: stretch; gap: 0.6rem; }
@@ -1163,6 +1188,8 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
 
   .scan-title { font-size: 1.3rem; letter-spacing: 0.05em; line-height: 1.15; }
   .scan-title br { display: none; }   /* markup keeps a space before it */
+  .scan-store { font-size: 0.8rem; letter-spacing: 0.1em; }
+  .shared-chip { font-size: 0.6rem; padding: 0.15rem 0.3rem; }
 
   /* The viewfinder takes whatever the copy above and below leaves, and goes
      portrait: a phone's rear camera is portrait, and a 4:3 landscape box

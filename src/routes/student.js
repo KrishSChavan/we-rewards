@@ -13,6 +13,10 @@ import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
 import { loadVendorCatalogue, loadRecommendedVendorIds } from '../lib/cache.js';
+// Where a vendor's points live (migration-044). Nothing in this file re-derives
+// that rule inline: a second copy of it that disagreed with the SQL functions
+// would show a customer one balance and charge them from another.
+import { readPurses, balanceFor, poolVendorIds, poolVendorIdsById } from '../lib/pools.js';
 
 const router = Router();
 
@@ -199,6 +203,11 @@ router.post('/decline', async (req, res, next) => {
  * GET /api/me/balances
  * All vendors + this student's balance at each (0 if never visited),
  * plus each vendor's active rewards so the app can show "1 punch away" style progress.
+ *
+ * "Balance at each" means the PURSE the vendor spends from (migration-044): its
+ * own point_balances row, or its pool's if it is in one. A pooled spot the
+ * student has never walked into therefore shows the chain's balance rather than
+ * a zero, which is the entire point of a pool.
  */
 router.get('/balances', requireConsent, async (req, res, next) => {
   try {
@@ -210,7 +219,7 @@ router.get('/balances', requireConsent, async (req, res, next) => {
 
     const [
       vendors,
-      { data: balances, error: bErr },
+      purses,
       { data: cards, error: cErr },
       { data: favorites, error: fErr },
       { data: recentTxns, error: rErr },
@@ -224,7 +233,13 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       // every back-out of a vendor screen. See src/lib/cache.js; the per-student
       // reads below are deliberately NOT cached.
       loadVendorCatalogue(),
-      supabaseAdmin.from('point_balances').select('vendor_id, balance').eq('user_id', req.user.id),
+      // Every purse this student holds, not just their per-vendor rows: since
+      // migration-044 a pooled spot spends from pool_balances instead, and a
+      // read of point_balances alone would show a 0 on a card whose chain is
+      // holding the student's points. Two user-keyed queries whatever the
+      // catalogue size (see src/lib/pools.js), so this stays one extra lookup
+      // rather than one per card.
+      readPurses(req.user.id),
       // Visit counters (migration-029): exactly one row per (student, vendor).
       supabaseAdmin.from('punch_cards').select('vendor_id, punches').eq('user_id', req.user.id),
       // Saved spots (migration-041) — the heart on each Spots row. PK-prefixed
@@ -252,13 +267,23 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       // rather than per-student, so it is cached like the catalogue.
       loadRecommendedVendorIds(),
     ]);
-    if (bErr) throw bErr;
+    // readPurses throws its own Supabase errors, so it needs no line here.
     if (cErr) throw cErr;
     if (fErr) throw fErr;
     if (rErr) throw rErr;
     if (pErr) throw pErr;
 
-    const balanceMap = Object.fromEntries((balances ?? []).map((b) => [b.vendor_id, b.balance]));
+    // How many ACTIVE spots share each pool, counted off the catalogue that is
+    // already in memory. The catalogue IS the active-vendor list, so this is a
+    // group-by over rows we have rather than a poolFacts() round trip per card
+    // — at 200 vendors that would be 400 extra queries on the busiest read in
+    // the app. Same definition of "size" as poolFacts(): active members only,
+    // because the number exists to be read out to a customer and a location the
+    // operator switched off is not somewhere they can go.
+    const poolSizes = new Map();
+    for (const v of vendors ?? []) {
+      if (v.pool_id) poolSizes.set(v.pool_id, (poolSizes.get(v.pool_id) ?? 0) + 1);
+    }
     const visitMap = Object.fromEntries((cards ?? []).map((c) => [c.vendor_id, c.punches ?? 0]));
     const favoriteSet = new Set((favorites ?? []).map((f) => f.vendor_id));
     // Both feeds collapse to the same question — "was I here lately?" — so they
@@ -282,7 +307,21 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           latitude: v.latitude ?? null,
           longitude: v.longitude ?? null,
           hasLogo: Boolean(v.has_logo),
-          balance: balanceMap[v.id] ?? 0,
+          // The purse, not the per-vendor row: for a pooled spot this is the
+          // chain's shared balance, for every other spot it is the same
+          // point_balances number it has always been (see src/lib/pools.js).
+          balance: purses.of(v),
+          // Where that number lives (migration-044). All three are null for an
+          // unpooled spot, which is every spot today, so a card that gets them
+          // renders exactly as it did before. When they are set the app can say
+          // whose purse it is instead of leaving a customer to wonder why a
+          // balance they never earned here is showing on this card.
+          //
+          // Additive, deliberately: `balance` keeps its name and meaning, so no
+          // existing reader of this payload has to change to keep working.
+          poolId: v.pool_id ?? null,
+          poolLabel: v.point_pools?.label ?? null,
+          poolSize: v.pool_id ? (poolSizes.get(v.pool_id) ?? 0) : null,
           // Earn rate (vendors.points_per_dollar, numeric(6,2) not null default
           // 10), so the app can tell a student what a dollar is worth here
           // instead of leaving them to infer it from a balance. Number() matches
@@ -559,7 +598,11 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
 
     const { data: vendors, error: vErr } = await supabaseAdmin
       .from('vendors')
-      .select('id, name, points_per_dollar')
+      // pool_id rides along so the push after a successful claim can name every
+      // sibling card the shared balance just moved on (migration-044). Selecting
+      // it here rather than re-fetching the matched vendor keeps the receipt
+      // path at the same number of queries it has always had.
+      .select('id, name, points_per_dollar, pool_id')
       .eq('active', true);
     if (vErr) throw vErr;
 
@@ -610,7 +653,17 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
     const row = data?.[0] ?? {};
     // Same live push as a terminal award — an open app updates its card,
     // meter, tier, and history without a reload.
-    emitBalance(req.user.id, { vendorId: hit.vendor.id, balance: row.new_balance, community: row.new_community });
+    emitBalance(req.user.id, {
+      vendorId: hit.vendor.id,
+      balance: row.new_balance,
+      community: row.new_community,
+      // Same contract as the terminal's award push: ONE event naming every card
+      // it repaints. A receipt claimed at one location of a pooled chain moves
+      // the balance on all of them, and an event that named only this vendor
+      // would leave the customer's other cards showing the pre-claim number
+      // until their next poll.
+      poolVendorIds: await poolVendorIds(hit.vendor),
+    });
     persistTierSnapshot(req.user.id, tierProfile).catch(() => {});
 
     res.json({
@@ -671,10 +724,18 @@ router.post('/redeem-code', requireConsent, async (req, res, next) => {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'Choose points or visits.' });
     }
 
-    const [{ data: vendorRow }, { data: reward }, { data: bal }, { data: card }] = await Promise.all([
-      supabaseAdmin.from('vendors').select('active, punch_enabled').eq('id', vendorId).maybeSingle(),
+    const [{ data: vendorRow }, { data: reward }, { data: card }] = await Promise.all([
+      // pool_id is not decoration here: it is what says WHICH TABLE this
+      // student's points for this vendor are in (migration-044). Select this row
+      // without it and purseOf() reads point_balances for a pooled spot, and a
+      // student whose points are sitting in the chain's purse is told they
+      // cannot afford a reward they can — with the reward visibly in reach on
+      // the card they just tapped. `id` rides along for the same reason:
+      // purseOf() builds the UNPOOLED filter out of vendor.id, so a row carrying
+      // pool_id but no id resolves to point_balances with a null vendor and
+      // answers 0 for everyone. Both columns, or neither is any use.
+      supabaseAdmin.from('vendors').select('id, active, punch_enabled, pool_id').eq('id', vendorId).maybeSingle(),
       supabaseAdmin.from('rewards').select('cost_in_points, cost_in_visits, active').eq('id', rewardId).eq('vendor_id', vendorId).maybeSingle(),
-      supabaseAdmin.from('point_balances').select('balance').eq('user_id', req.user.id).eq('vendor_id', vendorId).maybeSingle(),
       supabaseAdmin.from('punch_cards').select('punches').eq('user_id', req.user.id).eq('vendor_id', vendorId).maybeSingle(),
     ]);
 
@@ -691,7 +752,12 @@ router.post('/redeem-code', requireConsent, async (req, res, next) => {
     // dies at the counter with the student standing in front of the cashier.
     if (paidWith === 'points') {
       if (reward.cost_in_points == null) throw new Error('REWARD_NOT_POINTS_PRICED');
-      if ((bal?.balance ?? 0) < reward.cost_in_points) throw new Error('INSUFFICIENT_POINTS');
+      // Read here rather than up in the Promise.all because it CANNOT go there:
+      // which table holds this balance is a property of the vendors row that
+      // batch is still fetching. One extra round trip on the points path, none
+      // at all on the visits path, which never looks at points.
+      const balance = await balanceFor(req.user.id, vendorRow);
+      if (balance < reward.cost_in_points) throw new Error('INSUFFICIENT_POINTS');
     } else {
       if (!vendorRow.punch_enabled) throw new Error('PUNCH_DISABLED');
       if (reward.cost_in_visits == null) throw new Error('REWARD_NOT_VISITS_PRICED');
@@ -781,7 +847,16 @@ router.post('/community-transfer', requireConsent, async (req, res, next) => {
     const newBalance = data?.[0]?.new_vendor_balance ?? 0;
     // Same event the award path pushes, so every open tab's vendor card and
     // community counter move together (public/student/app.js reads both fields).
-    emitBalance(req.user.id, { vendorId, balance: newBalance, community: newCommunity });
+    // Moving community points INTO a pooled spot lands them in the shared purse,
+    // so the push has to name every sibling: the tab that submitted the move
+    // patches its own cards locally, but another open tab or a second device
+    // only ever sees this event.
+    emitBalance(req.user.id, {
+      vendorId,
+      balance: newBalance,
+      community: newCommunity,
+      poolVendorIds: await poolVendorIdsById(vendorId),
+    });
 
     res.json({ newCommunity, newBalance });
   } catch (err) {
@@ -1249,15 +1324,23 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
 /**
  * GET /api/me/export
  * Everything WeRewards holds about the signed-in student, as a JSON download:
- * profile (Google identity we store), per-vendor balances, full transaction
+ * profile (Google identity we store), per-vendor balances and any shared-pool
+ * balances (migration-044), full transaction
  * history, and the latest engagement-score snapshot. A privacy baseline.
  */
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed] = await Promise.all([
+    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed] = await Promise.all([
       supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at, referral_code').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
+      // The shared purses (migration-044). Points a student holds in a pool are
+      // still their points, and they are NOT in point_balances above: an export
+      // that read only that table would under-report someone whose spots are
+      // pooled by exactly the balance they can actually spend. The pool's label
+      // is embedded so the file says whose purse it is instead of printing a
+      // bare uuid at a person trying to read their own data.
+      supabaseAdmin.from('pool_balances').select('pool_id, balance, updated_at, point_pools(label)').eq('user_id', uid),
       // The community pool is a balance we hold, so the export promises it too.
       supabaseAdmin.from('community_balances').select('balance, lifetime_earned, updated_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin
@@ -1303,7 +1386,7 @@ router.get('/export', async (req, res, next) => {
         .eq('friend_id', uid)
         .maybeSingle(),
     ]);
-    for (const r of [profile, balances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed]) {
+    for (const r of [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed]) {
       if (r.error) throw r.error;
     }
 
@@ -1313,6 +1396,17 @@ router.get('/export', async (req, res, next) => {
       account: { id: uid, email: req.user.email },
       profile: profile.data,
       balances: balances.data ?? [],
+      // Kept as its own key rather than merged into `balances`: a pool balance
+      // is not held at one vendor, so folding it in would force a fake vendor_id
+      // onto it and make the two kinds of row indistinguishable. Flattened to
+      // pool_label so a reader is not asked to unwrap an embed. Empty for every
+      // student today, and for anyone whose spots are not pooled.
+      poolBalances: (poolBalances.data ?? []).map((r) => ({
+        pool_id: r.pool_id,
+        pool_label: r.point_pools?.label ?? null,
+        balance: r.balance,
+        updated_at: r.updated_at,
+      })),
       community: community.data ?? { balance: 0, lifetime_earned: 0 },
       transactions: transactions.data ?? [],
       scores: scores.data,

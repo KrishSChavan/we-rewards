@@ -14,6 +14,12 @@ import { validReward, validRatio } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 import { validLogo } from '../lib/logo.js';
+// Point sharing (migration-044). The purse rule lives in ONE place; nothing in
+// this file may re-derive "pooled or not" from a pool_id inline. Every vendor
+// row that reaches these helpers is req.vendor, which requireVendor selects as
+// vendors(*) — so pool_id is always present and the helpers can never be handed
+// a row that merely LOOKS unpooled.
+import { balanceFor, isPooled, poolFacts, poolVendorIds } from '../lib/pools.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
@@ -96,8 +102,72 @@ async function resolveEarnCode(code) {
   return data.user_id;
 }
 
-/** Resolve a live 4-digit redeem code for THIS vendor, or throw CODE_INVALID. */
-async function resolveRedeemCode(code, vendorId) {
+/**
+ * Why a live code that isn't ours failed: a sibling's, or genuinely no good.
+ *
+ * REDEEM CODES STAY PER-LOCATION even when the money is shared. A code names one
+ * reward at one counter, and the reward, its price and its visit charge all
+ * belong to that counter (migration-044 shares the purse and nothing else), so
+ * honouring a sibling's code here would ring up an item this shop may not even
+ * sell. Only the ERROR gets better.
+ *
+ * It has to get better because sharing makes this mistake routine: one balance
+ * across three spots means a customer will mint at Downtown and present at
+ * Campus constantly, and "That code is expired or invalid" sends the cashier
+ * chasing a refresh that will never fix it.
+ *
+ * Everything here is behind the pool_id check, and it only runs after a lookup
+ * has already failed — an unpooled vendor (all of them today) does exactly zero
+ * extra queries and gets byte-identical CODE_INVALID behaviour.
+ */
+async function wrongLocationError(c, vendor) {
+  const invalid = new Error('CODE_INVALID');
+  if (!vendor?.pool_id) return invalid;
+
+  // Siblings only, never the whole platform: a stranger's live code that happens
+  // to share these four digits must stay a flat CODE_INVALID, or the error would
+  // name a business the customer has nothing to do with.
+  const siblingIds = (await poolVendorIds(vendor)).filter((id) => id !== vendor.id);
+  if (!siblingIds.length) return invalid;
+
+  // limit(1) rather than maybeSingle(): two siblings can each hold a live code
+  // with the same four digits, and maybeSingle() would turn that coincidence
+  // into a 500 on what is already the error path.
+  const { data: hits } = await supabaseAdmin
+    .from('redeem_codes')
+    .select('vendor_id')
+    .eq('code', c)
+    .in('vendor_id', siblingIds)
+    .gt('expires_at', new Date().toISOString())
+    .limit(1);
+  const mintedAt = hits?.[0]?.vendor_id;
+  if (!mintedAt) return invalid;
+
+  const { data: where } = await supabaseAdmin
+    .from('vendors')
+    .select('name, location_label')
+    .eq('id', mintedAt)
+    .maybeSingle();
+  // location_label is what tells two spots of one business apart, so lead with
+  // it; the bare name is all a single-label sibling has.
+  const label = where?.location_label
+    ? `${where.name} (${where.location_label})`
+    : (where?.name ?? 'another location');
+
+  const err = new Error('CODE_WRONG_LOCATION');
+  // The central error map fixes the code and the status; publicMessage refines
+  // only the copy, which is the whole point here (see server.js). Naming the
+  // spot is what turns a dead end into an instruction.
+  err.publicMessage = `That code was made for ${label}. Ask the customer for a code for this location.`;
+  return err;
+}
+
+/**
+ * Resolve a live 4-digit redeem code for THIS vendor, or throw. Takes the whole
+ * vendor ROW (not just an id) because the failure path needs pool_id to tell a
+ * sibling's code from a dead one.
+ */
+async function resolveRedeemCode(code, vendor) {
   const c = String(code ?? '').trim();
   if (!/^\d{4}$/.test(c)) throw new Error('CODE_INVALID');
   const { data } = await supabaseAdmin
@@ -107,28 +177,55 @@ async function resolveRedeemCode(code, vendorId) {
     // back to the other (migration-029 folded both code tables into this one).
     .select('user_id, reward_id, paid_with, visits_charged')
     .eq('code', c)
-    .eq('vendor_id', vendorId)
+    .eq('vendor_id', vendor.id)
     .gt('expires_at', new Date().toISOString())
     .maybeSingle();
-  if (!data) throw new Error('CODE_INVALID');
+  if (!data) throw await wrongLocationError(c, vendor);
   return data;
 }
 
-/** GET /api/vendor/config — everything the terminal needs to render itself */
-router.get('/config', (req, res) => {
-  const v = req.vendor;
-  res.json({
-    vendorId: v.id,
-    name: v.name,
-    // Which branch this terminal is ringing up for (migration-043). Null for a
-    // single-location vendor, where the header shows the plain business name.
-    locationLabel: v.location_label ?? null,
-    pointsPerDollar: Number(v.points_per_dollar),
-    allowExactEntry: v.allow_exact_entry,
-    tiers: v.tiers ?? [],
-    hasPin: Boolean(v.pin_hash),
-    punchEnabled: Boolean(v.punch_enabled),
-  });
+/**
+ * GET /api/vendor/config — everything the terminal needs to render itself
+ *
+ * Async only for poolFacts, and only for a vendor that is actually in a pool: an
+ * unpooled vendor (which is every vendor today) runs exactly the same zero
+ * queries this handler always ran. Even the pooled case is free in practice,
+ * because /config is fetched on boot and after a settings save — never on the
+ * award or the redeem path, so nothing a customer waits at the counter for pays
+ * for it.
+ */
+router.get('/config', async (req, res, next) => {
+  try {
+    const v = req.vendor;
+    const pool = v.pool_id ? await poolFacts(v.pool_id) : null;
+    res.json({
+      vendorId: v.id,
+      name: v.name,
+      // Which branch this terminal is ringing up for (migration-043). Null for a
+      // single-location vendor, where the header shows the plain business name.
+      locationLabel: v.location_label ?? null,
+      pointsPerDollar: Number(v.points_per_dollar),
+      allowExactEntry: v.allow_exact_entry,
+      tiers: v.tiers ?? [],
+      hasPin: Boolean(v.pin_hash),
+      punchEnabled: Boolean(v.punch_enabled),
+      // Point sharing (migration-044), so the terminal can caption the balance
+      // it shows as the chain's rather than this counter's.
+      //
+      // pointsShared comes from the vendors ROW, not from poolFacts: membership
+      // IS the toggle, and this row is the very thing /scan and /redeem-preview
+      // resolve their balances through. Deriving it from the facts lookup
+      // instead would let a missing point_pools row caption a pooled balance
+      // "not shared" — the one inconsistency a cashier would act on.
+      pointsShared: isPooled(v),
+      poolLabel: pool?.poolLabel ?? null,
+      // Display only, and ACTIVE members only (see poolFacts). 1 means this
+      // counter and nothing else, which is what an unpooled terminal renders.
+      poolSize: pool?.poolSize ?? 1,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /**
@@ -163,15 +260,27 @@ router.get('/punch-token', (req, res) => {
 router.post('/scan', async (req, res, next) => {
   try {
     const userId = await resolveEarnCode(req.body?.code);
-    const [{ data: profile }, { data: bal }, tierProfile] = await Promise.all([
+    const [{ data: profile }, balance, tierProfile] = await Promise.all([
       supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle(),
-      supabaseAdmin.from('point_balances').select('balance').eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle(),
+      // Whichever purse THIS counter spends from (migration-044). It has to be
+      // the pooled number: this is read out loud before anyone enters an amount,
+      // and /redeem will happily spend the pool. Showing the local balance would
+      // have a human refuse a free coffee the customer can actually afford.
+      // For an unpooled vendor balanceFor runs the identical point_balances
+      // lookup this line used to do. One deliberate difference: it THROWS on a
+      // database error where the old `{ data: bal }` destructure swallowed it
+      // and showed 0. A cashier acts on this number, so a failed read has to
+      // read as failed, not as "no points".
+      balanceFor(userId, req.vendor),
       computeTierProfile(userId), // read-only: scan just displays the tier
     ]);
     res.json({
       userId,
       name: profile?.name ?? 'Customer',
-      balance: bal?.balance ?? 0,
+      balance,
+      // Additive: an older terminal ignores this and keeps showing `balance`
+      // unlabelled, which is still the right number.
+      shared: isPooled(req.vendor),
       tier: tierProfile.tier,
       multiplier: tierProfile.multiplier,
     });
@@ -237,7 +346,16 @@ router.post('/award', async (req, res, next) => {
     // payload.community when it's there and refetches when it isn't
     // (public/student/app.js), so no new room or event type is needed.
     const newCommunity = data?.[0]?.new_community;
-    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance, community: newCommunity }); // live push
+    // poolVendorIds names every card this ONE event has to repaint (see the
+    // contract on emitBalance). A shared balance belongs to several cards in the
+    // student app, and pushing one event per sibling would fire three "+50 pts"
+    // toasts for one purchase. Unpooled: [vendor.id], and no extra query.
+    emitBalance(userId, {
+      vendorId: req.vendor.id,
+      poolVendorIds: await poolVendorIds(req.vendor),
+      balance: newBalance,
+      community: newCommunity,
+    }); // live push
     // Snapshot the score for analytics — off the critical path, non-fatal.
     persistTierSnapshot(userId, tierProfile).catch(() => {});
 
@@ -264,11 +382,14 @@ router.post('/award', async (req, res, next) => {
 router.post('/redeem-preview', requirePin, async (req, res, next) => {
   try {
     const { user_id: userId, reward_id: rewardId, paid_with: paidWith, visits_charged: visitsCharged } =
-      await resolveRedeemCode(req.body?.code, req.vendor.id);
+      await resolveRedeemCode(req.body?.code, req.vendor);
 
-    const [{ data: profile }, { data: bal }, { data: reward }, { data: card }] = await Promise.all([
+    const [{ data: profile }, balance, { data: reward }, { data: card }] = await Promise.all([
       supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle(),
-      supabaseAdmin.from('point_balances').select('balance').eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle(),
+      // Same purse redeem_by_code will actually debit (migration-044). The
+      // confirm screen is where staff decide whether to hand the item over, so a
+      // local number here would contradict the deduction a second later.
+      balanceFor(userId, req.vendor),
       supabaseAdmin.from('rewards').select('title, cost_in_points, emoji').eq('id', rewardId).eq('vendor_id', req.vendor.id).maybeSingle(),
       supabaseAdmin.from('punch_cards').select('punches').eq('user_id', userId).eq('vendor_id', req.vendor.id).maybeSingle(),
     ]);
@@ -276,7 +397,10 @@ router.post('/redeem-preview', requirePin, async (req, res, next) => {
 
     res.json({
       name: profile?.name ?? 'Customer',
-      balance: bal?.balance ?? 0,
+      balance,
+      // Lets the confirm screen say whose points these are. Additive, like on
+      // /scan: a terminal that never reads it shows the same number it always did.
+      shared: isPooled(req.vendor),
       rewardTitle: reward.title,
       cost: reward.cost_in_points,
       emoji: reward.emoji || '🎁',
@@ -303,7 +427,7 @@ router.post('/redeem', requirePin, async (req, res, next) => {
     if (!/^\d{4}$/.test(code)) throw new Error('CODE_INVALID');
 
     // Whose code is this? (looked up before the RPC consumes it, for the live push)
-    const { user_id: userId } = await resolveRedeemCode(code, req.vendor.id);
+    const { user_id: userId } = await resolveRedeemCode(code, req.vendor);
 
     const { data, error } = await supabaseAdmin.rpc('redeem_by_code', {
       p_code: code,
@@ -314,7 +438,12 @@ router.post('/redeem', requirePin, async (req, res, next) => {
 
     const { new_balance: newBalance, reward_title: rewardTitle,
             paid_with: paidWith, visits_left: visitsLeft } = data[0];
-    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push
+    // One event for every sibling card, never one event each — see /award above.
+    emitBalance(userId, {
+      vendorId: req.vendor.id,
+      poolVendorIds: await poolVendorIds(req.vendor),
+      balance: newBalance,
+    }); // live push
 
     // A visits redemption doesn't move the points balance, so the balance push
     // alone leaves the student's counter showing its pre-reset value and the
@@ -384,7 +513,14 @@ router.post('/reverse', requirePin, async (req, res, next) => {
 
     const { affected_user: userId, new_balance: newBalance, reversed_type: type,
             reversed_points: points, paid_with: paidWith, restored_visits: restoredVisits } = data[0];
-    emitBalance(userId, { vendorId: req.vendor.id, balance: newBalance }); // live push to the student
+    // An undo moves the same purse a sale did, so it repaints the same set of
+    // cards. The punch push below deliberately stays per-vendor: visits are NOT
+    // shared, and a sibling's card must not show this location's visit count.
+    emitBalance(userId, {
+      vendorId: req.vendor.id,
+      poolVendorIds: await poolVendorIds(req.vendor),
+      balance: newBalance,
+    }); // live push to the student
 
     // Undoing a visits redemption adds the forfeited visits back, so the
     // student's counter has to hear about it the same way a fill does.
@@ -601,6 +737,74 @@ router.get('/recent', async (req, res, next) => {
  * One query + in-memory rollup; transactions is the source of truth (not the
  * user_scores cache).
  */
+/**
+ * GET /api/vendor/pool-settlement
+ * Who funded whom, across the locations that share this one's purse.
+ *
+ * This exists because per-location analytics become honest but baffling the
+ * moment points are shared: a shop that hands over a coffee bought with points
+ * earned next door shows a redemption with no matching revenue. That is exactly
+ * right and it looks broken, and the owner reading it has no way from the STATS
+ * tab alone to see where the money actually came from.
+ *
+ * PIN-gated like the rest of STATS: it is a statement of what each of an
+ * owner's shops owes the others, which is not something to leave on an
+ * unattended counter screen.
+ *
+ * No settlement TRANSFER is performed, here or anywhere. One owner reads one
+ * P&L, so moving points between their own shops to balance a book they read as
+ * one book would be ceremony; and it would cost a fourth transactions.type,
+ * which lands in rollupVendorAnalytics' else-arm and in front of migration-027's
+ * DO block. The report answers the question the transfer would have answered.
+ */
+router.get('/pool-settlement', requirePin, async (req, res, next) => {
+  try {
+    if (!req.vendor.pool_id) {
+      return res.status(403).json({
+        error: 'NOT_POOLED',
+        message: 'This location keeps its own points, so there is nothing to settle.',
+      });
+    }
+
+    const [{ data: rows, error: sErr }, { data: members, error: mErr }, { data: pool, error: pErr }] =
+      await Promise.all([
+        supabaseAdmin.rpc('pool_settlement', { p_pool_id: req.vendor.pool_id }),
+        supabaseAdmin.from('vendors').select('id, name, location_label, active')
+          .eq('pool_id', req.vendor.pool_id),
+        supabaseAdmin.from('point_pools').select('label').eq('id', req.vendor.pool_id).maybeSingle(),
+      ]);
+    if (sErr) throw sErr;
+    if (mErr) throw mErr;
+    if (pErr) throw pErr;
+
+    const byId = new Map((members ?? []).map((m) => [m.id, m]));
+    res.json({
+      poolLabel: pool?.label ?? null,
+      rows: (rows ?? []).map((r) => {
+        const m = byId.get(r.vendor_id);
+        return {
+          vendorId: r.vendor_id,
+          // Every location of a chain carries the same name, so the label is
+          // what actually tells them apart on this table.
+          name: m?.name ?? 'Location',
+          locationLabel: m?.location_label ?? null,
+          active: m?.active !== false,
+          minted: r.minted,
+          burned: r.burned,
+          moved: r.moved,
+          net: r.net,
+          // So the terminal can mark the row for the till it is standing at,
+          // without the client having to know its own vendor id.
+          isThisLocation: r.vendor_id === req.vendor.id,
+        };
+      }),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
 router.get('/analytics', requirePin, async (req, res, next) => {
   try {
     const startToday = new Date();
@@ -1147,6 +1351,24 @@ router.patch('/settings', requirePin, async (req, res, next) => {
       updates.longitude = coords?.lng ?? null;
     } else {
       delete updates.address; // unchanged — don't rewrite it or its coords
+    }
+
+    // RATE PARITY across a shared purse (migration-046). Locations that share
+    // points must charge the same points per dollar, or one systematically
+    // funds the other; pool_join refuses a mismatch at the door, and this is
+    // the other way parity could break — a vendor retuning their own rate from
+    // their own Settings tab. Fanned out rather than refused: a chain has to be
+    // able to reprice, and the alternative (leave the pool, change it, rejoin)
+    // moves customers' money twice for a number change. Every sibling lands on
+    // the new rate in one statement, so parity is never briefly false.
+    if (req.vendor.pool_id && 'points_per_dollar' in updates) {
+      const { error: fanErr } = await supabaseAdmin
+        .from('vendors')
+        .update({ points_per_dollar: updates.points_per_dollar })
+        .eq('pool_id', req.vendor.pool_id)
+        .neq('id', req.vendor.id);
+      if (fanErr) throw fanErr;
+      invalidateVendorCaches();   // every sibling's earn rate just changed
     }
 
     const { data, error } = await supabaseAdmin

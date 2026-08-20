@@ -141,9 +141,16 @@ async function loadCuisines() {
    price range and its logo are collected once above and carried onto every
    location by the server, because a chain is a chain.
 
-   The locations stay independent vendors once accepted (own points, items,
-   deals, stats and staff PIN); what they share is the sign-in, and the store
-   switcher at the top of the terminal moves between them. */
+   The locations stay independent vendors once accepted (own items, deals,
+   stats and staff PIN); what they share is the sign-in, and the store switcher
+   at the top of the terminal moves between them.
+
+   POINTS ARE THE ONE THING THAT CAN LATER BE SHARED (migration-044): an
+   operator can put an owner's locations in a pool, after which a customer earns
+   at any of them and spends at any other. It is off unless we set it up, which
+   is why the copy below says "by default" rather than promising separation — a
+   sentence on this form is the last place we want to be contradicted by a
+   feature someone asked us for. */
 
 const MAX_LOCATIONS = 12;   // keep in sync with src/routes/apply.js
 
@@ -245,7 +252,7 @@ async function submit(e) {
       const count = collectLocations().length + 1;
       if (count > 1) {
         const note = $('done-locations');
-        note.textContent = `All ${count} locations are on this one sign-in. Once you're approved, a store switcher at the top of the terminal moves between them, and each one keeps its own points, items and stats.`;
+        note.textContent = `All ${count} locations are on this one sign-in. Once you're approved, a store switcher at the top of the terminal moves between them, and by default each one keeps its own points, items and stats. Ask us if you'd rather your customers could earn at one and spend at another.`;
         note.hidden = false;
       }
       $('form-card').hidden = true;

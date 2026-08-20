@@ -73,7 +73,16 @@
 // seventh tab extends the scroll rather than growing the header into the
 // viewfinder. Bottom bar on phones scrolls only once labels would clip
 // (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v25';
+// v26: pooled points (migration-044). Where an operator has put this spot in a
+// pool, the balances on the award pad and the redeem-confirm screen are the
+// CHAIN's and say so, the SCAN screen names the till it belongs to (a pooled
+// balance is identical at every sibling, so the number no longer tells a
+// cashier where they are), and Settings carries a read-only note. All three are
+// invisible for an unpooled spot, which is every spot today - but the shell
+// changed, so the cache has to move or an installed terminal keeps the old
+// terminal.js beside a fresh index.html and the tags never appear
+// (index.html + terminal.js + terminal.css).
+const CACHE = 'werewards-terminal-v27';
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

@@ -257,6 +257,12 @@
               </span>
               <span id="punch-next" class="punch-next"></span>
             </button>
+            <!-- Visits are NOT shared across a pooled owner's spots, only the
+                 money is. On a pooled spot the balance above this block is the
+                 chain's, so the counter needs to say out loud that it is not.
+                 Written by renderPunchUi; ships [hidden] and empty, which is
+                 what every vendor gets until an operator makes a pool. -->
+            <p id="punch-pool-note" class="punch-pool-note" hidden></p>
           </div>
 
           <!-- Sits directly under the punch card it feeds, above the rewards
@@ -1262,7 +1268,12 @@
         <li>They're <strong>on top</strong> of your normal points, so your spot balance isn't touched</li>
         <li>They spend at <strong>any</strong> spot, not just the one that gave them to you</li>
       </ul>
-      <p>To spend them, tap the card once you have some: pick a spot, and they become that spot's points. Heads up: <strong>a move can't be undone</strong>.</p>
+      <!-- "that spot's points" stopped being true when a spot can spend from a
+           purse shared with its siblings (migration-044): moved points would
+           become the CHAIN's points there. Worded as what the student can do
+           with them instead, which is true either way and needs no branch in
+           static copy that no JS rewrites. -->
+      <p>To spend them, tap the card once you have some: pick a spot, and they become points you can spend at that spot. Heads up: <strong>a move can't be undone</strong>.</p>
     </div>
   </div>
 
@@ -1279,7 +1290,7 @@
 
       <!-- view 1: destination + amount -->
       <div id="move-pick" class="move-view">
-        <p class="detail-desc">Pick a spot and your community points become <em>that spot's</em> points, and you redeem them there like any others.
+        <p class="detail-desc">Pick a spot and your community points become points you can spend at <em>that spot</em>, and you redeem them like any others.
           <button id="move-whatis" class="move-whatis" type="button">What are community points?</button></p>
         <div id="move-vendors" class="move-vendors" role="radiogroup" aria-label="Move to which spot?"></div>
         <div class="move-amount-row">
@@ -1297,7 +1308,12 @@
            the move is final — that sentence is the whole reason this view exists. -->
       <div id="move-confirm-view" class="move-view" hidden>
         <p id="move-summary" class="detail-desc"></p>
-        <p class="move-final">⚠️ This can't be undone. Moved points stay at that spot.</p>
+        <!-- "stay at that spot" is false for a pooled destination, where they
+             land in a purse its siblings spend from too. The part that is
+             actually irreversible is the direction of travel, so say that: it
+             holds for every destination, and #move-summary above names the
+             chain when there is one. -->
+        <p class="move-final">⚠️ This can't be undone. Moved points can't come back to your community balance.</p>
         <p id="move-confirm-status" class="detail-status"></p>
         <button id="move-confirm" class="btn-redeem">Move my points</button>
         <button id="move-back" class="detail-textbtn" type="button">Back</button>
@@ -1587,6 +1603,10 @@
           </div>
           <p id="map-pin-address" class="map-pin-address"></p>
           <p id="map-pin-rate" class="map-pin-rate" hidden></p>
+          <!-- Why the number above is the same on the chain's other pins.
+               Written by paintPinPool(); ships [hidden] so the sheet's height is
+               unchanged for an unpooled spot. -->
+          <p id="map-pin-pool" class="map-pin-pool" hidden></p>
           <div class="map-pin-actions">
             <button id="map-pin-open" class="map-pin-btn map-pin-btn-primary" type="button">View rewards</button>
             <button id="map-pin-dir" class="map-pin-btn" type="button">Directions</button>

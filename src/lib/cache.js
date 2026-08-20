@@ -358,7 +358,21 @@ export function loadVendorCatalogue() {
       // they ride along here rather than justifying a second query — and
       // because the sheet's chips are derived from the catalogue itself, a
       // vendor tagging themselves becomes filterable on the next cache turn.
-      .select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, cuisine, price_level, created_at, rewards(id, title, cost_in_points, cost_in_visits, emoji, active)')
+      //
+      // pool_id + the pool's label (migration-044) are what decide WHICH TABLE
+      // a vendor's balance lives in. Every row out of here is handed to
+      // purseOf/balanceFrom in src/lib/pools.js, and a vendors row fetched
+      // WITHOUT pool_id looks unpooled: it would be read out of point_balances
+      // and show a customer a zero next to a shared purse that holds their
+      // points. The label is embedded rather than looked up per card because
+      // the FK added by 044 makes it one join on a query that already runs.
+      //
+      // DEPLOY ORDER, and this is the one query where it bites: PostgREST
+      // answers 400 to the WHOLE request on a single unknown column, and this
+      // is the read behind every student's home screen. Ship this file against
+      // a database without migration-044 and nobody sees any spots at all —
+      // not just the pooled ones. 044 goes first, always.
+      .select('id, name, slug, address, latitude, longitude, has_logo, accepts_community_points, punch_enabled, points_per_dollar, cuisine, price_level, created_at, pool_id, point_pools(label), rewards(id, title, cost_in_points, cost_in_visits, emoji, active)')
       .eq('active', true)
       .order('created_at', { ascending: false });
     if (error) throw error;

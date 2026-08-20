@@ -2519,9 +2519,13 @@ function renderMoveVendors() {
     btn.dataset.id = v.vendorId;
     btn.setAttribute('role', 'radio');
     btn.setAttribute('aria-checked', 'false');
+    // "there now" is a lie the moment the destination is pooled: three sibling
+    // buttons would each claim the same points as if picking between them moved
+    // different piles. Naming the chain says plainly that it is one pile.
+    const where = poolWhereText(v);
     btn.innerHTML = `
       <span class="mv-name">${escapeHtml(v.name)}</span>
-      <span class="mv-balance">${v.balance ?? 0} pts there now</span>`;
+      <span class="mv-balance">${v.balance ?? 0} pts ${where ? escapeHtml(where) : 'there now'}</span>`;
     wrap.appendChild(btn);
   });
 }
@@ -2566,9 +2570,15 @@ function showMoveConfirm() {
   // One intent, one token: minted here so a network retry of THIS confirm can't
   // move the points twice, and re-minted if they go Back and change anything.
   moveRequestId = crypto.randomUUID?.() ?? `mv-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  // The static warning under this line says the move is one-way, which is true
+  // whatever the destination. What changes for a pooled one is WHERE the points
+  // land: naming only this spot would undersell them, and the picker already
+  // showed the same number against each sibling.
+  const where = poolWhereText(v);
   $('move-summary').innerHTML =
     `Move <strong>${amount} pts</strong> to <strong>${escapeHtml(v.name)}</strong>? ` +
-    `They'll show up in your ${escapeHtml(v.name)} balance right away.`;
+    `They'll show up in your ${escapeHtml(v.name)} balance right away.` +
+    (where ? ` That balance is shared ${escapeHtml(where)}, so they will work at any of them.` : '');
   $('move-pick').hidden = true;
   $('move-confirm-view').hidden = false;
 }
@@ -2598,9 +2608,21 @@ async function submitMove() {
     // Success: both numbers move. The socket push carries the same pair, so
     // these direct updates just beat it by a beat (and no-op when it lands).
     setCommunityPoints(data.newCommunity ?? 0);
-    v.balance = data.newBalance ?? v.balance;
-    patchVendorCard(v.vendorId, v.balance);
-    if (vendor && vendor.vendorId === v.vendorId) applyBalance(v.balance);
+    const landed = data.newBalance ?? v.balance;
+    // A move into a POOLED destination lands in a purse its siblings spend from,
+    // so patching the destination card alone would leave the other cards for the
+    // same purse showing the old number until the next /balances. This route's
+    // own socket push does not carry poolVendorIds, so resolve the siblings from
+    // allVendors, which already knows who shares what. For an unpooled
+    // destination the filter picks exactly `v` and this is the single card and
+    // single applyBalance it was before.
+    allVendors
+      .filter((x) => (v.poolId ? x.poolId === v.poolId : x.vendorId === v.vendorId))
+      .forEach((x) => {
+        x.balance = landed;
+        patchVendorCard(x.vendorId, landed);
+        if (vendor && vendor.vendorId === x.vendorId) applyBalance(landed);
+      });
     if (historyLoaded) loadHistory();
     closeMoveSheet();
     moveToast(amount, v.name);
@@ -2890,6 +2912,58 @@ function earnRateText(n) {
   return `${r.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${unit} per $1`;
 }
 
+/* ---------- shared purses (migration-044) ---------- */
+
+// A spot's points either live at that one counter or in a purse shared with the
+// owner's other locations, and the ONLY thing that says which is poolId on the
+// /balances payload. There is deliberately no separate "sharing" flag server
+// side, so nothing here may infer sharing from a label or a size: an operator
+// can name a pool and a pool whose other members are switched off still reports
+// a size of 1, and both of those are still shared purses.
+//
+// Every vendor today has poolId null, so every helper below returns the empty
+// string and every caller falls through to exactly the wording it printed
+// before. That is the property to keep when editing any of them.
+const isPooled = (v) => Boolean(v?.poolId);
+
+// The operator's name for the chain, or '' when they never gave it one. Trimmed
+// because it is free text and " " would otherwise render as a real label and
+// produce "Shared across  spots".
+const poolLabelOf = (v) => String(v?.poolLabel ?? '').trim();
+
+// The one sentence that explains why the same number is sitting on three cards.
+// poolSize counts ACTIVE members only (src/lib/pools.js), so it can legitimately
+// be 1 or missing while the purse is still shared: in that case say the fact
+// without a number rather than printing one the server cannot stand behind.
+function poolChipText(v) {
+  if (!isPooled(v)) return '';
+  const label = poolLabelOf(v);
+  const n = Number(v.poolSize);
+  const many = Number.isFinite(n) && n > 1;
+  // The label-without-a-count case has to read as a sentence too: "Shared
+  // across Joe's Pizza spots." is what you get by dropping the number out of
+  // the plural form, and it reads like a bug because it is one.
+  if (label) return many ? `Shared across ${n} ${label} spots.` : `Shared across every ${label} spot.`;
+  return many ? `Shared across ${n} spots with the same owner.` : 'Shared with this spot\u2019s sibling locations.';
+}
+
+// The same fact as a fragment, for lines that already have a subject: "120 pts
+// ___". It never contains the words "here" or "there", which are exactly what
+// makes a shared balance read as a local one.
+function poolWhereText(v) {
+  if (!isPooled(v)) return '';
+  const label = poolLabelOf(v);
+  return label ? `across ${label} spots` : 'across the same owner\u2019s spots';
+}
+
+// "any Joe's Pizza spot" — for sentences about where the points can be SPENT,
+// rather than where the balance is held.
+function poolAnySpotText(v) {
+  if (!isPooled(v)) return '';
+  const label = poolLabelOf(v);
+  return label ? `any ${label} spot` : 'any of this owner\u2019s spots';
+}
+
 // The rate line on the vendor screen. Kept beside the card's copy of the same
 // idea rather than down with openVendor, so a change to the wording lands on
 // both surfaces at once.
@@ -2899,8 +2973,17 @@ function renderVendorRate(v) {
   const text = earnRateText(v?.pointsPerDollar);
   // The one surface with room for the whole truth, so it names the multiplier
   // rather than just hinting at it with the word "base".
-  el.textContent = text ? `Base rate: ${text}. Your tier multiplier applies on top.` : '';
-  el.hidden = !text;
+  // The pool line goes HERE, not only on the cards: this screen is where the
+  // balance is largest, and a customer looking at 420 points in 48pt type is
+  // the one most likely to believe it is 420 at this spot alone. The cards and
+  // the Spots rows carry the same fact; leaving it off the detail screen means
+  // the biggest number on the app is the least explained.
+  const pool = poolChipText(v);
+  const base = text ? `Base rate: ${text}. Your tier multiplier applies on top.` : '';
+  el.textContent = [pool, base].filter(Boolean).join(' ');
+  // Not `!text`: a pooled spot whose rate is missing still has something to say,
+  // and hiding on the rate alone would swallow the pool line with it.
+  el.hidden = !(pool || base);
 }
 
 // Words that carry no identity of their own, so "The Waffle Shop" initials as
@@ -2950,6 +3033,9 @@ function buildVendorCard(v) {
   // What a dollar spent here is worth, right under the balance it feeds. Empty
   // string when the rate is missing, so the line disappears rather than lying.
   const rate = earnRateText(v.pointsPerDollar);
+  // Why the same number is on three cards. Empty for every vendor with no pool,
+  // which is all of them until an operator makes one, so the card is unchanged.
+  const poolChip = poolChipText(v);
   // The mark in the letterhead: the vendor's own artwork from the cacheable
   // endpoint when they have it, their initials when they don't. Never empty, so
   // both kinds of vendor render the same card — the point of the whole layout.
@@ -2968,6 +3054,7 @@ function buildVendorCard(v) {
     </span>
     <span class="vc-body">
       <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
+      ${poolChip ? `<span class="vc-pool">${escapeHtml(poolChip)}</span>` : ''}
       ${rate ? `<span class="vc-rate">${rate}</span>` : ''}
       ${address}
     </span>
@@ -2983,8 +3070,16 @@ function buildVendorCard(v) {
 // tab, and without it here the card would keep rendering the old one forever,
 // since syncVendorCards only ever patches .vc-num on a reused card. That costs
 // a rebuild on a ratio change, which is a rare edit and worth the correctness.
+// The pool chip joins it for the same reason pointsPerDollar did, and this is
+// the trap in the whole feature: the chip is baked into innerHTML but the
+// balance is not in the signature, so syncVendorCards() only ever patches
+// .vc-num on a card it reuses. Leave the chip out and a card built before its
+// vendor joined a pool would keep its unpooled body forever while its number
+// silently became a shared one. poolChipText() rather than the three raw fields
+// so a size change that does not alter the sentence (there isn't one today, but
+// a future fallback could) does not throw the map tiles away for nothing.
 function vendorCardSig(v) {
-  return JSON.stringify([v.name, v.address ?? '', v.latitude ?? null, v.longitude ?? null, !!v.hasLogo, v.pointsPerDollar ?? null]);
+  return JSON.stringify([v.name, v.address ?? '', v.latitude ?? null, v.longitude ?? null, !!v.hasLogo, v.pointsPerDollar ?? null, poolChipText(v)]);
 }
 
 // Bring the card pool in line with allVendors — build what's new, patch what
@@ -3260,6 +3355,10 @@ function buildSpotRow(v) {
     : `<span class="spot-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
 
   const rate = earnRateText(v.pointsPerDollar);
+  // Same chip as the carousel card's, and it must join spotRowSig() below for
+  // the same reason. It is a fifth grid child spanning the full width, so it
+  // sits UNDER the whole row rather than squeezing the name column.
+  const poolChip = poolChipText(v);
 
   row.innerHTML = `
     <span class="spot-mark" aria-hidden="true">${mark}</span>
@@ -3269,7 +3368,8 @@ function buildSpotRow(v) {
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 20.4S3.6 15 3.6 9.1a4.6 4.6 0 0 1 8.4-2.6 4.6 4.6 0 0 1 8.4 2.6c0 5.9-8.4 11.3-8.4 11.3z" />
       </svg>
-    </button>`;
+    </button>
+    ${poolChip ? `<span class="spot-pool">${escapeHtml(poolChip)}</span>` : ''}`;
 
   paintSpotHeart(row, Boolean(v.favorite), v.name);
   return row;
@@ -3290,8 +3390,11 @@ function paintSpotHeart(row, on, name) {
 // the vendor, so this decides reuse vs rebuild — same contract as
 // vendorCardSig(). `favorite` is deliberately NOT in it: the heart is patched
 // in place, and rebuilding on a toggle would throw the logo away mid-tap.
+// The pool chip is in it for the reason spelled out over vendorCardSig(): the
+// balance is patched in place and never rebuilds the row, so a chip left out of
+// here would never appear on a row that already exists.
 function spotRowSig(v) {
-  return JSON.stringify([v.name, !!v.hasLogo, v.pointsPerDollar ?? null]);
+  return JSON.stringify([v.name, !!v.hasLogo, v.pointsPerDollar ?? null, poolChipText(v)]);
 }
 
 /**
@@ -3572,9 +3675,13 @@ function openPickSheet(v) {
   $('pick-tags').hidden = tags.length === 0;
 
   const bal = Number(v.balance) || 0;
+  // "here" is only true when the purse belongs to this one counter. A pooled
+  // spot names the chain instead, or a blind draw that lands on a sibling reads
+  // as a second, separate balance the student did not know they had.
+  const where = poolWhereText(v);
   $('pick-rate').textContent = [
     earnRateText(v.pointsPerDollar),
-    bal > 0 ? `You have ${bal} pts here.` : '',
+    bal > 0 ? `You have ${bal} pts ${where || 'here'}.` : '',
   ].filter(Boolean).join(' · ');
 
   const ov = $('spots-pick-modal');
@@ -4704,7 +4811,13 @@ function pinHtml(v, focused) {
   const face = v.hasLogo
     ? `<span class="mp-body" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
     : `<span class="mp-body"><span class="mp-initial">${escapeHtml(firstLetter(v.name))}</span></span>`;
-  const badge = pts > 0 ? `<span class="mp-badge">${escapeHtml(shortPoints(pts))}</span>` : '';
+  // The badge is a ~2ch disc pinned to a map, so the shared-purse sentence
+  // cannot fit inside it as words. It gets a marker class (styles.css rings it)
+  // and the sentence itself rides on the marker's accessible name and title in
+  // buildMapPins, with the full wording one tap away in the pin sheet.
+  const badge = pts > 0
+    ? `<span class="mp-badge${isPooled(v) ? ' is-shared' : ''}">${escapeHtml(shortPoints(pts))}</span>`
+    : '';
   return `<span class="${cls.join(' ')}">${face}<span class="mp-tip"></span>${badge}</span>`;
 }
 
@@ -4718,6 +4831,9 @@ function buildMapPins(spots) {
   spots.forEach((v) => {
     const id = String(v.vendorId);
     const focused = id === mapFocusId;
+    // '' for every unpooled vendor, so both strings below are byte-identical to
+    // what they were.
+    const where = poolWhereText(v);
     const marker = L.marker([mapCoord(v.latitude), mapCoord(v.longitude)], {
       icon: L.divIcon({
         // className replaces Leaflet's own 'leaflet-div-icon', which would
@@ -4727,7 +4843,9 @@ function buildMapPins(spots) {
         iconSize: [MAP_PIN_W, MAP_PIN_H],
         iconAnchor: [MAP_PIN_W / 2, MAP_PIN_H],   // the tip, not the middle
       }),
-      title: v.name,
+      // Hover tooltip on a desktop pointer: whose purse the badge is counting,
+      // since the badge itself has no room to say it.
+      title: where ? `${v.name}, points shared ${where}` : v.name,
       riseOnHover: true,
       zIndexOffset: focused ? 1000 : 0,
     });
@@ -4744,7 +4862,7 @@ function buildMapPins(spots) {
       const el = marker.getElement();
       if (!el) return;
       el.setAttribute('role', 'button');
-      el.setAttribute('aria-label', `${v.name}, ${Number(v.balance ?? 0)} points`);
+      el.setAttribute('aria-label', `${v.name}, ${Number(v.balance ?? 0)} points${where ? ` shared ${where}` : ''}`);
       // Re-assert the ring here for the same reason: setFocusPin runs while the
       // screen is opening, which is before this element exists. pinHtml bakes
       // the class in for the pin that opened the screen, but a pin tapped
@@ -4777,16 +4895,39 @@ function refreshMapPins() {
       }
       const next = shortPoints(pts);
       if (badge.textContent !== next) badge.textContent = next;
+      // A badge created by this function (rather than by pinHtml) would
+      // otherwise never get the ring, and a vendor can join a pool while the
+      // map is open.
+      badge.classList.toggle('is-shared', isPooled(v));
     } else if (badge) {
       badge.remove();
     }
     mp.classList.toggle('is-zero', pts <= 0);
-    el.setAttribute('aria-label', `${v.name}, ${pts} points`);
+    const where = poolWhereText(v);
+    el.setAttribute('aria-label', `${v.name}, ${pts} points${where ? ` shared ${where}` : ''}`);
   });
   if (mapPinId) {
     const v = allVendors.find((x) => String(x.vendorId) === mapPinId);
-    if (v) $('map-pin-num').textContent = String(v.balance ?? 0);
+    if (v) {
+      $('map-pin-num').textContent = String(v.balance ?? 0);
+      paintPinPool(v);
+    }
   }
+}
+
+// The sheet's shared-purse line, in one place because two callers write it: the
+// open, and the live patch above when a push lands while the sheet is up.
+// Hidden (and emptied) for an unpooled vendor, which is every vendor today, so
+// the sheet keeps exactly the height it has now. styles.css gives .map-pin-pool
+// no display of its own, but carries the [hidden] display:none companion beside
+// .map-pin-rate's anyway: the day anyone adds one, an author display rule beats
+// the hidden attribute and every unpooled spot gains a blank line in its sheet.
+function paintPinPool(v) {
+  const el = $('map-pin-pool');
+  if (!el) return;
+  const text = poolChipText(v);
+  el.textContent = text;
+  el.hidden = !text;
 }
 
 /* ---------- the note strip ---------- */
@@ -4842,6 +4983,9 @@ function openPinSheet(vendorId, pan) {
   const rateText = earnRateText(v.pointsPerDollar);
   rate.textContent = rateText ? `Base rate: ${rateText}` : '';
   rate.hidden = !rateText;
+  // The number right above this is the chain's when the spot is pooled, and the
+  // sheet is the surface with room to say so in full.
+  paintPinPool(v);
   // Directions need an address to hand to the platform's maps app; a vendor
   // pinned from coordinates alone gets the rewards button on its own.
   $('map-pin-dir').hidden = !v.address;
@@ -5275,11 +5419,25 @@ function connectSocket() {
     socket.on('balance', (payload) => {
       if (!payload?.vendorId) return;
       const next = payload.balance ?? 0;
+      // One shared purse changing is ONE event that has to repaint every spot
+      // spending from it, not one event per spot: the server sends the sibling
+      // list (itself always included, so an unpooled vendor is exactly
+      // [vendorId] and this loop runs once) instead of firing three pushes,
+      // which would fire three "+50 pts" toasts for a single purchase.
+      // Everything after the loop still runs exactly once, for the same reason.
+      const ids = payload.poolVendorIds ?? [payload.vendorId];
+      // prev is read BEFORE the loop writes, and off the vendor the event names
+      // — the gain it feeds InstallPrompt is one earn, not one per sibling.
       const v = allVendors.find((x) => x.vendorId === payload.vendorId);
       const prev = v ? (v.balance ?? 0) : 0;
-      if (v) v.balance = next;
-      patchVendorCard(payload.vendorId, next);                       // live-update the home card
-      if (vendor && payload.vendorId === vendor.vendorId) applyBalance(next); // and the open meter
+      let hitOpen = false;
+      ids.forEach((id) => {
+        const sib = allVendors.find((x) => x.vendorId === id);
+        if (sib) sib.balance = next;
+        patchVendorCard(id, next);                                   // live-update the home card
+        if (vendor && vendor.vendorId === id) hitOpen = true;
+      });
+      if (hitOpen) applyBalance(next);                               // and the open meter
       // A gain here is a scan landing → install triggers 2 (near a reward
       // threshold) and 4 (first points earned). `v` carries the vendor's rewards
       // so the hook can decide "within 1 visit". Redemptions (a drop) are handled
@@ -5487,7 +5645,16 @@ function decorateCard(card) {
 
   // Per-currency shortfall: never say "pts" for a reward sold only in visits.
   const gaps = [];
-  if (a.pts != null && !a.byPoints) gaps.push(`${a.pts - balance} pts to go`);
+  // A bare "20 pts to go" is read as "to go HERE". On a pooled spot the
+  // shortfall is against the chain's purse, so those 20 can be earned at any of
+  // its counters and the line says where. '' for an unpooled vendor, which
+  // leaves the original sentence untouched.
+  const anySpot = poolAnySpotText(vendor);
+  if (a.pts != null && !a.byPoints) {
+    gaps.push(anySpot
+      ? `${a.pts - balance} pts to go, earn at ${anySpot}`
+      : `${a.pts - balance} pts to go`);
+  }
   if (a.vis != null && a.visitsOn && !a.byVisits) gaps.push(`${a.vis - a.visits} visits to go`);
 
   // The prices stack in their own right-hand column rather than running on one
@@ -5527,7 +5694,13 @@ function onItemTap(e) {
   $('item-cost').textContent = bits.join(' / ');
   // A screen reader would otherwise announce the slash: "50 pts slash 5 visits".
   $('item-cost').setAttribute('aria-label', bits.join(' or '));
-  $('item-desc').textContent = `Redeem at ${vendor?.name ?? 'this spot'}.`;
+  // "Redeem at X." on its own reads as "and nowhere else", which is wrong for a
+  // pooled spot: the points it just showed are the chain's, so the sheet has to
+  // say the reward's price comes out of a purse the siblings share.
+  const anySpot = poolAnySpotText(vendor);
+  $('item-desc').textContent = anySpot
+    ? `Redeem at ${vendor?.name ?? 'this spot'}. These points work at ${anySpot}.`
+    : `Redeem at ${vendor?.name ?? 'this spot'}.`;
 
   // The buttons carry the user's own wording, so the numbers live here instead
   // of vanishing with the old disabled-button state.
@@ -6064,6 +6237,19 @@ function renderPunchUi() {
                     : '';
   $('punch-next').classList.toggle('is-ready', ready && !next);
   $('punch-scan-sub').textContent = 'Scan the code at the counter';
+
+  // VISITS ARE NOT SHARED, and this is the likeliest confusion in the whole
+  // feature: on a pooled spot a chain-wide points number sits a few pixels above
+  // this counter with the same visual weight, so without a line saying
+  // otherwise a student reasonably expects a visit collected downtown to show
+  // up here too. Only the money is common (src/lib/pools.js). Empty and hidden
+  // for an unpooled vendor, so the block keeps its current height.
+  const poolNote = $('punch-pool-note');
+  if (poolNote) {
+    const shared = isPooled(vendor);
+    poolNote.textContent = shared ? 'Visits are counted at this spot only, they are not shared.' : '';
+    poolNote.hidden = !shared;
+  }
 }
 
 /* ---------- visits sheet: progress only ---------- */
@@ -6083,6 +6269,14 @@ function openPunchModal() {
     !priced.length ? `${vendor.name} hasn’t priced anything in visits yet. Yours are safe, keep collecting.`
     : visits === 0 ? `Scan the visit code at the counter to collect your first visit at ${vendor.name}. One a night.`
                    : `Collected at ${vendor.name}, one a night. Spend them on any reward below that shows a visit price.`;
+  // The sheet that explains the counter has to carry the same warning the
+  // counter does, because this is where a student comes to work out what the
+  // number means. Appended rather than folded into the three branches above so
+  // each of them keeps its own wording intact.
+  if (isPooled(vendor)) {
+    $('punch-modal-desc').textContent +=
+      ` Visits are counted at ${vendor.name} only. Your points are shared ${poolWhereText(vendor)}, your visits are not.`;
+  }
 
   // What the counter buys, cheapest first. Redemption itself lives on the
   // reward, so this is a read-out, not a control.

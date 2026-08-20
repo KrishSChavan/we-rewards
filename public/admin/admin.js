@@ -42,7 +42,7 @@ const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now"
 // evaluating — declared below the boot IIFE it would be in its temporal dead
 // zone at that moment, and the throw is swallowed, so the report would quietly
 // arrive missing the context it exists for.
-const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'students'];
+const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'pools', 'students'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -97,6 +97,7 @@ function bootFailed(message) {
   $('tab-applications').addEventListener('click', () => setView('applications'));
   $('tab-incentives').addEventListener('click', () => setView('incentives'));
   $('tab-poster').addEventListener('click', () => setView('poster'));
+  $('tab-pools').addEventListener('click', openPools);
   $('tot-errors-card').addEventListener('click', jumpToErrors);
   $('tot-students-card').addEventListener('click', openStudents);
   $('students-back').addEventListener('click', () => setView('dashboard'));
@@ -169,6 +170,7 @@ function bootFailed(message) {
   $('poster-cancel').addEventListener('click', () => { pendingPoster = null; renderPoster(); });
   $('poster-download').addEventListener('click', downloadPoster);
   $('poster-remove').addEventListener('click', removePoster);
+  $('pool-new-form').addEventListener('submit', createPool);
   document.querySelectorAll('.err-filter').forEach((b) =>
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
   wireLists();   // the five filter/paging headers, before anything renders
@@ -266,6 +268,11 @@ async function loadAll() {
       // Only if the operator has actually opened the roster: a page of students
       // is two extra queries, and boot shouldn't pay for a screen nobody is on.
       students.length ? loadStudents({ reset: true }) : null,
+      // Same bargain for the pools screen, which is three queries of its own:
+      // it loads when the tab is first opened, and only refreshes here after
+      // that. Refreshing it matters because a join changes the vendor roster
+      // loading beside it.
+      poolsLoaded ? loadPools() : null,
       // Unauthenticated and tiny, but it belongs to a dialog only an admin can
       // open, so it rides along here rather than firing on the sign-in screen.
       loadCuisineVocab(),
@@ -2022,6 +2029,571 @@ async function rejectApplication(a, row, accept, reject, err) {
   }
 }
 
+/* ---------- points pools (migration-044/046) ----------
+   One owner, several locations, one customer purse: earn at any member and
+   spend at any other. Operator-only, and there is no vendor-facing equivalent
+   anywhere on purpose — a terminal cannot prove which locations belong to one
+   owner, and one shop's four-digit staff PIN is not consent to move every
+   sibling's customer balances. The owner asks; this screen is where it happens.
+   See the note above the routes in src/routes/admin.js.
+
+   THE CONFIRMS ARE THE FEATURE, not decoration around it. Every other
+   destructive control in this dashboard can be summarised honestly in a clause
+   ("this deletes the vendor and can't be undone"), and neither of these can:
+   adding a location looks like grouping some shops and is actually emptying
+   every customer balance it holds into a purse its siblings can spend from,
+   and removing one looks like undoing that but is a contribution split that
+   lands somewhere new. So each confirm says what happens to the money before
+   the click, and each result line quotes the server's own count of what it
+   just moved. That line is the only receipt an operator gets for a transfer
+   nothing on this page can reverse.
+
+   Deliberately NOT on the shared list tools above. Those exist for logs and
+   rosters that run to hundreds of rows and get searched; a deployment has a
+   handful of pools, all of which have to be on screen at once, and a filter
+   that could hide one would make the add-location picker's omissions (a
+   location already in somebody else's pool) unreadable. */
+
+let pools = [];           // every pool, with its members and what its purse holds
+let poolsLoaded = false;  // false until the first open pays for the load
+// Fetched settlement rows, keyed by pool id. Presence here IS "this pool's
+// table is open", which is what lets a repaint put back what was on screen.
+// loadPools() empties it: any reload means the numbers under those tables have
+// moved, and a quietly stale settlement figure on the screen an owner's
+// per-location stats get reconciled from is worse than a panel to reopen.
+const poolSettlements = new Map();
+
+// Loaded on first open rather than at boot: three queries for a screen most
+// sessions never touch. Same trade the student roster makes, and loadAll()
+// keeps it fresh from then on.
+function openPools() {
+  setView('pools');
+  if (!poolsLoaded) loadPools();
+}
+
+async function loadPools() {
+  const err = $('pools-error');
+  err.hidden = true;
+  try {
+    const res = await authFetch('/api/admin/pools');
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) throw new Error(`pools ${res.status}`);
+    pools = await res.json();
+    poolsLoaded = true;
+    poolSettlements.clear();
+    renderPools();
+  } catch {
+    err.textContent = 'Couldn’t load the pools. Check your connection and try again.';
+    err.hidden = false;
+  }
+}
+
+// After anything that moved points. The vendor roster is reloaded alongside the
+// pools because the add-location picker is built out of it: a location that has
+// just joined must not still be on offer in the pool row underneath.
+async function refreshPools() {
+  await Promise.all([loadPools(), loadVendors()]);
+}
+
+// The outcome line sits above the list rather than in the row that changed,
+// because every change repaints that list: a note pinned to the row that just
+// joined would be destroyed by the reload that proves it joined.
+function poolOk(text) {
+  const el = $('pools-ok');
+  el.textContent = text;
+  el.hidden = false;
+}
+
+function poolRowError(el, message) {
+  el.textContent = message;
+  el.hidden = false;
+}
+
+// "300 points moved for 12 customers", in the server's own numbers and never a
+// figure this file worked out for itself. A call that found nothing to move (a
+// double-tapped button, which the RPCs treat as a no-op rather than an error)
+// says so instead of reporting a confident zero.
+function poolMoveText(d, verb) {
+  const points = Number(d?.pointsMoved) || 0;
+  const customers = Number(d?.customers) || 0;
+  if (!points && !customers) return 'nothing to move';
+  return `${num(points)} point${points === 1 ? '' : 's'} ${verb} for ` +
+    `${num(customers)} customer${customers === 1 ? '' : 's'}`;
+}
+
+// Which shop a row is about, in the words the operator uses on the phone to the
+// owner. Two locations of a chain are the same name twice without the label.
+const poolVendorLabel = (v) => (v?.location_label ? `${v.name} (${v.location_label})` : (v?.name ?? 'that location'));
+
+function renderPools() {
+  $('pools-error').hidden = true;
+  $('pools-count').textContent = pools.length
+    ? `${num(pools.length)} pool${pools.length === 1 ? '' : 's'}`
+    : '';
+
+  const wrap = $('pool-list');
+  wrap.innerHTML = '';
+  if (!pools.length) {
+    const none = document.createElement('p');
+    none.className = 'muted';
+    none.textContent = 'No pools yet. Create one below, then add the owner’s locations to it.';
+    wrap.appendChild(none);
+    return;
+  }
+  pools.forEach((pool) => wrap.appendChild(buildPoolRow(pool)));
+}
+
+// Pool labels, vendor names and location labels are all typed by people, so the
+// whole row is built with DOM APIs and textContent. Same rule, same reason, as
+// paintVendorRows and paintApplicationRows.
+function buildPoolRow(pool) {
+  const members = Array.isArray(pool.members) ? pool.members : [];
+  const held = pool.held ?? { points: 0, customers: 0 };
+  const points = Number(held.points) || 0;
+  const customers = Number(held.customers) || 0;
+
+  const row = document.createElement('div');
+  row.className = 'pool-row';
+
+  const info = document.createElement('div');
+  info.className = 'pool-info';
+  const name = document.createElement('span');
+  name.className = 'pool-name';
+  name.textContent = pool.label;
+  const meta = document.createElement('span');
+  meta.className = 'pool-meta';
+  // The purse leads because it decides what the operator may do next: a pool
+  // holding nothing can be retired, one holding points cannot until its
+  // locations are out, and the customer count is the size of the promise.
+  meta.textContent =
+    `${num(points)} point${points === 1 ? '' : 's'} across ` +
+    `${num(customers)} customer${customers === 1 ? '' : 's'} · ` +
+    `${num(members.length)} location${members.length === 1 ? '' : 's'}`;
+  info.append(name, meta);
+
+  // One error line per pool, because every button that can fail here belongs to
+  // one pool and the operator's eye is already in this row. The view-level
+  // #pools-error is for a failed load, which belongs to no row at all.
+  const err = document.createElement('span');
+  err.className = 'pool-error';
+  err.hidden = true;
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'pool-btn';
+  addBtn.type = 'button';
+  addBtn.textContent = 'Add location';
+  addBtn.setAttribute('aria-label', `Add a location to ${pool.label}`);
+
+  const settleBtn = document.createElement('button');
+  settleBtn.className = 'pool-btn';
+  settleBtn.type = 'button';
+  settleBtn.setAttribute('aria-expanded', 'false');
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'pool-btn-danger';
+  delBtn.type = 'button';
+  delBtn.textContent = 'Delete pool';
+  delBtn.setAttribute('aria-label', `Delete the ${pool.label} pool`);
+  delBtn.addEventListener('click', () => deletePool(pool, delBtn, err));
+
+  const actions = document.createElement('div');
+  actions.className = 'pool-actions';
+  actions.append(addBtn, settleBtn, delBtn);
+
+  const head = document.createElement('div');
+  head.className = 'pool-head';
+  head.append(info, actions);
+  row.append(head, err);
+
+  const list = document.createElement('div');
+  list.className = 'pool-members';
+  if (!members.length) {
+    const none = document.createElement('p');
+    none.className = 'muted';
+    none.textContent = 'No locations in it yet. An empty pool holds nothing and changes nothing.';
+    list.appendChild(none);
+  } else {
+    members.forEach((m) => list.appendChild(buildPoolMemberRow(pool, m, err)));
+  }
+  row.appendChild(list);
+
+  // The picker is built with the row but FILLED when it is opened: the roster
+  // is reloaded after every change, and an option for a location that has since
+  // joined somewhere else is an offer the server could only refuse.
+  const picker = document.createElement('div');
+  picker.className = 'pool-picker';
+  picker.hidden = true;
+  const select = document.createElement('select');
+  select.className = 'nv-input pool-select';
+  select.setAttribute('aria-label', `Location to add to ${pool.label}`);
+  const go = document.createElement('button');
+  go.className = 'pool-btn';
+  go.type = 'button';
+  go.textContent = 'Add';
+  const cancel = document.createElement('button');
+  cancel.className = 'pool-btn';
+  cancel.type = 'button';
+  cancel.textContent = 'Cancel';
+  const hint = document.createElement('span');
+  hint.className = 'pool-picker-hint';
+  picker.append(select, go, cancel, hint);
+  row.appendChild(picker);
+
+  addBtn.addEventListener('click', () => {
+    if (!picker.hidden) { picker.hidden = true; return; }
+    const eligible = fillPoolPicker(select);
+    hint.textContent = eligible
+      ? 'Only locations that are not already in a pool are listed. Adding one empties its customer balances into this purse.'
+      : 'Every location is already in a pool, so there is nothing to add.';
+    select.hidden = !eligible;
+    go.hidden = !eligible;
+    picker.hidden = false;
+    if (eligible) select.focus();
+  });
+  cancel.addEventListener('click', () => { picker.hidden = true; addBtn.focus(); });
+  go.addEventListener('click', () => addPoolMember(pool, select.value, go, err));
+
+  const panel = document.createElement('div');
+  panel.className = 'pool-settle';
+  panel.hidden = true;
+  // The pool id, so the toggle can point at the panel it opens: aria-expanded
+  // alone says 'expanded what?' when a screen reader meets the fourth of these
+  // on one screen.
+  panel.id = `pool-settle-${pool.id}`;
+  settleBtn.setAttribute('aria-controls', panel.id);
+  row.appendChild(panel);
+  settleBtn.addEventListener('click', () => togglePoolSettlement(pool, panel, settleBtn, err));
+  paintPoolSettlement(pool, panel, settleBtn);   // sets the button's own label too
+
+  return row;
+}
+
+function buildPoolMemberRow(pool, m, err) {
+  const row = document.createElement('div');
+  row.className = 'pool-member';
+  if (!m.active) row.classList.add('is-off');
+
+  const info = document.createElement('div');
+  info.className = 'pool-member-info';
+  const name = document.createElement('span');
+  name.className = 'vendor-name';
+  name.textContent = m.name;
+  info.appendChild(name);
+  if (m.location_label) {
+    const loc = document.createElement('span');
+    loc.className = 'vendor-loc';
+    loc.textContent = m.location_label;
+    info.appendChild(loc);
+  }
+  const meta = document.createElement('span');
+  meta.className = 'vendor-meta';
+  // The rate is here because it is the precondition a join fails on, and
+  // "switched off" because an off member is still IN the pool: its customers'
+  // points sit in the purse and stay spendable at its siblings, which is not
+  // what off means anywhere else in this dashboard. The join date is what every
+  // settlement number below is windowed on.
+  meta.textContent = [
+    `${num(m.points_per_dollar)} pts/$`,
+    m.pool_joined_at
+      ? `joined ${new Date(m.pool_joined_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}`
+      : null,
+    m.active ? null : 'switched off',
+  ].filter(Boolean).join(' · ');
+  info.appendChild(meta);
+
+  const remove = document.createElement('button');
+  remove.className = 'pool-btn-danger';
+  remove.type = 'button';
+  remove.textContent = 'Remove';
+  remove.setAttribute('aria-label', `Remove ${m.name} from the ${pool.label} pool`);
+  remove.addEventListener('click', () => removePoolMember(pool, m, remove, err));
+
+  row.append(info, remove);
+  return row;
+}
+
+// The roster this page already holds, minus everyone who is in a pool (this one
+// or anybody else's). Not a second fetch: /api/admin/vendors carries pool_id for
+// exactly this, and refetching here would race the reload that runs after every
+// membership change.
+function fillPoolPicker(select) {
+  select.innerHTML = '';
+  const free = vendors
+    .filter((v) => !v.pool_id)
+    .sort((a, b) => poolVendorLabel(a).localeCompare(poolVendorLabel(b)));
+  free.forEach((v) => {
+    const opt = document.createElement('option');
+    opt.value = v.id;
+    // The rate rides along because it is what a join fails on: reading "5 pts/$"
+    // against a pool of 20s here is quicker than reading POOL_RATE_MISMATCH
+    // afterwards, and it is the same fix either way.
+    opt.textContent = [
+      poolVendorLabel(v),
+      `${num(v.points_per_dollar)} pts/$`,
+      v.active ? null : 'off',
+    ].filter(Boolean).join(' · ');
+    select.appendChild(opt);
+  });
+  return free.length;
+}
+
+async function addPoolMember(pool, vendorId, btn, err) {
+  const v = vendors.find((x) => x.id === vendorId);
+  if (!v) { poolRowError(err, 'Pick a location to add.'); return; }
+  const label = poolVendorLabel(v);
+
+  // Everything the button cannot say: whose money moves, where it goes, and
+  // that taking the location back out is a different operation, not an undo.
+  if (!confirm(
+    `Add “${label}” to the “${pool.label}” pool?\n\n` +
+    `Every customer balance at this location is emptied into the shared purse the moment you confirm. ` +
+    `Those points stop being this shop’s points: they can be spent at any other location in the pool, ` +
+    `and this shop starts honouring points earned at all of them. This moves real money between businesses.\n\n` +
+    `Taking it out again later returns only what its own trading funded, which is not the same as putting this back.`
+  )) return;
+
+  err.hidden = true;
+  $('pools-ok').hidden = true;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/pools/${pool.id}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ vendorId }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // The server's line, never one of ours. POOL_PIN_MISSING and
+      // POOL_RATE_MISMATCH each name the exact thing to go and fix first, and
+      // anything written here could only lose that.
+      poolRowError(err, data.message || 'Couldn’t add that location.');
+      return;
+    }
+    poolOk(`${label} joined ${pool.label}: ${poolMoveText(data, 'moved')}.`);
+    await refreshPools();
+  } catch {
+    poolRowError(err, 'No connection, try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removePoolMember(pool, m, btn, err) {
+  const label = poolVendorLabel(m);
+  const last = (Array.isArray(pool.members) ? pool.members.length : 0) <= 1;
+
+  if (!confirm(
+    `Remove “${label}” from the “${pool.label}” pool?\n\n` +
+    (last
+      ? `It is the last location in the pool, so it takes the whole remaining purse back with it. ` +
+        `Anything left behind would sit where no customer could ever spend it.`
+      : `It takes back only what its own trading funded, which is what its customers earned there ` +
+        `less what they spent there, since it joined. Everything the other locations funded stays ` +
+        `in the pool with them.`) +
+    `\n\nPoints are conserved either way, but this does not put the balances back the way they were before it joined.`
+  )) return;
+
+  err.hidden = true;
+  $('pools-ok').hidden = true;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/pools/${pool.id}/members/${m.id}`, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      poolRowError(err, data.message || 'Couldn’t remove that location.');
+      return;
+    }
+    poolOk(`${label} left ${pool.label}: ${poolMoveText(data, 'moved back')}.`);
+    await refreshPools();
+  } catch {
+    poolRowError(err, 'No connection, try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Retiring the name. The button is never hidden or disabled on a pool that
+// still has members: the server refuses with POOL_HAS_MEMBERS or
+// POOL_NOT_EMPTY, and that answer tells the operator what to do next, which a
+// greyed-out button never does.
+async function deletePool(pool, btn, err) {
+  if (!confirm(
+    `Delete the “${pool.label}” pool?\n\n` +
+    `Only an empty pool can be deleted, so this removes the name and nothing else. ` +
+    `If locations are still in it, take them out first: that is what hands their customers’ points back.`
+  )) return;
+
+  err.hidden = true;
+  $('pools-ok').hidden = true;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/pools/${pool.id}`, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      poolRowError(err, data.message || 'Couldn’t delete that pool.');
+      return;
+    }
+    poolOk(`Deleted the ${pool.label} pool. Nothing moved: it was already empty.`);
+    await loadPools();
+  } catch {
+    poolRowError(err, 'No connection, try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function createPool(e) {
+  e.preventDefault();
+  const input = $('pool-new-label');
+  const err = $('pool-new-error');
+  const label = input.value.trim();
+  err.hidden = true;
+  if (!label) {
+    err.textContent = 'Give the pool a name.';
+    err.hidden = false;
+    return;
+  }
+
+  // The one step here that moves nothing, so it is the one step with no confirm
+  // in front of it: an empty pool is a name and a row, and deleting it again
+  // costs the operator one click.
+  $('pool-new-submit').disabled = true;
+  try {
+    const res = await authFetch('/api/admin/pools', {
+      method: 'POST',
+      body: JSON.stringify({ label }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      err.textContent = data.message || 'Couldn’t create that pool.';
+      err.hidden = false;
+      return;
+    }
+    input.value = '';
+    poolOk(`Created the ${data.pool?.label ?? label} pool. It is empty until you add locations to it.`);
+    await loadPools();
+  } catch {
+    err.textContent = 'No connection, try again.';
+    err.hidden = false;
+  } finally {
+    $('pool-new-submit').disabled = false;
+  }
+}
+
+/* ----- settlement: who funded whom inside one pool -----
+   On demand, per pool, because it is a report rather than a control: an
+   operator opens it when an owner asks why one location's stats look wrong.
+   They look wrong for a real reason — a shop that hands over a coffee bought
+   with points earned next door records a redemption with no matching revenue,
+   which is correct and reads as broken — and these five columns are what turn
+   that back into a number the owner can act on. */
+
+async function togglePoolSettlement(pool, panel, btn, err) {
+  if (poolSettlements.has(pool.id)) {
+    poolSettlements.delete(pool.id);
+    paintPoolSettlement(pool, panel, btn);
+    return;
+  }
+  err.hidden = true;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/pools/${pool.id}/settlement`);
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ([]));
+    if (!res.ok) {
+      poolRowError(err, data?.message || 'Couldn’t work out the settlement for this pool.');
+      return;
+    }
+    poolSettlements.set(pool.id, Array.isArray(data) ? data : []);
+    paintPoolSettlement(pool, panel, btn);
+  } catch {
+    poolRowError(err, 'No connection, try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function paintPoolSettlement(pool, panel, btn) {
+  const rows = poolSettlements.get(pool.id);
+  panel.innerHTML = '';
+  panel.hidden = !rows;
+  btn.textContent = rows ? 'Hide settlement' : 'Settlement';
+  btn.setAttribute('aria-expanded', rows ? 'true' : 'false');
+  btn.setAttribute('aria-label', `${rows ? 'Hide the settlement for' : 'Settlement for'} ${pool.label}`);
+  if (!rows) return;
+
+  const legend = document.createElement('p');
+  legend.className = 'muted';
+  legend.textContent = 'Minted: points this location put into the purse, its earns plus community points brought in here. '
+    + 'Burned: points it paid out. Moved: what it contributed on joining, less anything it has taken back. '
+    + 'Everything is counted from the day that location joined.';
+  panel.appendChild(legend);
+
+  // The line this table exists for. Anyone can read five columns of numbers;
+  // what an owner needs told is which direction the debt runs.
+  const note = document.createElement('p');
+  note.className = 'muted pool-settle-note';
+  note.textContent = 'Net is minted plus moved, less burned. A negative net means this location has given away more than it brought in, so its siblings owe it.';
+  panel.appendChild(note);
+
+  if (!rows.length) {
+    const none = document.createElement('p');
+    none.className = 'muted';
+    none.textContent = 'Nothing to settle: there are no locations in this pool.';
+    panel.appendChild(none);
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'pool-table';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  ['Location', 'Minted', 'Burned', 'Moved', 'Net'].forEach((label, i) => {
+    const th = document.createElement('th');
+    th.scope = 'col';
+    th.textContent = label;
+    if (i) th.className = 'is-num';
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+
+  // pool_settlement returns the pool's CURRENT members only, so the name is
+  // always one of the rows above; the raw id is the fallback for the seconds
+  // between another admin adding a location and this page being reloaded.
+  const byId = new Map((Array.isArray(pool.members) ? pool.members : []).map((m) => [m.id, m]));
+  const tbody = document.createElement('tbody');
+  rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    const who = document.createElement('td');
+    const m = byId.get(r.vendor_id);
+    who.textContent = m ? poolVendorLabel(m) : r.vendor_id;
+    tr.appendChild(who);
+    [r.minted, r.burned, r.moved, r.net].forEach((value, i) => {
+      const td = document.createElement('td');
+      td.className = 'is-num';
+      td.textContent = num(value);
+      // Only the net is coloured. Minted and burned are facts about one shop;
+      // the net is the single number that says who owes whom, and colouring its
+      // neighbours would bury it.
+      if (i === 3) td.classList.add(Number(value) < 0 ? 'is-neg' : 'is-pos');
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.append(thead, tbody);
+
+  // Five columns of numbers that have to stay in their columns: the table
+  // scrolls sideways inside the row rather than squeezing the names to two
+  // characters on a phone.
+  const scroller = document.createElement('div');
+  scroller.className = 'pool-table-wrap';
+  scroller.appendChild(table);
+  panel.appendChild(scroller);
+}
+
 /* ---------- incentives (migration-039) ----------
    Operator-created deals that pay COMMUNITY points — the cross-vendor pool, so
    the platform funds them rather than a vendor honoring a promise it never
@@ -3182,10 +3754,22 @@ function renderStudentDetail(d) {
     spots.appendChild(sdEl('p', 'muted', 'No points or visits anywhere yet.'));
   } else {
     d.spots.forEach((s) => {
-      const parts = [`${num(s.points)} pts`];
+      // A pooled location's points are the CHAIN's points, and the server prints
+      // that same figure on every member row on purpose. Say so, or three rows
+      // reading "420 pts" look like 1,260 points across three separate piles —
+      // on the exact screen an operator opens when a customer is on the phone
+      // asking where their points went.
+      const parts = [`${num(s.points)} pts${s.shared ? ' shared' : ''}`];
       if (s.visits) parts.push(`${num(s.visits)} visit${s.visits === 1 ? '' : 's'}`);
       const row = sdRow(s.vendor + (s.vendorActive ? '' : ' (off)'), parts.join(' · '));
       if (!s.vendorActive) row.classList.add('is-off');
+      if (s.shared) {
+        row.classList.add('is-shared');
+        // Which purse, so two different chains in one list stay distinguishable.
+        row.title = s.poolLabel
+          ? `Shared points: one balance across every ${s.poolLabel} spot`
+          : 'Shared points: one balance across this owner’s spots';
+      }
       spots.appendChild(row);
     });
   }

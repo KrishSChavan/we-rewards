@@ -15,6 +15,10 @@ import {
   POSTER_MAX_BYTES, POSTER_EXTENSIONS,
 } from '../lib/qr-poster.js';
 import { emitBalance } from '../lib/realtime.js';
+// The one place the "which table holds this vendor's points" rule is written
+// down (migration-044). Re-deriving it inline in a support screen is how the
+// support screen ends up disagreeing with the till.
+import { balanceFrom } from '../lib/pools.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
 import { validLogo } from '../lib/logo.js';
@@ -229,7 +233,14 @@ router.get('/vendors', async (req, res, next) => {
       // that exists so a list can say whether there is artwork without dragging
       // a 500 KB base64 blob per row through the response. The bytes themselves
       // are fetched one vendor at a time by GET /vendors/:id/logo below.
-      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
+      //
+      // pool_id and the pool's label ride along because pool_id is what decides
+      // WHICH TABLE a location's points live in (src/lib/pools.js), and this
+      // roster is the only screen that shows every location at once. Without
+      // them the operator cannot see that three rows here are one purse, which
+      // is exactly what they need to know before switching one of them off.
+      // Null and absent for every vendor until an operator creates a pool.
+      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at, pool_id, point_pools(label)')
       .order('created_at', { ascending: false });
     if (error) throw error;
 
@@ -769,11 +780,67 @@ router.patch('/vendors/:id', async (req, res, next) => {
       updates.longitude = coords?.lng ?? null;
     }
 
+    // ---- the two edits a pool constrains (migration-046) ----
+    // Only read the row when one of them is actually in play, so the ordinary
+    // rename/logo/tag save costs nothing extra.
+    const touchesPool = 'points_per_dollar' in updates || updates.active === false;
+    let poolId = null;
+    if (touchesPool) {
+      const { data: v, error: vErr } = await supabaseAdmin
+        .from('vendors').select('pool_id').eq('id', req.params.id).maybeSingle();
+      if (vErr) throw vErr;
+      if (!v) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+      poolId = v.pool_id;
+    }
+
+    // SWITCHING OFF the last active member of a pool that still holds money
+    // would make that money invisible and unreachable: the student catalogue
+    // filters on active, so no card would show it, and requireVendor answers
+    // VENDOR_DISABLED at every till that could have spent it. Deactivating any
+    // OTHER member is fine — its customers keep spending at the siblings.
+    if (poolId && updates.active === false) {
+      const [{ count: others, error: cErr }, { data: held, error: hErr }] = await Promise.all([
+        supabaseAdmin.from('vendors').select('id', { count: 'exact', head: true })
+          .eq('pool_id', poolId).eq('active', true).neq('id', req.params.id),
+        supabaseAdmin.from('pool_balances').select('user_id')
+          .eq('pool_id', poolId).gt('balance', 0).limit(1),
+      ]);
+      if (cErr) throw cErr;
+      if (hErr) throw hErr;
+      if ((others ?? 0) === 0 && (held ?? []).length) {
+        return res.status(409).json({
+          error: 'POOL_LAST_ACTIVE_MEMBER',
+          message: 'This is the last open location sharing these points, and customers still hold some. Take it out of the pool first, or open another location in it.',
+        });
+      }
+    }
+
+    // RATE PARITY, kept by fanning out rather than refusing. Locations sharing a
+    // purse must charge the same points per dollar (earning at 20 and spending
+    // against a menu priced for 5 means one shop systematically funds the
+    // other), and pool_join enforces that at the door. But a chain has to be
+    // able to reprice: refusing here would mean leaving the pool to change a
+    // rate, and leaving moves customers' money. So the new rate lands on every
+    // member at once, in one statement, and parity is never briefly false.
+    if (poolId && 'points_per_dollar' in updates) {
+      const { error: fanErr } = await supabaseAdmin
+        .from('vendors')
+        .update({ points_per_dollar: updates.points_per_dollar })
+        .eq('pool_id', poolId)
+        .neq('id', req.params.id);
+      if (fanErr) throw fanErr;
+      invalidateVendorCaches();   // every sibling's rate just changed
+    }
+
     const { data, error } = await supabaseAdmin
       .from('vendors')
       .update(updates)
       .eq('id', req.params.id)
-      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at')
+      // Same column list as GET /vendors above, pool_id and label included: the
+      // dashboard swaps this row straight into the roster it already has, so a
+      // shape narrower than the list's would blank the pool marker on the one
+      // row the operator just edited.
+      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at, pool_id, point_pools(label)')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
@@ -977,6 +1044,24 @@ router.delete('/vendors/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
     }
 
+    // A location that shares points cannot be deleted while it is in the pool.
+    // vendors -> point_balances is ON DELETE CASCADE, and a pooled location's
+    // customers hold their money in pool_balances, which has NO cascade path
+    // from vendors (migration-044) — so a delete here would strand their share
+    // in a purse this shop no longer belongs to, with the pool_moves row that
+    // recorded its contribution nulled out and the settlement history gone.
+    // Taking it out of the pool first runs the contribution split, which hands
+    // its customers their points back where they can actually spend them.
+    const { data: pooled, error: poolErr } = await supabaseAdmin
+      .from('vendors').select('pool_id').eq('id', req.params.id).maybeSingle();
+    if (poolErr) throw poolErr;
+    if (pooled?.pool_id) {
+      return res.status(409).json({
+        error: 'VENDOR_IN_POOL',
+        message: 'This location shares points with others. Take it out of the pool first, which gives its customers their points back.',
+      });
+    }
+
     // Read the linked login accounts BEFORE the delete — the vendors delete
     // cascades vendor_staff away, so they're unreadable afterward.
     const { data: staff, error: staffErr } = await supabaseAdmin
@@ -1019,6 +1104,166 @@ router.delete('/vendors/:id', async (req, res, next) => {
     }
 
     res.json({ ok: true, id: data.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- points pools (migration-044/046) ----------
+   Operator-only, and deliberately so. Putting two locations in a pool merges
+   their customers' balances, which is irreversible in the sense that matters:
+   the split that undoes it hands each location back only what its own trading
+   funded, which is correct but is not the state anyone was in before. The
+   vendor side has no way to prove a location is theirs, and a staff PIN is one
+   shop's four digits authorising a change to all of them. So there is no
+   vendor-facing route and no terminal control: an owner asks, and this is where
+   it happens. See supabase/migrations/20260820140000_migration-046.sql. */
+
+const POOL_LABEL_MAX = 80;   // same cap as point_pools_label_len (migration-044)
+
+/**
+ * GET /api/admin/pools
+ * Every pool with its members, for the operator's panel. Two queries whatever
+ * the number of pools; the roster is small and this page is one operator.
+ */
+router.get('/pools', async (req, res, next) => {
+  try {
+    const [{ data: pools, error: pErr }, { data: members, error: mErr }] = await Promise.all([
+      supabaseAdmin.from('point_pools').select('id, label, created_at').order('created_at'),
+      supabaseAdmin.from('vendors').select('id, name, location_label, active, points_per_dollar, pool_id, pool_joined_at')
+        .not('pool_id', 'is', null),
+    ]);
+    if (pErr) throw pErr;
+    if (mErr) throw mErr;
+
+    // What the purse is holding, so the operator can see at a glance whether a
+    // pool can be retired and how much is riding on it.
+    const ids = (pools ?? []).map((p) => p.id);
+    let held = new Map();
+    if (ids.length) {
+      const { data: balances, error: bErr } = await supabaseAdmin
+        .from('pool_balances').select('pool_id, balance').in('pool_id', ids).gt('balance', 0);
+      if (bErr) throw bErr;
+      for (const b of balances ?? []) {
+        const cur = held.get(b.pool_id) ?? { points: 0, customers: 0 };
+        cur.points += b.balance ?? 0;
+        cur.customers += 1;
+        held.set(b.pool_id, cur);
+      }
+    }
+
+    res.json((pools ?? []).map((p) => ({
+      ...p,
+      members: (members ?? []).filter((m) => m.pool_id === p.id),
+      held: held.get(p.id) ?? { points: 0, customers: 0 },
+    })));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/admin/pools  { label } — create an empty pool. Holds nothing until
+ *  a location joins, so this is the one harmless step. */
+router.post('/pools', async (req, res, next) => {
+  try {
+    const label = String(req.body?.label ?? '').trim();
+    if (!label || label.length > POOL_LABEL_MAX) {
+      return res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: `Give the pool a name (max ${POOL_LABEL_MAX} characters). Customers see it: "Shared across 3 <name> spots."`,
+      });
+    }
+    const { data, error } = await supabaseAdmin
+      .from('point_pools').insert({ label }).select('id, label, created_at').single();
+    if (error) throw error;
+    res.status(201).json({ ok: true, pool: { ...data, members: [], held: { points: 0, customers: 0 } } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/pools/:id/members  { vendorId }
+ * The moment sharing turns on for a location: pool_join drains its customers'
+ * balances into the purse, in one transaction, with an audit row each.
+ * Preconditions (a staff PIN everywhere, one earning rate) are enforced inside
+ * the RPC, where they cannot be raced.
+ */
+router.post('/pools/:id/members', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'POOL_NOT_FOUND', message: 'That points pool no longer exists.' });
+    }
+    const vendorId = req.body?.vendorId;
+    if (!isUuid(vendorId)) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Pick a location to add.' });
+    }
+
+    const { data, error } = await supabaseAdmin.rpc('pool_join', {
+      p_pool_id: req.params.id,
+      p_vendor_id: vendorId,
+    });
+    if (error) throw error;
+
+    // The catalogue carries pool_id and the pool's label, and every card in the
+    // student app is about to show a different number. Coarse invalidation on
+    // purpose: this changed several vendors at once.
+    invalidateVendorCaches();
+
+    const row = data?.[0] ?? { customers: 0, points_moved: 0 };
+    res.json({ ok: true, customers: row.customers, pointsMoved: row.points_moved });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/admin/pools/:id/members/:vendorId
+ * Stop sharing at one location. pool_leave runs the contribution split: it
+ * takes back what its own trading funded and leaves the rest, so points are
+ * conserved and nobody is confiscated. The last member out takes the remainder,
+ * or it would be stranded where no one can spend it.
+ */
+router.delete('/pools/:id/members/:vendorId', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id) || !isUuid(req.params.vendorId)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Not found.' });
+    }
+    const { data, error } = await supabaseAdmin.rpc('pool_leave', { p_vendor_id: req.params.vendorId });
+    if (error) throw error;
+    invalidateVendorCaches();
+
+    const row = data?.[0] ?? { customers: 0, points_moved: 0 };
+    res.json({ ok: true, customers: row.customers, pointsMoved: row.points_moved });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE /api/admin/pools/:id — retire an empty pool. Refuses while it has
+ *  members or holds points; taking the members out is what empties it. */
+router.delete('/pools/:id', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'POOL_NOT_FOUND', message: 'That points pool no longer exists.' });
+    }
+    const { error } = await supabaseAdmin.rpc('pool_delete', { p_pool_id: req.params.id });
+    if (error) throw error;
+    res.json({ ok: true, id: req.params.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET /api/admin/pools/:id/settlement — who funded whom inside one pool. */
+router.get('/pools/:id/settlement', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'POOL_NOT_FOUND', message: 'That points pool no longer exists.' });
+    }
+    const { data, error } = await supabaseAdmin.rpc('pool_settlement', { p_pool_id: req.params.id });
+    if (error) throw error;
+    res.json(data ?? []);
   } catch (err) {
     next(err);
   }
@@ -1773,20 +2018,73 @@ router.get('/students', async (req, res, next) => {
       return q ? sel.or(`name.ilike.*${q}*,email.ilike.*${q}*`) : sel;
     }, page);
     const ids = rows.map((r) => r.user_id);
-    // Two reads for the whole page, not two per student.
-    const [bal, comm] = ids.length ? await Promise.all([
-      supabaseAdmin.from('point_balances').select('user_id, balance').in('user_id', ids),
+    // Three reads for the whole page, not three per student. pool_balances is
+    // the third because a pooled location's money is not in point_balances at
+    // all (src/lib/pools.js): without it a chain's customer would be listed here
+    // with zero points and zero spots, and the operator searching for the person
+    // who just called would decide the app had lost their balance.
+    const [bal, comm, pooled] = ids.length ? await Promise.all([
+      // vendor_id rides along so a pooled location's row can be skipped: without
+      // it this sum structurally cannot tell a drained husk from a real balance.
+      supabaseAdmin.from('point_balances').select('user_id, vendor_id, balance').in('user_id', ids),
       supabaseAdmin.from('community_balances').select('user_id, balance').in('user_id', ids),
-    ]) : [{ data: [] }, { data: [] }];
+      supabaseAdmin.from('pool_balances').select('user_id, pool_id, balance').in('user_id', ids),
+    ]) : [{ data: [] }, { data: [] }, { data: [] }];
     if (bal.error) throw bal.error;
     if (comm.error) throw comm.error;
+    if (pooled.error) throw pooled.error;
+
+    // "spots" means places they can spend today, and ONE shared purse is
+    // spendable at every active location in its pool, so a pool counts as its
+    // member count rather than as one. Active members only, matching poolFacts:
+    // a location the operator switched off is not somewhere they can go.
+    //
+    // One query for the whole page, keyed on the handful of pools this page's
+    // students actually hold money in. With no pools anywhere there are no rows
+    // to key on and the query is never made at all.
+    const purseRows = (pooled.data ?? []).filter((p) => (p.balance ?? 0) > 0);
+    const poolSizes = new Map();
+    if (purseRows.length) {
+      const { data: members, error: memErr } = await supabaseAdmin
+        .from('vendors')
+        .select('id, pool_id')
+        .in('pool_id', [...new Set(purseRows.map((p) => p.pool_id))])
+        .eq('active', true);
+      if (memErr) throw memErr;
+      for (const m of members ?? []) poolSizes.set(m.pool_id, (poolSizes.get(m.pool_id) ?? 0) + 1);
+    }
+
+    // Which vendors spend from a pool, so their point_balances rows can be left
+    // out of the sum below. pool_join zeroes those rows as it drains them, so in
+    // a healthy database they add nothing anyway — but "adds nothing" and "is
+    // not counted" are different claims, and only the second one survives a bug
+    // in the drain. The drill-in (GET /students/:id) already takes the second
+    // position; this makes the two screens agree by construction rather than by
+    // both being right about pool_join.
+    //
+    // One tiny query, and with no pools anywhere it returns no rows and the Set
+    // is empty, so nothing is filtered and this is exactly the old sum.
+    const { data: pooledVendors, error: pvErr } = await supabaseAdmin
+      .from('vendors').select('id').not('pool_id', 'is', null);
+    if (pvErr) throw pvErr;
+    const pooledVendorIds = new Set((pooledVendors ?? []).map((v) => v.id));
 
     const agg = new Map();   // user_id -> { points, spots }
     for (const b of bal.data ?? []) {
+      if (pooledVendorIds.has(b.vendor_id)) continue;   // counted via its pool below
       const a = agg.get(b.user_id) ?? { points: 0, spots: 0 };
       a.points += b.balance ?? 0;
       if ((b.balance ?? 0) > 0) a.spots += 1;   // "spots" = places they can spend today
       agg.set(b.user_id, a);
+    }
+    // Added, not double counted: joining a pool moves a location's own purse
+    // INTO the pool and records the transfer in pool_moves (migration-044), and
+    // the loop above skipped whatever that left behind.
+    for (const p of purseRows) {
+      const a = agg.get(p.user_id) ?? { points: 0, spots: 0 };
+      a.points += p.balance ?? 0;
+      a.spots += poolSizes.get(p.pool_id) ?? 0;
+      agg.set(p.user_id, a);
     }
     const community = new Map((comm.data ?? []).map((c) => [c.user_id, c.balance ?? 0]));
 
@@ -1827,10 +2125,17 @@ router.get('/students/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Student not found.' });
     }
 
-    const [profile, balances, community, txRes, cards, visits, referredBy, referred, notify, subs, terms] =
+    const [profile, balances, community, txRes, cards, visits, referredBy, referred, notify, subs, terms, purses] =
       await Promise.all([
         supabaseAdmin.from('profiles').select('user_id, name, email, created_at').eq('user_id', id).maybeSingle(),
-        supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at, vendors(name, active)').eq('user_id', id),
+        // pool_id (and the pool's name) come through the same vendors embed the
+        // spot rows are already named from. It is not decoration: pool_id is
+        // what says whether this row is still the vendor's purse, and a vendors
+        // row fetched without it reads as unpooled — which would report a
+        // chain's customer from the wrong table without any error to notice.
+        supabaseAdmin.from('point_balances')
+          .select('vendor_id, balance, updated_at, vendors(name, active, pool_id, point_pools(label))')
+          .eq('user_id', id),
         supabaseAdmin.from('community_balances').select('balance, lifetime_earned').eq('user_id', id).maybeSingle(),
         supabaseAdmin.from('transactions')
           .select('id, type, points, dollar_amount, community_points, created_at, vendors(name), rewards(title)')
@@ -1848,8 +2153,14 @@ router.get('/students/:id', async (req, res, next) => {
         supabaseAdmin.from('push_subscriptions').select('id', { count: 'exact', head: true }).eq('user_id', id).eq('role', 'student'),
         supabaseAdmin.from('terms_acceptances').select('terms_version, accepted_at')
           .eq('user_id', id).order('accepted_at', { ascending: false }).limit(1),
+        // The shared purses this student holds. This screen is what an operator
+        // opens when someone says "the app says 420 and the till says no", and
+        // for a pooled location the 420 is in pool_balances keyed on the POOL,
+        // with nothing under the vendor at all: read point_balances alone and
+        // every spot shows zero exactly when the screen is needed.
+        supabaseAdmin.from('pool_balances').select('pool_id, balance, updated_at').eq('user_id', id),
       ]);
-    for (const r of [profile, balances, community, txRes, cards, visits, referredBy, referred, notify, subs, terms]) {
+    for (const r of [profile, balances, community, txRes, cards, visits, referredBy, referred, notify, subs, terms, purses]) {
       if (r.error) throw r.error;
     }
     if (!profile.data) {
@@ -1884,6 +2195,33 @@ router.get('/students/:id', async (req, res, next) => {
       }
     }
 
+    // The purses this student holds, keyed the way balanceFrom wants them, so
+    // the "which table" rule is read out of src/lib/pools.js here instead of
+    // being spelled out a second time and drifting from the SQL the till
+    // actually spends against. poolTouched rides along because a shared row's
+    // updated_at lives on the pool, not on any one location.
+    const purseRows = purses.data ?? [];
+    const byVendor = new Map((balances.data ?? []).map((b) => [b.vendor_id, b.balance ?? 0]));
+    const byPool = new Map(purseRows.map((p) => [p.pool_id, p.balance ?? 0]));
+    const poolTouched = new Map(purseRows.map((p) => [p.pool_id, p.updated_at]));
+
+    // Every location that spends from one of those shared purses, so the money
+    // is shown against the shops it can be spent at rather than as a floating
+    // number with no counter attached. Inactive members are included on purpose:
+    // they still share the purse, and a spot the operator switched off is a
+    // thing they may be drilling in to explain. One query for all of them, and
+    // none at all for a student holding no shared money, which is every student
+    // until the first pool exists.
+    let poolMembers = [];
+    if (purseRows.length) {
+      const { data: members, error: memErr } = await supabaseAdmin
+        .from('vendors')
+        .select('id, name, active, pool_id, point_pools(label)')
+        .in('pool_id', purseRows.map((p) => p.pool_id));
+      if (memErr) throw memErr;
+      poolMembers = members ?? [];
+    }
+
     // One row per spot the student has anything at. Points and visits are
     // separate tables and either can exist without the other (visits with no
     // points is normal after a redemption), so they're merged rather than
@@ -1897,19 +2235,56 @@ router.get('/students/:id', async (req, res, next) => {
         points: 0,
         visits: 0,
         updatedAt: null,
+        // Additive purse identity: false/null on every row until a location
+        // joins a pool. Stamped here rather than at each call site because a
+        // spot is reached from three tables below, and two of them disagreeing
+        // about whether this row is shared is worse than neither saying so.
+        shared: false,
+        poolId: null,
+        poolLabel: null,
       };
+      if (vendors?.pool_id) {
+        s.shared = true;
+        s.poolId = vendors.pool_id;
+        s.poolLabel = vendors.point_pools?.label ?? s.poolLabel;
+      }
       spots.set(vendorId, s);
       return s;
     };
     for (const b of balances.data ?? []) {
       const s = spot(b.vendor_id, b.vendors);
-      s.points = b.balance ?? 0;
+      // Through the purse, never straight off the row: once a location is
+      // pooled its own point_balances row is what pool_join left behind, and
+      // printing that is how this screen ends up agreeing with neither the
+      // customer's app nor the till.
+      s.points = balanceFrom({ id: b.vendor_id, pool_id: b.vendors?.pool_id ?? null }, { byVendor, byPool });
       s.updatedAt = b.updated_at;
     }
     for (const c of cards.data ?? []) {
+      // No pool_id needed on this embed: punch cards are per-location and stay
+      // that way (only the money is shared), and a pooled spot reached only
+      // through a punch card gets its purse and its label from the member loop
+      // below, which is authoritative for both.
       spot(c.vendor_id, c.vendors).visits = c.punches ?? 0;
     }
+    for (const m of poolMembers) {
+      const s = spot(m.id, m);
+      s.points = byPool.get(m.pool_id) ?? 0;
+      // The shared purse's own timestamp beats the husk row's: a sale at a
+      // sibling is what moved this number, and the stale date under it is the
+      // first thing an operator would misread as "nothing has happened here".
+      s.updatedAt = poolTouched.get(m.pool_id) ?? s.updatedAt;
+    }
     const bal = [...spots.values()].sort((a, b) => b.points - a.points || b.visits - a.visits);
+
+    // Sum the PURSES, not the rows. A shared balance is printed on every member
+    // location's row above, so adding the rows up would report a chain
+    // customer's money once per branch and put a number on this screen that
+    // exists nowhere in the database. With no pools the second term is zero and
+    // the first is every row, i.e. exactly the row sum this replaces.
+    const purseTotal =
+      (balances.data ?? []).reduce((s, b) => s + (b.vendors?.pool_id ? 0 : (b.balance ?? 0)), 0)
+      + purseRows.reduce((s, p) => s + (p.balance ?? 0), 0);
 
     res.json({
       student: {
@@ -1921,7 +2296,7 @@ router.get('/students/:id', async (req, res, next) => {
       totals: {
         ...totals,
         spend: Number(totals.spend.toFixed(2)),
-        points: bal.reduce((s, b) => s + b.points, 0),
+        points: purseTotal,
         community: community.data?.balance ?? 0,
         communityLifetime: community.data?.lifetime_earned ?? 0,
         visits: visits.count ?? 0,

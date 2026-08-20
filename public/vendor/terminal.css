@@ -143,6 +143,35 @@ button { font-family: inherit; border: none; cursor: pointer; }
 
 .settings-optional { font-weight: 700; color: var(--muted); text-transform: none; }
 
+/* ---------- STATS: the shared-points settlement table ----------
+   One row per location sharing this purse. Read across the counter, so the
+   verdict word carries the meaning and the colour only reinforces it: a shop
+   that is OWED is in the success green, one that owes is plain ink. Nobody
+   should have to work out the sign of a negative number mid-shift. */
+
+.pool-settle { display: flex; flex-direction: column; gap: 0.4rem; }
+
+.pool-settle-row {
+  display: flex; align-items: baseline; gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 2px solid var(--sky-line);
+}
+/* The till you are standing at, so an owner reading three near-identical rows
+   knows which one is this shop without checking the header. */
+.pool-settle-row.is-here { background: var(--sky); border-color: var(--ink); }
+
+.pool-settle-name {
+  font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 0.85rem; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pool-settle-detail { font-size: 0.72rem; font-weight: 700; color: var(--muted); flex: none; }
+.pool-settle-net {
+  font-weight: 900; font-size: 0.85rem; flex: none;
+  padding: 0.1rem 0.4rem; border: 2px solid var(--ink);
+}
+.pool-settle-net.is-owed { color: var(--success); border-color: var(--success); }
+
 /* ---------- tabs: one line that scrolls ----------
 
    These tabs used to wrap. That reads as harmless until you count the devices
@@ -278,6 +307,28 @@ button { font-family: inherit; border: none; cursor: pointer; }
   font-weight: 900; line-height: 1.02; text-align: center; letter-spacing: 0.02em;
 }
 
+/* WHICH TILL THIS IS, shown only where the points are pooled (migration-044).
+   A pooled balance is identical at every location in the chain, so the number
+   on the next screen no longer tells a cashier where they are standing, and
+   "which store am I ringing up for" must be answerable without opening the
+   header's switcher. Reads as a boxed label, not a heading: it sits directly
+   under a 3.6rem title and must not compete with it.
+
+   `display: block` is explicit so the [hidden] attribute keeps working if this
+   ever becomes a flex row - the same trap .balance-chip documents above. */
+.scan-store {
+  display: block; text-align: center;
+  font-size: 0.95rem; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted);
+}
+.scan-store[hidden] { display: none; }
+.scan-store-name {
+  display: inline-block;
+  padding: 0.25rem 0.6rem; margin-right: 0.4rem;
+  border: 2.5px solid var(--ink); border-radius: 0.5rem;
+  color: var(--ink);
+}
+
 /* Customer / redemption code entry — the typed fallback behind the QR camera
    scanner (revealed by "Enter code manually" or when the camera fails). */
 .code-entry {
@@ -409,6 +460,27 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .balance-chip[hidden] { display: none; }
 .balance-chip span:first-child { font-size: 2.2rem; font-weight: 900; }
 .chip-label { font-weight: 700; color: var(--navy); }
+
+/* "SHARED, 3 SPOTS" — the tag that rides beside a POOLED balance (migration-044)
+   and on the scan screen's store line. Deliberately a third child INSIDE the
+   balance chip rather than a note beside it: the fact that this number is
+   chain-wide belongs to the number, and a caption under the chip would be read
+   as a caption for the whole customer row.
+
+   No flex-wrap on .balance-chip to make room for it, tempting as that is. The
+   build derives a no-flex-gap fallback per gapped flex container, and turning
+   this one into a wrapping row swaps that fallback from a margin-left on the
+   second child onto a margin-right + margin-bottom on EVERY child - which would
+   move the chip's contents on the old counter iPads today, with no pool in
+   existence. It stays a single line; white-space keeps the tag from breaking
+   across two. */
+.shared-tag {
+  flex: none; white-space: nowrap;
+  font-size: 0.68rem; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 0.2rem 0.45rem; border: 2px solid var(--navy); border-radius: 0.4rem;
+  color: var(--navy);
+}
+.shared-tag[hidden] { display: none; }
 
 /* customer's earn multiplier from their 30-day tier (next to the balance) */
 .head-chips { display: flex; align-items: stretch; gap: 0.6rem; }
@@ -603,6 +675,13 @@ button { font-family: inherit; border: none; cursor: pointer; }
 }
 .confirm-item { font-size: clamp(2.2rem, 6vw, 3.6rem); font-weight: 900; line-height: 1.05; }
 .confirm-cost { font-size: 1.4rem; font-weight: 700; color: var(--redeem); }
+/* The shared-points staleness line (see index.html). Quieter than the cost it
+   sits under: it is context for the number in the header, not a second price.
+   The [hidden] companion is not optional here even though no author `display`
+   rule targets it - a later `.confirm-box > p` rule would silently defeat the
+   attribute, and this line must never appear at an unpooled spot. */
+.confirm-note { font-size: 1rem; font-weight: 700; color: var(--muted); max-width: 34rem; }
+.confirm-note[hidden] { display: none; }
 
 .confirm-actions { width: min(60rem, 100%); justify-content: space-between; }
 
@@ -874,6 +953,17 @@ button { font-family: inherit; border: none; cursor: pointer; }
    rule of its own here, every card inside a region would sit flush on
    Safari < 14.1 (i.e. on exactly the older counter iPads). */
 .settings-region { display: flex; flex-direction: column; gap: 1rem; }
+
+/* The pooled-points card (migration-044): a direct child of .settings-inner,
+   above all three regions, because it is read-only and belongs to none of their
+   save models. Bordered in navy so it reads as a statement about this spot
+   rather than a card with a control hiding somewhere in it.
+
+   The [hidden] companion is load-bearing, not decoration: .stats-card above is
+   `display: flex`, which beats the hidden attribute outright. Without this line
+   the card would show, empty, on every unpooled spot - i.e. on all of them. */
+.pool-card { border-color: var(--navy); }
+.pool-card[hidden] { display: none; }
 /* A divider heading, deliberately lighter than the cards it groups: the cards
    keep .stats-card h3 (1.15rem/900), so the region reads as a label above them
    rather than competing with them. Scoped class, not a bare h3, because
@@ -1240,6 +1330,13 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
 
   .scan-title { font-size: 1.3rem; letter-spacing: 0.05em; line-height: 1.15; }
   .scan-title br { display: none; }   /* markup keeps a space before it */
+
+  /* The store line has to survive the phone layout, where the viewfinder takes
+     whatever the copy leaves: it stays one line, so the till's name never
+     pushes the camera down a row. */
+  .scan-store { font-size: 0.8rem; letter-spacing: 0.05em; }
+  .scan-store-name { padding: 0.15rem 0.4rem; border-width: 2px; }
+  .shared-tag { font-size: 0.6rem; padding: 0.15rem 0.35rem; border-width: 1.5px; }
 
   /* The viewfinder takes whatever the copy above and below leaves, and goes
      portrait: a phone's rear camera is portrait, and a 4:3 landscape box

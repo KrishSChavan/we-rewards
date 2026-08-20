@@ -13,6 +13,7 @@
 import { createClient } from '@supabase/supabase-js';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
+import { TERMS_VERSION } from '../../src/lib/terms.js';
 
 export const dbConfigured = Boolean(process.env.TEST_SUPABASE_URL);
 
@@ -48,7 +49,23 @@ export async function createVendor({ pointsPerDollar = 10, pin = null } = {}) {
   return data;
 }
 
-/** Create a throwaway auth user (+ its auto-created profile) and return it. */
+/**
+ * Create a throwaway auth user AND its profile row, and return it.
+ *
+ * The profile is written explicitly. It used to be created by a trigger on
+ * auth.users, and this helper's comment said so for a long time after
+ * migration-022 deleted that trigger (deliberately: a profile row is the record
+ * of consent, and a trigger would have manufactured consent for anyone who
+ * merely authenticated). Without it, every RPC that writes a balance fails on
+ * point_balances' foreign key to profiles, `data` comes back null, and the
+ * whole money and community suites die at their first assertion with
+ * "Cannot read properties of null" — 18 tests that looked like a schema drift
+ * and were actually this one missing insert.
+ *
+ * Consent is stamped as current, because these tests are exercising the money
+ * paths, not the consent gate; a test that wants a stale-consent user should
+ * write that row itself.
+ */
 export async function createUser({ password } = {}) {
   const email = `test-${rand()}@example.test`;
   const { data, error } = await admin.auth.admin.createUser({
@@ -57,6 +74,16 @@ export async function createUser({ password } = {}) {
     email_confirm: true,
   });
   if (error) throw error;
+
+  const { error: pErr } = await admin.from('profiles').insert({
+    user_id: data.user.id,
+    email,
+    name: 'Test Student',
+    terms_accepted_at: new Date().toISOString(),
+    terms_version: TERMS_VERSION,
+  });
+  if (pErr) throw pErr;
+
   return { id: data.user.id, email, password };
 }
 

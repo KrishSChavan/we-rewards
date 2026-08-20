@@ -454,6 +454,76 @@ h1, h3 { margin: 0; }
 .app-accept:disabled, .app-reject:disabled { opacity: 0.6; cursor: default; }
 .app-error { color: var(--bad); font-size: 0.78rem; font-weight: 700; flex: 1; text-align: left; }
 
+/* ---------- points pools (migration-044/046) ---------- */
+/* A pool is a card inside a card and its members are rows inside that, which is
+   one level of nesting deeper than anything else on this page. A second border
+   colour would just make the console noisier, so the member list is set off by
+   a left rule instead — the same trick .app-location uses for the extra sites
+   on one application. */
+.pool-list { display: grid; gap: 0.7rem; margin-top: 0.85rem; }
+.pool-row {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+}
+.pool-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.pool-info { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.pool-name { font-weight: 800; font-size: 0.95rem; overflow-wrap: anywhere; }
+/* Full ink, not muted: this line is what the purse is holding, which is the
+   number that says how much is riding on every button beside it. */
+.pool-meta { color: var(--ink); font-size: 0.78rem; overflow-wrap: anywhere; }
+.pool-actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.pool-error { color: var(--bad); font-size: 0.78rem; font-weight: 700; }
+
+.pool-members { display: grid; gap: 0.35rem; padding-left: 0.6rem; border-left: 2px solid var(--line, currentColor); }
+.pool-members .muted { margin: 0; }
+.pool-member { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.pool-member-info { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; min-width: 0; }
+/* Dim a switched-off member's text and never its Remove button, so the control
+   that fixes the situation can't be the faintest thing in the row. Same rule,
+   same reason, as .vendor-row.is-off. */
+.pool-member.is-off .pool-member-info { opacity: 0.55; }
+
+/* The same two small buttons the vendor roster uses (.vendor-edit neutral,
+   .vendor-delete destructive), under names that say which list they belong to. */
+.pool-btn, .pool-btn-danger {
+  flex-shrink: 0; font: inherit; font-size: 0.72rem; font-weight: 700; cursor: pointer;
+  padding: 0.35rem 0.6rem; border-radius: 8px;
+  background: transparent; border: 1px solid var(--line);
+}
+.pool-btn { color: var(--ink); }
+.pool-btn:not(:disabled):hover { background: var(--panel); }
+.pool-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pool-btn-danger { color: var(--bad); }
+.pool-btn-danger:not(:disabled):hover { background: var(--bad); color: #fff; border-color: var(--bad); }
+.pool-btn-danger:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
+.pool-btn:disabled, .pool-btn-danger:disabled { opacity: 0.6; cursor: default; }
+
+.pool-picker { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.pool-select { flex: 1 1 16rem; min-width: 0; }
+.pool-picker-hint { flex-basis: 100%; color: var(--muted); font-size: 0.72rem; }
+
+.pool-settle { display: grid; gap: 0.4rem; }
+.pool-settle .muted { margin: 0; }
+/* The one line an owner is actually here for, so it is not muted-grey like the
+   column legend above it. */
+.pool-settle-note { color: var(--ink); font-size: 0.8rem; }
+/* Five columns of numbers that have to stay in their columns: scroll sideways
+   rather than squeeze the location names to two characters on a phone. */
+.pool-table-wrap { overflow-x: auto; }
+.pool-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.pool-table th, .pool-table td {
+  padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line);
+  text-align: left; white-space: nowrap;
+}
+.pool-table th { color: var(--muted); font-size: 0.68rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.pool-table .is-num { text-align: right; font-variant-numeric: tabular-nums; }
+.pool-table tbody tr:last-child td { border-bottom: none; }
+/* Amber, not red: a negative net is a fact about who owes whom, not a fault. */
+.pool-table .is-neg { color: var(--warn); font-weight: 800; }
+.pool-table .is-pos { font-weight: 700; }
+#pools-ok { margin-top: 0.85rem; }
+
 /* ---------- incentives (migration-039) ---------- */
 /* The program editor is a two-column grid of short numeric fields; .inc-field-wide
    spans both for the free-text ones. It collapses to one column on a phone in
@@ -834,6 +904,15 @@ h1, h3 { margin: 0; }
   .err-detail { padding: 0 0.5rem 0.5rem; }
   /* One column of facts — two would leave every value a few characters wide. */
   .err-facts { grid-template-columns: 1fr; }
+
+  /* Three actions beside a two-line heading is a squeeze at 640px, so the pool's
+     buttons take their own row and share it evenly. The member rows stay
+     side-by-side: the name column can shrink, Remove cannot. */
+  .pool-head { flex-direction: column; align-items: stretch; }
+  .pool-actions > button { flex: 1 1 6rem; min-height: 2.5rem; }
+  .pool-member { align-items: flex-start; }
+  .pool-btn, .pool-btn-danger { padding: 0.45rem 0.5rem; }
+  .pool-picker > button { flex: 1 1 6rem; min-height: 2.5rem; }
 }
 
 @media (max-width: 480px) {

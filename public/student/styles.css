@@ -1667,6 +1667,23 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    (that row is flex-wrap: nowrap and DOES feed the card's min-width, so every
    card in the carousel would widen to fit "1,000 pts per $1"). */
 .vc-rate { font-size: 0.8rem; font-weight: 600; color: var(--muted); line-height: 1.25; overflow-wrap: anywhere; }
+/* "Shared across 3 Joe's Pizza spots." (migration-044) — why the same number is
+   sitting on three different cards. A chip rather than a third muted line: at
+   .vc-rate's weight it would read as a second rate, and this is a fact about the
+   balance immediately above it. Only ever rendered for a vendor with a poolId,
+   so no card in the carousel today gains anything.
+   Wrapping "anywhere" for exactly the reason .vc-name and .vc-rate carry
+   it: it drops the element's min-content size to one character, so a long chain
+   name can never be what .vendor-card's min-width resolves to and quietly widen
+   every card in the row. */
+.vc-pool {
+  align-self: flex-start; max-width: 100%;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--plate); color: var(--muted);
+  font-size: 0.72rem; font-weight: 800; line-height: 1.3;
+  overflow-wrap: anywhere;
+}
 /* tappable address line (opens the maps app, like the map itself) */
 .vc-address {
   margin-top: 0.6rem;                /* extra breathing room below the points */
@@ -2688,6 +2705,24 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   margin-top: 0.1rem;
 }
 
+/* The same shared-purse chip as the carousel card's, on the directory row.
+   It is the row's FIFTH grid child and spans every column so it sits UNDER the
+   whole row: put inside .spot-name instead and it would compete with the one
+   track that is allowed to ellipsise, and long names would start truncating to
+   make room for it. buildSpotRow only emits it for a pooled vendor, so today
+   every row still has four children and one grid row.
+   The negative top margin trims the grid's 0.8rem gap, which is sized for the
+   space between the mark, the name and the points, not for a second row. */
+.spot-pool {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: -0.2rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--plate); color: var(--muted);
+  font-size: 0.72rem; font-weight: 800; line-height: 1.3;
+}
+
 .spot-points {
   font-weight: 900; font-size: 0.95rem; color: var(--brand);
   white-space: nowrap;
@@ -3030,6 +3065,20 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    already unlocked, muted while the student is still saving toward one. */
 .punch-next { font-weight: 700; font-size: 0.95rem; color: var(--muted); }
 .punch-next.is-ready { color: var(--success); }
+/* "Visits are counted at this spot only" — on a pooled spot the points number
+   above this block is the chain's, and a visit counter beside it with no caveat
+   reads as the same kind of thing. Muted and small so it lands as a footnote to
+   the counter rather than as more progress. Outside #punch-card-btn on purpose:
+   it is a statement about the counter, not part of what tapping it does. */
+.punch-pool-note {
+  display: block;
+  margin-top: 0.45rem;
+  font-size: 0.8rem; font-weight: 700; color: var(--muted); line-height: 1.35;
+}
+/* An author `display:` beats the hidden attribute and the rule above sets one,
+   so without this companion renderPunchUi's `hidden = true` would do nothing
+   and every unpooled vendor would carry an empty line under its counter. */
+.punch-pool-note[hidden] { display: none; }
 
 /* --- the progress sheet --- */
 
@@ -3387,6 +3436,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .map-pin-address[hidden] { display: none; }
 .map-pin-rate { margin-top: 0.3rem; font-size: 0.84rem; font-weight: 700; color: var(--muted); line-height: 1.3; }
 .map-pin-rate[hidden] { display: none; }
+/* The shared-purse sentence, under the rate. Sets no display of its own, but
+   carries the companion rule anyway (exactly as .map-pin-rate does): the day
+   someone gives this a display value, the author rule would beat the hidden
+   attribute and every unpooled spot would get a blank line in its sheet. */
+.map-pin-pool { margin-top: 0.3rem; font-size: 0.8rem; font-weight: 700; color: var(--muted); line-height: 1.3; }
+.map-pin-pool[hidden] { display: none; }
 
 .map-pin-actions { display: flex; gap: 0.6rem; margin-top: 0.1rem; }
 .map-pin-btn {
@@ -3446,6 +3501,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   text-align: center;
   box-shadow: 0 1px 3px rgba(16, 29, 51, 0.4);
 }
+/* A pooled spot's badge is counting a purse its siblings spend from too, so it
+   is marked as "not only this pin". A ring and not words, because the badge is
+   about two characters wide and pinned to a map: the sentence itself lives on
+   the marker's accessible name and in the pin sheet, which is where a tap goes.
+   Only the colour and style of the existing 2px border change, so the badge
+   keeps its exact size and no pin moves. */
+.mp-badge.is-shared { border-style: dashed; border-color: var(--accent); }
 /* Nothing banked here yet: still a real, tappable spot, just quieter than the
    ones the student is actually collecting at. */
 .mp.is-zero { opacity: 0.55; }

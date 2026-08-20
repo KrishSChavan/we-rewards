@@ -116,6 +116,22 @@
       <section id="screen-scan" class="screen scan-screen" hidden>
         <h2 class="scan-title">SCAN TO AWARD <br />OR REDEEM</h2>
 
+        <!-- WHICH TILL THIS IS. Empty unless this spot shares its points
+             (migration-044): a pooled balance is the SAME number at every
+             location in the chain, so the balance on the next screen stops being
+             a clue about where the cashier is standing. Unpooled - which is
+             every spot today - shows nothing new, because the header already
+             names the store and there is nothing ambiguous to resolve.
+             paintStoreSwitcher fills it; :empty keeps it out of the layout.
+
+             AFTER the title, matching the full terminal, and that order is
+             load-bearing on the device this screen exists for: build-client.js
+             emits `.screen > * + * { margin-top }` as the no-flex-gap fallback
+             for old Safari, and a sibling combinator still matches across a
+             display:none element. First child here would push the title down by
+             a gap on exactly the iPads that need the viewfinder space. -->
+        <p id="scan-store" class="scan-store"></p>
+
         <div id="scan-area" class="qr-area">
           <div id="scan-qr-frame" class="qr-frame">
             <video id="scan-qr-video" class="qr-video" autoplay muted playsinline></video>
@@ -162,9 +178,14 @@
           </div>
           <div class="head-chips">
             <div id="customer-tier" class="tier-chip">1x</div>
+            <!-- The balance is the POOL’s when this store shares one with its
+                 siblings (migration-044), so it can be larger than anything ever
+                 earned here. The chip says so; it stays hidden for a store that
+                 keeps its own points, which today is every store. -->
             <div class="balance-chip">
               <span id="customer-balance">0</span>
               <span class="chip-label">pts</span>
+              <span id="customer-shared" class="shared-chip" hidden>shared</span>
             </div>
           </div>
         </div>
@@ -213,9 +234,13 @@
             <p class="eyebrow eyebrow-redeem">REDEEM FOR</p>
             <h2 id="redeem-name"></h2>
           </div>
+          <!-- Same shared purse marker as the award pad above: what is about
+               to be deducted comes out of the chain’s balance, not this
+               location’s. -->
           <div class="balance-chip">
             <span id="redeem-balance">0</span>
             <span class="chip-label">pts</span>
+            <span id="redeem-shared" class="shared-chip" hidden>shared</span>
           </div>
         </div>
         <div class="confirm-box">

@@ -81,6 +81,7 @@
       <button id="tab-applications" class="tab" type="button">Applications<span id="apps-badge" class="tab-badge" hidden>0</span></button>
       <button id="tab-incentives" class="tab" type="button">Incentives</button>
       <button id="tab-poster" class="tab" type="button">QR poster</button>
+      <button id="tab-pools" class="tab" type="button">Pools</button>
     </nav>
 
     <main>
@@ -449,6 +450,41 @@
         </div>
       </div>
     </div>
+
+    <!-- ===== POOLS TAB ===== -->
+    <!-- Operator-only, and there is no vendor-facing equivalent anywhere: a
+         terminal cannot prove which locations belong to one owner, and one
+         shop's four-digit staff PIN is not consent to move every sibling's
+         customer balances. The owner asks, and this screen is the answer. -->
+    <div id="view-pools" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>Points pools</h3>
+          <span id="pools-count" class="chart-max"></span>
+        </div>
+        <p class="muted">A pool makes several locations of one owner share a single customer purse: earn at any member, spend at any other. <strong>Adding</strong> a location empties every customer balance it holds into that purse. <strong>Removing</strong> one hands back only what its own trading funded and leaves the rest with the others. Points are never created or destroyed here, but they do move between businesses, so treat both directions as money.</p>
+        <p id="pools-error" class="field-error" role="alert" hidden></p>
+        <p id="pools-ok" class="inc-ok" hidden></p>
+        <div id="pool-list" class="pool-list"></div>
+      </div>
+
+      <div class="card">
+        <h3>New pool</h3>
+        <p class="muted">A new pool is empty: it holds nothing and changes nothing until a location joins it. Every location in one pool has to charge the same points per dollar, and each needs a staff PIN set before it can join.</p>
+        <form id="pool-new-form" class="inc-form" novalidate>
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="pool-new-label">Pool name</label>
+            <input id="pool-new-label" class="nv-input" type="text" maxlength="80" autocomplete="off" required placeholder="Bella’s Cafes" />
+            <span class="vendor-edit-hint">Customers see it, in lines like “Shared across 3 Bella’s Cafes spots”, so name it the way the owner’s regulars would.</span>
+          </div>
+          <p id="pool-new-error" class="field-error" role="alert" hidden></p>
+          <div class="inc-actions">
+            <button id="pool-new-submit" class="btn-primary" type="submit">Create pool</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     </main>
   </div>
 

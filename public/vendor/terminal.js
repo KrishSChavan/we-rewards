@@ -686,6 +686,114 @@ function repaintForStore() {
   enterScan();   // land on SCAN: un-gated, and where a till wants to be anyway
 }
 
+/* ---------- pooled points (one purse across several spots) ----------
+
+   Since migration-044 an operator can put some of a login's locations in a
+   POOL, and a pooled location spends from a purse shared with its siblings: a
+   customer earns 500 at Downtown and buys a 350-point coffee here. There is
+   exactly one rule and the server owns it (vendor.pool_id decides which table
+   the points live in); the terminal is only ever told the answer.
+
+   What arrives: GET /config carries pointsShared / poolLabel / poolSize, and
+   the /scan and /redeem-preview responses carry the POOLED balance with a
+   `shared` flag beside it. Everything below is display only, and there is
+   deliberately no control anywhere in this app - joining or leaving a pool
+   moves money between locations that need not all belong to whoever is standing
+   at this till, so it is an operator action in the WeRewards dashboard.
+
+   NOT shared, and none of this touches them: items, visits, redeem codes, the
+   earning rate, stats, the staff PIN. Only the money is common.
+
+   With no pool in existence pointsShared is false everywhere, every element
+   below stays hidden and empty, and this terminal draws exactly what it drew
+   before migration-044.                                                      */
+
+/** Are THIS till's points shared? About the till, not about one balance. */
+const pointsShared = () => Boolean(config?.pointsShared);
+
+// The three flood banners after a write (award, redeem, undo) all read out a
+// new balance, and under sharing that number is the CHAIN's, not this till's.
+// A cashier reading "new balance 420" at Campus while the customer earned it at
+// Downtown has no way to know the two are the same purse, and the next question
+// at the counter is why the number jumped. Two words, on the sentence they are
+// already reading. Empty for every unpooled spot, which is all of them today.
+const sharedNote = () => (pointsShared() ? ' (shared)' : '');
+
+/** The tag's words. poolSize counts the spot standing here as well, so "3
+ *  spots" is this one plus two siblings. A size the server couldn't give us
+ *  falls back to the bare word: "shared, 0 spots" would be a worse lie than
+ *  saying less. CSS upper-cases it, so it stays readable here. */
+function sharedTagText() {
+  const size = Number(config?.poolSize) || 0;
+  return size > 1 ? `Shared, ${size} spots` : 'Shared';
+}
+
+/**
+ * Paint one of the little tags that ride beside a customer balance.
+ *
+ * `shared` comes from the RESPONSE that produced the number rather than from
+ * config, so a till holding a config fetched before an operator pooled it still
+ * labels the figure it was actually handed. `?? pointsShared()` is for a
+ * response that predates the field: undefined means "the server didn't say",
+ * which is not the same as false.
+ */
+function paintSharedTag(el, shared) {
+  const on = shared ?? pointsShared();
+  el.textContent = on ? sharedTagText() : '';
+  el.hidden = !on;
+}
+
+/**
+ * Name the current store on the SCAN screen itself, not only in the header's
+ * switcher.
+ *
+ * Only where the points are shared, and that condition is the whole reason the
+ * line exists: a pooled balance is the SAME number at every location in the
+ * chain, so the figure on the next screen stops being a clue about which till
+ * this is, and "am I ringing up for Downtown or Campus?" must be answerable
+ * without opening a menu. An unpooled spot gets nothing new - the header
+ * already names it and there is nothing ambiguous to resolve.
+ */
+function paintScanStore() {
+  const on = pointsShared();
+  $('scan-store').hidden = !on;
+  if (!on) return;
+  $('scan-store-name').textContent = configTitle();
+  paintSharedTag($('scan-store-shared'), true);
+}
+
+/**
+ * The read-only pooled-points card on Settings.
+ *
+ * Read-only is the design, not an omission: see the section comment above. The
+ * sentence names how many OTHER spots share the purse (poolSize counts this one
+ * too) because that is the number a vendor is actually asking about, and it
+ * says what is still theirs, because "shared" read alone sounds like it covers
+ * the menu and the punch card as well.
+ */
+function paintSettingsPool() {
+  const card = $('settings-pool');
+  const on = pointsShared();
+  card.hidden = !on;
+  if (!on) return;
+
+  // The pool's name, when the operator gave it one, in parentheses: two chains
+  // on one dashboard are told apart by it, and a vendor who rings support will
+  // be asked which group they are in.
+  const label = config?.poolLabel ? ` (${config.poolLabel})` : '';
+  const others = Math.max((Number(config?.poolSize) || 0) - 1, 0);
+  // poolSize counts ACTIVE members only, so a pool whose siblings are all
+  // switched off answers 1 and lands here. Saying "0 other spots" would read as
+  // a bug; the points really are in a shared purse either way, and a sibling
+  // coming back online changes nothing about this spot.
+  const text = others === 0
+    ? `This spot's points sit in a shared group${label}. No other spot in it is open right now, so nothing changes here until one is.`
+    : others === 1
+      ? `Points earned here can be spent at 1 other spot in this group${label}, and points earned there can be spent here.`
+      : `Points earned here can be spent at ${others} other spots in this group${label}, and points earned there can be spent here.`;
+  $('settings-pool-text').textContent = text;
+}
+
 /* ---------- helpers ---------- */
 
 async function authFetch(path, opts = {}) {
@@ -1350,6 +1458,10 @@ function enterScan() {
   pendingRedeemKind = 'reward';
   show('screen-scan');
   $('scan-code-input').value = '';
+  // Repainted here rather than once at sign-in because every path that changes
+  // which store this terminal is (boot, a store switch, a settings save that
+  // renamed the location) lands back on SCAN through this function.
+  paintScanStore();
   // Don't auto-focus: on a tablet that pops the native keyboard, and entry now
   // goes through the on-screen digit pad. Tapping the field still works.
 }
@@ -1387,6 +1499,11 @@ async function submitEarnCode(code) {
     currentMultiplier = data.multiplier ?? 1;
     $('customer-name').textContent = data.name;
     $('customer-balance').textContent = data.balance;
+    // Where this spot shares a purse that figure is the CHAIN's, not what the
+    // customer earned here, so the tag travels with it. No note about the
+    // number going stale on this screen: awarding only ever adds, so a sibling
+    // till moving the balance mid-sale cannot make this transaction fail.
+    paintSharedTag($('customer-shared'), data.shared);
     $('customer-tier').textContent = `${currentMultiplier}x`;
     $('customer-tier').classList.toggle('is-boosted', currentMultiplier > 1);
     padValue = '';
@@ -1515,8 +1632,8 @@ async function awardAmount(dollarAmount) {
       return flood('error', 'DIDN\u2019T GO THROUGH', data.message, enterScan);
     }
     const detail = data.bonusPoints > 0
-      ? `${data.customerName} · ${data.basePoints} base + ${data.bonusPoints} tier bonus (${data.multiplier}x) · new balance ${data.newBalance}`
-      : `${data.customerName} · new balance ${data.newBalance}`;
+      ? `${data.customerName} · ${data.basePoints} base + ${data.bonusPoints} tier bonus (${data.multiplier}x) · new balance ${data.newBalance}${sharedNote()}`
+      : `${data.customerName} · new balance ${data.newBalance}${sharedNote()}`;
     flood('success', `+${data.awarded} PTS`, detail, () => {
       refreshLastActivity();
       enterScan();
@@ -1630,6 +1747,11 @@ function showRedeemConfirm(code, data) {
   $('redeem-confirm').disabled = false;
 
   const chip = document.querySelector('#screen-redeem-confirm .balance-chip');
+  // Cleared up front so the punch branch below can return without carrying a
+  // points note over from the last redemption. The shared TAG needs no such
+  // line: it lives inside the chip, which that branch hides outright.
+  $('redeem-shared-note').hidden = true;
+
   if (pendingRedeemKind === 'punch') {
     chip.hidden = true;
     $('redeem-emoji').textContent = '\u{1F39F}\u{FE0F}';
@@ -1645,6 +1767,20 @@ function showRedeemConfirm(code, data) {
 
   $('redeem-balance').textContent = data.balance;
   chip.hidden = false;
+  // The pooled figure, tagged as such, plus the one staleness warning in this
+  // app. This number was read when the code was scanned and is never refreshed
+  // while the screen sits open; before pooling that was safe, because this till
+  // was the only thing on earth that could spend at this spot. A sibling till
+  // can now move it between the scan and the tap on Confirm. The sentence says
+  // where the truth is instead of pretending the snapshot is live: the server
+  // re-reads the purse under a lock when Confirm is pressed, so a stale number
+  // here is a display problem and never an overspend.
+  paintSharedTag($('redeem-shared'), data.shared);
+  const sharedHere = data.shared ?? pointsShared();
+  $('redeem-shared-note').textContent = sharedHere
+    ? 'Shared points, so another spot can change this balance while you are on this screen. What gets checked is the balance at the moment you confirm.'
+    : '';
+  $('redeem-shared-note').hidden = !sharedHere;
   $('redeem-emoji').textContent = data.emoji || '🎁';
   $('redeem-item').textContent = data.rewardTitle;
   $('redeem-cost').textContent = `${data.cost} pts will be deducted`;
@@ -1682,7 +1818,7 @@ async function confirmRedeem() {
     // back), so the affordance has to appear for them too.
     const sub = isPunch
       ? `Visits used · ${data.visitsLeft ?? 0} left`
-      : `Points deducted · balance now ${data.newBalance}`;
+      : `Points deducted · balance now ${data.newBalance}${sharedNote()}`;
     flood('success', `GIVE: ${data.rewardTitle}`, sub, () => {
       refreshLastActivity();
       enterScan();
@@ -2527,7 +2663,76 @@ function renderAnalytics(d) {
   fillSummary('stats-7', d.last7 ?? {});
   fillSummary('stats-30', d.last30 ?? {});
   renderTopRewards(d.topRewards ?? []);
+  loadPoolSettlement();
   loadRecent();
+}
+
+/* ---------- STATS: who funded whom, when points are shared ----------
+
+   Only meaningful for a location in a pool, which is why the card ships hidden
+   and stays that way for every vendor that keeps its own points.
+
+   The number that matters is `net`. Negative means this shop has handed out
+   more than it brought in, and its siblings owe it; positive means the reverse.
+   Nothing is transferred on the strength of it: one owner reads one P&L, and
+   moving points between their own shops to balance a book they read as one book
+   would be ceremony. It is here so the redemptions-with-no-revenue line above
+   has an explanation sitting next to it. */
+
+async function loadPoolSettlement() {
+  const card = $('stats-pool-card');
+  if (!pointsShared()) { card.hidden = true; return; }
+
+  try {
+    const res = await authFetch('/api/vendor/pool-settlement');
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    // A 403 here means the pool was dissolved while this screen was open. Fold
+    // the card away rather than showing an error for something the vendor did
+    // not do and cannot act on.
+    if (!res.ok) { card.hidden = true; return; }
+    renderPoolSettlement(data);
+  } catch {
+    card.hidden = true;   // offline: the rest of STATS is still worth reading
+  }
+}
+
+function renderPoolSettlement(data) {
+  const card = $('stats-pool-card');
+  const box = $('stats-pool');
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  box.innerHTML = '';
+  if (!rows.length) { card.hidden = true; return; }
+  card.hidden = false;
+
+  $('stats-pool-note').textContent = data.poolLabel
+    ? `Customers earn and spend one balance across every ${data.poolLabel} spot. A location below owes the others when its number is positive, and is owed when it is negative.`
+    : 'Customers earn and spend one balance across these locations. A location owes the others when its number is positive, and is owed when it is negative.';
+
+  rows.forEach((r) => {
+    const row = document.createElement('div');
+    row.className = `pool-settle-row${r.isThisLocation ? ' is-here' : ''}`;
+
+    const name = document.createElement('span');
+    name.className = 'pool-settle-name';
+    // The business name is the same string at every location of a chain, so the
+    // label is what actually identifies the row.
+    name.textContent = (r.locationLabel || r.name) + (r.active === false ? ' (off)' : '');
+
+    const detail = document.createElement('span');
+    detail.className = 'pool-settle-detail';
+    detail.textContent = `in ${num(r.minted + r.moved)} \u00b7 out ${num(r.burned)}`;
+
+    const net = document.createElement('span');
+    net.className = `pool-settle-net${r.net < 0 ? ' is-owed' : ''}`;
+    // Sign spelled out rather than left as a minus sign to be squinted at
+    // across a counter.
+    net.textContent = r.net < 0 ? `owed ${num(-r.net)}` : `owes ${num(r.net)}`;
+    if (r.net === 0) net.textContent = 'level';
+
+    row.append(name, detail, net);
+    box.appendChild(row);
+  });
 }
 
 /* ---------- STATS: recent activity + undo (reverse a transaction) ---------- */
@@ -2645,7 +2850,7 @@ async function performReverse(txId, after) {
       flood('success', 'UNDONE', `${n} ${n === 1 ? 'visit' : 'visits'} put back`, refresh);
     } else {
       const back = data.type === 'redeem' ? 'points refunded' : 'points removed';
-      flood('success', 'UNDONE', `Balance now ${data.newBalance} · ${back}`, refresh);
+      flood('success', 'UNDONE', `Balance now ${data.newBalance}${sharedNote()} · ${back}`, refresh);
     }
   } catch {
     flood('error', 'NO CONNECTION', 'Check the internet and try again.', refresh);
@@ -2722,6 +2927,11 @@ let loadedSettings = null;   // last-loaded server state, for the Reset button
 
 function enterSettings() {
   show('screen-settings');
+  // Painted from `config`, which is already in hand, rather than waiting on the
+  // settings GET: pooling is not a setting on that form, and a vendor offline
+  // (or a GET that 401s into the PIN gate) should still be told their points
+  // are shared instead of seeing the card blink out.
+  paintSettingsPool();
   loadSettings();
   loadPoster();
 }
@@ -2933,6 +3143,11 @@ function renderSettings(s) {
   $('settings-error').hidden = true;
   renderTierEditor(s.tiers ?? []);
   updateRatioExample();
+  // Again here, and not only from enterSettings: a save re-fetches /config
+  // before re-rendering this form, so this is where an operator's pool change
+  // reaches a terminal that has been sitting on Settings. Nothing on the card
+  // is part of the batched form, so it never touches the dirty baseline below.
+  paintSettingsPool();
   resetSettingsBaseline();   // freshly-rendered form matches the server = nothing unsaved
 }
 

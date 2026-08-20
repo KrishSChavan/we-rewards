@@ -18,7 +18,12 @@
 // v3: the boot guard recognises more engines' wording for a parse failure. This
 // mount is the one aimed at devices old enough to hit that path, so the screen
 // it shows has to be the right one (boot-guard.js).
-const CACHE = 'werewards-scan-v4';
+// v5: pooled points (migration-044). The scan screen names the store it is
+// ringing up for, and the two balance figures carry a 'shared' chip when this
+// location spends from a purse shared with its siblings. Both are shell changes
+// (index.html/scan.css/scan.js), so an installed iPad keeps serving the old
+// three from cache until this constant moves.
+const CACHE = 'werewards-scan-v5';
 const SHELL = [
   '/scan/', '/scan/boot-guard.js', '/scan/scan.css', '/scan/scan.js',
   '/scan/jsQR.js', '/scan/no-zoom.js', '/scan/manifest.json',

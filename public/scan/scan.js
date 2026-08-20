@@ -488,11 +488,61 @@ function configTitle() {
   return config.locationLabel ? config.name + ' · ' + config.locationLabel : config.name;
 }
 
+/* ---------- pooled points (migration-044) ----------
+
+   An operator can put several of their locations in a POOL, and a pooled
+   location spends from a purse shared with its siblings instead of its own.
+   The rule lives on the vendors row and nowhere else, so this screen never
+   works it out: /config answers pointsShared for the store X-Vendor-Id names,
+   and every balance the server sends back for that store is already the right
+   purse’s figure. All this file adds is saying WHICH purse it is, because a
+   number bigger than anything earned at this counter otherwise looks like a
+   bug to the person reading it out.
+
+   No vendor is pooled today, so pointsShared is absent-or-false everywhere and
+   both chips below stay hidden exactly as the markup ships them. */
+
+function pointsAreShared() {
+  return Boolean(config && config.pointsShared);
+}
+
+/* Show or hide one balance chip’s "shared" marker. Read from `config` rather
+   than from the scan/preview response so both chips answer for the same store
+   the header does: the two are the same vendor either way, but only config is
+   repainted on a store switch, and a stale chip is worse than no chip.
+
+   The pool’s name and size go in the title attribute, not on the chip: at the
+   size this screen is read from there is room for one word, and "shared" is the
+   word that has to carry. Cleared when unpooled so a switch away from a pooled
+   store cannot leave the old chain’s name behind on a tooltip. */
+function paintSharedChip(id) {
+  var chip = $(id);
+  var shared = pointsAreShared();
+  var label = config ? config.poolLabel : null;
+  var size = config ? Number(config.poolSize) : 0;
+  chip.hidden = !shared;
+  chip.title = shared && label
+    ? ('Points shared with ' + label + (size > 1 ? (' (' + size + ' locations)') : ''))
+    : '';
+}
+
 function paintStoreSwitcher() {
   var btn = $('store-btn');
   var many = locations.length > 1;
 
   $('vendor-name').textContent = configTitle();
+  // The same name again, on the scan screen itself - but ONLY where points are
+  // shared, matching paintScanStore() in the full terminal.
+  //
+  // The gate is the whole point and is not a style choice: with a shared purse
+  // the balance on the next screen is identical at every till of the chain, so
+  // it stops being a clue about which one this is and "am I ringing up for
+  // Downtown or Campus?" has to be answerable without opening a menu. An
+  // unpooled vendor has nothing ambiguous to resolve, its header already names
+  // it, and painting this line for them would push the viewfinder down on the
+  // one device this screen exists for. Ungated, this would be a visible change
+  // to today's screen, which step 2 is not allowed to make.
+  $('scan-store').textContent = pointsShared() ? configTitle() : '';
   btn.disabled = !many;
   $('store-caret').hidden = !many;
   closeStoreMenu();
@@ -1097,6 +1147,8 @@ async function submitEarnCode(code) {
     currentMultiplier = data.multiplier ?? 1;
     $('customer-name').textContent = data.name;
     $('customer-balance').textContent = data.balance;
+    // Pooled store: that figure is the chain’s purse, so say so beside it.
+    paintSharedChip('customer-shared');
     $('customer-tier').textContent = currentMultiplier + 'x';
     $('customer-tier').classList.toggle('is-boosted', currentMultiplier > 1);
     padValue = '';
@@ -1305,6 +1357,7 @@ function showRedeemConfirm(code, data) {
   }
 
   $('redeem-balance').textContent = data.balance;
+  paintSharedChip('redeem-shared');
   chip.hidden = false;
   $('redeem-emoji').textContent = data.emoji || '🎁';
   $('redeem-item').textContent = data.rewardTitle;

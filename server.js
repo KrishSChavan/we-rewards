@@ -1002,11 +1002,46 @@ app.use(async (err, req, res, _next) => {
     GRANT_STUDENT_UNKNOWN: [404, 'No student account with that email.'],
     GRANT_BUDGET_EXHAUSTED: [409, 'This incentive has paid out its whole budget. Raise the budget to keep it running.'],
     GRANT_ALREADY_PAID: [409, 'That bonus has already been paid.'],
+    // Point pools (migration-044). Same substring-scan caveat as above, and it
+    // needed real care here because the map already carries CODE_INVALID and
+    // three VENDOR_* keys. Checked, in both directions: no key below contains
+    // an existing key, and no existing key contains one of these.
+    // CODE_WRONG_LOCATION is the near miss worth naming — it does NOT contain
+    // CODE_INVALID (…WRONG… vs …INVALID), so a sibling's code can't be answered
+    // with "ask the customer to refresh their code", which is advice that would
+    // never work. VENDOR_IN_POOL likewise doesn't collide with VENDOR_INELIGIBLE.
+    // They are appended LAST on purpose: the scan returns the first key in
+    // insertion order that matches, so adding keys at the end cannot change
+    // which message any existing error already resolves to.
+    //
+    // Wrong counter, right chain. The route attaches a publicMessage naming the
+    // spot the code was minted for (see resolveRedeemCode); this line is the
+    // fallback for when it couldn't be named. 409, not CODE_INVALID's 401: the
+    // code is real and live, it just isn't this counter's.
+    CODE_WRONG_LOCATION: [409, 'That code was made for another location of this business. Ask the customer for a code for this location.'],
+    // The rest are thrown by pool RPCs that land in a later migration, declared
+    // now so the first deploy that has them doesn't answer 500 'Something went
+    // wrong' to an operator mid pool-edit. Unreachable until then.
+    REVERSAL_OVERSPENT: [409, 'Those points have already been spent at another location, so this can no longer be undone.'],
+    POOL_RATE_MISMATCH: [409, 'Locations that share points must use the same points per dollar. Match the rates first.'],
+    POOL_PIN_MISSING: [409, 'Set a staff PIN at this location before it shares points.'],
+    POOL_NOT_EMPTY: [409, 'This pool still holds customer points. Take its locations out first, which gives the points back.'],
+    POOL_HAS_MEMBERS: [409, 'This pool still has locations in it. Remove them before deleting it.'],
+    POOL_NOT_FOUND: [404, 'That points pool no longer exists.'],
+    POOL_LAST_ACTIVE_MEMBER: [409, 'This is the last active location in the pool. Add another, or delete the pool.'],
+    POOL_MEMBER_HAS_POOL: [409, 'That location already shares points with another group. Remove it from that one first.'],
+    VENDOR_IN_POOL: [409, 'This location shares points with others. Take it out of the pool before changing this.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {
     const [status, message] = known[key];
-    return res.status(status).json({ error: key, message });
+    // A route may attach a more specific line for the SAME code — the one case
+    // today is CODE_WRONG_LOCATION naming which spot the code was minted for,
+    // which is the difference between a dead end and an instruction. The map
+    // still decides the code AND the status, so this can only ever refine copy;
+    // it can never invent an error the map doesn't know. Nothing else in the
+    // codebase sets publicMessage, so every other error answers exactly as before.
+    return res.status(status).json({ error: key, message: err.publicMessage || message });
   }
   console.error(err);
   // Unexpected failure → record it so it shows up on the /admin dashboard...

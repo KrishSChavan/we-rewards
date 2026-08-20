@@ -53,7 +53,7 @@
 // v20: the Edit dialog gained a Logo section — pick, Remove and "Save logo"
 // against PATCH /api/admin/vendors/:id, with the current artwork read back from
 // the new GET /api/admin/vendors/:id/logo (index.html + admin.js + admin.css)
-const CACHE = 'werewards-admin-v20';
+const CACHE = 'werewards-admin-v21';
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json',
