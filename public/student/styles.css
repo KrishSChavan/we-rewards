@@ -968,7 +968,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* Rotates when the menu is up, so the caret reports state rather than just
    pointing. 0.55rem: at the label's own size it reads as a second word. */
 .home-sub-caret {
-  margin-left: 0.3rem; font-size: 0.55rem; line-height: 1;
+  margin-left: 0.3rem; font-size: 1.2rem; line-height: 1;
   transition: transform 120ms ease;
 }
 .home-sub[aria-expanded="true"] { color: var(--ink); }
