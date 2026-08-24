@@ -293,8 +293,29 @@ export const recommendedVendorsCache = createCache({
   staleMs: 60 * 60_000,
 });
 
-/** How many spots the Recommended fallback shows. */
-export const RECOMMENDED_LIMIT = 5;
+/**
+ * How deep the visit ranking goes. THIS IS A CANDIDATE POOL, NOT A ROW LENGTH.
+ *
+ * The Recommended row shows five spots, and it used to ask for exactly five —
+ * which was right while the row was the same five for everybody. It is not any
+ * more: the client now drops spots the student has already been to
+ * (`visited` in GET /api/me/balances) before it picks the five, and a regular
+ * who has been to four of the top five would have been left with a row of one.
+ *
+ * Twenty-five is deep enough that a student would have to have visited two
+ * dozen spots before the ranking runs dry on them, and still one small cached
+ * array shared by every student. The five-at-a-time cap lives on the client,
+ * with the rest of the picking (public/student/app.js → RECOMMENDED_TARGET).
+ *
+ * DEPLOY SKEW, for whoever changes this next. The cap is on the CLIENT, so a
+ * page still running the pre-cap app.js against this server renders every id it
+ * is sent — a 25-card carousel and a 25-row "Top" filter. It is cosmetic and it
+ * self-heals: sw.js is network-first for the shell, so the next launch with a
+ * connection has the new bundle. The window is a page that was already open
+ * when the deploy landed. Raising this number widens that window's blast
+ * radius, not its likelihood.
+ */
+export const RECOMMENDED_LIMIT = 25;
 
 /** How far back top_vendors_by_visits looks when ranking. */
 const RECOMMENDED_WINDOW_DAYS = 30;

@@ -866,9 +866,12 @@
               </div>
 
               <!-- notifications: the opt-out the Privacy Policy promises.
-                   Turning this off drops this device's push subscription and
-                   stops every future notification; deals still appear in the
-                   app, because "don't interrupt me" is not "don't tell me". -->
+                   ONE SETTING, TWO CHANNELS (migration-047), and the switches
+                   are independent because that is what their labels say.
+                   Turning alerts off drops this device's push subscription;
+                   turning emails off stops the mail. Deals still appear in the
+                   app either way, because "don't interrupt me" is not "don't
+                   tell me". -->
               <h2 class="account-section-title">Notifications</h2>
               <div class="setting-row">
                 <span class="setting-label">
@@ -876,6 +879,28 @@
                   <span class="setting-desc">A heads-up when a spot you go to has something on. At most twice a day, never at night.</span>
                 </span>
                 <button id="deals-toggle" class="switch" type="button" role="switch" aria-checked="false" aria-label="Deal alerts">
+                  <span class="switch-knob"></span>
+                </button>
+              </div>
+              <!-- The channel that reaches everyone else. Web push does not
+                   exist on iOS outside an installed PWA, so for a large share of
+                   students this switch is the ONLY one that can do anything —
+                   which is why it is listed as a peer of deal alerts rather than
+                   buried as a sub-option of them. Same caps either way: email
+                   rides the same queue and the same throttle. -->
+              <!-- Starts hidden and is revealed by applyEmailConfig() only when
+                   /api/public-config says this deployment can actually send
+                   mail. A switch that cannot do anything is worse than an
+                   absent one: it reads as a promise, and the student who turns
+                   it on and never gets an email learns the settings lie. Same
+                   reasoning as setDealsToggle rendering what is TRUE rather
+                   than what is stored. -->
+              <div id="deal-emails-row" class="setting-row" hidden>
+                <span class="setting-label">
+                  <span class="setting-name">Deal emails</span>
+                  <span class="setting-desc">The same heads-up by email, but only when we can’t reach this phone with an alert. Never both.</span>
+                </span>
+                <button id="deal-emails-toggle" class="switch" type="button" role="switch" aria-checked="false" aria-label="Deal emails">
                   <span class="switch-knob"></span>
                 </button>
               </div>

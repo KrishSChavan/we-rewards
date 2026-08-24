@@ -179,6 +179,7 @@ function bootFailed(message) {
   const pub = await (await fetch('/api/public-config')).json();
   // Separate storage key from the student app (same origin + project) so a
   // vendor sign-in never clobbers a student session on the same device.
+  applyEmailConfig(pub.emailEnabled);
   sb = window.supabase.createClient(pub.supabaseUrl, pub.supabaseAnonKey, {
     auth: { storageKey: 'psu-vendor-auth' },
   });
@@ -187,6 +188,7 @@ function bootFailed(message) {
   $('login-password').addEventListener('keydown', (e) => e.key === 'Enter' && signIn());
   $('login-forgot').addEventListener('click', enterRecover);
   $('recover-back').addEventListener('click', leaveRecover);
+  $('recover-send').addEventListener('click', requestRecoverCode);
   $('recover-btn').addEventListener('click', submitRecover);
   $('recover-confirm').addEventListener('keydown', (e) => e.key === 'Enter' && submitRecover());
   // Show the code the way it was read out (grouped, upper case) while it's typed.
@@ -293,14 +295,38 @@ async function signIn() {
 }
 
 /* ---------- forgot password ----------
-   There is no recovery email in this stack (no SMTP, and vendors sign in with a
-   password rather than Google), so recovery is out-of-band: the operator mints a
-   one-time code in /admin, reads it down the phone, and it gets typed in here.
-   POST /api/vendor/recover verifies it and sets the new password.
+   Vendors sign in with a password rather than Google, so Supabase's own recovery
+   email never reaches them. Two ways to get a code (migration-047):
+     • self-serve, POST /api/vendor/recover/request, which mails one;
+     • the operator mints one in /admin and reads it down the phone, which is
+       still the only path that works for a vendor locked out of the mailbox too.
+   Either way it gets typed in here, and POST /api/vendor/recover verifies it and
+   sets the new password.
 
    The server treats every failure identically on purpose — unknown email, wrong
    code, expired, already used — so this screen must not try to explain which one
    it was. Just show what came back. */
+
+/* Whether THIS deployment can send mail at all, from /api/public-config.
+
+   Without it the self-serve button is a trap. The server answers every request
+   to /api/vendor/recover/request with the same reassuring "a code is on its
+   way", deliberately — that uniformity is what stops the endpoint becoming a
+   directory of vendor addresses — so a vendor on a deployment with no mail
+   configured taps it, is told a code is coming, and waits for one that was
+   never minted. The response cannot say so without leaking; the BUTTON can
+   simply not be there. */
+let emailEnabled = false;
+
+function applyEmailConfig(on) {
+  emailEnabled = Boolean(on);
+  $('recover-send').hidden = !emailEnabled;
+  // The instructions have to change with it, or the screen tells them to tap a
+  // button that isn't on it.
+  $('recover-help').textContent = emailEnabled
+    ? 'Type your email and tap "Email me a code". We’ll send an 8-character code to that address. Codes last 30 minutes and work once. No email? Call or text the WeRewards team and we’ll read one out to you.'
+    : 'Call or text the WeRewards team and ask for a reset code. We’ll read you an 8-character code. Type it below with a new password. Codes last 30 minutes and work once.';
+}
 
 function enterRecover() {
   // Carry over whatever they already typed on the login card.
@@ -309,6 +335,7 @@ function enterRecover() {
   $('recover-error').hidden = true;
   $('recover-success').hidden = true;
   $('recover-btn').disabled = false;
+  $('recover-sent').hidden = true;
   show('screen-recover');
   $('recover-code').focus();
 }
@@ -345,6 +372,49 @@ function recoverError(msg) {
   el.textContent = msg;
   el.hidden = false;
   $('recover-btn').disabled = false;
+}
+
+/* Ask the server to mint a code and mail it (migration-047).
+
+   The server answers the SAME 200 for every outcome: an address that runs a
+   shop, one that does not, one that asked a minute ago, and a mail API that is
+   down. That is deliberate on a public endpoint, and it means this handler must
+   not try to report which happened. It says what it asked for, never what
+   arrived, and it must never say "sent" as though it knew. */
+async function requestRecoverCode() {
+  const btn = $('recover-send');
+  const note = $('recover-sent');
+  $('recover-error').hidden = true;
+  note.hidden = true;
+
+  // The button is hidden when mail is off, but a hidden button is a display
+  // rule and not a guarantee. Refusing here means the copy on the screen and
+  // what the app actually does can never disagree.
+  if (!emailEnabled) return recoverError('This terminal cannot email codes. Call or text the WeRewards team for one.');
+  const email = $('recover-email').value.trim();
+  if (!email) return recoverError('Type your email first, then tap this.');
+
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+  try {
+    const res = await fetch('/api/vendor/recover/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    note.textContent = data.message
+      || 'If that email runs a spot on WeRewards, a reset code is on its way. It lasts 30 minutes.';
+    note.hidden = false;
+    // Where their attention goes next. The code lands in another app, so the
+    // useful thing is to have the field ready when they come back.
+    $('recover-code').focus();
+  } catch {
+    recoverError('No connection. Check the internet and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Email me a code';
+  }
 }
 
 async function submitRecover() {
@@ -3611,6 +3681,7 @@ function resetToLogin() {
   clearRecoverFields();
   $('recover-error').hidden = true;
   $('recover-success').hidden = true;
+  $('recover-sent').hidden = true;
   $('shell').hidden = true;
   show('screen-login');   // also stops the QR cameras, via syncScanners()
 }

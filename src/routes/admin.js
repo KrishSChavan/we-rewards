@@ -7,6 +7,8 @@ import { getVapidPublicKey, notifyAdminEndpoint } from '../lib/push.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
+import { sendEmail, emailUrl, emailEnabled } from '../lib/email.js';
+import { applicationAccepted, vendorResetCode } from '../lib/email-templates.js';
 import { validReward, validRatio } from '../lib/rewards.js';
 import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
 import { validSignupConfig } from '../lib/signup-bonus.js';
@@ -551,10 +553,16 @@ router.post('/vendors', async (req, res, next) => {
 
 /**
  * POST /api/admin/vendors/:id/reset-code   { userId? }
- * Mint a one-time password-reset code for one of this vendor's logins, for the
- * operator to read to them over the phone. This is the whole recovery channel —
- * there is no SMTP in this stack, and vendors sign in with a password rather
- * than Google, so Supabase's own recovery email is not available to them.
+ * Mint a one-time password-reset code for one of this vendor's logins. The code
+ * is emailed to that login AND returned here for the operator to read down the
+ * phone (migration-047 added the mail half; before it, dictation was the whole
+ * channel). Vendors sign in with a password rather than Google, so Supabase's
+ * own recovery email is not available to them either way.
+ *
+ * This is now the OPERATOR OVERRIDE path. The everyday one is self-serve:
+ * POST /api/vendor/recover/request, which a locked-out vendor drives themselves
+ * from the terminal. This endpoint stays because it is the only thing that works
+ * for a vendor who has also lost access to the mailbox.
  *
  * The plaintext is returned EXACTLY ONCE, here. Only its bcrypt hash is stored
  * (migration-031), matching how pin_hash and vendor_applications.password_hash
@@ -642,13 +650,48 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
     }
 
     const row = Array.isArray(issued) ? issued[0] : issued;
+    const address = row?.reset_email ?? target.email;
+
+    // Since migration-047 the code is ALSO emailed. The phone call is still the
+    // channel this flow was designed around — the operator recognising a voice
+    // is a stronger gate than a mailbox, and it still works for a vendor locked
+    // out of their email — so the plaintext is returned here exactly as before
+    // and the operator can read it out regardless of what the mail API did.
+    //
+    // The email is the convenience half: it saves dictating eight characters
+    // over a noisy counter, and it is the only version the vendor can copy and
+    // paste. `emailed` says which happened, so /admin can tell the operator to
+    // read it aloud rather than letting them assume it arrived.
+    const mail = vendorResetCode({
+      businessName: vendor.name,
+      code,
+      ttlMinutes: RESET_TTL_MINUTES,
+      terminalUrl: emailUrl('/vendor/', req),
+      selfServe: false,
+    });
+    const sent = await sendEmail({
+      to: address,
+      subject: mail.subject,
+      html: mail.html,
+      text: mail.text,
+      // Transactional: a reset code goes even to someone who muted deal emails.
+      category: 'transactional',
+      // Deliberately NOT keyed on anything stable. Every mint is a NEW code, and
+      // de-duplicating two mints would deliver the first code for the second
+      // request — which reads to the vendor as "the code you sent me is wrong".
+      idempotencyKey: `reset:${row?.reset_id ?? ''}`,
+      tags: ['vendor-reset'],
+    });
+
     res.json({
       ok: true,
       code,                                     // shown once, never retrievable again
-      email: row?.reset_email ?? target.email,  // the address the vendor must type
+      email: address,                           // the address the vendor must type
       expiresAt: row?.reset_expires_at ?? null,
       ttlMinutes: RESET_TTL_MINUTES,
       vendor: { id: vendor.id, name: vendor.name },
+      emailed: sent.ok,
+      emailConfigured: emailEnabled,
     });
   } catch (err) {
     next(err);
@@ -1312,7 +1355,9 @@ router.post('/applications/:id/accept', async (req, res, next) => {
 
     const { data: app, error: appErr } = await supabaseAdmin
       .from('vendor_applications')
-      .select('id, business_name, email, password_hash, address, location_label, locations, logo, cuisine, price_level')
+      // contact_name is selected only so the acceptance email can open with a
+      // person's name rather than the business's.
+      .select('id, business_name, contact_name, email, password_hash, address, location_label, locations, logo, cuisine, price_level')
       .eq('id', req.params.id)
       .maybeSingle();
     if (appErr) throw appErr;
@@ -1352,9 +1397,33 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       .eq('id', app.id);
     if (delErr) throw delErr; // vendor IS onboarded; surfacing the 500 beats hiding a stuck row
 
+    // The one email in this flow that has to actually work: it is how the vendor
+    // learns they can sign in, and — when the address already had an account —
+    // WHICH password does it (see applicationAccepted). Awaited so the operator's
+    // 200 means the attempt is finished, never throws, and never blocks the
+    // accept: the vendor exists either way, and /admin can re-send by hand.
+    const accepted = applicationAccepted({
+      businessName: app.business_name,
+      contactName: app.contact_name,
+      email: app.email,
+      linkedExisting,
+      locationCount: vendors?.length ?? 1,
+      terminalUrl: emailUrl('/vendor/', req),
+    });
+    const mailed = await sendEmail({
+      to: app.email,
+      subject: accepted.subject,
+      html: accepted.html,
+      text: accepted.text,
+      category: 'transactional',
+      idempotencyKey: `accept:${app.id}`,
+      tags: ['application-accepted'],
+    });
+
     // `vendors` is every location this accept created, so the dashboard can say
-    // "3 locations added" rather than naming only the first.
-    res.json({ ok: true, vendor, vendors, linkedExisting });
+    // "3 locations added" rather than naming only the first. `emailed` lets it
+    // say "we told them" — or, more usefully, that we could not.
+    res.json({ ok: true, vendor, vendors, linkedExisting, emailed: mailed.ok });
   } catch (err) {
     next(err);
   }

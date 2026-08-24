@@ -890,11 +890,13 @@ async function deleteVendor(v, btn, row) {
 }
 
 /* ---------- vendor password reset ----------
-   The whole recovery channel for a locked-out vendor. There is no SMTP in this
-   stack and vendors sign in with a password rather than Google, so Supabase's
-   own recovery email isn't available to them: instead we mint a one-time code
-   here and the operator reads it down the phone. The vendor types it into the
-   terminal's "Forgot password?" form (POST /api/vendor/recover).
+   The OPERATOR OVERRIDE for a locked-out vendor. Vendors sign in with a password
+   rather than Google, so Supabase's own recovery email isn't available to them.
+   Since migration-047 the everyday path is self-serve — the terminal's "Email me
+   a code" button — and this dialog stays for the vendor who has lost the mailbox
+   too. A code minted here is emailed AND shown, so the operator can still read it
+   down the phone. The vendor spends it at the terminal's "Forgot password?" form
+   (POST /api/vendor/recover).
 
    The plaintext exists only in this dialog. The server stores a bcrypt hash and
    returns the code exactly once, so closing without reading it out means
@@ -942,7 +944,7 @@ function openResetModal(v) {
   } else {
     pick.hidden = true;
     if (logins.length) {
-      $('reset-sub').textContent = `A one-time code for ${logins[0].email}, good for 30 minutes. Read it to them on the phone.`;
+      $('reset-sub').textContent = `A one-time code for ${logins[0].email}, good for 30 minutes. We email it there, and show it here so you can read it out.`;
     } else if (v.staffUnavailable) {
       // The lookup failed rather than coming back empty. Say so, and let them
       // try anyway: the mint route re-resolves the logins server-side, so a
@@ -1006,7 +1008,17 @@ async function mintResetCode() {
 
 function showResetCode(data) {
   $('reset-pick').hidden = true;
-  $('reset-sub').textContent = `The vendor signs in as ${data.email}. They enter that address and this code at the terminal’s “Forgot password?” screen.`;
+  // Whether the email actually went is the one thing the operator cannot see for
+  // themselves, and it decides what they do next: hang up, or read eight
+  // characters down the phone. `emailed` is false for a send that failed AND for
+  // a deployment with no mail configured, so say which — "it didn't send" and
+  // "this install never sends" call for different reactions.
+  const mail = data.emailed
+    ? `We’ve emailed it to ${data.email}. Read it out too if they’re on the phone.`
+    : data.emailConfigured
+      ? `The email did NOT send. Read this code out to them.`
+      : `Email isn’t set up on this deployment, so read this code out to them.`;
+  $('reset-sub').textContent = `The vendor signs in as ${data.email}. They enter that address and this code at the terminal’s “Forgot password?” screen. ${mail}`;
   $('reset-code').textContent = data.code;
   $('reset-expiry').textContent = data.expiresAt
     ? `Expires ${new Date(data.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · one use · 5 tries`

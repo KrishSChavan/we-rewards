@@ -10,6 +10,8 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { notifyAdmins } from '../lib/push.js';
+import { sendEmail } from '../lib/email.js';
+import { applicationReceived } from '../lib/email-templates.js';
 import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
 import { validLogo } from '../lib/logo.js';
 
@@ -172,9 +174,14 @@ router.post('/', async (req, res, next) => {
     // can run a vendor with the same email, and a multi-location owner can
     // apply again). So the old email_has_account bounce is gone; the unique
     // index on pending applications still stops duplicate submissions below.
-    const { error } = await supabaseAdmin
+    const { data: row, error } = await supabaseAdmin
       .from('vendor_applications')
-      .insert({ ...v.fields, password_hash: await bcrypt.hash(v.password, 10) });
+      .insert({ ...v.fields, password_hash: await bcrypt.hash(v.password, 10) })
+      // The id is only wanted as an idempotency key for the confirmation email
+      // below, so a double-tapped submit that somehow got past the unique index
+      // cannot produce two identical mails.
+      .select('id')
+      .single();
     if (error) {
       if (error.code === '23505') {
         return res.status(409).json({ error: 'DUPLICATE_APPLICATION', message: 'An application with this email is already pending, hang tight!' });
@@ -187,13 +194,34 @@ router.post('/', async (req, res, next) => {
     // Say how big it is: a five-location chain is a different review from a
     // single shop, and the count is the one thing the title can't imply.
     const count = v.fields.locations.length + 1;
-    await notifyAdmins({
-      title: 'New vendor application',
-      body: count > 1
-        ? `${v.fields.business_name} · ${v.fields.contact_name} · ${count} locations`
-        : `${v.fields.business_name} · ${v.fields.contact_name}`,
-      url: '/admin/',
+    // Both sides of the handshake, in parallel: the operator hears that work
+    // arrived, the applicant hears that it landed. Neither may fail the request
+    // — the row is already committed, and a 500 here would tell someone their
+    // application did not go through when it did. notifyAdmins and sendEmail
+    // both swallow their own failures for exactly that reason.
+    const mail = applicationReceived({
+      businessName: v.fields.business_name,
+      contactName: v.fields.contact_name,
+      locationCount: count,
     });
+    await Promise.all([
+      notifyAdmins({
+        title: 'New vendor application',
+        body: count > 1
+          ? `${v.fields.business_name} · ${v.fields.contact_name} · ${count} locations`
+          : `${v.fields.business_name} · ${v.fields.contact_name}`,
+        url: '/admin/',
+      }),
+      sendEmail({
+        to: v.fields.email,
+        subject: mail.subject,
+        html: mail.html,
+        text: mail.text,
+        category: 'transactional',
+        idempotencyKey: `apply:${row?.id ?? v.fields.email}`,
+        tags: ['application-received'],
+      }),
+    ]);
 
     res.status(201).json({ ok: true });
   } catch (err) {

@@ -54,7 +54,7 @@
   <div class="doc-header">
     <p class="doc-label">Legal Document — Student &amp; Vendor-Facing</p>
     <h1>WeRewards<br>Privacy Policy</h1>
-    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: August 10, 2026</p>
+    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: August 20, 2026</p>
   </div>
 
   <div class="notice">
@@ -110,7 +110,8 @@
 
   <h3>2.6 Deal Notification Data</h3>
   <p>If you grant your browser's notification permission to WeRewards, your browser gives us a <strong>push subscription</strong>: an endpoint URL at your browser vendor's push service (Google, Apple, or Mozilla, depending on your device) plus two encryption keys. We store these against your user identifier so we can deliver notifications to that device, and delete them when you turn deal alerts off, when you revoke permission, or when the push service tells us the subscription is dead.</p>
-  <p>For each deal you are selected to receive, we record which deal it was, whether a notification was sent, and whether you opened it. We also keep a small counter per account (when you were last notified, and how many notifications you have had in the current day and week) purely to enforce the frequency limits in Section 7.4. These records are deleted about 30 days after the deal expires, and immediately if you delete your account.</p>
+  <p>For each deal you are selected to receive, we record which deal it was, whether a message was sent, which way it was sent (push notification or email), and whether you opened it. We also keep a small counter per account (when you were last messaged, and how many messages you have had in the current day and week) purely to enforce the frequency limits in Section 7.4. These records are deleted about 30 days after the deal expires, and immediately if you delete your account.</p>
+  <p>Where we could not reach you with a push notification, a deal may instead be sent to the email address on your account (Section 7.4). Our email provider tells us whether each message was delivered, could not be delivered, or was reported as spam. If an address permanently cannot receive mail, or its owner reports one of our messages as spam or uses an unsubscribe link, we record that address on an internal <strong>suppression list</strong> so that nothing further is sent to it. That list holds the email address and the reason only.</p>
 
   <h3>2.7 Consent Records</h3>
   <p>When you accept the Terms and this Policy after signing in, we record that you did so: your user identifier, which version of the documents you accepted, the date and time, and — as evidence that the acceptance was genuine — your <strong>IP address</strong> and browser user agent at that moment.</p>
@@ -193,7 +194,7 @@
       <tr><td>Debug and fix platform errors</td><td>Error logs, user agent, user ID</td></tr>
       <tr><td>Operate platform analytics (admin-only)</td><td>Aggregated/anonymized transaction data</td></tr>
       <tr><td>Select who receives a vendor's deal</td><td>User ID, transaction history at that vendor, balance at that vendor</td></tr>
-      <tr><td>Deliver deal notifications and cap their frequency</td><td>User ID, push subscription, notification history</td></tr>
+      <tr><td>Deliver deal notifications and cap their frequency</td><td>User ID, push subscription, email address, notification history</td></tr>
       <tr><td>Credit a signup promotion</td><td>The email domain of your account and the date it was created</td></tr>
       <tr><td>Credit an invite bonus, and decide when the person who invited you has qualified for theirs</td><td>Invite code, the link between the two accounts, and whether the invited account has earned points at any vendor</td></tr>
       <tr><td>Run, audit, and detect abuse of a promotion (admin-only)</td><td>Bonus records, referral records including both accounts' email addresses</td></tr>
@@ -275,6 +276,12 @@
         <td>The notification text and the subscription endpoint your own browser issued. The message is encrypted with keys your browser generated, so the push service relays it without being able to read it</td>
         <td>policies.google.com/privacy · apple.com/legal/privacy · mozilla.org/privacy</td>
       </tr>
+      <tr>
+        <td><strong>Resend</strong><br>(resend.com)</td>
+        <td>Sending email: deal emails where a push notification could not reach you, and account email such as a password reset code you asked for</td>
+        <td>Your email address and the contents of the message being sent, plus whether it was delivered, bounced, or reported as spam</td>
+        <td>resend.com/legal/privacy-policy</td>
+      </tr>
     </tbody>
   </table>
 
@@ -295,6 +302,7 @@
       <tr><td>Receipt fingerprints (business, printed date and time, total)</td><td>Kept while your account exists, so the same receipt cannot be claimed twice</td></tr>
       <tr><td>Error logs</td><td>90 days, then automatically purged — including any that reference a since-deleted account (see Section 6)</td></tr>
       <tr><td>Push subscriptions</td><td>Until you turn deal alerts off, revoke notification permission, delete your account, or the push service reports the subscription is dead</td></tr>
+      <tr><td>Email suppressions (an address that bounced, or whose owner unsubscribed or reported a message as spam)</td><td>Kept so that nothing further is sent to that address. A bounce is dropped after about 180 days, in case the address is repaired. An unsubscribe or a spam report is kept indefinitely, <em>including after the account is deleted</em>: the record is what stops us mailing that address again, so deleting it would undo the very request it exists to honour. It holds the address and the reason only</td></tr>
       <tr><td>Deal delivery records and frequency counters</td><td>About 30 days after the deal expires; deleted immediately if you delete your account</td></tr>
       <tr><td>Your invite code</td><td>Until you delete your account</td></tr>
       <tr><td>Referral records (which account invited which)</td><td>Until either account is deleted, whichever comes first</td></tr>
@@ -327,11 +335,15 @@
   <h3>7.3 Correction</h3>
   <p>If you believe your account information is inaccurate, contact us at <a href="mailto:contactwerewards@gmail.com">contactwerewards@gmail.com</a>.</p>
   <h3>7.4 Opt-Out of Communications</h3>
-  <p>We do not send marketing emails to students.</p>
-  <p><strong>Deal notifications.</strong> Participating vendors can send offers ("deals") to students who have earned points at that vendor. If you have granted your browser's notification permission to WeRewards, these may reach you as a push notification; they always appear in the app's Deals list whether or not a notification was sent.</p>
-  <p>You can turn deal notifications off at any time through <strong>Account tab → Notifications → Deal alerts</strong>, or by revoking notification permission in your browser or device settings. Turning them off removes the push subscriptions stored for your account and stops all future notifications; deals continue to appear in the app's Deals list, which you can simply not open.</p>
+  <p><strong>Deal notifications.</strong> Participating vendors can send offers ("deals") to students who have earned points at that vendor. These can reach you two ways, and they always appear in the app's Deals list whether or not anything was sent to you:</p>
+  <ul>
+    <li><strong>A push notification</strong>, if you have granted your browser's notification permission to WeRewards.</li>
+    <li><strong>An email</strong> to the address on your account, <em>only</em> where we could not reach you with a push notification. Many browsers and devices cannot receive push notifications at all, and email is the only way we can tell those students about a deal. You will never receive both for the same deal.</li>
+  </ul>
+  <p>You can turn either off at any time under <strong>Account tab → Notifications</strong>: <strong>Deal alerts</strong> controls push notifications, <strong>Deal emails</strong> controls email, and the two are independent. Turning off Deal alerts removes the push subscriptions stored for your account. Every deal email also carries an unsubscribe link, and your email or webmail app may show its own one-click "Unsubscribe" button; either one turns Deal emails off for your account. Whatever you turn off, deals continue to appear in the app's Deals list, which you can simply not open.</p>
+  <p><strong>Other email.</strong> We do send you email about your account when something happens that you need to know about, for example a password reset code you asked for. These are not marketing, and turning off Deal emails does not stop them.</p>
   <p><strong>Vendors do not receive your identity for this purpose.</strong> A vendor composes the message and chooses a category of recipients (for example, "my most frequent customers over the last 90 days"). WeRewards selects the matching accounts and delivers the message. The vendor is shown only aggregate counts (how many accounts matched, how many were sent to, how many opened the message). Vendors are not given your name, email address, or any identifier as part of this feature.</p>
-  <p><strong>Frequency limits.</strong> We cap how many of these notifications any one account can receive: at most two per day and five per week, never less than four hours apart, and none between 10:00 PM and 9:00 AM Eastern Time. Where several vendors would reach you at once, we combine them into a single notification. These limits are enforced by us, not by vendors.</p>
+  <p><strong>Frequency limits.</strong> We cap how many of these messages any one account can receive: at most two per day and five per week, never less than four hours apart, and none between 10:00 PM and 9:00 AM Eastern Time. These are limits on deal messaging as a whole, not per channel, so an email counts against them exactly as a push notification does. Where several vendors would reach you at once, we combine them into a single message. These limits are enforced by us, not by vendors.</p>
 
   <!-- ══════════════════════════════════════════════════════════ -->
   <h2>8. Security</h2>

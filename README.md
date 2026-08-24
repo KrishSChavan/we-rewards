@@ -107,6 +107,16 @@ config — the terminal never sends a point value.
    npm run check:gemini -- receipt.jpg  # ...and read an actual receipt photo
    ```
    See **Receipt scanning** below for what this does and doesn't change.
+9. (Optional) Product analytics: create a project at
+   [posthog.com](https://posthog.com), copy the **Project API Key** (`phc_…`)
+   from Settings → Project into `.env` as `POSTHOG_API_KEY`, and set
+   `POSTHOG_HOST=https://eu.i.posthog.com` if the project is on EU. Then:
+   ```
+   npm run check:posthog          # config, then send one real test event
+   npm run check:posthog -- --dry # config and payload only, send nothing
+   ```
+   With no key set, `client_events` still records everything and nothing else
+   changes. See **Product analytics (PostHog)** below.
 
 ## Point math
 
@@ -148,6 +158,60 @@ components, visit + spend aggregates) so analytics can read scores straight
 from the DB. `profiles.revisits` is a lifetime counter: +1 the first time a
 student earns at a vendor on a new day after a previous visit — incremented
 inside `award_points` atomically, backfilled by migration-005.
+
+## Recommended spots (migration-048)
+
+Home's carousel has two modes. **Recent spots** is anywhere the student has been
+in the last seven days; **Recommended** is the fallback when there is nothing
+recent, which is every new signup and anyone back from a break — and it is what
+the heading's menu switches to on demand.
+
+Recommended answers *"where should I go next"*, so it is built from three rules,
+and the first one is the reason the rest exist:
+
+1. **Nowhere they have already been.** Everywhere the student has ever bought,
+   redeemed, or scanned a visit is out before anything is picked. Handing a
+   regular the five spots they visit most, under a heading that promises
+   something new, is the failure mode this exists to avoid.
+2. **The visit ranking leads.** What is left is ordered by
+   `top_vendors_by_visits()` — distinct `(student, day)` pairs over 30 days, so a
+   regular who buys coffee three times on Tuesday contributes one visit, not
+   three. The server caches a pool of the top 25 (`RECOMMENDED_LIMIT`) rather
+   than exactly five, because a student who has been to four of the top five
+   would otherwise be left with a row of one.
+3. **Newer spots trickle in.** Up to two of the five cards are reserved for spots
+   that would not otherwise make the row, won by a per-spot dice whose odds
+   **halve every 14 days** and reach zero at 60. A place that opened today is
+   certain; one from last month is a long shot. Winners take the 2nd and 4th
+   cards, so the row still opens on a proven spot.
+
+The dice is `hash01(student, spot, day)`, not `Math.random()`. Three consequences,
+all deliberate: the row cannot reshuffle between socket pushes while a student is
+looking at it; different students see different newcomers on the same morning, so
+a new spot is spread across the student body rather than spiked at it; and the
+draw is redone at midnight, so a spot that missed today gets another go tomorrow.
+
+**Five is a hard cap and the row is allowed to be shorter.** A student with two
+spots left untried sees two — padding it with places they already go would undo
+rule 1. Only when they have visited *everything* does it fall back to the plain
+ranking, because a row of nothing is worse than a re-run of the classics.
+
+The Spots tab's **Top** filter is deliberately *not* this list. It is the same
+ranking for everybody, a student's own regulars included — a fact about the town
+rather than advice to one person.
+
+`student_visited_vendor_ids()` is a SQL function rather than a query in Node for
+one specific reason: "ever been" is the only all-time per-student read in the app,
+and `config.toml` caps PostgREST at `max_rows = 1000`. An unpaginated all-time
+pull over `transactions` truncates there silently, and a heavy student's oldest
+spots would read back as never-visited and be recommended to them forever. It
+unions `transactions` (`earn`/`redeem`; a `community_transfer` happens in-app, not
+at a counter) with `punch_cards` **existence** — not `punches > 0`, because
+redeeming a visits-priced reward assigns that counter back to zero.
+
+Without the migration applied the endpoint still answers: `visited` falls back to
+the punch cards and recent transactions already in hand, which under-claims, so
+the worst case is recommending somewhere they last went months ago.
 
 ## Receipt scanning
 
@@ -336,11 +400,131 @@ undeliverable notification only removes the interruption.
 
 Vendors see counts, never students: the audience (`top` / `lapsed` / `close`) is
 expanded server-side by `campaign_audience()`. Students opt out under **Account →
-Notifications → Deal alerts**; the Privacy Policy §7.4 states the caps above, so
-moving those defaults means moving that document (a unit test asserts the pair).
+Notifications**, one switch per channel; the Privacy Policy §7.4 states the caps
+above, so moving those defaults means moving that document (a unit test asserts
+the pair).
 
 Set the same `VAPID_*` keys as the admin alerts to enable push. With no keys the
 worker never starts, campaigns still queue, and every deal still shows in-app.
+
+### Email as the second channel (migration-047)
+
+Web push does not exist on iOS outside an installed PWA, so before this the
+largest single group of students could not be reached at all — `claim_campaign_pushes()`
+skipped anyone without an endpoint, by design, and that is most of them.
+
+Email now fills that gap, and **only** that gap. Push is tried first wherever it
+is available; the email goes only if no endpoint accepted, so no student is told
+twice about one deal. The claim reports which channels are open for each student
+in `out_reach` (`push` / `email` / `both`), decided under the same row lock that
+spends the quota.
+
+The important consequence is that **email adds no throttling of its own**. It
+rides the same claim, so every fence in the table above already applies to it:
+the four-hour cooldown, the daily and weekly caps, the per-vendor fence, the
+coalescing hold, and quiet hours. There is nothing new to tune and nothing that
+can drift out of step with push.
+
+`push_opt_in` and `email_opt_in` are **independent** — turning off *Deal alerts*
+means no push, not silence — and every deal email carries RFC 8058 one-click
+unsubscribe, handled at `/unsubscribe`.
+
+## Email (Resend)
+
+`src/lib/email.js` is the only mail transport, modelled on `src/lib/push.js`:
+optional, never throws, and a silent no-op with no `RESEND_API_KEY`. Templates
+are pure functions in `src/lib/email-templates.js`.
+
+| When | Template | Class |
+| --- | --- | --- |
+| A `/join` application lands | `applicationReceived` | transactional |
+| The operator accepts it | `applicationAccepted` | transactional |
+| A reset code is minted (either door) | `vendorResetCode` | transactional |
+| A deal could not be pushed | `dealDigest` | marketing |
+
+**Transactional vs marketing is load-bearing, not a label.** Marketing is sent
+only to a live opt-in, always carries `List-Unsubscribe`, and is refused for any
+suppressed address. Transactional ignores a marketing opt-out entirely, because
+"stop telling me my password changed" is not an option we offer.
+
+**The suppression list** (`email_suppressions`) is the counterpart of the
+404/410 endpoint prune in `push.js`. Resend's webhook posts to
+`/api/webhooks/resend` (Svix-signed; unsigned requests are refused, since a
+forged bounce could suppress a vendor's login and break their recovery). A
+permanent bounce or a spam complaint suppresses at `all` and stops the student
+being *claimed* at all — not merely stops the send, or their quota would be
+spent every four hours on a message nothing can deliver. Transient bounces are
+ignored: guessing wrong there locks a real vendor out of password recovery.
+
+Run `npm run check:resend` before trusting any of it, and
+`npm run check:resend -- you@example.com` to send one of each template to a real
+inbox. A misconfigured key fails invisibly — nothing 500s, and four things just
+quietly stop happening.
+
+## Product analytics (PostHog)
+
+`src/lib/posthog.js` mirrors the `client_events` table (migration-024) out to
+PostHog. Modelled on `src/lib/email.js`: optional, never throws, and a silent
+no-op with no `POSTHOG_API_KEY`. `client_events` stays the system of record —
+PostHog is a copy, and losing it loses nothing.
+
+`logEvent()` calls `capture()`, which is a synchronous enqueue. Events are
+batched (20, or every 10s) and POSTed to `{POSTHOG_HOST}/batch/`, so no
+third-party network hop ever lands on a path a student is waiting on. The queue
+is flushed on SIGTERM, which is the shutdown Heroku announces on every deploy.
+
+**This is server-side only.** No `posthog-js` runs in the browser, which is a
+deliberate choice, not an omission — the CSP stays `script-src 'self'`, the
+es2017 / safari12 bundle floor is untouched, and no service-worker cache needs
+bumping. Two consequences worth knowing before you go looking for them:
+
+- **No autocapture, session replay, or feature flags.** Those need the browser
+  SDK. Adding it is a `public/` change (plus a `sw.js` `CACHE` bump per app),
+  and `/scan` almost certainly cannot run it at all — it targets `safari12`,
+  which already could not parse supabase-js.
+- **Pre-login events have no person.** `pwa_launched` and most of the install
+  funnel fire before sign-in, and this deployment sends no client-side anon id,
+  so they go with `$process_person_profile: false`. They are queryable as counts
+  and breakdowns but cannot be stitched into a true PostHog funnel. Signed-in
+  events carry the Supabase user id and behave normally. Bucketing anonymous
+  traffic under one shared id would have bought a funnel at the cost of
+  inventing a single hyperactive "user" and corrupting every person metric in
+  the project, which is not a trade worth making.
+
+Failures split the way `push.js` prunes endpoints — keep what might still land,
+drop what provably won't. A 5xx / 429 / network error re-queues; a 4xx is
+dropped and logged once, because a bad project key fails identically forever.
+A 1000-event ceiling keeps an unreachable vendor from becoming an OOM.
+
+Verify before trusting it:
+
+```bash
+npm run check:posthog          # config, then send one real test event
+npm run check:posthog -- --dry # config and payload only, send nothing
+```
+
+Region matters: a US key posted to the EU host is rejected and vice versa.
+`POSTHOG_HOST` defaults to `https://us.i.posthog.com`; EU projects must set
+`https://eu.i.posthog.com` explicitly.
+
+## Vendor password recovery
+
+Vendors sign in with a password rather than Google, so Supabase's own recovery
+email never reaches them. Two doors mint the same kind of code (30 minutes, five
+guesses, single use, `vendor_password_resets`):
+
+- **Self-serve** — the terminal's *Forgot password?* screen has **Email me a
+  code**, which posts to `/api/vendor/recover/request`. The everyday path.
+- **Operator** — `/admin` mints one and shows it, and it is now also emailed.
+  This stays because it is the only thing that works for a vendor who has lost
+  the mailbox as well as the password.
+
+The self-serve endpoint answers an identical `200` for every outcome — unknown
+address, a student account at that address, still inside the cooldown, mail API
+down — because a public endpoint that distinguishes them is a directory of which
+addresses are vendor logins. The per-login cooldown is not mainly an
+anti-mailbomb measure: minting supersedes any outstanding code, so without it
+anyone who knows a vendor's address could invalidate their live code on repeat.
 
 ## Tests
 

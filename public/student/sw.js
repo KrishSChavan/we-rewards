@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v69';   // v69: spots that share one purse with the owner's other locations (migration-044) say so — a chip on the card and the directory row, and every per-location "here"/"there" balance line (move picker, random pick, map pin, reward shortfall) names the chain instead; the visit counter says visits are NOT shared; live balance pushes patch every sibling card from one event
+const CACHE = 'werewards-v72';   // v72: Home's RECOMMENDED row leaves out spots you have already been to, caps at five, and trickles in newly-joined spots on a per-student daily roll whose odds halve every fortnight; the Spots tab's "Top" filter keeps the old plain ranking
+// v71: the Deal emails row only appears when the deployment can actually send mail (/api/public-config emailEnabled). A switch that cannot do anything reads as a promise.
 // v68: Home's search field is gone (the Spots tab owns searching) and the heading it shared a row with is now a two-item menu — Recent spots / Recommended; addresses render title-cased with E/W/N/S for the compass words
 // v66: Spots tab gained a "Pick a random spot" button under the search box — draws from shownSpots(), the same filter+search pipeline the list itself renders
 // v65: the Spots filter is a sheet, not a select — the list picker now combines with cuisine and price chips (migration-042), and the chips are built from the tags the loaded spots actually carry rather than a list shipped here

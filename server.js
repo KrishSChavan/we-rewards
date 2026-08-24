@@ -14,12 +14,15 @@ import vendorRoutes from './src/routes/vendor.js';
 import vendorRecoverRoutes from './src/routes/vendor-recover.js';
 import adminRoutes from './src/routes/admin.js';
 import applyRoutes from './src/routes/apply.js';
+import unsubscribeRoutes from './src/routes/unsubscribe.js';
+import webhookRoutes from './src/routes/webhooks.js';
 import { supabaseAdmin } from './src/lib/supabase.js';
 import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError, requestContext, isCrawler } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
+import { posthogEnabled, flushPostHog, batchUrl } from './src/lib/posthog.js';
 import { isUuid } from './src/lib/ids.js';
 import { loadVendorLogo } from './src/lib/cache.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
@@ -28,6 +31,7 @@ import { publicSignupBonus } from './src/lib/signup-bonus.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
 import { geminiConfigured, geminiModel } from './src/lib/gemini-receipt.js';
+import { emailEnabled, emailFrom } from './src/lib/email.js';
 import { buildClientAssets, buildRoot, ensureFresh } from './scripts/build-client.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 import {
@@ -93,6 +97,15 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
+// ABOVE the JSON-only gate, and the only thing that is. RFC 8058 one-click
+// unsubscribe is a POST carrying `List-Unsubscribe=One-Click` as
+// application/x-www-form-urlencoded, which requireJson would answer 415 —
+// Gmail would record the unsubscribe as broken and stop offering the button,
+// leaving "Report spam" as the only way a student can make deal emails stop.
+// The router reads nothing from the body (its proof is in the query string), so
+// no parser runs for it either and the payload is simply ignored.
+app.use('/unsubscribe', unsubscribeRoutes);
+
 // JSON-only content-type gate. Refuse any non-JSON request body (esp. XML — the
 // XXE vector) with 415 BEFORE express.json() or any other parser runs. We ship no
 // XML parser, so this is belt-and-suspenders that fails closed. See require-json.js.
@@ -124,6 +137,13 @@ app.use('/api/me/receipt', receiptLimiter, express.json({ limit: '8mb' }));
 // far tighter gate than any per-IP cap. Mounted here, above the global parser,
 // for the same mount-order reason as the receipt route.
 app.use('/api/admin/qr-poster', express.json({ limit: '14mb' }));
+
+// Resend delivery events. The Svix signature covers the EXACT bytes that were
+// sent, so this path gets a raw parser rather than the JSON one: re-serialising
+// a parsed object changes key order and whitespace, and the signature would
+// never verify again. Mounted here for the same mount-order reason as the two
+// parsers above — the global express.json() below skips a body already parsed.
+app.use('/api/webhooks/resend', express.raw({ type: 'application/json', limit: '256kb' }));
 
 // Bodies are tiny everywhere except a vendor saving a logo, which arrives as a
 // base64 data-URL (resized client-side to ~128px, so tens of KB). 600kb gives
@@ -273,6 +293,23 @@ const referralLimiter = rateLimit({
 app.use('/api', generalLimiter);
 app.use('/api/vendor/verify-pin', pinLimiter);
 app.use('/api/vendor/recover', recoverLimiter);
+// ...and a tighter one on the half that SENDS MAIL, stacked on top of it. Two
+// separate concerns share that prefix since migration-047: /recover spends
+// guesses against a live code, /recover/request mints a new one and mails it.
+// Without its own cap they share a budget, so hammering the mailer would use up
+// the guesses a legitimate vendor needs — and on a NAT'd campus network that is
+// one shared IP for everybody. The per-login cooldown in vendor_reset_request is
+// the real fence (it survives IP rotation); this bounds the mail one address can
+// be made to receive.
+app.use('/api/vendor/recover/request', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Same uniform answer shape as the route itself: a caller must not be able to
+  // tell a rate limit from a successful request for an address that doesn't exist.
+  message: { ok: true, message: 'If that email runs a spot on WeRewards, a reset code is on its way. It lasts 30 minutes.' },
+}));
 // Every path that resolves a 4-digit code, not just the preview. app.use()
 // matches on whole path segments, so '/api/vendor/redeem-preview' alone left
 // '/api/vendor/redeem' and both punch-card paths covered by nothing but the
@@ -706,6 +743,7 @@ app.use('/api/vendor/recover', vendorRecoverRoutes);  // public — locked-out v
 app.use('/api/vendor', vendorRoutes);   // vendor-authenticated endpoints
 app.use('/api/admin', adminRoutes);     // operator-only (ADMIN_EMAILS) analytics + errors
 app.use('/api/apply', applyRoutes);     // public vendor applications (rate-limited above)
+app.use('/api/webhooks', webhookRoutes); // public, Svix-signed (Resend bounces/complaints)
 
 // The cuisine vocabulary, for the two surfaces that have to OFFER it: the
 // public /join application and the admin vendor editors. Public because /join
@@ -902,11 +940,20 @@ app.get('/api/vendor-logo/:id', async (req, res) => {
 // BEFORE they pick a Google account — after that choice it is too late, and the
 // bonus is decided by the address they arrive with. null when no program is
 // running, so the page never promises a bonus nobody will be paid.
+//
+// `emailEnabled` rides along for the same reason and is needed at the same
+// moment: the terminal's "Email me a code" button sits on the SIGNED-OUT recover
+// screen, so the only way to hide it on a deployment that cannot send mail is a
+// flag available before anyone has signed in. It is a property of the
+// deployment, not of any account — it says nothing about whether a given address
+// is a vendor login, which is the disclosure /api/vendor/recover/request's
+// uniform response exists to prevent.
 app.get('/api/public-config', async (_req, res) =>
   res.json({
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
     signupBonus: await publicSignupBonus(),
+    emailEnabled,
   })
 );
 
@@ -1124,6 +1171,23 @@ if (isMain) {
     ? `Receipt reading: ${geminiModel()} (AI + forgery check), tesseract fallback`
     : 'Receipt reading: tesseract only — set GEMINI_API_KEY to enable the forgery check');
 
+  // Say whether mail is live, and why it matters that you can tell. With no key
+  // the app is unchanged except that four things silently stop: applicants hear
+  // nothing back, accepted vendors are never told they can sign in, self-serve
+  // password resets mint no code at all, and deal emails (the only way most iOS
+  // students can be reached) never send. All four fail QUIETLY by design, so
+  // this line is the only place the difference is visible.
+  console.log(emailEnabled
+    ? `Email: Resend as ${emailFrom()}${process.env.RESEND_WEBHOOK_SECRET ? ' (bounce webhook on)' : ' — no RESEND_WEBHOOK_SECRET, bounces are not being pruned'}`
+    : 'Email: off — set RESEND_API_KEY and EMAIL_FROM to enable vendor mail and deal emails');
+
+  // Same reason as the line above: PostHog forwarding fails quietly by design,
+  // so boot is the one place its state is visible. client_events is unaffected
+  // either way — this only says whether the MIRROR is running.
+  console.log(posthogEnabled
+    ? `Analytics: mirroring client_events to PostHog (${new URL(batchUrl()).origin})`
+    : 'Analytics: client_events only — set POSTHOG_API_KEY to mirror to PostHog');
+
   // Pre-build the OCR worker (receipt scanning) so the first student's scan
   // doesn't also pay the ~2-4s wasm init. Still worth warming when the AI
   // reader is configured: tesseract is exactly the thing that has to be ready
@@ -1156,7 +1220,18 @@ if (isMain) {
     console.log(`${signal} received — draining connections and shutting down`);
     stopCampaignWorker();   // don't claim a batch we won't live to deliver
     stopReferralWorker();   // the sweep is idempotent; the next boot picks it up
-    io.close(() => {
+    io.close(async () => {
+      // Last call for queued analytics. capture() batches in memory to keep a
+      // third-party hop off the request path, which means SIGTERM — the one
+      // shutdown Heroku actually announces, on every deploy and every dyno
+      // cycle — is where that queue would otherwise be lost. Awaited inside the
+      // drain callback so it runs after connections are done but before exit,
+      // and it can neither throw nor hang past its own 5s fetch timeout. The
+      // 10s backstop below still wins if anything here misbehaves.
+      if (posthogEnabled) {
+        const flushed = await flushPostHog();
+        if (flushed.sent) console.log('flushed ' + flushed.sent + ' analytics event(s) to PostHog');
+      }
       console.log('server closed cleanly');
       process.exit(0);
     });

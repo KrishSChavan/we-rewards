@@ -263,6 +263,12 @@ button { font-family: inherit; border: none; cursor: pointer; }
   border: 2.5px solid var(--ink); border-radius: 0.6rem;
 }
 .login-note { color: var(--muted); font-size: 0.95rem; }
+/* The self-serve reset button is hidden on a deployment with no mail
+   configured. .btn-ghost sets no display of its own today, so the UA rule
+   would carry it — but an author display: on a button here later would
+   silently beat [hidden] and put the button back, which is exactly the class
+   of bug .store-menu[hidden] below was written to fix. Say it explicitly. */
+#recover-send[hidden] { display: none; }
 
 /* ---------- shared buttons ---------- */
 

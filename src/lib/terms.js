@@ -28,7 +28,21 @@
 // profiles.created_at, which for an existing student is long past. Both guards
 // are covered by test/sql/behavior-040.sql and the e2e. Do not remove either
 // one on the assumption that accept-terms only runs for new accounts.
-export const TERMS_VERSION = '2026-08-10';
+// 2026-08-20: deal EMAILS (Policy §2.6, §7.4, and a new processor in §4).
+// Material for three separate reasons, any one of which would be enough.
+// First, the Policy said in so many words "We do not send marketing emails to
+// students" — a promise that this feature breaks, and the same shape of promise
+// the 2026-08-01 bump above was made to honour. Second, students are opted in by
+// default, so consent has to come from somewhere and this is where. Third, it
+// names a new processor (Resend) that receives student email addresses; §4 lists
+// every third party that data reaches, and an unlisted one is a disclosure gap
+// rather than an omission.
+//
+// The channel itself is a fallback only (see supabase/migrations/…migration-047),
+// so nobody receives more messages than the caps already allowed — but "the same
+// number of messages, arriving somewhere new" is still a change in what students
+// agreed to.
+export const TERMS_VERSION = '2026-08-20';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

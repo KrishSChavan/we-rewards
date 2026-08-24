@@ -16,6 +16,8 @@
     "ship": "powershell -ExecutionPolicy Bypass -File scripts/ship.ps1",
     "check:gemini": "node scripts/check-gemini.js",
     "check:client": "node scripts/check-client.js",
+    "check:resend": "node scripts/check-resend.js",
+    "check:posthog": "node scripts/check-posthog.js",
     "test": "node --import ./test/setup.js --test --test-concurrency=1 test/*.test.js test/integration/*.test.js",
     "test:unit": "node --import ./test/setup.js --test --test-concurrency=1 test/*.test.js",
     "test:integration": "node --import ./test/setup.js --test --test-concurrency=1 test/integration/*.test.js",

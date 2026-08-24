@@ -10,7 +10,10 @@
 // vendor would look identical to the throttle eating the other four.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { composeNotification, CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS } from '../src/lib/campaigns.js';
+import {
+  composeNotification, CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS,
+  runCampaignTick, startCampaignWorker, stopCampaignWorker,
+} from '../src/lib/campaigns.js';
 
 const item = (vendor, over = {}) => ({
   campaignId: `c-${vendor}`,
@@ -120,4 +123,35 @@ test('the durations the terminal offers are the ones the server accepts', () => 
   assert.deepEqual(CAMPAIGN_DURATIONS, [24, 72, 168]);
   assert.ok(CAMPAIGN_DURATIONS.includes(CAMPAIGN_CONFIG.defaultDurationHours)
     || CAMPAIGN_CONFIG.defaultDurationHours === 48);
+});
+
+test('with neither transport configured the tick does nothing at all', async () => {
+  // The test environment sets no VAPID keys and no RESEND_API_KEY, so this is
+  // the shape of a checkout — or a deployment — that has turned email off by
+  // simply never setting it.
+  //
+  // "Does nothing" has to mean it never reaches the database, not merely that it
+  // sends no mail. claim_campaign_pushes SPENDS a student's cooldown and daily
+  // cap at claim time (migration-032, section 7), so a tick that claimed and
+  // then found it had no way to deliver would silence that student for four
+  // hours over a message that was never going to be sent. Any fetch here is a
+  // failure, which is what the patched global proves.
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (...args) => { calls++; return realFetch(...args); };
+  try {
+    const result = await runCampaignTick();
+    assert.deepEqual(result, { claimed: 0, delivered: 0, emailed: 0 });
+    assert.equal(calls, 0, 'the tick talked to the network with nothing configured');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('the worker refuses to start when there is nothing to deliver with', () => {
+  // Same reasoning one level up: an unconfigured deployment should not carry a
+  // timer that wakes every 30 seconds to do nothing. startCampaignWorker is a
+  // no-op, and stopCampaignWorker after it must stay safe to call regardless.
+  startCampaignWorker();
+  stopCampaignWorker();
 });

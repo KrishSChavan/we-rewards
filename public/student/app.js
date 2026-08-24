@@ -33,6 +33,12 @@ let redeemCountdown = null; // redemption-code modal countdown
 let selectedItem = null;
 let socket = null;          // socket.io connection for live balance pushes
 let currentToken = null;    // latest Supabase access token (socket auth)
+// The signed-in student's uuid. NOT for identifying them to the server — every
+// request carries the token and the server reads the id off that. This is a
+// SEED: the Recommended row rolls a per-student, per-day dice for the newer
+// spots (see spotRoll), and seeding it on the account is what stops every
+// student in town being shown the same newcomer on the same morning.
+let currentUserId = null;
 let balanceReady = false;   // first balance shown yet? (skip the ticker on load)
 let communityPoints = 0;    // cross-vendor wallet (see community-points.md)
 let communityReady = false; // first community count shown yet? (same reason)
@@ -266,6 +272,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // use separate auth storage keys — otherwise signing into the vendor terminal
   // overwrites the student's session (and the student then reads the vendor's
   // empty balances as 0). See the vendor terminal's matching 'psu-vendor-auth'.
+  applyEmailConfig(pub.emailEnabled);
   sb = window.supabase.createClient(pub.supabaseUrl, pub.supabaseAnonKey, {
     auth: { storageKey: 'psu-student-auth' },
   });
@@ -435,6 +442,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('deals-optin-no').addEventListener('click', dismissDealOptin);
   $('deals-alert-retry').addEventListener('click', retryPushSubscribe);
   $('deals-toggle').addEventListener('click', onDealsToggle);
+  $('deal-emails-toggle').addEventListener('click', onDealEmailsToggle);
   // never leave the punch camera running while the tab is backgrounded
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopPunchScanner();
@@ -637,6 +645,7 @@ function render(session) {
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
     InstallPrompt.clearUser();  // stop keying install suppression to the signed-out user
+    currentUserId = null;       // …and stop rolling the next student's recommendations as this one
     return;
   }
 
@@ -663,6 +672,11 @@ function render(session) {
     syncInstallRow();
   }
   fillAccount(session);
+  // Set on EVERY render, not just a fresh sign-in: a silent token refresh
+  // re-enters here without going through the wasSignedOut branch above, and a
+  // seed that went null mid-session would reshuffle the Recommended row under
+  // a student who had not touched anything.
+  currentUserId = session.user?.id ?? null;
   loadVendors();
   loadTier();
   loadCommunity();
@@ -3172,13 +3186,132 @@ function newVendors() {
   return allVendors.filter((v) => v.isNew).sort(newestFirst);
 }
 
-/** How many spots the Recommended row aims to show. */
+/** How many spots the Recommended row shows. A hard cap, never a target. */
 const RECOMMENDED_TARGET = 5;
 
 /**
- * The Recommended list — shared by the Home carousel's fallback row and the
- * Spots tab's "Top" filter, so the two can never disagree about what is being
- * recommended.
+ * How many of those five a newly-joined spot may take. Two, so the row is
+ * always MOSTLY places other students actually go: a recommendation nobody has
+ * been to yet is a punt, and a row of five punts is not a recommendation, it is
+ * a directory with a nicer heading.
+ */
+const RECOMMENDED_NEW_SLOTS = 2;
+
+/**
+ * Which cards the newcomers take when they win one. Second and fourth, so the
+ * row still OPENS on a proven spot — the first card is the one every student
+ * sees and most never swipe past — while the new place sits where a thumb
+ * lands rather than at the end of a carousel nobody reaches.
+ */
+const RECOMMENDED_NEW_CARDS = [1, 3];
+
+/**
+ * The freshness ramp. A spot's odds of being trickled into the row HALVE every
+ * NEW_SPOT_HALF_LIFE_DAYS and hit zero at NEW_SPOT_MAX_AGE_DAYS: opened today
+ * it is certain, at a fortnight it is a coin flip, at a month one in four, and
+ * past two months it is simply not new any more and has to earn its place on
+ * visits like everywhere else.
+ *
+ * Deliberately a much longer ramp than the server's NEW_VENDOR_WINDOW_DAYS (7),
+ * which drives the NEW strip on the Spots tab. That badge is a binary claim
+ * about a spot and has to expire quickly to stay honest; this is a probability,
+ * and a spot that opened three weeks ago is still worth putting in front of
+ * someone who has not tried it.
+ */
+const NEW_SPOT_HALF_LIFE_DAYS = 14;
+const NEW_SPOT_MAX_AGE_DAYS = 60;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * When the trickle re-draws. 4am LOCAL, and both halves of that matter.
+ *
+ * LOCAL, not UTC. `Date.now() / DAY_MS` buckets by the UTC day, whose boundary
+ * on this campus is 8pm Eastern — the middle of dinner, and one of the busiest
+ * moments the app has. A student sitting on Home when that ticked over would
+ * watch two recommendation cards swap under their thumb.
+ *
+ * 4am rather than midnight, because midnight local is still a time students are
+ * awake and holding their phones. Nothing here needs to happen at a particular
+ * hour; it only needs to happen when nobody is looking.
+ */
+const DAY_ROLLOVER_HOUR = 4;
+
+/**
+ * Which local day a moment belongs to, as an integer.
+ *
+ * getTimezoneOffset() is read off the moment itself rather than off "now", so a
+ * spot created either side of a daylight-saving change is bucketed by the offset
+ * that was actually in force then. NaN in (an unparseable createdAt) gives NaN
+ * out, which is what lets newcomerChance reject it below.
+ */
+function dayIndex(ms) {
+  return Math.floor((ms - new Date(ms).getTimezoneOffset() * 60_000) / DAY_MS - DAY_ROLLOVER_HOUR / 24);
+}
+
+/**
+ * This spot's odds of being trickled into the Recommended row, in [0, 1].
+ *
+ * Age is counted in whole days off dayIndex — the SAME clock the roll below
+ * uses — and that is load-bearing rather than tidiness. A continuously-decaying
+ * chance compared against a roll that only moves once a day would let a spot
+ * sitting near the threshold flip from in to out mid-session, the carousel
+ * silently losing a card between one socket push and the next. Sharing one day
+ * boundary means the row can change at exactly one instant per day, 4am, and is
+ * otherwise frozen for as long as the student has the app open.
+ */
+function newcomerChance(v) {
+  const age = dayIndex(Date.now()) - dayIndex(new Date(v.createdAt ?? 0).getTime());
+  if (!Number.isFinite(age)) return 0;          // no createdAt: not evidence of being new
+  if (age > NEW_SPOT_MAX_AGE_DAYS) return 0;
+  // Clamped, not rejected: a phone clock a few minutes behind the server turns
+  // a spot that opened this morning into age -1, and dropping the very newest
+  // spot is the exact opposite of what this is for.
+  return Math.pow(0.5, Math.max(0, age) / NEW_SPOT_HALF_LIFE_DAYS);
+}
+
+/**
+ * A stable number in [0, 1) for one spot, one student, one day.
+ *
+ * NOT Math.random(). recommendedList() runs on every repaint — including every
+ * socket-driven balance push — so a live dice would reshuffle the row while the
+ * student was looking at it, and tapping a card would open whatever had slid
+ * into its place. Hashing (student, spot, day) instead makes the roll a pure
+ * function of things that do not change during a session.
+ *
+ * All three parts matter. The STUDENT keeps the whole campus from being shown
+ * the same newcomer on the same morning — the trickle is meant to spread a new
+ * spot across the student body, not to spike it. The SPOT gives each newcomer
+ * its own independent roll. The DAY is what makes it a trickle at all: the draw
+ * is redone every night, so a spot that missed today gets another go tomorrow,
+ * and a student who ignored one is not shown it forever.
+ */
+function spotRoll(v) {
+  return hash01(`${currentUserId ?? ''}:${v.vendorId}:${dayIndex(Date.now())}`);
+}
+
+/** FNV-1a, folded into [0, 1). Fast, no dependencies, stable across engines. */
+function hash01(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  // >>> 0 first: Math.imul returns a SIGNED int32, and a negative modulo would
+  // hand back a negative "probability" that every chance test then passes.
+  return ((h >>> 0) % 1e6) / 1e6;
+}
+
+/**
+ * The most-visited spots, in the server's ranking. What the Spots tab's "Top"
+ * filter shows — an objective answer to "what is popular here", identical for
+ * every student, and deliberately NOT the same list as recommendedList().
+ *
+ * The two used to be one function, on the reasoning that the two surfaces must
+ * never disagree about what is being recommended. They no longer answer the
+ * same question, so there is nothing left to disagree about: "Top" is a fact
+ * about the town, Recommended is advice to one student, and a student's own
+ * local belongs in the first and not the second.
  *
  * Three rules, in order:
  *
@@ -3192,11 +3325,13 @@ const RECOMMENDED_TARGET = 5;
  *      They go at the BOTTOM, after everything that earned its place by being
  *      visited, so topping up never displaces a genuinely popular spot.
  *
- * Rule 3 is why the row is labelled "Recommended" rather than "Most visited":
- * a brand-new spot has no visits by definition, so it is there on the strength
- * of being new, and the heading has to be able to carry both.
+ * The slice is new and it matters: since the Recommended row started filtering
+ * out spots the student has been to, the server sends a POOL of 25 ranked ids
+ * rather than exactly five (src/lib/cache.js → RECOMMENDED_LIMIT). Without the
+ * cap this filter would quietly grow from a five-row shortlist into most of the
+ * directory.
  */
-function recommendedList() {
+function topSpotsList() {
   if (allVendors.length <= RECOMMENDED_TARGET) {
     return allVendors.slice().sort(spotsOrder);
   }
@@ -3205,12 +3340,84 @@ function recommendedList() {
     .filter((v) => v.recommendedRank != null)
     .sort((a, b) => a.recommendedRank - b.recommendedRank);
 
-  if (ranked.length >= RECOMMENDED_TARGET) return ranked;
+  if (ranked.length >= RECOMMENDED_TARGET) return ranked.slice(0, RECOMMENDED_TARGET);
 
   // Top up with new spots the ranking didn't already include.
   const taken = new Set(ranked.map((v) => String(v.vendorId)));
   const filler = newVendors().filter((v) => !taken.has(String(v.vendorId)));
   return ranked.concat(filler.slice(0, RECOMMENDED_TARGET - ranked.length));
+}
+
+/**
+ * The Recommended row: at most five spots, none of them anywhere this student
+ * has already been, with the newest places trickled in.
+ *
+ * WHY NOT JUST THE TOP FIVE. "Recommended" is an answer to "where should I go
+ * next", and the five spots a regular already visits most are not an answer to
+ * that — they are that student's own habits handed back to them under a heading
+ * that promises something new. So everywhere they have ever bought, redeemed or
+ * scanned a visit (the server's `visited` flag, migration-048) is out of the
+ * running before anything is picked.
+ *
+ * The rules, in order:
+ *
+ *   1. BEEN EVERYWHERE? A row of nothing is worse than a re-run of the
+ *      classics, so a student who has visited the entire catalogue falls back
+ *      to the plain ranking. This is also the graceful path on a deployment
+ *      where migration-048 has not been applied: `visited` is then absent on
+ *      every spot, nothing is excluded, and the row behaves as it did before
+ *      plus the trickle.
+ *   2. THE BACKBONE is the visit ranking over what is left, best first, then
+ *      whatever else they have not tried, newest first. Five of those is
+ *      already a good row.
+ *   3. THE TRICKLE. Every unvisited spot that did NOT make the backbone rolls
+ *      for one of two reserved cards, with odds that decay by age
+ *      (newcomerChance). A place that opened this week is close to certain; one
+ *      from last month is a long shot. Winners are taken newest-first, so when
+ *      more spots win than there are cards the fresher one gets it.
+ *
+ * Rule 3 is why the row is labelled "Recommended" rather than "Most visited":
+ * a brand-new spot has no visits by definition, so it is there on the strength
+ * of being new, and the heading has to be able to carry both.
+ *
+ * The five is a HARD CAP, and the row is allowed to be shorter. If a student
+ * has only two spots left they have not tried, then two is the honest answer —
+ * padding it out with places they already go would undo the whole point.
+ */
+function recommendedList() {
+  const key = (v) => String(v.vendorId);
+  const unvisited = allVendors.filter((v) => !v.visited);
+  // Rule 1. Nowhere left to send them — show the ranking rather than nothing.
+  if (!unvisited.length) return topSpotsList();
+
+  // Rule 2.
+  const ranked = unvisited
+    .filter((v) => v.recommendedRank != null)
+    .sort((a, b) => a.recommendedRank - b.recommendedRank);
+  const unranked = unvisited.filter((v) => v.recommendedRank == null).sort(newestFirst);
+  const backbone = ranked.concat(unranked).slice(0, RECOMMENDED_TARGET);
+
+  // Rule 3. Only spots that would MISS the row otherwise roll for a card — a
+  // newcomer already sitting in the backbone would just be spending a reserved
+  // card on itself and pushing a second one out for nothing.
+  const seated = new Set(backbone.map(key));
+  const winners = [];
+  for (const v of unvisited.filter((s) => !seated.has(key(s))).sort(newestFirst)) {
+    if (winners.length >= RECOMMENDED_NEW_SLOTS) break;
+    const chance = newcomerChance(v);
+    if (chance > 0 && spotRoll(v) < chance) winners.push(v);
+  }
+  if (!winners.length) return backbone;
+
+  // Seat the winners on their reserved cards, then fill around them from the
+  // backbone in order — so what gets displaced is always its weakest tail.
+  const row = new Array(RECOMMENDED_TARGET).fill(null);
+  winners.forEach((v, i) => { row[RECOMMENDED_NEW_CARDS[i]] = v; });
+  const rest = backbone.slice();
+  for (let i = 0; i < row.length; i++) if (!row[i]) row[i] = rest.shift() ?? null;
+  // filter(Boolean) closes the gaps a short backbone leaves behind, which is
+  // why the winners' card numbers are a preference and not a guarantee.
+  return row.filter(Boolean);
 }
 
 /**
@@ -3220,9 +3427,10 @@ function recommendedList() {
  *   favorites — the spots this student saved with the heart, alphabetical.
  *   recent    — spots with activity in the last 7 days (the server's `recent`
  *               flag), alphabetical. The set the Home carousel draws from.
- *   top       — the most-visited spots, in the server's ranking.
- *               `recommendedRank` is only set on the ranked few, so this is a
- *               short list by design.
+ *   top       — the most-visited spots, in the server's ranking, capped at
+ *               five. NOT the Home carousel's Recommended row: this one is the
+ *               same for everybody and includes the student's own regular
+ *               haunts, which is what "Top" means.
  *
  * Each returns a NEW array; nothing here may sort allVendors in place, or the
  * carousel's own ordering would change underneath it.
@@ -3238,7 +3446,7 @@ function baseSpotsList() {
   if (spotsFilter === 'recent') {
     return allVendors.filter((v) => v.recent).sort(spotsOrder);
   }
-  if (spotsFilter === 'top') return recommendedList();
+  if (spotsFilter === 'top') return topSpotsList();
   return allVendors.slice().sort(spotsOrder);
 }
 
@@ -4068,8 +4276,10 @@ function resetSpots() {
      RECENT — anything with activity in the last 7 days (the server's `recent`
        flag: bought, redeemed, scanned a receipt, or collected a visit).
      RECOMMENDED — the fallback when there is no recent activity at all, which
-       is every brand-new student and anyone back from a break. Shows the five
-       most-visited spots, so the first screen of the app is never empty.
+       is every brand-new student and anyone back from a break. Shows up to five
+       spots they have NOT been to — the popular ones, with the newest places
+       trickled in — so the first screen of the app is never empty and never
+       just hands a returning student their own history back.
 
    Saved spots (the heart on the Spots tab) sort to the front of the recent row.
    They do not ADD to it — a spot you saved but haven't been to in a month
@@ -4102,11 +4312,10 @@ function recentVendors() {
   }
 
   // No recent activity — show the Recommended list instead. recommendedList()
-  // handles the small-catalogue and top-up rules, and is the same function the
-  // Spots tab's "Top" filter uses, so the two surfaces can never disagree.
-  // Its final fallback covers a brand-new deployment with nothing ranked and
-  // nothing new: better the whole list than an empty carousel, since "check
-  // back soon" is wrong when spots plainly exist.
+  // owns all of it: dropping the spots this student has already been to, the
+  // five-card cap, and the newcomer trickle. The guard below covers a brand-new
+  // deployment with no spots ranked and none new: better the whole list than an
+  // empty carousel, since "check back soon" is wrong when spots plainly exist.
   const list = recommendedList();
   return {
     list: list.length ? list : allVendors.slice().sort(spotsOrder),
@@ -6356,6 +6565,16 @@ let dealAlertsOn = true;
 // indistinguishable from one that worked — which is exactly how this went
 // unnoticed. Shown on the repair line; cleared by a success.
 let pushFailNote = '';
+// The second channel (migration-047). Independent of dealAlertsOn: for a
+// student on iOS who never installed the PWA this is the only switch that can
+// do anything at all, because web push does not exist for them.
+let dealEmailsOn = true;
+// Whether THIS deployment can send mail at all (/api/public-config). The Deal
+// emails row stays hidden without it: a switch that cannot do anything reads as
+// a promise, and a student who turns it on and never gets an email learns that
+// the settings screen lies. Same instinct as setDealsToggle showing what is
+// TRUE rather than what is stored.
+let emailEnabled = false;
 const DEAL_OPTIN_DISMISS_KEY = 'wr-deal-optin-dismissed';
 
 async function loadDeals() {
@@ -6367,8 +6586,10 @@ async function loadDeals() {
     dealsLoaded = true;
     pushReady = data.pushReady ?? null;
     dealAlertsOn = data.dealAlerts !== false;
+    dealEmailsOn = data.dealEmails !== false;
     renderDealsCard(data.unread ?? 0);
     setDealsToggle(dealAlertsOn);
+    setDealEmailsToggle(dealEmailsOn);
     if (!$('deals-modal').hidden) renderDealsList();
     // Only ask about notifications once there is something to be notified
     // about. A permission prompt before the first deal exists is a prompt
@@ -6446,6 +6667,7 @@ function dropDealsSheet() {
   dealsLoaded = false;
   pushReady = null;
   dealAlertsOn = true;
+  dealEmailsOn = true;
   pushFailNote = '';
 }
 
@@ -6975,6 +7197,55 @@ async function onDealsToggle() {
   const showWhy = next && !ok && Boolean(pushFailNote) && !denied;
   $('deals-fail-note').textContent = showWhy ? pushFailNote : '';
   $('deals-fail-note').hidden = !showWhy;
+}
+
+/* ---------- account: the deal-emails switch ----------
+
+   Far simpler than the one above, and the difference is the whole reason both
+   exist. The push switch has to reconcile three things that can disagree — a
+   browser permission, an endpoint the server holds, and a stored flag — so it
+   renders what is TRUE rather than what was asked for. Email has none of that:
+   there is no permission to grant, no device to be reachable, and no endpoint
+   to go stale. The flag is the entire truth, so the switch can simply move and
+   then be corrected if the write fails. */
+
+function applyEmailConfig(on) {
+  emailEnabled = Boolean(on);
+  $('deal-emails-row').hidden = !emailEnabled;
+}
+
+function setDealEmailsToggle(on) {
+  $('deal-emails-toggle').setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+async function onDealEmailsToggle() {
+  // The row is hidden when mail is off, but hidden is a display rule, not a
+  // guarantee. Refusing here keeps the screen and the server in agreement.
+  if (!emailEnabled) return;
+  const sw = $('deal-emails-toggle');
+  const wasOn = sw.getAttribute('aria-checked') === 'true';
+  const next = !wasOn;
+
+  // Moves immediately in BOTH directions, unlike the push switch. Turning on is
+  // safe to promise here because nothing can refuse it: no prompt, no round trip
+  // to a push service, nothing that can come back "granted but unreachable".
+  dealEmailsOn = next;
+  setDealEmailsToggle(next);
+  sw.disabled = true;
+  try {
+    // Only this key. Sending both would let a stale Account screen overwrite the
+    // push switch with whatever it happened to be showing.
+    const res = await authFetch('/api/me/notify', {
+      method: 'PATCH',
+      body: JSON.stringify({ dealEmails: next }),
+    });
+    if (!res.ok) throw new Error(`notify failed: ${res.status}`);
+  } catch (err) {
+    dealEmailsOn = wasOn;                    // the server never heard it
+    setDealEmailsToggle(wasOn);
+    console.warn('[email] deal-emails toggle failed:', err?.message ?? err);
+  }
+  sw.disabled = false;
 }
 
 /* ---------- the full-screen punch-in scanner ---------- */

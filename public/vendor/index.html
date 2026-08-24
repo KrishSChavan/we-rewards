@@ -84,14 +84,21 @@
   </section>
 
   <!-- ===== FORGOT PASSWORD =====
-       There is no recovery email in this stack. The operator mints a one-time
-       code in /admin and reads it to the vendor over the phone; it gets typed
-       in here. Server side: POST /api/vendor/recover (src/routes/vendor-recover.js). -->
+       Two ways to get a code, one place to spend it (migration-047):
+         • "Email me a code" — POST /api/vendor/recover/request, self-serve.
+         • Call the team, and the operator mints one in /admin and reads it out.
+       Either way it gets typed in below and verified by POST /api/vendor/recover
+       (src/routes/vendor-recover.js). -->
   <section id="screen-recover" class="screen" hidden>
     <div class="login-card">
       <p class="brand">WEREWARDS</p>
       <h1>Reset your password</h1>
-      <p class="login-note">
+      <!-- BOTH of these start in their email-OFF state and are upgraded by
+           applyEmailConfig() once /api/public-config says this deployment can
+           send mail. That direction is deliberate: if the config fetch fails or
+           the script never runs, the vendor is left with instructions that
+           work (call us) and no button that silently does nothing. -->
+      <p id="recover-help" class="login-note">
         Call or text the WeRewards team and ask for a reset code. We’ll read you
         an 8-character code. Type it below with a new password. Codes last 30
         minutes and work once.
@@ -99,6 +106,12 @@
       <label>Email
         <input id="recover-email" type="email" autocomplete="username" inputmode="email" />
       </label>
+      <!-- Deliberately not a primary button: the primary action on this screen
+           is still "Set new password", because a vendor who already has a code
+           read to them over the phone must not be nudged into requesting a
+           second one, which would supersede the one they are holding. -->
+      <button id="recover-send" class="btn-ghost" type="button" hidden>Email me a code</button>
+      <p id="recover-sent" class="field-success" hidden></p>
       <label>Reset code
         <input id="recover-code" type="text" autocomplete="one-time-code" autocapitalize="characters"
                spellcheck="false" maxlength="12" placeholder="e.g. K7M2-NP94" />

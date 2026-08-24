@@ -5,6 +5,7 @@
 // queryable server-side.
 
 import { supabaseAdmin } from './supabase.js';
+import { capture } from './posthog.js';
 
 // Cap field lengths so a bogus/oversized payload can't bloat a row (or the table).
 const cap = (s, n) => (s == null ? null : String(s).slice(0, n));
@@ -20,6 +21,14 @@ const cap = (s, n) => (s == null ? null : String(s).slice(0, n));
  * @param {string} [e.path]      page URL at the time
  */
 export async function logEvent(e) {
+  // Mirror to PostHog BEFORE the insert, and outside its try. capture() is a
+  // synchronous enqueue that cannot throw, so it costs nothing here — and doing
+  // it first means a database blip (the overwhelmingly likelier of the two
+  // failures) still leaves the event visible somewhere. client_events stays the
+  // system of record; this is a copy, not a hand-off. No-op unless
+  // POSTHOG_API_KEY is set.
+  capture(e);
+
   try {
     await supabaseAdmin.from('client_events').insert({
       source: e.source,

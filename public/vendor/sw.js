@@ -82,7 +82,7 @@
 // changed, so the cache has to move or an installed terminal keeps the old
 // terminal.js beside a fresh index.html and the tags never appear
 // (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v27';
+const CACHE = 'werewards-terminal-v29';   // v29: 'Email me a code' is hidden, and the recover copy falls back to 'call us', when the deployment has no mail configured. The server's answer is uniform by design, so the button is the only place this can be said.
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

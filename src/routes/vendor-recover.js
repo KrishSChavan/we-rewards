@@ -4,9 +4,17 @@
 // (whose router-level requireVendor would 401 every request here) and given its
 // own tight limiter in server.js.
 //
+// TWO DOORS MINT A CODE (migration-047), and this file holds one of them:
+//   • POST /request, below — self-serve. The vendor types their address and the
+//     code is mailed to it. No operator involved. This is the everyday path.
+//   • POST /api/admin/vendors/:id/reset-code — the operator mints one by hand
+//     and reads it down the phone. Still here, because it is the only thing
+//     that works for a vendor who has lost the mailbox as well as the password.
+// Both land in the same table and are spent by the same endpoint below.
+//
 // What stands between this endpoint and a stolen terminal:
-//   1. a code that only exists because the operator minted one by hand in /admin
-//      and read it down the phone to someone they recognised,
+//   1. a code that exists only because someone proved control of the vendor's
+//      registered mailbox, or because the operator recognised a voice,
 //   2. a 30-minute expiry (migration-031),
 //   3. a 5-guess cap charged ATOMICALLY inside vendor_reset_begin, so rotating
 //      IPs past the per-IP limiter still can't buy extra guesses,
@@ -19,7 +27,9 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { normalizeResetCode } from '../lib/reset-codes.js';
+import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
+import { sendEmail, emailUrl, emailEnabled, maskEmail } from '../lib/email.js';
+import { vendorResetCode } from '../lib/email-templates.js';
 
 const router = Router();
 
@@ -91,6 +101,106 @@ export function validateRecoverInput(body) {
 
   return { email, code, newPassword };
 }
+
+// How long a self-serve code lives, and how long before the same login may ask
+// for another. Kept in sync with RESET_TTL_MINUTES in src/routes/admin.js: one
+// code, one lifetime, whichever door minted it.
+const SELF_TTL_MINUTES = 30;
+// The cooldown is NOT mainly about mailbombing. vendor_reset_request supersedes
+// any outstanding code, so without it anyone who knows a vendor's address can
+// invalidate that vendor's live code on repeat and keep them locked out of their
+// own recovery. Two minutes is long enough to make that useless and short
+// enough that a vendor who lost the first mail to a spam folder can retry.
+const SELF_COOLDOWN_SECONDS = 120;
+
+/**
+ * POST /api/vendor/recover/request  { email }
+ *
+ * Self-serve half of recovery (migration-047): mint a code and mail it, with no
+ * operator in the loop. The operator-minted path in /admin stays for the vendor
+ * who has lost the mailbox too.
+ *
+ * ALWAYS ANSWERS 200 with the same body. Unknown address, a student account at
+ * that address, a vendor still inside the cooldown, a mail API having a bad
+ * minute: identical. This endpoint is public and unauthenticated, so any
+ * observable difference between those cases turns it into a directory of which
+ * addresses are vendor logins. Same rule the verify endpoint below follows for
+ * the same reason; the operator gets the real story in the server log.
+ */
+router.post('/request', async (req, res, next) => {
+  try {
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+
+    // The uniform answer. Built once so no branch can accidentally differ.
+    const ACCEPTED = {
+      ok: true,
+      message: 'If that email runs a spot on WeRewards, a reset code is on its way. It lasts 30 minutes.',
+    };
+
+    if (!email || email.length > EMAIL_MAX || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.json(ACCEPTED);
+    }
+    // With no mail transport there is no self-serve channel at all, and minting
+    // a code nobody can read would only supersede one the operator just read
+    // down the phone. Answer identically and mint nothing.
+    if (!emailEnabled) {
+      console.warn('[recover] self-serve request but email is not configured — set RESEND_API_KEY / EMAIL_FROM');
+      return res.json(ACCEPTED);
+    }
+
+    const code = generateResetCode();
+    const codeHash = await bcrypt.hash(normalizeResetCode(code), 10);
+
+    const { data, error } = await supabaseAdmin.rpc('vendor_reset_request', {
+      p_email: email,
+      p_code_hash: codeHash,
+      p_ttl_minutes: SELF_TTL_MINUTES,
+      p_cooldown_seconds: SELF_COOLDOWN_SECONDS,
+    });
+    if (error) throw error;
+
+    const row = Array.isArray(data) ? data[0] : data;
+    // Zero rows: not a vendor login. One row with reset_throttled: a vendor, but
+    // one who asked moments ago and already has a live code in their inbox.
+    // Neither sends mail, and neither is visible to the caller.
+    if (!row || row.reset_throttled || !row.reset_id) {
+      if (row?.reset_throttled) console.log(`[recover] self-serve throttled for ${maskEmail(email)}`);
+      return res.json(ACCEPTED);
+    }
+
+    const mail = vendorResetCode({
+      businessName: row.reset_vendor_name,
+      code,
+      ttlMinutes: SELF_TTL_MINUTES,
+      terminalUrl: emailUrl('/vendor/', req),
+      // Changes the copy to name the request and add the "wasn't you?" line —
+      // the operator-minted version is answering a phone call the vendor made,
+      // this one may be arriving unasked.
+      selfServe: true,
+    });
+    const sent = await sendEmail({
+      to: row.reset_email,
+      subject: mail.subject,
+      html: mail.html,
+      text: mail.text,
+      category: 'transactional',
+      // Per RESET ROW, not per address: every request that gets this far minted
+      // a NEW code, and de-duplicating two of them would mail the first code in
+      // answer to the second request.
+      idempotencyKey: `reset:${row.reset_id}`,
+      tags: ['vendor-reset'],
+    });
+    if (!sent.ok) {
+      // The code is live and the caller has been told it is coming. Nothing can
+      // be done for them in this response without leaking whether they exist, so
+      // the log is where this has to be visible.
+      console.error(`[recover] could not mail self-serve code to ${maskEmail(row.reset_email)}: ${sent.reason}`);
+    }
+    return res.json(ACCEPTED);
+  } catch (err) {
+    next(err);
+  }
+});
 
 /** POST /api/vendor/recover  { email, code, newPassword } */
 router.post('/', async (req, res, next) => {

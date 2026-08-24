@@ -200,6 +200,46 @@ router.post('/decline', async (req, res, next) => {
 // ============================================================
 
 /**
+ * Every vendor this student has ever transacted with or scanned a visit at
+ * (migration-048). Drives the `visited` flag below, which is how the
+ * Recommended row knows not to recommend somewhere they already go.
+ *
+ * Returns `null` — NOT an empty array — when the RPC is unavailable, because
+ * the two mean opposite things to the caller: an empty array is "this student
+ * has been nowhere", which is a real and common state (every new signup), while
+ * null is "we could not find out". Answering the second with the first would
+ * hand a five-year regular a row of the five spots they visit most.
+ *
+ * Warns at most hourly, THROTTLED RATHER THAN LATCHED. This runs on the hottest
+ * read in the app — every home open, every socket push — so an unthrottled warn
+ * would fill the log with the same line thousands of times an hour and bury
+ * everything else. But a once-per-process latch is worse than it looks: this is
+ * a POST, and src/lib/supabase.js only retries GET/HEAD, so a single gateway
+ * blip is enough to burn the one warning the process will ever emit. Every real
+ * failure after that — the function dropped, the grant lost — would then be
+ * completely silent. An hourly window gives up almost all of the noise and none
+ * of the signal.
+ */
+const VISITED_WARN_INTERVAL_MS = 60 * 60_000;
+let visitedRpcWarnedAt = 0;
+async function visitedVendorIds(userId) {
+  const { data, error } = await supabaseAdmin.rpc('student_visited_vendor_ids', {
+    p_user_id: userId,
+  });
+  if (error) {
+    const now = Date.now();
+    if (now - visitedRpcWarnedAt >= VISITED_WARN_INTERVAL_MS) {
+      visitedRpcWarnedAt = now;
+      console.warn(
+        `[balances] student_visited_vendor_ids unavailable, falling back (run migration-048?): ${error.message}`
+      );
+    }
+    return null;
+  }
+  return (data ?? []).map((r) => r.vendor_id);
+}
+
+/**
  * GET /api/me/balances
  * All vendors + this student's balance at each (0 if never visited),
  * plus each vendor's active rewards so the app can show "1 punch away" style progress.
@@ -225,6 +265,7 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       { data: recentTxns, error: rErr },
       { data: recentPunches, error: pErr },
       recommended,
+      visited,
     ] = await Promise.all([
       // The catalogue half of this payload is IDENTICAL for every student, and
       // `vendors` has no index beyond its primary key — so filtering on `active`
@@ -266,6 +307,12 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       // The Recommended fallback for a student with no recent activity. Global
       // rather than per-student, so it is cached like the catalogue.
       loadRecommendedVendorIds(),
+      // Everywhere this student has EVER been, so the Recommended row can leave
+      // those out (migration-048). Per-student and all-time, which is why it is
+      // an RPC and not a .select(): supabase/config.toml caps PostgREST at
+      // max_rows = 1000 and an all-time transactions pull would truncate there
+      // in silence. Never throws upward — see visitedVendorIds().
+      visitedVendorIds(req.user.id),
     ]);
     // readPurses throws its own Supabase errors, so it needs no line here.
     if (cErr) throw cErr;
@@ -295,8 +342,23 @@ router.get('/balances', requireConsent, async (req, res, next) => {
     ]);
     // Position in the top-N list, so the client can keep the ranking. A vendor
     // that has since been deactivated is already absent from `vendors`, so it
-    // simply never gets read back out.
+    // simply never gets read back out. This is a CANDIDATE POOL now, not the
+    // row itself (src/lib/cache.js → RECOMMENDED_LIMIT): the client drops the
+    // spots this student has already been to and then takes five.
     const recommendedRank = new Map(recommended.map((id, i) => [id, i]));
+    // Everywhere they have been, all-time (migration-048). `null` back from the
+    // RPC means "could not find out" rather than "nowhere", so fall back to the
+    // two per-student reads already in hand instead of telling the client this
+    // student is brand new. That fallback is NARROWER than the function on
+    // purpose — a punch card, or a transaction inside the 7-day recent window —
+    // so the worst it does is recommend somewhere they last went months ago,
+    // never the reverse.
+    const visitedSet = new Set(
+      visited ?? [
+        ...(cards ?? []).map((c) => c.vendor_id),
+        ...(recentTxns ?? []).map((t) => t.vendor_id),
+      ]
+    );
     res.json(
       (vendors ?? []).map((v) => {
         return {
@@ -359,6 +421,14 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           // has no recent spots at all, where the carousel shows these instead
           // under a "Recommended" heading rather than opening empty.
           recommendedRank: recommendedRank.has(v.id) ? recommendedRank.get(v.id) : null,
+          // Has this student EVER been here — bought, redeemed, or scanned a
+          // visit (migration-048)? Separate from `recent`, which is a 7-day
+          // window and answers a different question: `recent` is "have I been
+          // lately", this is "do I know this place at all". The Recommended row
+          // shows only spots where this is false, so it stays an answer to
+          // "where should I go next" rather than a list of the student's own
+          // habits handed back to them.
+          visited: visitedSet.has(v.id),
           // Joined in the last NEW_VENDOR_WINDOW_DAYS — drives the NEW strip at
           // the top of the Spots tab. `createdAt` rides along so the client can
           // order those newest-first without re-deriving the window: the server
@@ -1131,7 +1201,7 @@ router.get('/deals', requireConsent, async (req, res, next) => {
         .limit(50),
       supabaseAdmin
         .from('student_notify_state')
-        .select('push_opt_in')
+        .select('push_opt_in, email_opt_in')
         .eq('user_id', req.user.id)
         .maybeSingle(),
       // Do we actually hold somewhere to send to? claim_campaign_pushes will not
@@ -1173,6 +1243,10 @@ router.get('/deals', requireConsent, async (req, res, next) => {
       // `push_opt_in` defaults on; the row only exists once they have been
       // targeted or have changed the setting.
       dealAlerts: state?.push_opt_in ?? true,
+      // The second channel (migration-047), also defaulting on and independent
+      // of dealAlerts. This is the one that reaches a student whose browser
+      // cannot do web push at all, which is most of iOS.
+      dealEmails: state?.email_opt_in ?? true,
       // "Can this student be reached at all", as distinct from "did they say
       // yes". The client re-subscribes when this is false and permission is
       // granted, which is what repairs the otherwise-permanent silent state.
@@ -1292,30 +1366,69 @@ router.post('/push/unsubscribe', requireConsent, async (req, res, next) => {
 });
 
 /**
- * PATCH /api/me/notify  { dealAlerts: boolean }
- * The opt-out the Privacy Policy promises. Governs PUSH only: the in-app deals
- * list is unaffected, because turning off interruptions is not the same as
- * refusing to be told anything.
+ * PATCH /api/me/notify  { dealAlerts?: boolean, dealEmails?: boolean }
+ *
+ * The opt-out the Privacy Policy promises, one switch per channel. Neither
+ * touches the in-app deals list, because turning off interruptions is not the
+ * same as refusing to be told anything.
+ *
+ * TWO INDEPENDENT SWITCHES since migration-047, which is what their labels in
+ * the Account screen say and therefore what they have to do. Turning off deal
+ * alerts means no push; it does NOT imply silence on email, and the reverse
+ * holds too. Turning off both is what means silence.
+ *
+ * Either key may be sent alone, so the two switches never overwrite each other
+ * from a stale page — a body with neither is the only bad request.
  */
 router.patch('/notify', requireConsent, async (req, res, next) => {
   try {
-    const on = req.body?.dealAlerts;
-    if (typeof on !== 'boolean') {
+    const push = req.body?.dealAlerts;
+    const mail = req.body?.dealEmails;
+    const hasPush = typeof push === 'boolean';
+    const hasMail = typeof mail === 'boolean';
+    if (!hasPush && !hasMail) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'Deal alerts must be on or off.' });
     }
+
+    const patch = { user_id: req.user.id, updated_at: new Date().toISOString() };
+    if (hasPush) patch.push_opt_in = push;
+    if (hasMail) patch.email_opt_in = mail;
+
     const { error } = await supabaseAdmin
       .from('student_notify_state')
-      .upsert({ user_id: req.user.id, push_opt_in: on, updated_at: new Date().toISOString() },
-              { onConflict: 'user_id' });
+      .upsert(patch, { onConflict: 'user_id' });
     if (error) throw error;
-    if (!on) {
+
+    // Turning push OFF drops every stored endpoint: an endpoint nobody holds
+    // cannot be pushed to, which is what makes the switch true rather than
+    // merely recorded. There is no email equivalent — we cannot "delete" an
+    // address the student still needs for password resets and receipts — so the
+    // email half is the flag alone, which is why the claim in migration-047
+    // re-reads it rather than trusting reachability.
+    if (hasPush && !push) {
       await supabaseAdmin
         .from('push_subscriptions')
         .delete()
         .eq('user_id', req.user.id)
         .eq('role', 'student');
     }
-    res.json({ dealAlerts: on });
+
+    // A student turning deal emails back ON is undoing an unsubscribe, which
+    // may also have written a 'marketing' row on the suppression list (a
+    // one-click unsubscribe from a mail client does exactly that). Clear it, or
+    // the switch reads on and nothing ever arrives.
+    if (hasMail && mail && req.user.email) {
+      await supabaseAdmin
+        .from('email_suppressions')
+        .delete()
+        .eq('email', String(req.user.email).trim().toLowerCase())
+        .eq('scope', 'marketing');
+    }
+
+    const body = {};
+    if (hasPush) body.dealAlerts = push;
+    if (hasMail) body.dealEmails = mail;
+    res.json(body);
   } catch (err) {
     next(err);
   }
@@ -1357,7 +1470,7 @@ router.get('/export', async (req, res, next) => {
         .from('campaign_recipients')
         .select('campaign_id, status, pushed_at, read_at, opened_at, vendor_campaigns(title, body, kind, created_at, vendors(name))')
         .eq('user_id', uid),
-      supabaseAdmin.from('student_notify_state').select('push_opt_in, last_push_at').eq('user_id', uid).maybeSingle(),
+      supabaseAdmin.from('student_notify_state').select('push_opt_in, email_opt_in, last_push_at, last_email_at').eq('user_id', uid).maybeSingle(),
       // Community points we GAVE them and why (migration-039/040). Not a
       // transaction, so the history above misses it entirely — and "points that
       // appeared from nowhere" is exactly what an export exists to explain.
@@ -1411,7 +1524,7 @@ router.get('/export', async (req, res, next) => {
       transactions: transactions.data ?? [],
       scores: scores.data,
       deals: deals.data ?? [],
-      notifications: notify.data ?? { push_opt_in: true, last_push_at: null },
+      notifications: notify.data ?? { push_opt_in: true, email_opt_in: true, last_push_at: null, last_email_at: null },
       // Bonus points from an incentive or an operator, and the referral links
       // we hold about this student.
       bonusPoints: grants.data ?? [],
@@ -1472,6 +1585,14 @@ router.post('/delete', async (req, res, next) => {
  * endpoints would outlive the account — and the Privacy Policy says they are
  * deleted with it. Done BEFORE the auth user goes, so a failure here surfaces
  * as a failed deletion rather than silently orphaning them.
+ *
+ * email_suppressions is DELIBERATELY not cleaned up here, and is the one piece
+ * of a deleted account's data that stays. It is keyed by address rather than by
+ * user id, and it is the record of someone asking us to stop — so removing it on
+ * deletion would mean a student who unsubscribed, or who reported us as spam,
+ * starts receiving mail again the moment they sign up afresh with the same
+ * address. That is the opposite of honouring the request, and it is why the
+ * Privacy Policy's retention table calls the exception out by name.
  */
 async function forgetPushSubscriptions(userId) {
   const { error } = await supabaseAdmin
