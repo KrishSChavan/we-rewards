@@ -103,6 +103,60 @@ test('the accepted email says WHICH password works when the account was linked',
   assert.ok(fresh.text.includes('a@b.com'));
 });
 
+test('neither vendor email can ship a link to the terminal that 404s', () => {
+  // The terminal is mounted at /terminal (server.js: `{ mount: '/terminal', dir:
+  // 'vendor' }`) while its SOURCE lives in public/vendor, and both templates were
+  // originally written against the directory name. That put a dead link in the
+  // primary button of the two emails whose whole job is getting a vendor into the
+  // terminal: the welcome email, and the one sent to somebody already locked out.
+  //
+  // Asserting on the DEFAULTS matters as much as on the callers. Every caller
+  // passes terminalUrl today, so a wrong default is invisible until someone adds
+  // a caller that doesn't — and then it ships a bare relative path into a mail
+  // client, where there is no origin to resolve it against at all.
+  for (const [label, msg] of [
+    ['accepted', applicationAccepted({ businessName: 'X', contactName: 'Sam', email: 'a@b.com' })],
+    ['reset', vendorResetCode({ businessName: 'X', code: 'AAAA-BBBB' })],
+  ]) {
+    assert.equal(/["\s(]\/?vendor\//.test(msg.html), false, `${label}: html links at /vendor/`);
+    assert.equal(/["\s(]\/?vendor\//.test(msg.text), false, `${label}: text links at /vendor/`);
+    assert.ok(msg.html.includes('/terminal/'), `${label}: html has no /terminal/ link`);
+    assert.ok(msg.text.includes('/terminal/'), `${label}: text has no /terminal/ link`);
+  }
+});
+
+test('the accepted email can be followed by someone who has never installed an app', () => {
+  // These vendors are handed an iPad and a queue of customers. The install steps
+  // are the part most likely to strand one of them, so the things that actually
+  // cause the support call are pinned here rather than left to review.
+  const msg = applicationAccepted({
+    businessName: 'Blue Bird Cafe', contactName: 'Sam', email: 'sam@x.com',
+    terminalUrl: 'https://we-rewards.com/terminal/',
+  });
+
+  // Named browser, because a link opened from another app lands in a web view
+  // whose menu has no Add to Home Screen at all.
+  assert.match(msg.html, /Safari/);
+  assert.match(msg.html, /Add to Home Screen/);
+  // The near-miss that silently does nothing, called out by name.
+  assert.match(msg.html, /Add Bookmark/i);
+  // Below iOS 14.3 an installed icon has NO getUserMedia, so the scanner dies at
+  // the counter and only a force-quit recovers it. One line here beats that.
+  assert.match(msg.html, /14\.3/);
+  assert.match(msg.text, /14\.3/);
+
+  // The address is for TYPING off a screen, so it carries no scheme and no
+  // trailing slash even though the button's href does.
+  assert.ok(msg.html.includes('we-rewards.com/terminal<'), 'the typed address is not clean');
+  assert.ok(msg.html.includes('href="https://we-rewards.com/terminal/"'), 'the button href is not absolute');
+
+  assert.ok(msg.text.includes('we-rewards.com/terminal'), 'the text part lost the typed address');
+  // Steps must survive into the text part; a plain-text reader gets no <ol>.
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.']) {
+    assert.ok(msg.text.includes(n), `the text part is missing step ${n}`);
+  }
+});
+
 test('the reset code is readable from the notification alone', () => {
   // A vendor is standing at a counter. Putting the code in the subject means
   // they never have to open anything, and it is safe to do because the code is

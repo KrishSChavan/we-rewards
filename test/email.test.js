@@ -94,8 +94,8 @@ test('emailUrl falls back to the request origin when APP_ORIGIN is unset', () =>
   // The campaign worker has no request, which is why APP_ORIGIN is warned about
   // at boot; a request-path caller can still do better than a relative link.
   const req = { protocol: 'https', get: () => 'we-rewards.com' };
-  assert.equal(emailUrl('/vendor/', req), 'https://we-rewards.com/vendor/');
-  assert.equal(emailUrl('vendor/', req), 'https://we-rewards.com/vendor/');
+  assert.equal(emailUrl('/terminal/', req), 'https://we-rewards.com/terminal/');
+  assert.equal(emailUrl('terminal/', req), 'https://we-rewards.com/terminal/');
 });
 
 /* ---------- the Svix signature on the webhook ---------- */

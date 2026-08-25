@@ -137,11 +137,11 @@ async function sendSamples(to) {
     ['application received', applicationReceived({ businessName: 'Blue Bird Cafe', contactName: 'Sam', locationCount: 2 })],
     ['application accepted', applicationAccepted({
       businessName: 'Blue Bird Cafe', contactName: 'Sam', email: to,
-      locationCount: 2, terminalUrl: `${process.env.APP_ORIGIN ?? ''}/vendor/`,
+      locationCount: 2, terminalUrl: `${process.env.APP_ORIGIN ?? ''}/terminal/`,
     })],
     ['vendor reset code', vendorResetCode({
       businessName: 'Blue Bird Cafe', code: 'K7M2-NP94',
-      terminalUrl: `${process.env.APP_ORIGIN ?? ''}/vendor/`, selfServe: true,
+      terminalUrl: `${process.env.APP_ORIGIN ?? ''}/terminal/`, selfServe: true,
     })],
     ['deal digest', dealDigest({
       name: 'Alex',

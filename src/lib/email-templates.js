@@ -103,9 +103,15 @@ function p(html, extra = '') {
  * A "bulletproof" button: a padded table cell wrapping the anchor, not a styled
  * <a>. Outlook drops padding on inline anchors, which turns a call to action
  * into an unclickable coloured word.
+ *
+ * `flush` drops the button's own margins for use inside stack(), which owns the
+ * vertical rhythm itself — a margin here on top of a stack gap is exactly the
+ * kind of double spacing that makes one gap in an email look wrong next to the
+ * others. Default is the old margin, so the templates that don't stack are
+ * untouched.
  */
-function button(href, label) {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 18px 0;">
+function button(href, label, { flush = false } = {}) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:${flush ? '0' : '6px 0 18px 0'};">
   <tr><td align="center" bgcolor="${BRAND}" style="border-radius:8px;">
     <a href="${esc(href)}" style="display:inline-block;padding:13px 26px;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:8px;">${esc(label)}</a>
   </td></tr>
@@ -118,6 +124,95 @@ function codeBlock(code) {
   <tr><td align="center" bgcolor="${PAGE}" style="border:2px solid ${ACCENT};border-radius:10px;padding:18px;">
     <span style="font-family:'Courier New',Courier,monospace;font-size:30px;font-weight:bold;letter-spacing:5px;color:${BRAND};">${esc(code)}</span>
   </td></tr>
+</table>`;
+}
+
+/* ---------- even vertical rhythm ---------- */
+//
+// The problem these solve: every block in this file used to carry its own
+// bottom margin (p 14px, button 6/18px, codeBlock 6/18px), so the gap between
+// any two blocks was whatever their two margins happened to add up to — 14px
+// between paragraphs, 20px above a button, 18px below it. Nobody can name the
+// rule because there isn't one, and on a long email the unevenness reads as
+// sloppiness even to someone who could not say why.
+//
+// So: blocks below carry NO margin of their own, and stack() owns every gap.
+// Two values, used everywhere — GAP_TIGHT inside a section, GAP_SECTION between
+// sections. Change one constant, the whole email re-spaces evenly.
+
+const GAP_SECTION = 26;   // between the titled sections of a card
+const GAP_TIGHT = 12;     // between lines and list rows inside one section
+
+/**
+ * Stack blocks with ONE gap between them and none after the last.
+ *
+ * A single table with one row per block, not nested tables: Outlook renders
+ * this as plain table cells with padding, which is the one box model every
+ * client agrees on. The "none after the last" half is what keeps a section's
+ * own trailing space from adding to the gap that follows it.
+ */
+function stack(blocks, gap = GAP_SECTION) {
+  const rows = blocks.filter(Boolean);
+  if (!rows.length) return '';
+  const cells = rows.map((html, i) =>
+    `<tr><td style="padding:0 0 ${i === rows.length - 1 ? 0 : gap}px 0;">${html}</td></tr>`
+  ).join('\n');
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+${cells}
+</table>`;
+}
+
+/** A line of body copy carrying no margin. Spacing comes from stack(). */
+function line(html, extra = '') {
+  return `<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:${INK};${extra}">${html}</p>`;
+}
+
+/** A section heading inside the card. Sized between the h1 and body copy. */
+function h2(text) {
+  return `<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:17px;font-weight:bold;line-height:1.35;color:${INK};">${esc(text)}</p>`;
+}
+
+/**
+ * A numbered list, as a two-column table rather than an <ol>.
+ *
+ * Outlook and Gmail both mangle list indentation (Outlook applies Word's list
+ * margins, Gmail rewrites the padding), and a step list whose numbers do not
+ * line up with their text is exactly the kind of small wrongness that makes a
+ * nervous reader stop following instructions. A table cannot drift.
+ *
+ * Numbers are real content here, not decoration: these steps must be done in
+ * order, and someone reading them off a screen at a counter needs to be able to
+ * say "I'm on four".
+ */
+function steps(items) {
+  const rows = items.filter(Boolean).map((html, i, all) => {
+    const pad = i === all.length - 1 ? 0 : GAP_TIGHT;
+    return `
+  <tr>
+    <td valign="top" style="padding:0 10px ${pad}px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:bold;line-height:1.6;color:${BRAND};">${i + 1}.</td>
+    <td valign="top" style="padding:0 0 ${pad}px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:${INK};">${html}</td>
+  </tr>`;
+  }).join('');
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${rows}</table>`;
+}
+
+/** An unordered list, same table reasoning as steps(). Order carries nothing. */
+function bullets(items) {
+  const rows = items.filter(Boolean).map((html, i, all) => {
+    const pad = i === all.length - 1 ? 0 : GAP_TIGHT;
+    return `
+  <tr>
+    <td valign="top" style="padding:0 10px ${pad}px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:${BRAND};">&bull;</td>
+    <td valign="top" style="padding:0 0 ${pad}px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:${INK};">${html}</td>
+  </tr>`;
+  }).join('');
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${rows}</table>`;
+}
+
+/** A tinted aside for a caveat that must not read as part of the main flow. */
+function note(html) {
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr><td bgcolor="${PAGE}" style="border:1px solid ${EDGE};border-radius:8px;padding:14px 16px;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:${MUTED};">${html}</td></tr>
 </table>`;
 }
 
@@ -188,39 +283,105 @@ export function applicationReceived({ businessName, contactName, locationCount =
  * password they chose on the application form is NOT the one that works.
  */
 export function applicationAccepted({
-  businessName, contactName, email, linkedExisting = false, locationCount = 1, terminalUrl = '/vendor/',
+  businessName, contactName, email, linkedExisting = false, locationCount = 1, terminalUrl = '/terminal/',
 } = {}) {
   const name = esc(contactName || 'there');
   const biz = esc(businessName || 'your business');
   const many = locationCount > 1;
 
+  // What we ask them to TYPE, not what the button links to. 'https://' and a
+  // trailing slash are both noise to someone copying an address off a screen
+  // onto a Post-it, and the trailing slash in particular gets read as a full
+  // stop and dropped, which teaches them the address we gave them is wrong.
+  const typeAddress = esc(String(terminalUrl).replace(/^https?:\/\//, '').replace(/\/+$/, ''));
+
   const passwordLine = linkedExisting
     ? `This email already had a WeRewards account, so we linked it rather than making a second one. <strong>Sign in with the password you already use</strong>, not the one you typed on the application form.`
     : `Sign in with the password you chose when you applied.`;
 
-  const body = [
-    p(`Hi ${name},`),
-    p(`<strong>${biz}</strong> is approved and live on WeRewards.${many ? ` All ${locationCount} locations are set up, and you switch between them from the name at the top of the terminal.` : ''}`),
-    button(terminalUrl, 'Open your terminal'),
-    p(`Sign in as <strong>${esc(email || '')}</strong>. ${passwordLine}`),
-    p(`First things worth doing: set a staff PIN (it’s what gates redemptions), check your points rate, and print your QR poster from the terminal.`),
-    p(`Reply to this email if anything looks wrong.`, `color:${MUTED};font-size:14px;`),
-  ].join('\n');
+  const body = stack([
+
+    stack([
+      line(`Hi ${name},`),
+      line(`<strong>${biz}</strong> is approved and live on WeRewards.${many ? ` All ${locationCount} locations are set up, and you switch between them from the name at the top of the terminal.` : ''}`),
+    ], GAP_TIGHT),
+
+    stack([
+      h2('Signing in'),
+      line(`Sign in as <strong>${esc(email || '')}</strong>. ${passwordLine}`),
+      button(terminalUrl, 'Open your terminal', { flush: true }),
+    ], GAP_TIGHT),
+
+    // The install steps. Written for someone who has never been told what a
+    // browser is, so every step names a thing they can SEE on the screen rather
+    // than a thing they would have to already know the word for. Deliberately
+    // free of version numbers: an iPad owner cannot reliably say whether they
+    // are on iPadOS 17 or 26, and a step that starts by asking them to find out
+    // is a step they stop at. Where the interface genuinely differs, the step
+    // names both possibilities and tells them to tap whichever one is there.
+    stack([
+      h2('Putting the terminal on your iPad'),
+      line(`This gives you a proper app icon on the iPad home screen, so nobody has to type an address at the start of a shift.`),
+      // Ahead of the steps, not after them: it is a precondition, and a vendor
+      // who reads it only at the end has already installed an icon whose
+      // scanner cannot work and now has to be told to delete it again.
+      note(`<strong>If this iPad is an older one, check this before you start.</strong> Open Settings, then General, then About, and find Software Version. If it is 14.3 or higher, carry on. If it is lower, do not add the icon: on those iPads the barcode scanner cannot use the camera from a home screen icon. Open <strong>${typeAddress}</strong> in Safari instead, and everything works normally.`),
+      steps([
+        `On the iPad, open <strong>Safari</strong>. It is the blue compass icon on the home screen. Chrome will not do this, and neither will a page that opened by itself from another app.`,
+        `Type <strong>${typeAddress}</strong> into the long box across the top, then tap Go. Do not sign in yet.`,
+        `At the <strong>right-hand end</strong> of that same box, tap the small <strong>square with an arrow pointing up out of it</strong>. If you cannot see one, tap the <strong>three dots</strong> at that end instead, then tap <strong>Share</strong>.`,
+        `A menu drops down. Slide it upwards to scroll, because it is longer than it looks, and tap <strong>Add to Home Screen</strong>. Do not tap Add Bookmark, which sounds right and does nothing useful here.`,
+        `Type a short name, your shop name is ideal, then tap <strong>Add</strong> in the <strong>top-right corner</strong> of the little box.`,
+        `Go back to the home screen and tap your new icon. If the page fills the whole screen and there is no address box along the top, it worked. Sign in there and it will remember you.`,
+      ]),
+    ], GAP_TIGHT),
+
+    stack([
+      h2('First things worth doing'),
+      bullets([
+        `Set a staff PIN. It is what stops a customer redeeming a reward themselves.`,
+        `Check your points rate, so customers earn what you meant them to.`,
+        `Print your QR poster from the terminal and put it by the till.`,
+      ]),
+    ], GAP_TIGHT),
+
+    line(`If anything looks wrong, reply to this email or write to us at <strong>contactwerewards@gmail.com</strong> and a person will get back to you.`, `color:${MUTED};font-size:14px;`),
+
+  ]);
 
   const text = [
     `Hi ${contactName || 'there'},`,
     '',
     `${businessName || 'Your business'} is approved and live on WeRewards.${many ? ` All ${locationCount} locations are set up, and you switch between them from the name at the top of the terminal.` : ''}`,
     '',
-    `Open your terminal: ${terminalUrl}`,
+    'SIGNING IN',
     '',
     `Sign in as ${email || ''}. ${linkedExisting
       ? 'This email already had a WeRewards account, so we linked it rather than making a second one. Sign in with the password you already use, not the one you typed on the application form.'
       : 'Sign in with the password you chose when you applied.'}`,
     '',
-    `First things worth doing: set a staff PIN (it's what gates redemptions), check your points rate, and print your QR poster from the terminal.`,
+    `Open your terminal: ${terminalUrl}`,
     '',
-    `Reply to this email if anything looks wrong.`,
+    'PUTTING THE TERMINAL ON YOUR IPAD',
+    '',
+    'This gives you a proper app icon on the iPad home screen, so nobody has to type an address at the start of a shift.',
+    '',
+    `If this iPad is an older one, check this before you start. Open Settings, then General, then About, and find Software Version. If it is 14.3 or higher, carry on. If it is lower, do not add the icon: on those iPads the barcode scanner cannot use the camera from a home screen icon. Open ${typeAddress.replace(/&amp;/g, '&')} in Safari instead, and everything works normally.`,
+    '',
+    '1. On the iPad, open Safari. It is the blue compass icon on the home screen. Chrome will not do this, and neither will a page that opened by itself from another app.',
+    `2. Type ${typeAddress.replace(/&amp;/g, '&')} into the long box across the top, then tap Go. Do not sign in yet.`,
+    '3. At the right-hand end of that same box, tap the small square with an arrow pointing up out of it. If you cannot see one, tap the three dots at that end instead, then tap Share.',
+    '4. A menu drops down. Slide it upwards to scroll, because it is longer than it looks, and tap "Add to Home Screen". Do not tap "Add Bookmark", which sounds right and does nothing useful here.',
+    '5. Type a short name, your shop name is ideal, then tap Add in the top-right corner of the little box.',
+    '6. Go back to the home screen and tap your new icon. If the page fills the whole screen and there is no address box along the top, it worked. Sign in there and it will remember you.',
+    '',
+    'FIRST THINGS WORTH DOING',
+    '',
+    '- Set a staff PIN. It is what stops a customer redeeming a reward themselves.',
+    '- Check your points rate, so customers earn what you meant them to.',
+    '- Print your QR poster from the terminal and put it by the till.',
+    '',
+    'If anything looks wrong, reply to this email or write to us at contactwerewards@gmail.com and a person will get back to you.',
     '',
     'WeRewards',
   ].join('\n');
@@ -229,7 +390,7 @@ export function applicationAccepted({
     subject: `${businessName || 'Your business'} is live on WeRewards`,
     html: layout({
       title: 'You’re approved',
-      preheader: `Sign in at ${email || 'your email'} and open the terminal.`,
+      preheader: `Sign in at ${email || 'your email'}, then put the terminal on your iPad.`,
       body,
       footer: footerLines(),
     }),
@@ -251,7 +412,7 @@ export function applicationAccepted({
  * code, choose the password, five guesses, thirty minutes) already works from
  * a device that is not the one holding the mail.
  */
-export function vendorResetCode({ businessName, code, ttlMinutes = 30, terminalUrl = '/vendor/', selfServe = false } = {}) {
+export function vendorResetCode({ businessName, code, ttlMinutes = 30, terminalUrl = '/terminal/', selfServe = false } = {}) {
   const biz = esc(businessName || 'your WeRewards account');
 
   const body = [

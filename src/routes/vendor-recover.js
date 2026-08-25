@@ -172,7 +172,7 @@ router.post('/request', async (req, res, next) => {
       businessName: row.reset_vendor_name,
       code,
       ttlMinutes: SELF_TTL_MINUTES,
-      terminalUrl: emailUrl('/vendor/', req),
+      terminalUrl: emailUrl('/terminal/', req),
       // Changes the copy to name the request and add the "wasn't you?" line —
       // the operator-minted version is answering a phone call the vendor made,
       // this one may be arriving unasked.

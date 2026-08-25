@@ -666,7 +666,7 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
       businessName: vendor.name,
       code,
       ttlMinutes: RESET_TTL_MINUTES,
-      terminalUrl: emailUrl('/vendor/', req),
+      terminalUrl: emailUrl('/terminal/', req),
       selfServe: false,
     });
     const sent = await sendEmail({
@@ -1408,7 +1408,7 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       email: app.email,
       linkedExisting,
       locationCount: vendors?.length ?? 1,
-      terminalUrl: emailUrl('/vendor/', req),
+      terminalUrl: emailUrl('/terminal/', req),
     });
     const mailed = await sendEmail({
       to: app.email,
