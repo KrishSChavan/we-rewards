@@ -42,6 +42,13 @@ const LABEL_MAX = 40;      // same cap as vendors.location_label (apply.js / ven
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 72;   // bcrypt reads 72 bytes; refuse longer, never truncate
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// The contact the operator phones (migration-049). Same cap and the same
+// permissive shape as /join's, because a number typed on one door and a number
+// typed on the other end up in the same column. Permissive on purpose: this is
+// dialled by a human, so a plausible-looking string beats a strict format that
+// rejects the way somebody actually writes their own number.
+const PHONE_MAX = 20;      // same cap as vendors.phone (migration-049)
+const PHONE_RE = /^[\d\s()+.-]{7,20}$/;
 
 // How long a minted password-reset code stays usable. Long enough to finish the
 // phone call and walk to the terminal, short enough that a code read out and
@@ -60,8 +67,19 @@ export function validVendorName(raw) {
 /**
  * Validate POST /vendors → the fields onboardVendor needs, or { error } to 400.
  * Deliberately the same rules as validApplication in src/routes/apply.js, minus
- * the fields that only exist to help the operator judge an application (contact
- * name, phone, message) and have nowhere to live on a vendors row.
+ * `message` — the applicant's free-text pitch, which exists to help the operator
+ * judge an application and has nowhere to live on a vendors row.
+ *
+ * The contact name and phone were in that same "review-time only" category until
+ * migration-049, on the reasoning that an operator adding a vendor by hand has
+ * already decided. That was wrong in one specific way: the phone number's job
+ * starts AFTER onboarding, not before — it is how a reset code reaches a vendor
+ * who has lost their mailbox as well as their password (migration-031). They are
+ * columns now, and both doors collect them.
+ *
+ * The one difference between the doors is that a phone is REQUIRED on /join and
+ * optional here; see the comment on the check below for why that is a decision
+ * rather than drift.
  */
 export function validNewVendor(body) {
   const b = body ?? {};
@@ -72,6 +90,8 @@ export function validNewVendor(body) {
   const password = typeof b.password === 'string' ? b.password : '';
   const address = String(b.address ?? '').trim();
   const label = String(b.locationLabel ?? '').trim();
+  const contactName = String(b.contactName ?? '').trim();
+  const phone = String(b.phone ?? '').trim();
   const logo = validLogo(b.logo);
 
   if (!EMAIL_RE.test(email) || email.length > EMAIL_MAX) return { error: 'Enter a valid email address.' };
@@ -80,6 +100,16 @@ export function validNewVendor(body) {
   if (address.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
   if (label.length > LABEL_MAX) return { error: `The location name must be ${LABEL_MAX} characters or fewer.` };
   if (logo.error) return { error: logo.error };
+  if (contactName.length > NAME_MAX) return { error: `Contact name must be ${NAME_MAX} characters or fewer.` };
+  // OPTIONAL HERE, REQUIRED ON /join, and the asymmetry is deliberate rather
+  // than drift. An applicant typing into a public form is telling us how to
+  // reach them and has no other way to; an operator adding a vendor at a demo
+  // is standing next to the person and may not have written the number down
+  // yet. Refusing the whole save over it would push them to invent one, which
+  // is strictly worse than a blank the roster visibly flags. The SHAPE is held
+  // to /join's rule exactly, so a number that gets in here is one that could
+  // have come in through the other door.
+  if (phone && !PHONE_RE.test(phone)) return { error: 'Enter a valid phone number.' };
 
   // Not validated, NORMALISED (migration-042): both are optional pickers, and
   // an unrecognised tag drops out rather than 400ing a form the operator has
@@ -89,6 +119,11 @@ export function validNewVendor(body) {
     cuisine: normalizeCuisine(b.cuisine),
     priceLevel: normalizePriceLevel(b.priceLevel),
     locationLabel: label || null,
+    // '' → null for the same reason address does it: an empty string would read
+    // back as a real (blank) contact and the roster could not tell "nobody has
+    // filled this in" apart from "there is nobody to call".
+    contactName: contactName || null,
+    phone: phone || null,
   };
 }
 
@@ -242,7 +277,14 @@ router.get('/vendors', async (req, res, next) => {
       // them the operator cannot see that three rows here are one purse, which
       // is exactly what they need to know before switching one of them off.
       // Null and absent for every vendor until an operator creates a pool.
-      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at, pool_id, point_pools(label)')
+      //
+      // contact_name + phone (migration-049) are the operator's own contact
+      // details for the storefront, and this roster is where they are read: the
+      // question "who do I call about this location" is asked while looking at
+      // the location, not from inside a dialog. Null for every vendor onboarded
+      // before 049, whose number was destroyed with their application row —
+      // which is exactly why the row renders the gap rather than hiding it.
+      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at, contact_name, phone, pool_id, point_pools(label)')
       .order('created_at', { ascending: false });
     if (error) throw error;
 
@@ -340,7 +382,8 @@ async function inheritedConfig(userId) {
  * Insert ONE vendors row and return it (with the inheritable columns, so the
  * caller can hand them to the next location).
  *
- * @param loc  { name, address?, logo?, cuisine?, priceLevel?, locationLabel? }
+ * @param loc  { name, address?, logo?, cuisine?, priceLevel?, locationLabel?,
+ *               contactName?, phone? }
  * @param config  inherited economics to spread in, or null for table defaults
  * @param slugStart  Map<base, next attempt> shared across one onboarding
  */
@@ -382,8 +425,15 @@ async function createVendorRow(loc, config, slugStart) {
         // rather than visibly broken.
         cuisine: normalizeCuisine(loc.cuisine),
         price_level: normalizePriceLevel(loc.priceLevel),
+        // Who the operator calls about this storefront (migration-049). Carried
+        // here rather than left on the application because the application row
+        // is DELETED at the end of an accept — before 049 that is precisely
+        // where the phone number went, and the vendor who most needs phoning
+        // (locked out, no mailbox) was the one with no number on file.
+        contact_name: loc.contactName ?? null,
+        phone: loc.phone ?? null,
       })
-      .select(`id, name, slug, location_label, ${INHERITED_CONFIG.join(', ')}`)
+      .select(`id, name, slug, location_label, contact_name, phone, ${INHERITED_CONFIG.join(', ')}`)
       .single();
     if (!error) { slugStart.set(base, attempt + 1); return data; }
     if (error.code !== '23505') throw error;
@@ -420,7 +470,7 @@ async function createVendorRow(loc, config, slugStart) {
  */
 async function onboardVendor({
   name, email, password, passwordHash, address, logo, cuisine, priceLevel,
-  locationLabel = null, locations = [],
+  locationLabel = null, locations = [], contactName = null, phone = null,
 }) {
   let userId;
   let linkedExisting = false;
@@ -468,7 +518,17 @@ async function onboardVendor({
   try {
     // Location one is this call's own arguments; the rest came from a /join
     // application that named several (migration-043).
-    const all = [{ name, address, logo, cuisine, priceLevel, locationLabel }, ...locations];
+    //
+    // THE CONTACT IS SHARED, spread first so a location that ever carries its
+    // own still wins. /join asks for one contact name and one phone number for
+    // the whole application however many branches it names, and on day one that
+    // is simply true — one owner is opening three shops. The columns live on
+    // each vendors row rather than on the login (migration-049) so that can stop
+    // being true later without a schema change: a chain that puts a manager in
+    // each store is corrected branch by branch from this dashboard.
+    const contact = { contactName, phone };
+    const all = [{ name, address, logo, cuisine, priceLevel, locationLabel }, ...locations]
+      .map((loc) => ({ ...contact, ...loc }));
     for (const loc of all) {
       const row = await createVendorRow(loc, config, slugStart);
       created.push(row);
@@ -510,10 +570,13 @@ async function onboardVendor({
  * onboarding an accepted application does, so the vendor can sign in to the
  * terminal immediately with the email and password set here.
  *
- * Only the fields a vendors row actually holds are collected. An application
- * also carries a contact name, phone and free-text message, but those exist to
- * help the operator DECIDE — an operator adding a vendor by hand has already
- * decided, and there is nowhere to store them.
+ * Only the fields a vendors row actually holds are collected. The one an
+ * application carries that still has nowhere to live is `message`, the
+ * applicant's free-text pitch: it exists to help the operator DECIDE, and an
+ * operator adding a vendor by hand has already decided. The contact name and
+ * phone used to be in that category too — until migration-049 gave them
+ * columns, on the grounds that a number you can only read before you accept
+ * somebody is a number you do not have when they call you locked out.
  *
  * The response mirrors accept's, including `linkedExisting` for the case where
  * the email already had an account and was linked rather than created (the
@@ -537,6 +600,10 @@ router.post('/vendors', async (req, res, next) => {
       // rather than failing, and the label is what tells the two apart in the
       // terminal's store switcher (migration-043).
       locationLabel: v.locationLabel,
+      // Both optional on this door (migration-049); a vendor added at a demo can
+      // have their number filled in from the roster afterwards.
+      contactName: v.contactName,
+      phone: v.phone,
     });
     if (result.conflict) {
       return res.status(409).json({
@@ -776,6 +843,38 @@ router.patch('/vendors/:id', async (req, res, next) => {
       updates.location_label = l || null;
     }
 
+    // Who the operator phones about this location (migration-049). `!= null`
+    // admits '', which is how either is CLEARED back to blank — same convention
+    // as address and locationLabel above.
+    //
+    // This is the ONLY way the existing roster ever gets a phone number. Every
+    // vendor onboarded before 049 had their application row deleted at accept,
+    // so the number is not recoverable from anywhere: it is re-collected by
+    // hand, one vendor at a time, through this endpoint.
+    if (body.contactName != null) {
+      const c = String(body.contactName).trim();
+      if (c.length > NAME_MAX) {
+        return res.status(400).json({ error: 'BAD_REQUEST', message: `Contact name must be ${NAME_MAX} characters or fewer.` });
+      }
+      updates.contact_name = c || null;
+    }
+
+    if (body.phone != null) {
+      const p = String(body.phone).trim();
+      // Held to /join's shape exactly (PHONE_RE), so a number the operator types
+      // here is one the public form would have accepted. Length is checked
+      // first: the regex is bounded at 20 too, so a longer string would fail it
+      // anyway, but "must be 20 characters or fewer" tells the operator what to
+      // do and "enter a valid phone number" does not.
+      if (p.length > PHONE_MAX) {
+        return res.status(400).json({ error: 'BAD_REQUEST', message: `A phone number must be ${PHONE_MAX} characters or fewer.` });
+      }
+      if (p && !PHONE_RE.test(p)) {
+        return res.status(400).json({ error: 'BAD_REQUEST', message: 'Enter a valid phone number.' });
+      }
+      updates.phone = p || null;
+    }
+
     if (body.pointsPerDollar != null) {
       const r = validRatio(body.pointsPerDollar);
       if (r.error) return res.status(400).json({ error: 'BAD_REQUEST', message: r.error });
@@ -813,7 +912,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
     }
 
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, locationLabel, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, locationLabel, contactName, phone, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -881,9 +980,10 @@ router.patch('/vendors/:id', async (req, res, next) => {
       .eq('id', req.params.id)
       // Same column list as GET /vendors above, pool_id and label included: the
       // dashboard swaps this row straight into the roster it already has, so a
-      // shape narrower than the list's would blank the pool marker on the one
-      // row the operator just edited.
-      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at, pool_id, point_pools(label)')
+      // shape narrower than the list's would blank the pool marker — or, since
+      // migration-049, the contact line — on the one row the operator just
+      // edited. Keep the two lists identical.
+      .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at, contact_name, phone, pool_id, point_pools(label)')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
@@ -1355,9 +1455,19 @@ router.post('/applications/:id/accept', async (req, res, next) => {
 
     const { data: app, error: appErr } = await supabaseAdmin
       .from('vendor_applications')
-      // contact_name is selected only so the acceptance email can open with a
-      // person's name rather than the business's.
-      .select('id, business_name, contact_name, email, password_hash, address, location_label, locations, logo, cuisine, price_level')
+      // contact_name opens the acceptance email with a person's name rather
+      // than the business's — and, since migration-049, is ALSO copied onto
+      // every vendors row this accept creates, along with `phone`.
+      //
+      // That copy is the whole point of 049. This handler deletes the
+      // application row a few lines below, so anything not carried across here
+      // is destroyed, permanently, at the moment the vendor becomes real. The
+      // phone number spent this entire project in that gap: asked for on a
+      // public form, shown to the operator once in the review queue, gone. It is
+      // also the one field that matters most AFTER acceptance rather than
+      // before, because dictating a reset code down the phone (migration-031) is
+      // the only recovery left for a vendor who has lost their mailbox too.
+      .select('id, business_name, contact_name, phone, email, password_hash, address, location_label, locations, logo, cuisine, price_level')
       .eq('id', req.params.id)
       .maybeSingle();
     if (appErr) throw appErr;
@@ -1381,6 +1491,11 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       // always was.
       locationLabel: app.location_label,
       locations: Array.isArray(app.locations) ? app.locations : [],
+      // The applicant's own contact details, onto every location this creates
+      // (migration-049). Read the comment on the select above for why this line
+      // is the one that stops the number being thrown away.
+      contactName: app.contact_name,
+      phone: app.phone,
     });
     // The taken email's account vanished mid-accept. Nothing was created, so
     // leave the application queued for a retry.

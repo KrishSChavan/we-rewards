@@ -114,3 +114,67 @@ test('a missing body is rejected rather than throwing', () => {
     assert.ok(validNewVendor(b).error, 'should return an error, not throw');
   }
 });
+
+/* ---------- the contact the operator phones (migration-049) ----------
+
+   These columns exist because the phone number used to be DESTROYED at accept:
+   /join collected it onto vendor_applications, the vendors table had nowhere to
+   put it, and the accept handler deletes the application row as its last step.
+   The number that mattered most after onboarding was the one guaranteed not to
+   survive it.
+
+   So what these tests hold is the seam that fix runs through. The shape rule has
+   to match apply.js's exactly (one column, two doors), and '' has to become null
+   rather than an empty string, because the admin roster distinguishes "nobody
+   has filled this in yet" from "there is nobody to call" and an empty string
+   reads as the second. */
+
+test('a contact name and phone are trimmed and passed through', () => {
+  const out = validNewVendor({ ...GOOD, contactName: '  Sam  ', phone: '  814 555 0134  ' });
+  assert.equal(out.error, undefined);
+  assert.equal(out.contactName, 'Sam');
+  assert.equal(out.phone, '814 555 0134');
+});
+
+test('an omitted or blank contact becomes null, never an empty string', () => {
+  // The roster renders a missing phone as a visible "no phone" so the pre-049
+  // vendors get re-collected by hand. '' would render as a filled-in blank and
+  // that prompt would never appear.
+  for (const b of [GOOD, { ...GOOD, contactName: '', phone: '' }, { ...GOOD, contactName: '   ', phone: '  ' }]) {
+    const out = validNewVendor(b);
+    assert.equal(out.contactName, null);
+    assert.equal(out.phone, null);
+  }
+});
+
+test('the phone shape is exactly /join’s, so one column has one rule', () => {
+  // Same regex as PHONE_RE in src/routes/apply.js. Permissive on purpose: this
+  // is dialled by a human, so the way somebody writes their own number wins
+  // over a canonical format.
+  for (const phone of ['8145550134', '814 555 0134', '(814) 555-0134', '+1 814.555.0134']) {
+    assert.equal(validNewVendor({ ...GOOD, phone }).error, undefined, `should accept ${phone}`);
+  }
+  for (const phone of ['123', 'call me', '814-555-0134 ext 12', '=8145550134']) {
+    assert.match(validNewVendor({ ...GOOD, phone }).error, /phone/i, `should reject ${phone}`);
+  }
+});
+
+test('a phone is OPTIONAL here and REQUIRED on /join, deliberately', () => {
+  // The one place the two doors are allowed to differ, and only in this
+  // direction. An applicant on a public form has no other way to tell us how to
+  // reach them; an operator adding a vendor at a demo is standing next to the
+  // person and can fill it in from the roster later. Refusing the whole save
+  // over it just gets an invented number typed in.
+  assert.equal(validNewVendor(GOOD).error, undefined, 'no phone must still onboard');
+  // ...but anything actually SUPPLIED is held to the same rule, so a number that
+  // gets in through this door is one the public form would have taken.
+  assert.ok(validNewVendor({ ...GOOD, phone: 'nope' }).error);
+});
+
+test('an over-long contact name is refused rather than truncated at the column', () => {
+  // vendors_contact_name_len (migration-049) caps this at 80. A validator that
+  // let 81 through would turn an operator's typo into a 500 from a check
+  // constraint instead of a message they can act on.
+  assert.equal(validNewVendor({ ...GOOD, contactName: 'x'.repeat(80) }).error, undefined);
+  assert.match(validNewVendor({ ...GOOD, contactName: 'x'.repeat(81) }).error, /80 characters/);
+});

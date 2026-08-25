@@ -180,6 +180,33 @@ h1, h3 { margin: 0; }
 .vendor-name { font-weight: 700; font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vendor-meta { color: var(--muted); font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* How to reach this location (migration-049): phone, then each login's email.
+   Sized between the name and the slug line — louder than the slug because it is
+   what the operator came to the roster to USE, quieter than the name because it
+   is not what identifies the row.
+
+   Wraps rather than truncating, unlike .vendor-name and .vendor-meta. A half
+   phone number and a half email address are both worse than useless: an
+   ellipsised slug is still recognisable, an ellipsised contact is something you
+   have to open a dialog to finish reading. */
+.vendor-contact {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  font-size: 0.75rem; color: var(--muted); min-width: 0; overflow-wrap: anywhere;
+}
+.vendor-contact-link {
+  color: var(--accent); text-decoration: none;
+  /* A comfortable tap target on a phone without adding a visible gap between
+     the links and the separators that sit between them. */
+  padding: 0.1rem 0;
+}
+.vendor-contact-link:hover, .vendor-contact-link:focus-visible { text-decoration: underline; }
+.vendor-contact-sep { opacity: 0.5; }
+/* A gap the operator is meant to fill, not a neutral absence — every vendor
+   onboarded before migration-049 has one, and it is only ever filled in by
+   somebody noticing it here. Italic and muted rather than red: it is a to-do,
+   not a fault. */
+.vendor-contact-missing { font-style: italic; opacity: 0.75; }
+
 /* Which branch a row is, when one login runs several (migration-043). A chip
    rather than another meta line: two rows of a chain differ ONLY by this, so it
    has to be the thing the eye lands on, not the thing it has to hunt for. */
@@ -338,6 +365,15 @@ h1, h3 { margin: 0; }
 /* The price row's select holds a sentence ("$$ — $10–20"), not the 4-character
    number .vendor-edit-input is sized for, so it opts out of that 7rem. */
 .vendor-sells-row #vendor-edit-price { width: auto; flex: 0 1 14rem; }
+
+/* "Who to call" (migration-049): two fields sharing one Save, so the row has to
+   split its slack rather than let the name input eat it all the way the
+   single-field rows above do. The name takes the larger share because a
+   business contact is "Sam Okonkwo-Whitfield" often enough, while a phone
+   number has a known width and stops needing space at 20 characters. Both wrap
+   to full width on a phone via the .vendor-ratio-row rule further down. */
+.vendor-contact-row #vendor-edit-contact { flex: 2 1 8rem; }
+.vendor-contact-row #vendor-edit-phone { width: auto; flex: 1 1 7rem; min-width: 0; }
 .nv-price { margin-top: 0.15rem; }
 
 .vendor-reward-list { display: grid; gap: 0.45rem; margin: 0.5rem 0; }

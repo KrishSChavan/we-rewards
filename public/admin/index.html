@@ -594,6 +594,30 @@
         <p class="vendor-edit-hint">Only for a vendor running more than one location on one login: it is how their staff tell the branches apart in the terminal's store switcher. Leave blank for a single-location vendor. Students never see it.</p>
       </div>
 
+      <!-- Who to phone about this location (migration-049). One Save for both
+           fields, like "What they sell" below: they are one question ("how do I
+           reach this shop") asked twice, and a button under each would be two
+           controls doing one job.
+
+           This dialog is the ONLY way a vendor onboarded before migration-049
+           ever gets a phone number. Their application row — the only place the
+           number was ever stored — is deleted at accept, so there is nothing to
+           backfill from and every one of them is re-collected by hand here. -->
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">Who to call</p>
+        <div class="vendor-ratio-row vendor-contact-row">
+          <!-- No .vendor-edit-name here, unlike the single-field rows above: that
+               class claims all the row's slack (and 100% of it on a phone), which
+               is right when an input is alone with its button and wrong when two
+               share a row. The widths come from .vendor-contact-row instead. -->
+          <input id="vendor-edit-contact" class="vendor-edit-input" type="text" maxlength="80" autocomplete="off" placeholder="Contact name" aria-label="Contact name" />
+          <input id="vendor-edit-phone" class="vendor-edit-input" type="tel" maxlength="20" inputmode="tel" autocomplete="off" placeholder="Phone" aria-label="Phone number" />
+          <button id="vendor-contact-save" class="vr-save" type="button">Save</button>
+          <span id="vendor-contact-note" class="vendor-edit-note"></span>
+        </div>
+        <p class="vendor-edit-hint">Operator-only, and never shown to students or on the terminal. This is the number a reset code gets read out to when a vendor has lost their email as well as their password, so it is worth filling in even when the shop is easy to reach otherwise.</p>
+      </div>
+
       <div class="vendor-edit-section">
         <p class="vendor-edit-label">Points per dollar</p>
         <div class="vendor-ratio-row">
@@ -708,6 +732,23 @@
             <button id="nv-password-show" class="vr-save" type="button" aria-pressed="false">Show</button>
           </div>
           <span class="vendor-edit-hint">8 to 72 characters. Read it to the vendor: this is the only time it is shown, and after that only a reset code can change it.</span>
+        </div>
+
+        <!-- Who to phone (migration-049). Optional on this door and required on
+             /join, deliberately: an applicant typing into a public form has no
+             other way to tell us how to reach them, while an operator adding a
+             vendor at a demo is standing next to the person and can fill the
+             number in from the roster later. Refusing the save over it would
+             just get an invented number typed in. -->
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="nv-contact">Contact name <em class="nv-opt">(optional)</em></label>
+          <input id="nv-contact" class="nv-input" type="text" maxlength="80" autocomplete="off" placeholder="Sam" />
+        </div>
+
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="nv-phone">Phone <em class="nv-opt">(optional)</em></label>
+          <input id="nv-phone" class="nv-input" type="tel" maxlength="20" inputmode="tel" autocomplete="off" placeholder="814 555 0134" />
+          <span class="vendor-edit-hint">Operator-only; students and the terminal never see it. It is how a reset code gets read out to a vendor who has lost their email as well as their password.</span>
         </div>
 
         <div class="nv-field">

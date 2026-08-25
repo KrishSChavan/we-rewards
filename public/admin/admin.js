@@ -133,6 +133,7 @@ function bootFailed(message) {
   $('vendor-edit-close').addEventListener('click', closeVendorModal);
   $('vendor-name-save').addEventListener('click', saveVendorName);
   $('vendor-location-save').addEventListener('click', saveVendorLocationLabel);
+  $('vendor-contact-save').addEventListener('click', saveVendorContact);
   $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
   $('vendor-sells-save').addEventListener('click', saveVendorSells);
   $('vendor-logo-pick').addEventListener('click', () => $('vendor-logo-file').click());
@@ -578,7 +579,16 @@ function wireLists() {
     listId: 'vendor-list',
     noun: 'vendor',
     rows: () => vendors,
-    text: (v) => `${v.name} ${v.slug} ${v.address ?? ''}`,
+    // Contact details are searchable too (migration-049), and this is not a
+    // nicety: the operator's own lookup usually starts from an inbound call or
+    // a reply to a reset email, so the thing they have in hand is the number or
+    // the address, not the shop's name. It already works this way on the
+    // applications list below — a vendor stopping being searchable by phone the
+    // moment they were accepted was part of the same gap 049 closes.
+    text: (v) => [
+      v.name, v.slug, v.address, v.location_label, v.contact_name, v.phone,
+      ...(v.staff ?? []).map((s) => s.email),
+    ].filter(Boolean).join(' '),
     paint: paintVendorRows,
     empty: () => '<p class="muted">No vendors yet.</p>',
     count: vendorCountText,
@@ -682,14 +692,63 @@ function showVendorError() {
   el.hidden = false;
 }
 
-// One row's name + meta line, shared by renderVendors and the Edit modal's
-// ratio save (which repaints the meta in place so the roster shows the new rate).
+/* How to reach this location, on the roster row itself (migration-049).
+
+   Both halves are here because they answer the same question from opposite
+   ends. The PHONE is a column on the vendors row, carried over from the
+   application at accept. The EMAIL is the login behind it, which lives in
+   auth.users and arrives on `v.staff` from the definer RPC — it is also the
+   address a reset code is mailed to, so seeing it next to the Reset password
+   button is what tells the operator where that code is about to go.
+
+   Real links, not text. The operator reading this roster is usually reading it
+   BECAUSE they need to contact somebody, and on a phone a tel: link is the
+   difference between a tap and copying nine digits by eye.
+
+   A MISSING PHONE IS SHOWN, not hidden. Every vendor onboarded before 049 has
+   a blank one — the number was destroyed with their application row and cannot
+   be recovered — so those forty gaps have to be re-collected by hand through
+   the Edit dialog. A row that quietly renders nothing is a row nobody ever
+   fixes; a visible "no phone" is a to-do list. */
+function vendorContactHtml(v) {
+  const bits = [];
+
+  if (v.phone) {
+    // The href is the same string, so escapeHtml covers both the attribute (it
+    // escapes " and ') and the text. PHONE_RE already bounds what can be stored
+    // to digits and () + . - , none of which need URL encoding in a tel:.
+    bits.push(`<a class="vendor-contact-link" href="tel:${escapeHtml(v.phone)}">${escapeHtml(v.phone)}</a>`);
+  } else {
+    bits.push('<span class="vendor-contact-missing">no phone</span>');
+  }
+
+  // Every login, not just the first: a multi-location owner can have several,
+  // and the roster is where the operator picks which one to chase.
+  (v.staff ?? []).forEach((s) => {
+    if (!s?.email) return;
+    bits.push(`<a class="vendor-contact-link" href="mailto:${escapeHtml(s.email)}">${escapeHtml(s.email)}</a>`);
+  });
+
+  // staffUnavailable means the lookup failed, which is NOT the same as "no
+  // login" — the same distinction the Reset password button is careful about.
+  // Saying so beats rendering an empty space that reads as "no email".
+  if (v.staffUnavailable) bits.push('<span class="vendor-contact-missing">login unknown</span>');
+
+  return `<span class="vendor-contact">${bits.join('<span class="vendor-contact-sep"> · </span>')}</span>`;
+}
+
+// One row's name + contact + meta line, shared by renderVendors and the Edit
+// modal's saves (which repaint it in place so the roster shows the new value).
 const vendorInfoHtml = (v) =>
   `<span class="vendor-name">${escapeHtml(v.name)}</span>` +
   // Which branch this row is, when one login runs several (migration-043).
   // Without it two locations of a chain are the same name twice, told apart
   // only by a slug suffix nobody can read as a place.
   (v.location_label ? `<span class="vendor-loc">${escapeHtml(v.location_label)}</span>` : '') +
+  // Above the slug line on purpose. The slug and the earn rate are what the
+  // row IS; the phone and email are what the operator came here to do
+  // something with, so they sit closer to the name.
+  vendorContactHtml(v) +
   `<span class="vendor-meta">${escapeHtml(v.slug)} · ${num(v.points_per_dollar)} pts/$</span>`;
 
 function renderVendors() {
@@ -1294,6 +1353,12 @@ function openVendorModal(v, infoEl) {
   setNote($('vendor-name-note'), '', null);
   $('vendor-edit-location').value = v.location_label ?? '';
   setNote($('vendor-location-note'), '', null);
+  // Straight off the roster row — GET /admin/vendors selects both since
+  // migration-049, so opening this dialog to fill in a missing number costs no
+  // extra request.
+  $('vendor-edit-contact').value = v.contact_name ?? '';
+  $('vendor-edit-phone').value = v.phone ?? '';
+  setNote($('vendor-contact-note'), '', null);
   $('vendor-edit-ratio').value = Number(v.points_per_dollar);
   setNote($('vendor-ratio-note'), '', null);
   // Straight off the roster row — GET /admin/vendors already selects both, so
@@ -1382,6 +1447,46 @@ async function saveVendorLocationLabel() {
     Object.assign(editVendor.v, data);                             // keep the in-memory roster in sync
     editVendor.infoEl.innerHTML = vendorInfoHtml(editVendor.v);    // roster row shows the new label
     $('vendor-edit-location').value = editVendor.v.location_label ?? '';
+    setNote(note, 'Saved', 'ok');
+    btn.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
+// Set (or clear) who the operator phones about this location (migration-049).
+// One save for both fields — see the dialog markup for why.
+//
+// This is the function that fills the gap 049 leaves behind: every vendor
+// accepted before it has a blank phone, the application row it came from is
+// long deleted, and there is no backfill. They are re-collected one at a time,
+// here, which is why the roster renders a missing number as a visible "no
+// phone" rather than an empty space.
+async function saveVendorContact() {
+  if (!editVendor) return;
+  const btn = $('vendor-contact-save');
+  const note = $('vendor-contact-note');
+  const contactName = $('vendor-edit-contact').value.trim();
+  const phone = $('vendor-edit-phone').value.trim();
+
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    // Both keys, always. '' is a real value on this endpoint (it clears the
+    // field), which is what lets a wrong number be removed rather than only
+    // overwritten.
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ contactName, phone }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    Object.assign(editVendor.v, data);                             // keep the in-memory roster in sync
+    editVendor.infoEl.innerHTML = vendorInfoHtml(editVendor.v);    // roster row shows the new contact
+    $('vendor-edit-contact').value = editVendor.v.contact_name ?? '';
+    $('vendor-edit-phone').value = editVendor.v.phone ?? '';
     setNote(note, 'Saved', 'ok');
     btn.disabled = false;
   } catch {
@@ -1714,6 +1819,11 @@ function firstNewVendorProblem() {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test($('nv-email').value.trim())) return 'Enter a valid email address.';
   if ($('nv-password').value.length < 8) return 'Password must be at least 8 characters.';
   if ($('nv-password').value.length > 72) return 'Password must be 72 characters or fewer.';
+  // Optional, but checked when given (migration-049) — the same shape /join
+  // enforces and the same one validNewVendor re-checks server-side. Catching it
+  // here saves a round trip on a form the operator has otherwise finished.
+  const phone = $('nv-phone').value.trim();
+  if (phone && !/^[\d\s()+.-]{7,20}$/.test(phone)) return 'Enter a valid phone number, or leave it blank.';
   return null;
 }
 
@@ -1738,6 +1848,10 @@ async function createVendor(e) {
         address: $('nv-address').value.trim(),
         // Blank for the single-location vendor, which is nearly all of them.
         locationLabel: $('nv-location').value.trim(),
+        // Optional on this door (migration-049) — a vendor added at a demo can
+        // have their number filled in from the roster afterwards.
+        contactName: $('nv-contact').value.trim(),
+        phone: $('nv-phone').value.trim(),
         logo: newVendorLogo,
         cuisine: pickedCuisine($('nv-cuisine')),
         priceLevel: $('nv-price').value || null,
