@@ -42,7 +42,23 @@
 // so nobody receives more messages than the caps already allowed — but "the same
 // number of messages, arriving somewhere new" is still a change in what students
 // agreed to.
-export const TERMS_VERSION = '2026-08-20';
+// 2026-08-26: nearby spot alerts (Policy §2.9, §2.13, §7.4). Material, and by
+// the plainest test available — the prior Policy did not merely fail to mention
+// this, it said the OPPOSITE, twice. §2.9 ended "This is the only feature in
+// WeRewards that touches your location, and it does nothing until you ask it
+// to", and §2.13 listed precise GPS location under Information We Do NOT
+// Collect. The feature makes the first sentence false and needs the second
+// qualified, which is the same shape of broken promise the 2026-08-01 and
+// 2026-08-20 bumps above were made to honour.
+//
+// Students are also opted in by default (nearby_opt_in defaults true), so as
+// with deal emails the consent has to come from somewhere, and this is where.
+//
+// The coordinates genuinely never reach us — the proximity test runs on the
+// phone — but a granted claim writes a row saying this student was next to that
+// spot at that time, and that is coarse location data we did not previously
+// hold. Disclosing it is not optional and neither is re-consenting to it.
+export const TERMS_VERSION = '2026-08-26';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

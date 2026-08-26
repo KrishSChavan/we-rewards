@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v73';   // v73: a printed banner's QR (/r/<code>) is passed through instead of cached, and ?qr= is stashed at boot so a signup through that poster can be credited (app.js + sw.js)
+const CACHE = 'werewards-v74';   // v74: nearby-spot notifications (migration-051) — a local showNotification when the student dwells near somewhere they've never earned, its own tag family so it can't replace an unread deal, and /?spot=<id> deep links open that spot
+// v73: a printed banner's QR (/r/<code>) is passed through instead of cached, and ?qr= is stashed at boot so a signup through that poster can be credited (app.js + sw.js)
 // v71: the Deal emails row only appears when the deployment can actually send mail (/api/public-config emailEnabled). A switch that cannot do anything reads as a promise.
 // v68: Home's search field is gone (the Spots tab owns searching) and the heading it shared a row with is now a two-item menu — Recent spots / Recommended; addresses render title-cased with E/W/N/S for the compass words
 // v66: Spots tab gained a "Pick a random spot" button under the search box — draws from shownSpots(), the same filter+search pipeline the list itself renders
@@ -115,13 +116,22 @@ self.addEventListener('push', (e) => {
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const url = e.notification.data?.url || '/?deals=1';
+  // Two kinds of notification arrive here now. A nearby-spot one (migration-051)
+  // points at /?spot=<vendorId> and wants that spot's own screen; everything
+  // else is a deal and wants the deals list. The message type is what tells
+  // app.js which, since a focused tab is handed the target rather than being
+  // navigated to it.
+  let type = 'open-deals';
+  try {
+    if (new URL(url, self.location.origin).searchParams.get('spot')) type = 'open-spot';
+  } catch { /* keep the deals default */ }
   e.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       const hit = list.find((c) => new URL(c.url).origin === self.location.origin);
       if (hit) {
         // A focused tab won't re-navigate, so hand it the target instead and
         // let app.js open the right sheet.
-        hit.postMessage({ type: 'open-deals', url });
+        hit.postMessage({ type, url });
         return hit.focus();
       }
       return clients.openWindow(url);

@@ -1206,6 +1206,43 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 .setting-note { font-size: 0.82rem; font-weight: 600; color: var(--muted); padding: 0 0.3rem; line-height: 1.35; }
 
+/* ---------- nearby spots (migration-051) ----------
+   A SEPARATE CLASS from .deals-optin, which it otherwise mirrors exactly, and
+   the reason is the surface each one sits on. .deals-optin lives in the hub
+   panel, which is navy: its text is rgba(255,255,255,.86) and its background a
+   translucent --accent tint that only reads against dark. This card sits on
+   Home, which is --paper. Reusing the class there put near-white text on a
+   near-white card — legible in dark mode and invisible in light, which is the
+   worst kind of broken because whoever builds it in the dark theme never sees
+   it. So this takes the ordinary paper-card treatment (--card / --edge, the
+   same sticker shape as .setting-row and .account-card) and inherits --ink. */
+.nearby-optin {
+  margin: 0 1.3rem 0.9rem;
+  background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
+  padding: 0.9rem 1rem; box-shadow: 0 4px 0 var(--edge);
+  display: flex; flex-direction: column; gap: 0.6rem;
+  text-align: left;
+}
+.nearby-optin-text { font-size: 0.88rem; font-weight: 700; line-height: 1.4; color: var(--ink); }
+.nearby-optin-actions { display: flex; gap: 0.45rem; flex-wrap: wrap; }
+.nearby-optin-yes, .nearby-optin-no {
+  font: inherit; font-weight: 900; font-size: 0.85rem;
+  padding: 0.5rem 0.9rem; border-radius: 0.65rem; border: 2px solid var(--navy);
+}
+.nearby-optin-yes { background: var(--navy); color: #fff; }
+.nearby-optin-no { background: transparent; color: var(--muted); border-color: var(--edge); }
+
+/* The per-device instructions in #nearby-help. A real <ol>: these are ordered
+   steps someone follows on another screen with the phone in their other hand,
+   so the numbers are the point and must not be decoration. */
+.nearby-help-steps {
+  width: 100%; margin: 0.3rem 0 0.7rem; padding-left: 1.35rem;
+  display: flex; flex-direction: column; gap: 0.5rem;
+  text-align: left; font-size: 0.9rem; font-weight: 600; line-height: 1.4;
+  color: var(--ink);
+}
+.nearby-help-steps li { padding-left: 0.15rem; }
+
 /* ---------- move-points sheet (spending the community balance) ----------
    Rides the shared .overlay.sheet / .detail-card mechanics; these are just the
    destination picker + amount controls inside the card. Same sticker language

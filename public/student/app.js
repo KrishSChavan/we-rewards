@@ -50,6 +50,7 @@ let historyLoaded = false;  // has the history tab fetched at least once?
 let paneSlide = null;       // the in-flight #home <-> #vendor slide, so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
 let pendingDealLink = null;       // a ?deal=/?deals= notification tap, held until the app is ready
+let pendingSpotLink = null;       // same, for a ?spot= nearby-notification tap (migration-051)
 // Consent-gate state (the gate itself is far below, see ensureConsent). It is
 // declared up here with the rest of the module's state rather than beside the
 // feature because Splash.giveUp() reads consentChecking, and boot() can call
@@ -266,6 +267,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   captureReferralLink();           // same, for a friend's ?ref= invite link
   capturePosterQr();               // same, for a printed banner's ?qr= link (migration-050)
   pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
+  pendingSpotLink = captureSpotLink();   // same, for a ?spot= nearby-spot notification tap
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
   InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
   const pub = await (await fetch('/api/public-config')).json();
@@ -274,6 +276,11 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // overwrites the student's session (and the student then reads the vendor's
   // empty balances as 0). See the vendor terminal's matching 'psu-vendor-auth'.
   applyEmailConfig(pub.emailEnabled);
+  // Radius and dwell for the nearby-spots watcher (migration-051). Read here
+  // rather than baked into this bundle so they can be retuned from the
+  // environment — they are the two numbers most likely to need adjusting once
+  // the feature meets a real street.
+  applyNearbyConfig(pub.nearby);
   sb = window.supabase.createClient(pub.supabaseUrl, pub.supabaseAnonKey, {
     auth: { storageKey: 'psu-student-auth' },
   });
@@ -444,6 +451,14 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('deals-alert-retry').addEventListener('click', retryPushSubscribe);
   $('deals-toggle').addEventListener('click', onDealsToggle);
   $('deal-emails-toggle').addEventListener('click', onDealEmailsToggle);
+  // nearby spots (migration-051): the switch, the one-time explanatory card,
+  // and the sheet of per-device instructions for a student who has already
+  // blocked location and therefore cannot be re-prompted.
+  $('nearby-toggle').addEventListener('click', onNearbyToggle);
+  $('nearby-optin-enable').addEventListener('click', onNearbyOptinEnable);
+  $('nearby-optin-dismiss').addEventListener('click', dismissNearbyOptin);
+  $('nearby-help-close').addEventListener('click', closeNearbyHelp);
+  $('nearby-help').addEventListener('click', (e) => { if (e.target === $('nearby-help')) closeNearbyHelp(); });
   // never leave the punch camera running while the tab is backgrounded
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopPunchScanner();
@@ -454,6 +469,12 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     // Coming back from the background is also when a deal may have landed
     // while we were away.
     if (!document.hidden && dealsLoaded) loadDeals();
+    // High-accuracy geolocation is expensive, and a position read while the
+    // app is backgrounded is worth nothing anyway: the OS suspends the watch
+    // on its own schedule and the dwell timer would be measuring wall-clock
+    // through a gap. Stop on the way out, start again on the way back.
+    if (document.hidden) stopNearbyWatch();
+    else if (nearbyOn) startNearbyWatch();
   });
   // receipt: photo → server OCR → points. The hidden file input is the actual
   // picker; "take or choose" and "use a different photo" both just click it.
@@ -522,6 +543,11 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     // Tapping a deal notification when a tab is already open focuses that tab
     // rather than navigating it, so the worker hands us the target instead.
     navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type === 'open-spot') {
+        const spot = readSpotParam(e.data.url);
+        if (spot) openVendor(spot, TAB.home);
+        return;
+      }
       if (e.data?.type !== 'open-deals') return;
       const id = readDealParam(e.data.url);
       openDealsSheet(id);
@@ -537,6 +563,27 @@ function readDealParam(href) {
     const u = new URL(href, location.origin);
     return u.searchParams.get('deal') || null;
   } catch { return null; }
+}
+
+/* A nearby-spot notification points at /?spot=<vendorId>. Read once and
+   stripped from the URL for the same reason the deal link is: without that a
+   reload — or the OAuth round trip on a cold sign-in — reopens the same spot
+   forever. */
+function captureSpotLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const id = params.get('spot');
+    if (!id) return null;
+    params.delete('spot');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+    return id;
+  } catch { return null; }
+}
+
+function readSpotParam(href) {
+  try { return new URL(href, location.origin).searchParams.get('spot') || null; }
+  catch { return null; }
 }
 
 function captureDealLink() {
@@ -639,6 +686,7 @@ function render(session) {
     dropPunchScanSheet();       // same (and it holds the camera)
     dropPunchModal();           // same
     dropDealsSheet();           // same, and the next student must not read these
+    dropNearby();               // stop the location watch: it must never outlive the session that opted into it
     dropItemModal();            // same, and it can be holding a live redemption QR
     dropMapScreen();            // same, and it must not leave a location dot up for the next student
     syncPendingPunchNote();     // landing may need the "punch spotted" note
@@ -678,7 +726,7 @@ function render(session) {
   // seed that went null mid-session would reshuffle the Recommended row under
   // a student who had not touched anything.
   currentUserId = session.user?.id ?? null;
-  loadVendors();
+  const vendorsReady = loadVendors();
   loadTier();
   loadCommunity();
   const dealsReady = loadDeals();
@@ -694,6 +742,15 @@ function render(session) {
     const { id } = pendingDealLink;
     pendingDealLink = null;
     dealsReady.then(() => openDealsSheet(id));
+  }
+
+  // Same story for a nearby-spot tap, against the catalogue rather than the
+  // deals list: openVendor() looks the id up in allVendors and returns
+  // silently if it is not there yet, so this has to wait for the load.
+  if (pendingSpotLink) {
+    const id = pendingSpotLink;
+    pendingSpotLink = null;
+    vendorsReady.then(() => openVendor(id, TAB.home));
   }
 }
 
@@ -2696,6 +2753,10 @@ async function loadVendors() {
     if (!res.ok) throw new Error();
     allVendors = await res.json();
     renderVendors();
+    // A spot they just earned at is no longer somewhere they have never been.
+    // Without this its dwell timer survives the refresh and fires the moment
+    // the server's own visited check would have refused it anyway.
+    pruneNearbyDwell();
 
     if (vendor && !$('vendor').hidden) {
       const v = allVendors.find((x) => x.vendorId === vendor.vendorId);
@@ -6646,9 +6707,15 @@ async function loadDeals() {
     pushReady = data.pushReady ?? null;
     dealAlertsOn = data.dealAlerts !== false;
     dealEmailsOn = data.dealEmails !== false;
+    // The third switch (migration-051). Rides this payload rather than getting
+    // an endpoint of its own: it is notification state, it is read on exactly
+    // the same occasions, and a second request would double the cost of every
+    // foreground return to carry one boolean.
+    nearbyOn = data.nearbyAlerts !== false;
     renderDealsCard(data.unread ?? 0);
     setDealsToggle(dealAlertsOn);
     setDealEmailsToggle(dealEmailsOn);
+    void initNearby();
     if (!$('deals-modal').hidden) renderDealsList();
     // Only ask about notifications once there is something to be notified
     // about. A permission prompt before the first deal exists is a prompt
@@ -7305,6 +7372,750 @@ async function onDealEmailsToggle() {
     console.warn('[email] deal-emails toggle failed:', err?.message ?? err);
   }
   sw.disabled = false;
+}
+
+
+/* ---------- nearby spots: "you're walking past somewhere new" ----------
+
+   The one notification in this app the SERVER does not send. Deal alerts and
+   the operator's application alerts are web push, delivered to an endpoint the
+   server holds; this one is shown by this page, on the service worker this
+   browser already registered, while the app is open.
+
+   That is forced, not chosen. There is no background geolocation on the web:
+   navigator.geolocation does not exist inside a service worker, the Geofencing
+   API was withdrawn from Chrome in 2018 and shipped nowhere else, and Periodic
+   Background Sync cannot read a position even where it runs. The only moment a
+   proximity test is possible at all is while a page is alive — so that is when
+   this runs, and the Account screen's wording says so rather than implying a
+   watcher that follows the student around with the app closed.
+
+   WHAT THE SERVER IS STILL FOR (src/lib/nearby.js, migration-051): the two
+   facts this page cannot hold — "have I already told them about this spot",
+   which has to survive a reinstall, and "may they be interrupted at all right
+   now", which is shared with deal alerts. Nothing below decides either. It
+   works out WHERE the student is, and asks.
+
+   TWO PERMISSIONS, and this is the part most likely to trip someone reading
+   this later. Geolocation says where they are; NOTIFICATIONS is what lets us
+   show anything at all. A student can easily have one and not the other — most
+   will already have granted notifications through the deal-alerts flow — so the
+   enable path asks for whichever are missing, notifications FIRST because that
+   is the one that needs a user gesture (see askNotificationPermission). */
+
+// Fallbacks only. The live values arrive from GET /api/public-config so the
+// radius and dwell can be retuned from the environment without a rebuild; these
+// exist so the watcher still behaves sanely if that fetch failed.
+const NEARBY_DEFAULTS = { radiusMeters: 150, dwellSeconds: 30 };
+
+// A fix this vague cannot answer "am I within 150m of that door", and acting on
+// one is how a student gets told they are passing a shop on the other side of
+// campus. Cell-tower and coarse wifi fixes routinely report 500m-3km; a phone
+// with GPS in a street reports 5-30m. Dropping everything above this is the
+// single most effective false-positive filter here, ahead of even the dwell.
+const NEARBY_ACCURACY_MAX_M = 100;
+
+// Leaving takes more than arriving did. Without this a student standing right
+// on the boundary has their dwell timer reset by every GPS wobble and is never
+// notified at all — the failure mode is silence, which is invisible.
+const NEARBY_EXIT_FACTOR = 1.35;
+
+// Re-check the candidate list at most this often. watchPosition can fire every
+// second or two while walking, and the filter below runs over every vendor.
+const NEARBY_MIN_INTERVAL_MS = 5000;
+
+const NEARBY_OPTIN_DISMISS_KEY = 'wr-nearby-optin-dismissed';
+
+// The student's own switch (Account → Nearby spots), mirrored from the server.
+// Defaults on, like the other two, and is written back to FALSE by this file
+// when the device says location is denied or unavailable — so it never sits on
+// over a phone that could never deliver. See onNearbyGeoError.
+let nearbyOn = true;
+let nearbyConfig = { ...NEARBY_DEFAULTS };
+let nearbyWatchId = null;
+// vendorId → the timestamp we first saw them inside the radius. This map IS the
+// dwell test; an entry disappearing is what "they left" means.
+let nearbyDwell = new Map();
+// One claim in flight at a time per spot. watchPosition keeps firing while the
+// request is out, and without this a thirty-second dwell posts a dozen claims.
+let nearbyClaiming = new Set();
+// Spots this PAGE has already fired for. The durable guard is the server's
+// ledger; this only stops a second notification inside one session while the
+// balances payload still says `visited: false` (it is refreshed on earn, but
+// not necessarily before the next position update).
+let nearbyFired = new Set();
+let nearbyLastScanAt = 0;
+// The live PermissionStatus, kept so its 'change' event can flip the switch off
+// the moment a student revokes location in their OS settings. Held rather than
+// re-queried because the event is the only way to hear about that at all.
+let nearbyPermStatus = null;
+// initNearby() runs from loadDeals(), which re-runs on every foreground
+// return. The watcher is safe to re-enter, but the explanatory card is not:
+// without this it would reappear on every return until dismissed, which is
+// the behaviour of a nag rather than an offer.
+let nearbyInitDone = false;
+
+/** Live radius/dwell from /api/public-config; falls back to the constants. */
+function applyNearbyConfig(cfg) {
+  const r = Number(cfg?.radiusMeters);
+  const d = Number(cfg?.dwellSeconds);
+  nearbyConfig = {
+    radiusMeters: Number.isFinite(r) && r > 0 ? r : NEARBY_DEFAULTS.radiusMeters,
+    dwellSeconds: Number.isFinite(d) && d >= 0 ? d : NEARBY_DEFAULTS.dwellSeconds,
+  };
+}
+
+// Both halves have to exist for this feature to do anything: somewhere to read
+// a position from, and somewhere to show the result. A desktop Safari tab has
+// geolocation and no service worker notifications; an iOS tab has neither.
+function nearbySupported() {
+  return 'geolocation' in navigator
+    && 'serviceWorker' in navigator
+    && 'Notification' in window;
+}
+
+/**
+ * What the browser thinks of our location permission, WITHOUT asking for it.
+ *
+ * The Permissions API is the only way to learn "denied" without firing a
+ * request, and it is missing on older Safari — where the honest answer is
+ * 'unknown', not 'prompt'. Treating unknown as prompt would be worse than it
+ * sounds: it is what makes an app fire a geolocation request at a student who
+ * has already refused one, which some browsers answer by silently never
+ * resolving the callback at all.
+ */
+async function nearbyGeoPermission() {
+  if (!('geolocation' in navigator)) return 'unsupported';
+  try {
+    if (!navigator.permissions?.query) return 'unknown';
+    const st = await navigator.permissions.query({ name: 'geolocation' });
+    return st?.state ?? 'unknown';
+  } catch {
+    // Some engines throw on an unrecognised permission name rather than
+    // rejecting. Same answer: we cannot tell.
+    return 'unknown';
+  }
+}
+
+/**
+ * Watch for the student revoking (or granting) location in their OS or browser
+ * settings while the app is open.
+ *
+ * This is the whole of the "turn the switch off if they take it away later"
+ * promise. Nothing else can see it happen: a revoked permission produces no
+ * error until the next position request, and on a page that has already stopped
+ * watching there may never be one.
+ */
+async function watchNearbyPermission() {
+  if (nearbyPermStatus) return;                       // already listening
+  try {
+    if (!navigator.permissions?.query) return;
+    const st = await navigator.permissions.query({ name: 'geolocation' });
+    if (!st || typeof st.addEventListener !== 'function') return;
+    nearbyPermStatus = st;
+    st.addEventListener('change', () => {
+      if (st.state === 'denied') {
+        // Their choice, made elsewhere. Record it so the Account screen agrees
+        // with their phone rather than showing a switch that does nothing.
+        void disableNearby('Location is off for WeRewards on this device.');
+      } else if (st.state === 'granted' && nearbyOn) {
+        startNearbyWatch();
+      }
+    });
+  } catch { /* no Permissions API — the error path in the watcher covers us */ }
+}
+
+/**
+ * Decide what this feature should be doing, and do it. Called after the
+ * catalogue and the notification state have both loaded, and again whenever the
+ * app comes back to the foreground.
+ *
+ * Deliberately never asks for a permission. Everything here is either silent or
+ * a card the student can ignore — the actual request happens in
+ * onNearbyOptinEnable and onNearbyToggle, both of which are gestures.
+ */
+async function initNearby() {
+  // Re-entrant by design: only the first pass may raise the card, but every
+  // pass re-reads the permission and re-renders the switch, because both can
+  // have changed in another tab or in the OS settings while we were away.
+  const first = !nearbyInitDone;
+  nearbyInitDone = true;
+  if (!nearbySupported()) {
+    // Nothing to offer and nothing to fix: hide the row rather than show a dead
+    // switch. Same reasoning as the Deal emails row — a control that cannot do
+    // anything reads as a promise.
+    $('nearby-row').hidden = true;
+    return;
+  }
+  $('nearby-row').hidden = false;
+
+  const perm = await nearbyGeoPermission();
+  void watchNearbyPermission();
+
+  if (perm === 'denied') {
+    // They have refused location at some point. The switch must not sit on over
+    // that, and we cannot re-prompt — the popup in openNearbyHelp is the only
+    // route back, and it is offered when they touch the switch, not now.
+    if (nearbyOn) await disableNearby(null);
+    setNearbyToggle();
+    return;
+  }
+
+  if (!nearbyOn) { setNearbyToggle(); return; }
+
+  if (perm === 'granted' && Notification.permission === 'granted') {
+    startNearbyWatch();
+  } else if (first && !nearbyOptinDismissed()) {
+    // On by default, but not yet usable: one card explaining what it does, with
+    // the button that spends the gesture. A cold geolocation prompt on app open
+    // is refused far more often, and on the web a refusal is close to permanent.
+    showNearbyOptin();
+  }
+  setNearbyToggle();
+}
+
+function nearbyOptinDismissed() {
+  try { return localStorage.getItem(NEARBY_OPTIN_DISMISS_KEY) === '1'; }
+  catch { return false; }
+}
+
+function showNearbyOptin() {
+  $('nearby-optin').hidden = false;
+}
+
+function dismissNearbyOptin() {
+  $('nearby-optin').hidden = true;
+  try { localStorage.setItem(NEARBY_OPTIN_DISMISS_KEY, '1'); } catch { /* private mode */ }
+}
+
+/**
+ * The explanatory card's Enable button. The one place both permissions are
+ * asked for together.
+ *
+ * ORDER IS LOAD-BEARING. Notification.requestPermission() must be called with
+ * nothing awaited before it — it needs the transient activation from this tap
+ * and an await spends it (see askNotificationPermission, and note that Safari
+ * answers a late call with a promise that never settles). Geolocation has no
+ * such rule, so it goes second, after the notification answer is in.
+ */
+async function onNearbyOptinEnable() {
+  const btn = $('nearby-optin-enable');
+  btn.disabled = true;
+  // FIRST, inside the gesture. Nothing above this line may await.
+  const permP = askNotificationPermission();
+  try {
+    const notif = await permP;
+    if (notif !== 'granted') {
+      // Without this there is nowhere to show the notification, so enabling
+      // location would buy nothing. Leave the switch alone — this is a
+      // notifications problem, and the deal-alerts row already explains it.
+      $('nearby-optin-note').textContent = notif === 'denied'
+        ? 'Notifications are blocked for WeRewards, so there’s nowhere to show this. Allow them in your browser settings first.'
+        : 'We need permission to show notifications before this can work.';
+      $('nearby-optin-note').hidden = false;
+      return;
+    }
+    const ok = await requestNearbyLocation();
+    if (ok) {
+      dismissNearbyOptin();
+      startNearbyWatch();
+    } else {
+      $('nearby-optin-note').textContent = 'Location is off for WeRewards, so we can’t tell when you’re nearby. You can turn this on later in Account.';
+      $('nearby-optin-note').hidden = false;
+    }
+  } finally {
+    btn.disabled = false;
+    setNearbyToggle();
+  }
+}
+
+/**
+ * Ask for location once, and answer whether we ended up with it.
+ *
+ * THIS is where "if anything comes back as not enabled, turn it off" is
+ * implemented, and the distinction it draws is deliberate:
+ *
+ *   PERMISSION_DENIED (1)      — they said no. Switch off.
+ *   POSITION_UNAVAILABLE (2)   — the device cannot produce a fix at all, which
+ *                                is what location services being off system-wide
+ *                                looks like from here. Switch off.
+ *   TIMEOUT (3)                — nothing was refused; the fix just did not
+ *                                arrive in time. Switch LEFT ON. A student in a
+ *                                lift or a basement must not silently lose a
+ *                                feature they never turned off, and this is the
+ *                                one error here that is routinely transient.
+ *
+ * The same three codes are treated more conservatively once the watch is
+ * running — see onNearbyGeoError.
+ */
+function requestNearbyLocation() {
+  return new Promise((resolve) => {
+    if (!('geolocation' in navigator)) { void disableNearby(null); resolve(false); return; }
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    navigator.geolocation.getCurrentPosition(
+      () => done(true),
+      (err) => {
+        if (err?.code === 1 || err?.code === 2) {
+          void disableNearby(err?.code === 1
+            ? 'Location is off for WeRewards on this device.'
+            : 'This device couldn’t provide a location.');
+        }
+        done(false);
+      },
+      // A generous timeout: this runs once, from a tap, and the student is
+      // watching. A cold GPS fix outdoors is routinely 10-20 seconds.
+      { enableHighAccuracy: true, timeout: 25_000, maximumAge: 60_000 }
+    );
+  });
+}
+
+/**
+ * Start following the student's position.
+ *
+ * enableHighAccuracy is ON. It costs battery, and it is not optional at a 150m
+ * radius: the coarse wifi/cell fix a browser hands back without it is commonly
+ * accurate to several hundred metres, which cannot answer the only question
+ * this feature asks. NEARBY_ACCURACY_MAX_M then throws away whatever still
+ * arrives too vague to use.
+ *
+ * The watch is stopped whenever the page is hidden (see the visibilitychange
+ * wiring), so "high accuracy" only ever means "while they are looking at it".
+ */
+function startNearbyWatch() {
+  if (nearbyWatchId !== null || !nearbySupported() || !nearbyOn) return;
+  if (Notification.permission !== 'granted') return;   // nowhere to show it
+  try {
+    nearbyWatchId = navigator.geolocation.watchPosition(
+      onNearbyPosition,
+      onNearbyGeoError,
+      { enableHighAccuracy: true, timeout: 30_000, maximumAge: 15_000 }
+    );
+  } catch {
+    nearbyWatchId = null;
+  }
+}
+
+function stopNearbyWatch() {
+  if (nearbyWatchId === null) return;
+  try { navigator.geolocation.clearWatch(nearbyWatchId); } catch { /* already gone */ }
+  nearbyWatchId = null;
+  // Dwell is wall-clock, so a timer left running across a backgrounded app
+  // would "complete" on a spot the student walked away from ten minutes ago.
+  nearbyDwell.clear();
+}
+
+/**
+ * A watch error, which is a different situation from the one-shot ask above:
+ * the student already granted this once, and the app is now running in their
+ * pocket where transient failures are normal.
+ *
+ * So only an explicit revoke (code 1) turns the switch off here. A device that
+ * momentarily cannot produce a fix (code 2 indoors, code 3 in a tunnel) is left
+ * alone — turning the feature off for a student who walked into a building
+ * would be a silent, permanent-feeling loss of something they never touched.
+ */
+function onNearbyGeoError(err) {
+  if (err?.code === 1) {
+    stopNearbyWatch();
+    void disableNearby('Location is off for WeRewards on this device.');
+  }
+}
+
+/** Great-circle metres between two points. Accurate far beyond what a 150m
+    radius needs, and cheap enough to run over the whole catalogue. */
+function metersBetween(aLat, aLon, bLat, bLon) {
+  const R = 6371000;
+  const rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(bLat - aLat);
+  const dLon = rad(bLon - aLon);
+  const s = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+    + Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+/**
+ * The spots this student could be told about. Everything here is a rule the
+ * server ALSO enforces, except the two it cannot see (a chain sibling, and what
+ * this page has already fired) — the client filters first purely to avoid
+ * posting claims that are certain to be refused.
+ */
+function nearbyCandidates() {
+  // A chain the student already knows. migration-048 answers per VENDOR ROW, so
+  // a second branch of somewhere they go every week comes back `visited: false`
+  // — and "a spot you haven't tried" is simply false about it. pool_id
+  // (migration-044) is what makes two rows one business, so it is the right key
+  // here even though it exists for the shared purse.
+  const knownPools = new Set();
+  for (const v of allVendors) if (v.visited && v.poolId) knownPools.add(v.poolId);
+
+  return allVendors.filter((v) => {
+    if (v.visited) return false;
+    if (nearbyFired.has(v.vendorId)) return false;
+    if (v.latitude == null || v.longitude == null) return false;
+    if (v.poolId && knownPools.has(v.poolId)) return false;
+    // Nothing to walk in for. A spot with no live rewards can still be earned
+    // at, but "you haven't earned here yet" is a thin thing to interrupt
+    // someone for when there is nothing on the other side of the door.
+    if (!(v.rewards ?? []).length) return false;
+    return true;
+  });
+}
+
+/**
+ * A position update. Runs the dwell bookkeeping and, at most, starts ONE claim.
+ *
+ * One, not one per spot in range: the student's cooldown means the server would
+ * refuse the rest anyway, and firing several claims to collect several refusals
+ * is a round trip per spot for nothing. Saved spots go first — they told us they
+ * were interested in that one — then whatever is nearest.
+ */
+function onNearbyPosition(pos) {
+  const now = Date.now();
+  if (now - nearbyLastScanAt < NEARBY_MIN_INTERVAL_MS) return;
+  nearbyLastScanAt = now;
+
+  const { latitude, longitude, accuracy } = pos?.coords ?? {};
+  if (latitude == null || longitude == null) return;
+  // Too vague to answer the question. Not an error and not worth a note: it
+  // happens constantly indoors and resolves itself the moment they step out.
+  if (Number.isFinite(accuracy) && accuracy > NEARBY_ACCURACY_MAX_M) return;
+
+  const enter = nearbyConfig.radiusMeters;
+  const exit = enter * NEARBY_EXIT_FACTOR;
+  const dwellMs = nearbyConfig.dwellSeconds * 1000;
+  const ready = [];
+
+  for (const v of nearbyCandidates()) {
+    const d = metersBetween(latitude, longitude, Number(v.latitude), Number(v.longitude));
+    const seen = nearbyDwell.get(v.vendorId);
+    if (seen == null) {
+      if (d <= enter) nearbyDwell.set(v.vendorId, now);
+      continue;
+    }
+    // Already inside. The wider exit radius is what stops boundary jitter
+    // restarting the timer forever.
+    if (d > exit) { nearbyDwell.delete(v.vendorId); continue; }
+    if (now - seen >= dwellMs && !nearbyClaiming.has(v.vendorId)) ready.push({ v, d });
+  }
+
+  if (!ready.length) return;
+  ready.sort((a, b) => (Number(b.v.favorite) - Number(a.v.favorite)) || (a.d - b.d));
+  void claimNearbySpot(ready[0].v);
+}
+
+// Anything no longer a candidate (they just earned there, the catalogue
+// refreshed) must not keep a dwell timer that would fire the moment it is
+// re-added. Called after every loadVendors().
+function pruneNearbyDwell() {
+  if (!nearbyDwell.size) return;
+  const live = new Set(nearbyCandidates().map((v) => v.vendorId));
+  for (const id of [...nearbyDwell.keys()]) if (!live.has(id)) nearbyDwell.delete(id);
+}
+
+/**
+ * Ask the server whether this spot may be announced, and announce it if so.
+ *
+ * The claim SPENDS the slot server-side before we show anything, so a failure
+ * between here and showNotification costs the student one notification. That
+ * asymmetry is deliberate and matches the campaign worker: two notifications
+ * about one thing is worse than none.
+ */
+async function claimNearbySpot(v) {
+  if (nearbyClaiming.has(v.vendorId)) return;
+  nearbyClaiming.add(v.vendorId);
+  try {
+    const res = await authFetch('/api/me/nearby/claim', {
+      method: 'POST',
+      body: JSON.stringify({ vendorId: v.vendorId }),
+    });
+    if (!res.ok) return;
+    const { allowed } = await res.json();
+    // Refused — cooldown, quiet hours, their cap, or the server knows something
+    // this page does not (they earned here five minutes ago). Drop the dwell so
+    // the next pass starts the timer again rather than re-claiming instantly.
+    if (!allowed) { nearbyDwell.delete(v.vendorId); return; }
+    nearbyFired.add(v.vendorId);
+    nearbyDwell.delete(v.vendorId);
+    await showNearbySpotNotification(v);
+  } catch {
+    // Offline, or the claim never landed. Nothing was granted, so nothing is
+    // lost; the dwell entry stays and the next fix tries again.
+  } finally {
+    nearbyClaiming.delete(v.vendorId);
+  }
+}
+
+/**
+ * Show it. Through the service worker registration rather than `new
+ * Notification(...)`: the constructor does not exist on Android Chrome at all,
+ * and it is the registration form that survives the page being backgrounded
+ * mid-call — which, for a notification whose entire premise is that the phone is
+ * in someone's pocket, is the normal case rather than the edge one.
+ */
+async function showNearbySpotNotification(v) {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    // earnRateText, not a second copy of the formatting: it already renders ''
+    // for a missing or nonsense rate, which is exactly the "say nothing rather
+    // than promise zero" rule this sentence needs.
+    const rate = earnRateText(v.pointsPerDollar);
+    await reg.showNotification(`You’re near ${v.name}`, {
+      body: rate ? `You haven’t earned here yet — ${rate}.` : 'You haven’t earned here yet.',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      // Its OWN tag family, not the deals one. Sharing 'wr-deals' would make a
+      // nearby notification silently REPLACE a deal the student has not read
+      // yet (renotify:false in sw.js), destroying a message to deliver an
+      // interruption. Per-vendor so two spots can never collapse into one.
+      tag: `wr-nearby-${v.vendorId}`,
+      renotify: false,
+      data: { url: `/?spot=${encodeURIComponent(v.vendorId)}` },
+    });
+  } catch {
+    // The slot is already spent (see claimNearbySpot). Nothing to recover, and
+    // nothing the student could act on if we told them.
+  }
+}
+
+/* ---------- account: the nearby-spots switch ---------- */
+
+/**
+ * Render what is TRUE, not what is stored — the rule setDealsToggle follows,
+ * and for the same reason: a switch reading "on" while nothing ever arrives is
+ * what makes people stop believing the settings screen.
+ *
+ * "True" here means all three of: they have not opted out, the browser will let
+ * us read a position, and it will let us show a notification. The last one is
+ * why this reads Notification.permission as well — this feature borrows the
+ * deal-alerts permission, and a student who blocked notifications has silenced
+ * this too whatever the location permission says.
+ */
+function setNearbyToggle() {
+  const sw = $('nearby-toggle');
+  if (!sw) return;
+  const geoBlocked = nearbyPermStatus?.state === 'denied';
+  const notifBlocked = 'Notification' in window && Notification.permission === 'denied';
+  const live = nearbyOn && !geoBlocked && !notifBlocked;
+  sw.setAttribute('aria-checked', live ? 'true' : 'false');
+  // NOT disabled when location is blocked, unlike the deals switch. Tapping it
+  // is how the student reaches the instructions for un-blocking it — a dead
+  // control would leave them with a switch that will not move and no way to
+  // find out why. It IS disabled when notifications are blocked, because that
+  // fix lives on the deal-alerts row above and is already explained there.
+  sw.disabled = notifBlocked;
+  $('nearby-blocked-note').hidden = !notifBlocked;
+}
+
+/**
+ * Record that this device cannot do it, and stop pretending otherwise.
+ *
+ * Written to the SERVER, not just to this page: the student's next launch reads
+ * the switch back from /api/me/deals, so a local-only flag would come back on
+ * and re-prompt them forever. `reason` is shown at the switch when there is
+ * one; null means "just correct the state quietly" (app start-up, where nobody
+ * touched anything and a note would be an accusation out of nowhere).
+ */
+async function disableNearby(reason) {
+  stopNearbyWatch();
+  nearbyOn = false;
+  setNearbyToggle();
+  if (reason) {
+    $('nearby-fail-note').textContent = reason;
+    $('nearby-fail-note').hidden = false;
+  }
+  try {
+    await authFetch('/api/me/notify', {
+      method: 'PATCH',
+      body: JSON.stringify({ nearbyAlerts: false }),
+    });
+  } catch {
+    // The server still thinks it is on. Harmless: it sends nothing for this
+    // feature, so the only cost is this page asking again next launch.
+  }
+}
+
+/**
+ * The switch itself.
+ *
+ * Turning OFF moves immediately — that direction is always deliverable.
+ * Turning ON does not move until it has actually worked, because it can fail in
+ * three separate ways (notifications blocked, location refused, location
+ * already permanently denied) and a switch that flips on and silently flips
+ * back at the next launch is the exact bug the deals switch was rewritten to
+ * avoid.
+ */
+async function onNearbyToggle() {
+  const sw = $('nearby-toggle');
+  const wasOn = sw.getAttribute('aria-checked') === 'true';
+  const next = !wasOn;
+  $('nearby-fail-note').hidden = true;
+  sw.disabled = true;
+
+  // Started before any await, inside this tap's gesture — askNotificationPermission
+  // is only meaningful from one. Cheap and side-effect-free when already granted.
+  const permP = next ? askNotificationPermission() : null;
+  try {
+    if (!next) {
+      nearbyOn = false;
+      stopNearbyWatch();
+      setNearbyToggle();
+      const res = await authFetch('/api/me/notify', {
+        method: 'PATCH',
+        body: JSON.stringify({ nearbyAlerts: false }),
+      });
+      if (!res.ok) throw new Error(`notify failed: ${res.status}`);
+      return;
+    }
+
+    // ---- turning on ----
+    const notif = await permP;
+    if (notif !== 'granted') {
+      $('nearby-fail-note').textContent = notif === 'denied'
+        ? 'Notifications are blocked for WeRewards, so there’s nowhere to show this.'
+        : 'We need permission to show notifications before this can work.';
+      $('nearby-fail-note').hidden = false;
+      return;
+    }
+
+    // The case the whole help sheet exists for. A browser that has recorded a
+    // denial will NOT prompt again — getCurrentPosition fails instantly, or on
+    // some engines never calls back at all — so re-asking is not an option and
+    // pretending to try would just look broken. Show them where the setting is.
+    const perm = await nearbyGeoPermission();
+    if (perm === 'denied') { openNearbyHelp(); return; }
+
+    if (!(await requestNearbyLocation())) {
+      // requestNearbyLocation has already written the opt-out for a denial or
+      // an unavailable device; a timeout deliberately leaves the flag alone.
+      $('nearby-fail-note').textContent = 'We couldn’t get a location from this device. Try again outside, or check that location is on.';
+      $('nearby-fail-note').hidden = false;
+      return;
+    }
+
+    nearbyOn = true;
+    const res = await authFetch('/api/me/notify', {
+      method: 'PATCH',
+      body: JSON.stringify({ nearbyAlerts: true }),
+    });
+    if (!res.ok) throw new Error(`notify failed: ${res.status}`);
+    dismissNearbyOptin();
+    void watchNearbyPermission();
+    startNearbyWatch();
+  } catch (err) {
+    if (next) {
+      nearbyOn = false;
+      $('nearby-fail-note').textContent = 'We couldn’t save that. Check your connection and try again.';
+      $('nearby-fail-note').hidden = false;
+    } else {
+      nearbyOn = wasOn;                    // the server never heard the opt-out
+    }
+    console.warn('[nearby] toggle failed:', err?.message ?? err);
+  } finally {
+    sw.disabled = false;
+    setNearbyToggle();
+  }
+}
+
+/* ---------- "turn location back on" instructions ----------
+
+   Reached only when the browser has already recorded a denial, which is a state
+   nothing in a web page can undo: there is no API to re-prompt, and calling
+   getCurrentPosition again fails instantly (or, on some engines, never calls
+   back at all). Steps are the only thing left to offer.
+
+   Written per platform because the generic version — "check your browser
+   settings" — is the kind of help that is technically true and practically
+   useless on a phone, where the setting is four screens deep under a name the
+   student has no reason to guess. */
+
+function nearbyPlatform() {
+  const ua = navigator.userAgent || '';
+  const iOS = /iPad|iPhone|iPod/.test(ua)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);   // iPadOS
+  const android = /Android/.test(ua);
+  // The one that matters for the instructions, not for the feature: an
+  // installed app's permissions live under the APP on both mobile platforms,
+  // while a tab's live under the browser. Sending someone to the wrong one is
+  // the difference between a 20-second fix and giving up.
+  const installed = Boolean(window.InstallPrompt?.isInstalled?.())
+    || window.matchMedia?.('(display-mode: standalone)')?.matches
+    || window.navigator.standalone === true;
+  if (iOS) return installed ? 'ios-app' : 'ios-browser';
+  if (android) return installed ? 'android-app' : 'android-browser';
+  return 'desktop';
+}
+
+const NEARBY_HELP = {
+  'ios-app': [
+    'Open Settings and tap Privacy & Security, then Location Services.',
+    'Make sure Location Services is on.',
+    'Scroll down to WeRewards and choose “While Using the App”.',
+    'If WeRewards isn’t listed, find Safari Websites in the same list and choose “While Using the App”.',
+  ],
+  'ios-browser': [
+    'Open Settings and tap Privacy & Security, then Location Services.',
+    'Make sure Location Services is on.',
+    'Scroll down to Safari Websites and choose “While Using the App”.',
+    'Come back here, reload the page, and turn this on again.',
+  ],
+  'android-app': [
+    'Press and hold the WeRewards icon on your home screen, then tap App info (ⓘ).',
+    'Tap Permissions, then Location.',
+    'Choose “Allow only while using the app”.',
+  ],
+  'android-browser': [
+    'Tap the ⋮ menu in Chrome, then Settings.',
+    'Tap Site settings, then Location.',
+    'Find we-rewards.com under Blocked and tap it, then choose Allow.',
+  ],
+  desktop: [
+    'Click the icon just left of the web address (a lock, a slider, or a globe).',
+    'Find Location and set it to Allow.',
+    'Reload the page, then turn this on again.',
+  ],
+};
+
+function openNearbyHelp() {
+  const list = $('nearby-help-steps');
+  list.innerHTML = '';
+  for (const step of NEARBY_HELP[nearbyPlatform()] ?? NEARBY_HELP.desktop) {
+    const li = document.createElement('li');
+    li.textContent = step;                    // textContent, never innerHTML
+    list.appendChild(li);
+  }
+  const ov = $('nearby-help');
+  ov.hidden = false;
+  void ov.offsetWidth;                        // reflow so the slide-up runs
+  ov.classList.add('is-open');
+}
+
+function closeNearbyHelp() {
+  const ov = $('nearby-help');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  setTimeout(() => {
+    if (ov.classList.contains('is-open')) return;   // reopened mid-slide
+    ov.hidden = true;
+  }, 360);
+}
+
+// Hard reset, no animation — for sign-out (same reason as dropDealsSheet).
+function dropNearby() {
+  stopNearbyWatch();
+  const ov = $('nearby-help');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('nearby-optin').hidden = true;
+  $('nearby-fail-note').hidden = true;
+  nearbyOn = true;
+  // The next student to sign in on this device is a different person who has
+  // never been offered this. The dismissal in localStorage is per-device and
+  // deliberately survives, but the one-per-session guard must not.
+  nearbyInitDone = false;
+  nearbyFired.clear();
+  nearbyClaiming.clear();
+  nearbyLastScanAt = 0;
 }
 
 /* ---------- the full-screen punch-in scanner ---------- */

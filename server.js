@@ -19,6 +19,7 @@ import webhookRoutes from './src/routes/webhooks.js';
 import trackedQrRoutes from './src/routes/tracked-qr.js';
 import { supabaseAdmin } from './src/lib/supabase.js';
 import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
+import { NEARBY_CONFIG } from './src/lib/nearby.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError, requestContext, isCrawler } from './src/lib/errors.js';
@@ -975,6 +976,14 @@ app.get('/api/public-config', async (_req, res) =>
     supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
     signupBonus: await publicSignupBonus(),
     emailEnabled,
+    // The two knobs the nearby-spots watcher needs before it can do anything
+    // (migration-051). Served rather than baked into the bundle so the radius
+    // and the dwell can be retuned from the environment without a rebuild —
+    // they are the numbers most likely to want adjusting once the feature meets
+    // a real street. Deliberately NOT the caps or quiet hours: those are
+    // enforced in the database, and a client that knew them would be tempted to
+    // decide for itself and skip the claim.
+    nearby: NEARBY_CONFIG,
   })
 );
 

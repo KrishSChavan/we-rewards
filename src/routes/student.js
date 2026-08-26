@@ -9,6 +9,7 @@ import { matchVendor, extractTotal, extractDateTime, parseIsoDateTime } from '..
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
 import { getVapidPublicKey } from '../lib/push.js';
+import { claimNearby } from '../lib/nearby.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
@@ -1223,7 +1224,7 @@ router.get('/deals', requireConsent, async (req, res, next) => {
         .limit(50),
       supabaseAdmin
         .from('student_notify_state')
-        .select('push_opt_in, email_opt_in')
+        .select('push_opt_in, email_opt_in, nearby_opt_in')
         .eq('user_id', req.user.id)
         .maybeSingle(),
       // Do we actually hold somewhere to send to? claim_campaign_pushes will not
@@ -1273,6 +1274,13 @@ router.get('/deals', requireConsent, async (req, res, next) => {
       // yes". The client re-subscribes when this is false and permission is
       // granted, which is what repairs the otherwise-permanent silent state.
       pushReady: (subCount ?? 0) > 0,
+      // The third switch (migration-051), also defaulting on. There is no
+      // `nearbyReady` peer to it: unlike the two above, this feature needs no
+      // subscription and no endpoint the server could check — it needs a
+      // GEOLOCATION permission only the browser can see. So the client is the
+      // only thing that can tell whether it is truly working, and it writes the
+      // answer back here (PATCH /api/me/notify) rather than being asked.
+      nearbyAlerts: state?.nearby_opt_in ?? true,
     });
   } catch (err) {
     next(err);
@@ -1406,15 +1414,18 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
   try {
     const push = req.body?.dealAlerts;
     const mail = req.body?.dealEmails;
+    const near = req.body?.nearbyAlerts;
     const hasPush = typeof push === 'boolean';
     const hasMail = typeof mail === 'boolean';
-    if (!hasPush && !hasMail) {
+    const hasNear = typeof near === 'boolean';
+    if (!hasPush && !hasMail && !hasNear) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'Deal alerts must be on or off.' });
     }
 
     const patch = { user_id: req.user.id, updated_at: new Date().toISOString() };
     if (hasPush) patch.push_opt_in = push;
     if (hasMail) patch.email_opt_in = mail;
+    if (hasNear) patch.nearby_opt_in = near;
 
     const { error } = await supabaseAdmin
       .from('student_notify_state')
@@ -1450,7 +1461,51 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
     const body = {};
     if (hasPush) body.dealAlerts = push;
     if (hasMail) body.dealEmails = mail;
+    if (hasNear) body.nearbyAlerts = near;
     res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/nearby/claim  { vendorId }
+ *
+ * "I am standing next to this spot and I have never been in — may I show myself
+ * a notification about it?" (migration-051).
+ *
+ * THE ODD ONE OUT, and the shape is deliberate. Every other notification in
+ * this codebase is delivered BY the server; this one is rendered by the
+ * student's own page, because there is no background geolocation on the web and
+ * therefore no moment other than "the page is open" at which proximity can be
+ * known at all. See src/lib/nearby.js.
+ *
+ * So this endpoint grants permission rather than doing anything. It carries a
+ * vendor id and NO COORDINATES — the distance maths already happened on the
+ * phone, against a catalogue it was holding anyway.
+ *
+ * Everything that could say no lives in the database function, under a row lock
+ * on the student, sharing the deal-alert budget. Nothing is re-decided here,
+ * including the things the client already checked: a client can be stale, and
+ * in this feature's worst case it is stale in the one direction that matters —
+ * a student who earned points at the counter thirty seconds ago is still inside
+ * the radius of the shop they are standing in.
+ *
+ * requireConsent, like every other /api/me route: a student who has not
+ * accepted the terms has no profile row, and the claim's foreign keys would
+ * fail on one anyway.
+ */
+router.post('/nearby/claim', requireConsent, async (req, res, next) => {
+  try {
+    const vendorId = req.body?.vendorId;
+    if (!isUuid(String(vendorId ?? ''))) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'That spot could not be identified.' });
+    }
+    // 200 either way. A refusal is not an error — it is the ordinary, expected
+    // answer several times a day for anyone who walks past the same street
+    // twice — and a 4xx here would fill the client error log with normal
+    // behaviour and bury the failures that matter.
+    res.json({ allowed: await claimNearby(req.user.id, vendorId) });
   } catch (err) {
     next(err);
   }
@@ -1466,7 +1521,7 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed] = await Promise.all([
+    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby] = await Promise.all([
       supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at, referral_code').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
       // The shared purses (migration-044). Points a student holds in a pool are
@@ -1492,7 +1547,7 @@ router.get('/export', async (req, res, next) => {
         .from('campaign_recipients')
         .select('campaign_id, status, pushed_at, read_at, opened_at, vendor_campaigns(title, body, kind, created_at, vendors(name))')
         .eq('user_id', uid),
-      supabaseAdmin.from('student_notify_state').select('push_opt_in, email_opt_in, last_push_at, last_email_at').eq('user_id', uid).maybeSingle(),
+      supabaseAdmin.from('student_notify_state').select('push_opt_in, email_opt_in, nearby_opt_in, last_push_at, last_email_at').eq('user_id', uid).maybeSingle(),
       // Community points we GAVE them and why (migration-039/040). Not a
       // transaction, so the history above misses it entirely — and "points that
       // appeared from nowhere" is exactly what an export exists to explain.
@@ -1520,8 +1575,20 @@ router.get('/export', async (req, res, next) => {
         .select('id, code, status, friend_points, created_at')
         .eq('friend_id', uid)
         .maybeSingle(),
+      // Which spots we have told this student they were walking past
+      // (migration-051). In the export for two reasons rather than one: it is a
+      // record we hold about them like any other, AND every row is a coarse
+      // location fix — "you were near this shop at this time" — which makes it
+      // the most sensitive thing in this file. An export that quietly omitted
+      // it would be the one place the Privacy Policy's account of §2.9 stopped
+      // being checkable by the person it is about.
+      supabaseAdmin
+        .from('nearby_notifications')
+        .select('vendor_id, notified_at, vendors(name)')
+        .eq('user_id', uid)
+        .order('notified_at', { ascending: false }),
     ]);
-    for (const r of [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed]) {
+    for (const r of [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby]) {
       if (r.error) throw r.error;
     }
 
@@ -1546,7 +1613,15 @@ router.get('/export', async (req, res, next) => {
       transactions: transactions.data ?? [],
       scores: scores.data,
       deals: deals.data ?? [],
-      notifications: notify.data ?? { push_opt_in: true, email_opt_in: true, last_push_at: null, last_email_at: null },
+      notifications: notify.data ?? { push_opt_in: true, email_opt_in: true, nearby_opt_in: true, last_push_at: null, last_email_at: null },
+      // Flattened to a spot name for the same reason poolBalances is: a person
+      // reading their own data should not be handed a bare uuid and asked to
+      // resolve it. Empty for every student who has never had one fire.
+      nearbySpotsNotified: (nearby.data ?? []).map((r) => ({
+        vendor_id: r.vendor_id,
+        vendor_name: r.vendors?.name ?? null,
+        notified_at: r.notified_at,
+      })),
       // Bonus points from an incentive or an operator, and the referral links
       // we hold about this student.
       bonusPoints: grants.data ?? [],

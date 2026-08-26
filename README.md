@@ -356,6 +356,75 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   `source` filter — the same envelope `/students`, `/referrals` and `/grants`
   return, so the dashboard can say how much it is not showing.
 
+## Nearby spot alerts (migration-051)
+
+A student walking past somewhere they have never earned at gets one
+notification about it. Lives in **Account → Notifications → Nearby spots**, a
+third switch beside Deal alerts and Deal emails, on by default.
+
+### The web cannot do background geolocation, and this does not pretend to
+
+There is no API for this on any platform. `navigator.geolocation` does not exist
+in a service worker, the Geofencing API was withdrawn from Chrome in 2018 and
+shipped nowhere else, and Periodic Background Sync cannot read a position even
+where it runs. **The only moment a proximity test is possible is while the page
+is open**, so that is when this runs, and the switch's own description says so.
+Do not "fix" this later by reaching for a background API; there isn't one.
+
+### The phone decides where; the server decides whether
+
+`GET /api/me/balances` already ships every vendor's `latitude`/`longitude` and a
+per-vendor `visited` flag (migration-048), so the distance maths needs no server
+round trip and **no coordinates ever leave the device**. The client watches
+position while the app is foregrounded, requires a **150m radius held for 30
+seconds** (both tunable via `NEARBY_RADIUS_METERS` / `NEARBY_DWELL_SECONDS` and
+served through `/api/public-config`), throws away any fix accurate to worse than
+100m, and uses a wider exit radius so boundary jitter cannot reset the timer.
+
+It then asks `POST /api/me/nearby/claim { vendorId }` — **a spot id and nothing
+else** — and shows the notification itself via `registration.showNotification()`.
+Nothing is pushed, so this works with no VAPID keys and on browsers with no web
+push at all.
+
+⚠ **The quota is SHARED with deal alerts, not parallel.**
+`claim_nearby_notification` reads and writes the same
+`student_notify_state.last_push_at / day_count / week_count` that
+`claim_campaign_pushes` does, so a nearby alert spends a deal-alert slot and vice
+versa. Two per day is the total number of times WeRewards interrupts a student,
+whatever the reason. A second independent budget would have doubled the real
+rate at exactly the moment the app started buzzing people in the street — and
+the Block that follows takes the deal alerts down with it, since they share one
+permission.
+
+⚠ **Once per spot, ever.** `nearby_notifications`' primary key
+`(user_id, vendor_id)` is the guard, and rows are **not** pruned when the student
+later earns there — that is what stops the app introducing someone to the same
+shop twice. A refused claim writes no row, so cooldown and quiet-hours refusals
+leave the spot claimable tomorrow.
+
+⚠ **Two permissions, not one.** Geolocation says where they are; notifications
+are what let anything be shown. The enable path asks for notifications *first*,
+because that is the one needing a user gesture (`askNotificationPermission`).
+
+⚠ **Apply migration-048 first.** The claim delegates the "have they been here"
+question to `student_visited_vendor_ids()`. Without it migration-051 does not
+compile — a deliberate hard failure, because the app's silent fallback for that
+function is a 7-day window, and interrupting someone to recommend the place they
+had lunch at last month is the whole failure this feature must not have.
+
+### Turning it off, and turning it back on
+
+The switch writes itself **off** when the device says location is denied or
+unavailable during the initial ask, and when a student revokes the permission
+later (watched via `navigator.permissions`). A *timeout* deliberately does not
+turn it off — a student in a basement must not silently lose a feature they
+never touched.
+
+A browser that has recorded a denial cannot be re-prompted; `getCurrentPosition`
+fails instantly or never calls back. So touching the switch in that state opens
+**#nearby-help**, a sheet of per-device instructions (installed iOS app, iOS
+Safari, installed Android app, Android Chrome, desktop) for finding the setting.
+
 ## Trackable QR codes (migration-050)
 
 Banners and posters get their own QR codes, so the operator can see which
@@ -629,6 +698,8 @@ powershell -File test/sql/run.ps1 -Migration migration-032.sql `
            -Seed seed-032.sql -Behavior behavior-032.sql # vendor campaigns
 powershell -File test/sql/run.ps1 -Migration migration-050.sql `
            -Seed seed-050.sql -Behavior behavior-050.sql # trackable QR codes
+powershell -File test/sql/run.ps1 -Migration migration-051.sql `
+           -Seed seed-051.sql -Behavior behavior-051.sql # nearby spot alerts
 ```
 
 Each migration brings its own `-Seed` / `-Behavior` pair, because a seed written

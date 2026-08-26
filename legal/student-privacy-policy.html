@@ -27,6 +27,7 @@
     .doc-effective { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }
     h2 { font-size: 1rem; letter-spacing: 0.06em; text-transform: uppercase; margin: 2.2rem 0 0.6rem; border-bottom: 1px solid #ccc; padding-bottom: 0.25rem; }
     h3 { font-size: 0.95rem; font-weight: bold; margin: 1.2rem 0 0.3rem; }
+    h4 { font-size: 0.9rem; font-weight: bold; margin: 0.9rem 0 0.25rem; color: #333; }
     p { margin-bottom: 0.9rem; }
     ul, ol { margin: 0.5rem 0 1rem 1.6rem; }
     li { margin-bottom: 0.4rem; }
@@ -54,7 +55,7 @@
   <div class="doc-header">
     <p class="doc-label">Legal Document — Student &amp; Vendor-Facing</p>
     <h1>WeRewards<br>Privacy Policy</h1>
-    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: August 20, 2026</p>
+    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: August 26, 2026</p>
   </div>
 
   <div class="notice">
@@ -126,7 +127,10 @@
   </ul>
   <p>All three are stored on your device rather than sent to us as a separate collection of data. You can clear them at any time through your browser's site-data settings.</p>
 
-  <h3>2.9 Location on the Map</h3>
+  <h3>2.9 Location</h3>
+  <p>Two features in WeRewards can use your location. Both ask your permission first, both work only while the app is open, and you can refuse or switch off either one without losing anything else.</p>
+
+  <h4>The map</h4>
   <p>The app includes a map of the spots you can earn points at. Opening that map does not involve your location at all: it shows the vendors' own addresses, which they gave us.</p>
   <p>The map also has a "show my location" button. If you tap it, your browser will ask your permission to share your position, and you can say no. If you allow it:</p>
   <ul>
@@ -134,7 +138,20 @@
     <li>It is <strong>never sent to our servers</strong>, never stored, never logged, and never shared with anyone, including the vendors and OpenStreetMap.</li>
     <li>It is discarded as soon as you close the map, and nothing about it survives to your next visit.</li>
   </ul>
-  <p>Declining, or never tapping the button at all, leaves the map completely usable. This is the only feature in WeRewards that touches your location, and it does nothing until you ask it to.</p>
+  <p>Declining, or never tapping the button at all, leaves the map completely usable.</p>
+
+  <h4>Nearby spot alerts</h4>
+  <p>If you turn on <strong>Nearby spots</strong> (Account &rarr; Notifications), the app can let you know when you are next to a spot you have never earned points at. It is off until your browser grants us location permission, and we ask for that permission once, from a card that explains what it is for.</p>
+  <p>How it works, precisely:</p>
+  <ul>
+    <li>While the app is open, your browser reads your position and <strong>your device compares it to the vendor addresses it already downloaded</strong>. That comparison happens entirely on your phone.</li>
+    <li>Your coordinates are <strong>never sent to us</strong>. We do not receive, store, or log your latitude and longitude, and no vendor ever sees where you are.</li>
+    <li>When your device decides you are next to a spot you have not tried, it asks our server one question — <em>"may I show a notification about this spot?"</em> — naming <strong>the spot only</strong>. We record that we told you about that spot, and when.</li>
+    <li>That record is coarse location information, and we want to be plain about it rather than hide it: it means you were near that spot at that time. It is not a track of your movements, we keep no other position data, and you can see the whole list in <strong>Download my data</strong>.</li>
+    <li>We use it for one purpose only: making sure you are never told about the same spot twice, and never interrupted more often than our limits allow.</li>
+  </ul>
+  <p><strong>This does not run in the background.</strong> Web apps cannot read your location when they are closed, and WeRewards does not try to. If the app is not open on your screen, nothing here is happening.</p>
+  <p>You can switch Nearby spots off at any time in Account &rarr; Notifications, or withdraw location permission in your device settings — the switch turns itself off when you do. Turning it off stops the alerts and no further records are made. It is separate from Deal alerts: switching one off does not affect the other.</p>
 
   <h3>2.10 Receipt Photos</h3>
   <p>You can claim points by photographing a paper receipt from a participating spot. Taking that photo is entirely up to you — you can always earn at the counter instead, and nothing here happens unless you tap submit.</p>
@@ -169,7 +186,7 @@
   <h3>2.13 Information We Do NOT Collect</h3>
   <ul>
     <li>Payment card numbers or bank account information. (A receipt often prints the last four digits of a card; we do not read, extract, or store them.)</li>
-    <li>Precise GPS location. The map can draw your position on your own screen if you tap the locate button and allow it, but that reading stays inside your browser and never reaches us. See Section 2.9.</li>
+    <li>Precise GPS location. Two features can read your position with your permission &mdash; the map's locate button and Nearby spot alerts &mdash; but in both cases the reading stays inside your browser and your coordinates never reach us. For nearby alerts we learn only <em>which spot</em> you were next to, never where you are. See Section 2.9.</li>
     <li>Penn State student ID numbers or academic records</li>
     <li>Biometric data</li>
     <li>Contacts, or files from your device</li>
@@ -340,10 +357,11 @@
     <li><strong>A push notification</strong>, if you have granted your browser's notification permission to WeRewards.</li>
     <li><strong>An email</strong> to the address on your account, <em>only</em> where we could not reach you with a push notification. Many browsers and devices cannot receive push notifications at all, and email is the only way we can tell those students about a deal. You will never receive both for the same deal.</li>
   </ul>
-  <p>You can turn either off at any time under <strong>Account tab → Notifications</strong>: <strong>Deal alerts</strong> controls push notifications, <strong>Deal emails</strong> controls email, and the two are independent. Turning off Deal alerts removes the push subscriptions stored for your account. Every deal email also carries an unsubscribe link, and your email or webmail app may show its own one-click "Unsubscribe" button; either one turns Deal emails off for your account. Whatever you turn off, deals continue to appear in the app's Deals list, which you can simply not open.</p>
+  <p><strong>Nearby spot alerts.</strong> Separately from deals, the app can notify you when you are next to a spot you have never earned points at (Section 2.9). This is a notification your own device shows while the app is open; nothing is sent to you by us, and you are told about any given spot at most once, ever. It has its own switch, <strong>Nearby spots</strong>, and turning off Deal alerts does not turn it off.</p>
+  <p>You can turn any of them off at any time under <strong>Account tab → Notifications</strong>: <strong>Deal alerts</strong> controls push notifications, <strong>Deal emails</strong> controls email, <strong>Nearby spots</strong> controls nearby alerts, and all three are independent. Turning off Deal alerts removes the push subscriptions stored for your account. Every deal email also carries an unsubscribe link, and your email or webmail app may show its own one-click "Unsubscribe" button; either one turns Deal emails off for your account. Whatever you turn off, deals continue to appear in the app's Deals list, which you can simply not open.</p>
   <p><strong>Other email.</strong> We do send you email about your account when something happens that you need to know about, for example a password reset code you asked for. These are not marketing, and turning off Deal emails does not stop them.</p>
   <p><strong>Vendors do not receive your identity for this purpose.</strong> A vendor composes the message and chooses a category of recipients (for example, "my most frequent customers over the last 90 days"). WeRewards selects the matching accounts and delivers the message. The vendor is shown only aggregate counts (how many accounts matched, how many were sent to, how many opened the message). Vendors are not given your name, email address, or any identifier as part of this feature.</p>
-  <p><strong>Frequency limits.</strong> We cap how many of these messages any one account can receive: at most two per day and five per week, never less than four hours apart, and none between 10:00 PM and 9:00 AM Eastern Time. These are limits on deal messaging as a whole, not per channel, so an email counts against them exactly as a push notification does. Where several vendors would reach you at once, we combine them into a single message. These limits are enforced by us, not by vendors.</p>
+  <p><strong>Frequency limits.</strong> We cap how many of these messages any one account can receive: at most two per day and five per week, never less than four hours apart, and none between 10:00 PM and 9:00 AM Eastern Time. These are limits on <em>all</em> of the above taken together, not per channel and not per feature &mdash; an email counts against them exactly as a push notification does, and so does a nearby spot alert. Two per day is the total number of times WeRewards will interrupt you, whatever the reason. Where several vendors would reach you at once, we combine them into a single message. These limits are enforced by us, not by vendors.</p>
 
   <!-- ══════════════════════════════════════════════════════════ -->
   <h2>8. Security</h2>

@@ -524,6 +524,32 @@
               </div>
               </div><!-- /.home-stack -->
 
+              <!-- ---------- nearby spots: the one-time ask (migration-051) ----------
+                   ON HOME, not in a sheet and not in Account. This card is the
+                   only gesture that will ever ask for location, and on the web a
+                   refusal is close to permanent — there is no second prompt to
+                   fall back on. A card reachable only by someone who went
+                   looking is a card most students never see, which is the exact
+                   mistake #deals-optin was moved out of a sheet to fix.
+
+                   It explains before it asks. A cold permission prompt with no
+                   lead-in is refused far more often, and the thing being asked
+                   for here — continuous location — is the one a student is most
+                   entitled to want a reason for first.
+
+                   Raised by initNearby() only on the first pass of a session,
+                   and only when the feature is genuinely usable but not yet
+                   permitted. "Not now" writes a localStorage dismissal that
+                   survives, so this is once per device, not once per launch. -->
+              <div id="nearby-optin" class="nearby-optin" hidden>
+                <p class="nearby-optin-text">Want a nudge when you walk past a spot you’ve never earned at? Once per spot, only while the app is open.</p>
+                <div class="nearby-optin-actions">
+                  <button id="nearby-optin-enable" class="nearby-optin-yes" type="button">Turn on</button>
+                  <button id="nearby-optin-dismiss" class="nearby-optin-no" type="button">Not now</button>
+                </div>
+                <p id="nearby-optin-note" class="setting-note" hidden></p>
+              </div>
+
               <!-- ---------- the spots ----------
                    One block, so it owns exactly one auto margin in .home-main's
                    split (see there). Nothing inside carries an auto of its own. -->
@@ -911,6 +937,47 @@
                    isn't reporting "blocked" — e.g. a permission prompt that was
                    dismissed, quieted, or never answered. Filled by onDealsToggle. -->
               <p id="deals-fail-note" class="setting-note" hidden></p>
+
+              <!-- THE THIRD SWITCH (migration-051), and a peer of the two above
+                   rather than a sub-option of deal alerts, because it answers a
+                   different question: those are "a spot you go to has something
+                   on", this is "you are standing next to somewhere you have
+                   never tried". Wanting one says nothing about wanting the
+                   other, so they are independent flags — and turning deal
+                   alerts off deliberately does NOT silence this.
+
+                   They do share a budget. A student hears from WeRewards at
+                   most twice a day in total across both, which is why the
+                   description below promises no more than the deals one does.
+
+                   "Only while the app is open" is in the description because it
+                   is TRUE and unavoidable: the web has no background
+                   geolocation on any platform (see app.js). Leaving it out
+                   would be promising a tracker we cannot build.
+
+                   Starts hidden and is revealed by initNearby() only where the
+                   browser can actually do this — same rule as the Deal emails
+                   row, for the same reason: a switch that cannot do anything
+                   reads as a promise. -->
+              <div id="nearby-row" class="setting-row" hidden>
+                <span class="setting-label">
+                  <span class="setting-name">Nearby spots</span>
+                  <span class="setting-desc">A nudge when you pass somewhere you’ve never earned at. Once per spot, only while the app is open.</span>
+                </span>
+                <button id="nearby-toggle" class="switch" type="button" role="switch" aria-checked="false" aria-label="Nearby spots">
+                  <span class="switch-knob"></span>
+                </button>
+              </div>
+              <p id="nearby-blocked-note" class="setting-note" hidden>
+                Notifications are blocked for WeRewards in your browser settings. Allow them there to turn this on.
+              </p>
+              <!-- Why the last turn-on attempt failed, when the browser is not
+                   reporting a plain block — a refused location prompt, a device
+                   that could not get a fix, a save that did not land. Filled by
+                   onNearbyToggle. The BLOCKED case has no note here on purpose:
+                   it opens #nearby-help instead, because "allow it in settings"
+                   needs steps, not a sentence. -->
+              <p id="nearby-fail-note" class="setting-note" hidden></p>
 
               <!-- appearance -->
               <h2 class="account-section-title">Appearance</h2>
@@ -1528,6 +1595,29 @@
            a prompt most people never see. -->
       <ul id="deals-list" class="deals-list"></ul>
       <p id="deals-empty" class="deals-empty" hidden>Nothing on right now. Check back later.</p>
+    </div>
+  </div>
+
+  <!-- ---------- "turn location back on" (migration-051) ----------
+       Opened by onNearbyToggle when, and only when, the browser reports
+       geolocation as already DENIED. That state cannot be undone from a web
+       page: there is no API to re-prompt, and calling getCurrentPosition again
+       fails instantly or (on some engines) never calls back at all. So the
+       student is shown where the setting lives instead.
+
+       The steps are written into #nearby-help-steps by openNearbyHelp() from a
+       per-platform list, because "check your browser settings" is help that is
+       technically true and practically useless on a phone — the control is four
+       screens deep under a name nobody would guess. Built with textContent, so
+       nothing here can become an injection point. -->
+  <div id="nearby-help" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <button id="nearby-help-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="detail-emoji">📍</p>
+      <h2 class="detail-title">Turn location on</h2>
+      <p class="detail-desc">Your browser has location switched off for WeRewards, and only you can switch it back on. Here’s where:</p>
+      <ol id="nearby-help-steps" class="nearby-help-steps"></ol>
+      <p class="setting-note">We only read your location while the app is open, and it never leaves your phone — we only ever tell the server which spot you’re next to.</p>
     </div>
   </div>
 
