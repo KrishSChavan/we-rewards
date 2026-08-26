@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v74';   // v74: nearby-spot notifications (migration-051) — a local showNotification when the student dwells near somewhere they've never earned, its own tag family so it can't replace an unread deal, and /?spot=<id> deep links open that spot
+const CACHE = 'werewards-v75';   // v75: map pins are never translucent — the zero-balance dimming is gone and focus is a scale-up alone, so an unfocused pin is the same size and strength as its neighbours
+// v74: nearby-spot notifications (migration-051) — a local showNotification when the student dwells near somewhere they've never earned, its own tag family so it can't replace an unread deal, and /?spot=<id> deep links open that spot
 // v73: a printed banner's QR (/r/<code>) is passed through instead of cached, and ?qr= is stashed at boot so a signup through that poster can be credited (app.js + sw.js)
 // v71: the Deal emails row only appears when the deployment can actually send mail (/api/public-config emailEnabled). A switch that cannot do anything reads as a promise.
 // v68: Home's search field is gone (the Spots tab owns searching) and the heading it shared a row with is now a two-item menu — Recent spots / Recommended; addresses render title-cased with E/W/N/S for the compass words

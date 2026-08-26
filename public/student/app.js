@@ -5089,7 +5089,6 @@ function firstLetter(name) {
 function pinHtml(v, focused) {
   const pts = Number(v.balance ?? 0);
   const cls = ['mp'];
-  if (pts <= 0) cls.push('is-zero');     // still tappable, just quieter
   if (focused) cls.push('is-focus');
   const face = v.hasLogo
     ? `<span class="mp-body" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
@@ -5185,7 +5184,6 @@ function refreshMapPins() {
     } else if (badge) {
       badge.remove();
     }
-    mp.classList.toggle('is-zero', pts <= 0);
     const where = poolWhereText(v);
     el.setAttribute('aria-label', `${v.name}, ${pts} points${where ? ` shared ${where}` : ''}`);
   });

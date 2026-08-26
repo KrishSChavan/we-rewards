@@ -3516,8 +3516,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .mp {
   position: relative; display: block; width: 100%; height: 100%;
   transform-origin: 50% 100%;
-  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
-              opacity 160ms ease;   /* the is-zero dimming, so focus fades in/out with the scale */
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 /* px, not rem, from here down: app.js hands Leaflet an iconSize/iconAnchor in
    pixels, and the tip has to land on the doorway whatever the root font size is. */
@@ -3558,15 +3557,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    Only the colour and style of the existing 2px border change, so the badge
    keeps its exact size and no pin moves. */
 .mp-badge.is-shared { border-style: dashed; border-color: var(--accent); }
-/* Nothing banked here yet: still a real, tappable spot, just quieter than the
-   ones the student is actually collecting at. */
-.mp.is-zero { opacity: 0.55; }
-.mp.is-zero .mp-body { box-shadow: none; }
+/* Focus is a size change and nothing else. Every pin stays fully opaque —
+   including the ones the student has yet to bank anything at — because a
+   half-faded pin on a busy map reads as unreadable, not as quiet. The scale IS
+   the whole state, so a pin that loses focus goes straight back to the size of
+   its neighbours. */
 .mp.is-focus { transform: scale(1.24); }
-/* ...but the quieting is for the pins the student ISN'T looking at. The one they
-   just tapped is the subject of the open sheet, so it comes back to full
-   strength — and fades back to 0.55 when the focus moves to another pin. */
-.mp.is-zero.is-focus { opacity: 1; }
 .mp.is-focus .mp-body { border-color: var(--brand); box-shadow: 0 0 0 3px var(--hub-glow), 0 3px 7px rgba(16, 29, 51, 0.4); }
 .mp.is-focus .mp-tip { border-top-color: var(--brand); }
 .leaflet-marker-icon:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 0.5rem; }
