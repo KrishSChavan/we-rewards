@@ -356,6 +356,87 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   `source` filter — the same envelope `/students`, `/referrals` and `/grants`
   return, so the dashboard can say how much it is not showing.
 
+## Trackable QR codes (migration-050)
+
+Banners and posters get their own QR codes, so the operator can see which
+placements people actually scan — and pay community points to the ones that
+bring in accounts. Lives in **/admin → QR poster**, in its own card beneath the
+scan-here poster uploader. The two are unrelated: that one is a single artwork
+file every vendor terminal downloads, this one is a list of individually tracked
+codes.
+
+Each code carries a name, an optional placement note, a community-points award,
+and a pause switch. The QR encodes `https://<origin>/r/<code>`, downloadable as
+a print-ready **PNG or SVG** rendered in the browser from the vendored
+`qrcode-generator` build — a third-party QR service would mean handing someone
+else a link that pays out points.
+
+### The award is attached to signing up, not to scanning
+
+A printed code is photographable. The first student to scan a banner can text
+the link to everyone they know, and nothing server-side can tell that apart from
+a crowd standing in front of the poster. So the award is attached to the one
+thing that cannot be shared: **creating an account**.
+
+A scan alone never pays. When a new account is created after a scan, the payout
+goes through `grant_community_points()` (migration-039) with
+`ref_id = user_id, kind = 'tracked_qr'`, so 039's `unique (ref_id, kind)` index
+makes it **once per account, ever** — the same shape as the signup bonus. There
+is no new SQL that moves points, and therefore no new way to move them wrongly.
+
+⚠ **The ten-minute window is load-bearing.** `POST /api/me/accept-terms` is not
+"a new account"; every existing student re-POSTs it whenever `TERMS_VERSION` is
+bumped. `maybeAwardTrackedQr` therefore requires `profiles.created_at` to be
+essentially *now* — created by the very upsert calling it. Without that check, a
+terms revision would pay the whole campus for posters they were never recruited
+by. `src/lib/signup-bonus.js` solves the same problem with its program's date
+window; a banner has none, so the test here is tighter.
+
+⚠ **No incentives row, so no shared budget ceiling.** A poster award could have
+been incentive kind #3, but `idx_incentives_one_active_per_kind` means every
+banner would share one row and one budget, and an operator would have had to
+create that deal before any banner could pay. The guards instead are the
+per-banner cap (5000, matching the signup bonus) and `grant_community_points`'
+own 100000 typo stop. To add a campus-wide cap later: widen
+`incentives_kind_check` the way migration-040 did, and pass `p_incentive_id`.
+
+### How a scan is counted
+
+`GET /r/<code>` counts the scan, sets an httpOnly `SameSite=Lax` cookie, and
+302s to `/?qr=<code>`. Three things it has to get right:
+
+- **302, never 301**, and `Cache-Control: no-store`. Cloudflare fronts the dyno,
+  and a cached redirect would make every later scan invisible.
+- **The service worker is told to skip it** (`public/student/sw.js`). It
+  intercepts every same-origin GET, so an installed PWA would otherwise serve a
+  cached copy and never reach the server — and `Cache.put` rejects on the
+  opaqueredirect a navigation fetch produces.
+- **Link previews are not people.** iMessage, Slack, Discord and WhatsApp all
+  fetch a pasted URL to build a preview card. Those user-agents are filtered out
+  before a row is written, or the banners that got shared most would look like
+  the ones that performed best.
+
+Attribution rides on *both* the cookie and a `localStorage` stash of `?qr=`,
+because a browser that refuses one usually accepts the other. Neither is
+trusted — the server decides what is owed, and the once-per-account index caps
+it however many codes a client sends.
+
+Scan rows hold **no IP address and no account**: `visitor_hash` is the SHA-256
+of a nonce this server minted into the visitor's own cookie, which counts a
+returning phone without naming it. That is what the "people" column counts, as
+opposed to raw scans.
+
+### What the operator sees
+
+Per code: scans, unique people, signups, points paid, first and last scan, a
+30-day bar chart and a time-of-day histogram (bucketed in the **campus**
+timezone — UTC would put the lunch rush at breakfast). Both a summary CSV and a
+per-code raw scan log export.
+
+Deleting a code that has traffic is refused — pausing keeps the history and the
+banner on the wall keeps resolving. `active = false` stops the payout only;
+scans still count, because the poster is still up.
+
 ## Vendor deals (campaigns)
 
 The terminal's **DEALS** tab lets a vendor write an offer and send it to their
@@ -536,12 +617,18 @@ is the always-on, DB-free subset.
 `test/sql/run.ps1` builds a throwaway `postgres:16` from `schema.sql` + every
 migration in order, seeds a realistic pre-migration world, applies the migration
 under test, and asserts its runtime behaviour. Docker is on the **PowerShell**
-PATH, not Git Bash:
+PATH, not Git Bash.
+
+`npm run test:sql` runs it on either laptop — it goes through
+`scripts/run-ps.mjs`, which picks `pwsh` on macOS and `pwsh`-or-`powershell` on
+Windows (see "Two laptops" in `mds/staging-setup.md`). To call it directly:
 
 ```powershell
 powershell -File test/sql/run.ps1                        # migration-029 (the default pair)
 powershell -File test/sql/run.ps1 -Migration migration-032.sql `
            -Seed seed-032.sql -Behavior behavior-032.sql # vendor campaigns
+powershell -File test/sql/run.ps1 -Migration migration-050.sql `
+           -Seed seed-050.sql -Behavior behavior-050.sql # trackable QR codes
 ```
 
 Each migration brings its own `-Seed` / `-Behavior` pair, because a seed written

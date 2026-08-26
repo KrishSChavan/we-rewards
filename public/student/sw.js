@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v72';   // v72: Home's RECOMMENDED row leaves out spots you have already been to, caps at five, and trickles in newly-joined spots on a per-student daily roll whose odds halve every fortnight; the Spots tab's "Top" filter keeps the old plain ranking
+const CACHE = 'werewards-v73';   // v73: a printed banner's QR (/r/<code>) is passed through instead of cached, and ?qr= is stashed at boot so a signup through that poster can be credited (app.js + sw.js)
 // v71: the Deal emails row only appears when the deployment can actually send mail (/api/public-config emailEnabled). A switch that cannot do anything reads as a promise.
 // v68: Home's search field is gone (the Spots tab owns searching) and the heading it shared a row with is now a two-item menu — Recent spots / Recommended; addresses render title-cased with E/W/N/S for the compass words
 // v66: Spots tab gained a "Pick a random spot" button under the search box — draws from shownSpots(), the same filter+search pipeline the list itself renders
@@ -57,6 +57,12 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   if (url.origin !== location.origin) return;   // CDNs manage their own caching
   if (url.pathname.startsWith('/api/')) return;       // live data must never be stale
+  // A poster QR resolve (migration-050). Two separate reasons, either one fatal:
+  // a cached copy would stop the scan ever reaching the server, so the traffic
+  // numbers would flatten out the moment a student installed the app — and the
+  // response is a redirect, which for a navigation request arrives here as an
+  // opaqueredirect that Cache.put rejects on, unhandled, below.
+  if (url.pathname.startsWith('/r/')) return;
   if (url.pathname.startsWith('/socket.io/')) return; // let the realtime transport pass through
 
   e.respondWith(

@@ -12,6 +12,7 @@ import { getVapidPublicKey } from '../lib/push.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
+import { maybeAwardTrackedQr, readVisitorCookie, TRACKED_QR_COOKIE } from '../lib/tracked-qr.js';
 import { loadVendorCatalogue, loadRecommendedVendorIds } from '../lib/cache.js';
 // Where a vendor's points live (migration-044). Nothing in this file re-derives
 // that rule inline: a second copy of it that disagreed with the SQL functions
@@ -148,7 +149,28 @@ router.post('/accept-terms', async (req, res, next) => {
       profileCreatedAt: profile?.created_at,
     });
 
-    res.json({ ok: true, termsVersion: TERMS_VERSION, acceptedAt: now, signupBonus });
+    // Poster/banner QR attribution (migration-050). Same contract as the signup
+    // bonus above and for the same reason: this is the signup moment, and a
+    // payout that fails must not cost the student their consent.
+    //
+    // TWO SOURCES, because either one alone loses real students. The body is
+    // what app.js stashed out of ?qr= at boot, which survives a cleared cookie;
+    // the httpOnly cookie was set by GET /r/<code> itself, which survives a
+    // cleared localStorage and a private-mode tab. Neither is trusted for
+    // anything but naming a banner — the money is decided server-side, and
+    // migration-039's UNIQUE (ref_id, kind) index caps it at once per account
+    // however many codes a client sends.
+    const qrFromCookie = readVisitorCookie(req)?.code ?? null;
+    const qrBonus = await maybeAwardTrackedQr({
+      userId,
+      rawCode: req.body?.trackedQr ?? qrFromCookie,
+      profileCreatedAt: profile?.created_at,
+    });
+    // Consumed. Clearing is belt and braces over the ten-minute new-account
+    // window in the evaluator, and the path MUST match the one it was set with.
+    if (qrBonus) res.clearCookie(TRACKED_QR_COOKIE, { path: '/' });
+
+    res.json({ ok: true, termsVersion: TERMS_VERSION, acceptedAt: now, signupBonus, qrBonus });
   } catch (err) {
     next(err);
   }

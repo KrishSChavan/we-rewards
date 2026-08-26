@@ -96,7 +96,9 @@ function bootFailed(message) {
   $('tab-dashboard').addEventListener('click', () => setView('dashboard'));
   $('tab-applications').addEventListener('click', () => setView('applications'));
   $('tab-incentives').addEventListener('click', () => setView('incentives'));
-  $('tab-poster').addEventListener('click', () => setView('poster'));
+  $('tab-poster').addEventListener('click', openPoster);
+  $('qr-new-form').addEventListener('submit', createQr);
+  $('qr-export').addEventListener('click', () => exportQrAll($('qr-export')));
   $('tab-pools').addEventListener('click', openPools);
   $('tot-errors-card').addEventListener('click', jumpToErrors);
   $('tot-students-card').addEventListener('click', openStudents);
@@ -274,6 +276,10 @@ async function loadAll() {
       // that. Refreshing it matters because a join changes the vendor roster
       // loading beside it.
       poolsLoaded ? loadPools() : null,
+      // And the same for the trackable QR codes, for a third reason: the ↻
+      // button is what this card's own load-failure message tells the operator
+      // to press, so it has to be reachable from here or that sentence is a lie.
+      qrLoaded ? loadQrCodes() : null,
       // Unauthenticated and tiny, but it belongs to a dialog only an admin can
       // open, so it rides along here rather than firing on the sign-in screen.
       loadCuisineVocab(),
@@ -4339,4 +4345,627 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
+}
+
+/* ===================== Trackable QR codes (migration-050) =====================
+   The operator's half of the poster feature: make a code, print its QR onto a
+   banner, read the traffic back. The award itself is decided server-side at
+   signup — nothing here can pay anybody, which is why every control below is
+   safe to fiddle with except the award amount on a banner already on a wall.
+
+   ⚠ Sibling of the scan-here poster card above and unrelated to it. */
+
+let qrCodes = [];
+// Set on the first successful load. Same bargain as poolsLoaded: boot does not
+// pay for a tab nobody has opened, but once opened, ↻ refreshes it like
+// everything else on screen.
+let qrLoaded = false;
+// Open detail panels, keyed by code id, holding the fetched series or 'loading'.
+// A Map rather than a flag on the node, for the same reason the pool settlement
+// panel does it: every mutation repaints the whole list and would destroy it.
+const qrOpen = new Map();
+
+function qrError(msg) {
+  const el = $('qr-error');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+function qrOkMsg(msg) {
+  const el = $('qr-ok');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+/** The URL the printed QR encodes. Built from where the dashboard itself is
+ *  served, so staging prints staging links and production prints production
+ *  ones, with nothing to configure and nothing to get wrong. */
+const qrUrl = (code) => `${location.origin}/r/${code}`;
+
+async function loadQrCodes() {
+  try {
+    const res = await authFetch('/api/admin/tracked-qr');
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      qrError('Couldn’t load the QR codes. Hit ↻ to try again.');
+      return;
+    }
+    const d = await res.json().catch(() => ({}));
+    qrCodes = d.codes ?? [];
+    qrLoaded = true;
+    qrError('');
+    renderQrCodes();
+  } catch {
+    qrError('Couldn’t load the QR codes. Check the connection and try again.');
+  }
+}
+
+function renderQrCodes() {
+  const list = $('qr-list');
+  list.textContent = '';
+  $('qr-count').textContent = qrCodes.length
+    ? `${qrCodes.length} code${qrCodes.length === 1 ? '' : 's'}`
+    : '';
+  $('qr-export').hidden = !qrCodes.length;
+
+  if (!qrCodes.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No codes yet. Make one below, print its QR onto a banner, and the scans show up here.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const c of qrCodes) list.appendChild(buildQrRow(c));
+}
+
+/** A short, human date. Nulls read as a sentence rather than an empty cell. */
+function qrWhen(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'never';
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} `
+    + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+function qrStat(value, label) {
+  const wrap = document.createElement('span');
+  wrap.className = 'qr-stat';
+  const n = document.createElement('b');
+  n.textContent = String(value ?? 0);
+  wrap.appendChild(n);
+  wrap.appendChild(document.createTextNode(` ${label}`));
+  return wrap;
+}
+
+function buildQrRow(c) {
+  const row = document.createElement('div');
+  row.className = 'qr-row';
+
+  /* ---- line 1: name, the printed URL, and the pause switch ---- */
+  const head = document.createElement('div');
+  head.className = 'qr-head';
+
+  const name = document.createElement('input');
+  name.className = 'nv-input qr-name';
+  name.type = 'text';
+  name.maxLength = 80;
+  name.value = c.name ?? '';
+  name.setAttribute('aria-label', 'Name');
+  head.appendChild(name);
+
+  const link = document.createElement('span');
+  link.className = 'qr-link';
+  link.textContent = `/r/${c.code}`;
+  link.title = qrUrl(c.code);
+  head.appendChild(link);
+
+  const sw = document.createElement('label');
+  sw.className = 'qr-switch';
+  const active = document.createElement('input');
+  active.type = 'checkbox';
+  active.checked = !!c.active;
+  sw.appendChild(active);
+  const swText = document.createElement('span');
+  swText.textContent = c.active ? 'Paying' : 'Paused';
+  sw.appendChild(swText);
+  active.addEventListener('change', () => { swText.textContent = active.checked ? 'Paying' : 'Paused'; });
+  head.appendChild(sw);
+  row.appendChild(head);
+
+  /* ---- line 2: what it has actually done ---- */
+  const stats = document.createElement('div');
+  stats.className = 'qr-stats';
+  stats.appendChild(qrStat(c.scans, c.scans === 1 ? 'scan' : 'scans'));
+  // "people" rather than "unique visitors": one phone scanning twice is one
+  // person, and the operator reading this is asking how many people walked
+  // past, not how many times a camera fired.
+  stats.appendChild(qrStat(c.uniques, 'people'));
+  stats.appendChild(qrStat(c.signups, c.signups === 1 ? 'signup' : 'signups'));
+  stats.appendChild(qrStat(c.points_awarded, 'points paid'));
+  const last = document.createElement('span');
+  last.className = 'qr-stat qr-stat-muted';
+  last.textContent = `last scan ${qrWhen(c.last_scan)}`;
+  stats.appendChild(last);
+  row.appendChild(stats);
+
+  /* ---- line 3: the two editable knobs ---- */
+  const edit = document.createElement('div');
+  edit.className = 'qr-edit';
+
+  const ptsWrap = document.createElement('label');
+  ptsWrap.className = 'qr-field';
+  const ptsLabel = document.createElement('span');
+  ptsLabel.textContent = 'Award';
+  ptsWrap.appendChild(ptsLabel);
+  const points = document.createElement('input');
+  points.className = 'nv-input qr-points';
+  points.type = 'number';
+  points.min = '0';
+  points.max = '5000';
+  points.step = '1';
+  points.value = String(c.points ?? 0);
+  ptsWrap.appendChild(points);
+  edit.appendChild(ptsWrap);
+
+  const noteWrap = document.createElement('label');
+  noteWrap.className = 'qr-field qr-field-wide';
+  const noteLabel = document.createElement('span');
+  noteLabel.textContent = 'Note';
+  noteWrap.appendChild(noteLabel);
+  const note = document.createElement('input');
+  note.className = 'nv-input qr-note';
+  note.type = 'text';
+  note.maxLength = 200;
+  note.value = c.note ?? '';
+  note.placeholder = 'where it is';
+  noteWrap.appendChild(note);
+  edit.appendChild(noteWrap);
+  row.appendChild(edit);
+
+  const rowError = document.createElement('span');
+  rowError.className = 'qr-row-error';
+  rowError.hidden = true;
+  row.appendChild(rowError);
+
+  const detail = document.createElement('div');
+  detail.className = 'qr-detail';
+  detail.hidden = !qrOpen.has(c.id);
+  row.appendChild(detail);
+
+  /* ---- line 4: the buttons ---- */
+  const actions = document.createElement('div');
+  actions.className = 'qr-actions';
+  const button = (label, cls, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.textContent = label;
+    b.addEventListener('click', () => fn(b));
+    actions.appendChild(b);
+    return b;
+  };
+
+  const fields = { name, points, note, active };
+  button('Save', 'qr-btn', (b) => saveQr(c, fields, b, rowError));
+  button('Copy link', 'qr-btn', (b) => copyQrLink(c, b));
+  button('PNG', 'qr-btn', (b) => downloadQrPng(c, b, rowError));
+  button('SVG', 'qr-btn', (b) => downloadQrSvg(c, b, rowError));
+  button(qrOpen.has(c.id) ? 'Hide traffic' : 'Traffic', 'qr-btn', (b) => toggleQrDetail(c, detail, b, rowError));
+  button('Delete', 'qr-btn qr-btn-danger', (b) => deleteQr(c, b, rowError));
+  row.appendChild(actions);
+
+  if (qrOpen.has(c.id)) paintQrDetail(detail, qrOpen.get(c.id), c);
+  return row;
+}
+
+/** Row-local failures go beside the row, not at the top of the card: a repaint
+ *  destroys anything pinned inside a row, so the two live in different places
+ *  on purpose (same split the pool rows use). */
+function qrRowError(el, msg) {
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+async function saveQr(c, fields, btn, errEl) {
+  const name = fields.name.value.trim();
+  if (!name) return qrRowError(errEl, 'Give it a name you’ll recognise later.');
+  const points = Number(fields.points.value);
+  if (!Number.isInteger(points) || points < 0 || points > 5000) {
+    return qrRowError(errEl, 'The award must be a whole number from 0 to 5000.');
+  }
+
+  // ⚠ THE ONE GENUINELY DANGEROUS EDIT IN THIS CARD. The banner is already
+  // printed and screwed to a wall, and community_grants has no reversal path —
+  // there is no undo for points this pays out. A raise is therefore confirmed;
+  // a cut is not, because the failure mode of a cut is a support ticket rather
+  // than money that cannot come back.
+  if (points > (c.points ?? 0) && points >= 100) {
+    const ok = confirm(
+      `Raise “${name}” to ${points} community points per signup?\n\n`
+      + 'The banner is already printed, and points paid out cannot be reversed.'
+    );
+    if (!ok) return;
+  }
+
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Saving…';
+  qrRowError(errEl, '');
+  qrOkMsg('');
+  try {
+    const res = await authFetch(`/api/admin/tracked-qr/${c.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name, points, note: fields.note.value.trim(), active: fields.active.checked }),
+    });
+    if (res.status === 403) return denyAccess();
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return qrRowError(errEl, body.message || 'Couldn’t save that.');
+
+    // Replace in place rather than reloading the list: a repaint of every row
+    // would collapse any traffic panel the operator has open beside this one.
+    const i = qrCodes.findIndex((x) => x.id === c.id);
+    if (i >= 0 && body.code) qrCodes[i] = body.code;
+    renderQrCodes();
+    qrOkMsg(`Saved “${name}”.`);
+  } catch {
+    qrRowError(errEl, 'Couldn’t save that. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function createQr(e) {
+  e.preventDefault();
+  const btn = $('qr-new-submit');
+  const errEl = $('qr-new-error');
+  const name = $('qr-new-name').value.trim();
+  const setErr = (m) => { errEl.textContent = m || ''; errEl.hidden = !m; };
+
+  if (!name) return setErr('Give it a name you’ll recognise later, e.g. “HUB east entrance”.');
+  const points = Number($('qr-new-points').value || 0);
+  if (!Number.isInteger(points) || points < 0 || points > 5000) {
+    return setErr('The award must be a whole number from 0 to 5000. 0 tracks traffic and pays nothing.');
+  }
+
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Creating…';
+  setErr('');
+  qrOkMsg('');
+  try {
+    const res = await authFetch('/api/admin/tracked-qr', {
+      method: 'POST',
+      body: JSON.stringify({ name, points, note: $('qr-new-note').value.trim() }),
+    });
+    if (res.status === 403) return denyAccess();
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return setErr(body.message || 'Couldn’t create that code.');
+
+    qrCodes.unshift(body.code);
+    renderQrCodes();
+    $('qr-new-name').value = '';
+    $('qr-new-note').value = '';
+    $('qr-new-points').value = '0';
+    qrOkMsg(`Created “${body.code.name}”. Its QR is the PNG or SVG button on its row.`);
+  } catch {
+    setErr('Couldn’t create that code. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function deleteQr(c, btn, errEl) {
+  // The server refuses a delete once a code has traffic; this only asks first so
+  // the refusal isn't the operator's first hint that it might matter.
+  const warn = c.scans > 0 || c.signups > 0
+    ? `“${c.name}” has ${c.scans} scan${c.scans === 1 ? '' : 's'} and ${c.signups} signup${c.signups === 1 ? '' : 's'}.\n\n`
+      + 'Deleting throws that history away, and any banner already on a wall stops working. Pausing keeps both. Delete anyway?'
+    : `Delete “${c.name}”? It has never been scanned, so nothing is lost.`;
+  if (!confirm(warn)) return;
+
+  btn.disabled = true;
+  qrRowError(errEl, '');
+  qrOkMsg('');
+  try {
+    const force = c.scans > 0 || c.signups > 0 ? '?force=1' : '';
+    const res = await authFetch(`/api/admin/tracked-qr/${c.id}${force}`, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return qrRowError(errEl, body.message || 'Couldn’t delete that code.');
+    }
+    qrOpen.delete(c.id);
+    qrCodes = qrCodes.filter((x) => x.id !== c.id);
+    renderQrCodes();
+    qrOkMsg(`Deleted “${c.name}”.`);
+  } catch {
+    qrRowError(errEl, 'Couldn’t delete that code. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function copyQrLink(c, btn) {
+  const label = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(qrUrl(c.code));
+    btn.textContent = 'Copied';
+  } catch {
+    // Clipboard is permission-gated and fails on http:// origins. Falling back
+    // to showing the URL beats a button that silently does nothing.
+    btn.textContent = qrUrl(c.code);
+  }
+  setTimeout(() => { btn.textContent = label; }, 1600);
+}
+
+/* ---------- the traffic panel ---------- */
+
+async function toggleQrDetail(c, panel, btn, errEl) {
+  if (qrOpen.has(c.id)) {
+    qrOpen.delete(c.id);
+    panel.hidden = true;
+    panel.textContent = '';
+    btn.textContent = 'Traffic';
+    return;
+  }
+  qrOpen.set(c.id, 'loading');
+  panel.hidden = false;
+  panel.textContent = 'Loading…';
+  btn.textContent = 'Hide traffic';
+  btn.disabled = true;
+  qrRowError(errEl, '');
+  try {
+    const res = await authFetch(`/api/admin/tracked-qr/${c.id}/detail?days=30`);
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      qrOpen.delete(c.id);
+      panel.hidden = true;
+      btn.textContent = 'Traffic';
+      return qrRowError(errEl, 'Couldn’t load the traffic for that code.');
+    }
+    const detail = await res.json();
+    qrOpen.set(c.id, detail);
+    paintQrDetail(panel, detail, c);
+  } catch {
+    qrOpen.delete(c.id);
+    panel.hidden = true;
+    btn.textContent = 'Traffic';
+    qrRowError(errEl, 'Couldn’t load the traffic. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** One bar chart. Bars carry their number as a title, because 30 labels do not
+ *  fit on a phone and an unlabelled bar is decoration. */
+function qrChart(series, labelOf) {
+  // The TRUE peak, reported above the chart. Kept separate from the divisor
+  // below: tracked_qr_detail fills every bucket (generate_series), so an
+  // unscanned code arrives as 30 rows of zero rather than as an empty array,
+  // and a divisor floor leaking into the label made that read "peak 1 in a
+  // day" next to a chart correctly showing none.
+  const peak = Math.max(0, ...series.map((p) => p.scans ?? 0));
+  const max = Math.max(1, peak);
+  const chart = document.createElement('div');
+  chart.className = 'qr-chart';
+  for (const p of series) {
+    const col = document.createElement('div');
+    col.className = 'qr-bar-col';
+    col.title = `${labelOf(p)}: ${p.scans ?? 0} scan${p.scans === 1 ? '' : 's'}`;
+    const bar = document.createElement('div');
+    bar.className = 'qr-bar';
+    // A floor of 2% so a day with one scan is visibly different from a day with
+    // none — the difference between "nobody" and "somebody" is the whole point
+    // of the chart and it must not round away to a flat line.
+    bar.style.height = p.scans ? `${Math.max(2, Math.round((p.scans / max) * 100))}%` : '0';
+    if (!p.scans) bar.classList.add('qr-bar-empty');
+    col.appendChild(bar);
+    chart.appendChild(col);
+  }
+  return { chart, peak };
+}
+
+// Zero is a real answer and says so, rather than being dressed up as a peak.
+const peakText = (n, unit) => (n ? `peak ${n} in a${unit === 'hour' ? 'n' : ''} ${unit}` : 'no scans yet');
+
+function paintQrDetail(panel, detail, c) {
+  panel.textContent = '';
+  if (detail === 'loading') { panel.textContent = 'Loading…'; return; }
+
+  const daily = detail.daily ?? [];
+  const hourly = detail.hourly ?? [];
+
+  const mk = (title, hint) => {
+    const h = document.createElement('div');
+    h.className = 'qr-detail-head';
+    const t = document.createElement('strong');
+    t.textContent = title;
+    h.appendChild(t);
+    const s = document.createElement('span');
+    s.textContent = hint;
+    h.appendChild(s);
+    return h;
+  };
+
+  const d = qrChart(daily, (p) => p.day);
+  panel.appendChild(mk('Last 30 days', peakText(d.peak, 'day')));
+  panel.appendChild(d.chart);
+
+  const h = qrChart(hourly, (p) => `${p.hour}:00`);
+  panel.appendChild(mk('Time of day', `local time · ${peakText(h.peak, 'hour')}`));
+  panel.appendChild(h.chart);
+
+  const foot = document.createElement('div');
+  foot.className = 'qr-detail-foot';
+  const first = document.createElement('span');
+  first.textContent = `first scan ${qrWhen(c.first_scan)}`;
+  foot.appendChild(first);
+  const csv = document.createElement('button');
+  csv.type = 'button';
+  csv.className = 'qr-btn';
+  csv.textContent = 'Export scans CSV';
+  csv.addEventListener('click', () => exportQrScans(c, csv));
+  foot.appendChild(csv);
+  panel.appendChild(foot);
+}
+
+/* ---------- the printable QR ----------
+   Drawn here, in this browser, from the vendored qrcode-generator build the
+   student and terminal apps already use. Not a third-party QR service, and the
+   distinction is not paranoia: pasting a URL that pays out community points
+   into someone else's website is handing them a link they can then print.
+
+   BYTE MODE, and deliberately not the denser Alphanumeric one. Uppercasing the
+   whole URL would let it encode as Alphanumeric and buy roughly one QR version
+   — bigger modules, easier to scan from across a room, which for a banner is
+   worth real money. It is still not worth it: this artwork gets printed on
+   vinyl, and every scanner app on every phone has to read a screaming-uppercase
+   URL correctly for that trade to pay off. The 8-character code is what keeps
+   the symbol small instead.
+
+   4-module quiet zone on all sides, because a QR with the margin cropped off is
+   the single most common reason a printed one doesn't scan, and whoever lays
+   this into the banner artwork will crop to the edge of the image. */
+const QR_QUIET = 4;
+
+function makeQr(text) {
+  const qr = qrcode(0, 'M');   // 0 = smallest version that fits; M = 15% recovery
+  qr.addData(String(text), 'Byte');
+  qr.make();
+  return qr;
+}
+
+/** A PNG about 1240px square: enough to print at ~4 inches without a soft edge. */
+function qrPngBlob(text) {
+  const qr = makeQr(text);
+  const count = qr.getModuleCount();
+  const units = count + QR_QUIET * 2;
+  const scale = Math.max(4, Math.round(1240 / units));
+  const px = units * scale;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = px;
+  canvas.height = px;
+  const ctx = canvas.getContext('2d');
+  // Hard-coded black on white, never the dashboard theme: an inverted or
+  // low-contrast QR is a known real-world scan failure, and this one is going
+  // to a printer that has no idea what dark mode is.
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, px, px);
+  ctx.fillStyle = '#000000';
+  for (let r = 0; r < count; r += 1) {
+    for (let c = 0; c < count; c += 1) {
+      if (qr.isDark(r, c)) ctx.fillRect((c + QR_QUIET) * scale, (r + QR_QUIET) * scale, scale, scale);
+    }
+  }
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
+/** The same symbol as vector, which is what a print shop actually wants. */
+function qrSvgBlob(text) {
+  const qr = makeQr(text);
+  const count = qr.getModuleCount();
+  const units = count + QR_QUIET * 2;
+  let rects = '';
+  for (let r = 0; r < count; r += 1) {
+    for (let c = 0; c < count; c += 1) {
+      if (qr.isDark(r, c)) rects += `<rect x="${c + QR_QUIET}" y="${r + QR_QUIET}" width="1" height="1"/>`;
+    }
+  }
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${units} ${units}" width="1240" height="1240" shape-rendering="crispEdges">
+<rect width="${units}" height="${units}" fill="#ffffff"/>
+<g fill="#000000">${rects}</g>
+</svg>
+`;
+  return new Blob([svg], { type: 'image/svg+xml' });
+}
+
+// A filename the operator can find again in six months, from a name they typed.
+const qrFileName = (c, ext) => {
+  const slug = String(c.name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  return `werewards-qr-${slug || 'code'}-${c.code}.${ext}`;
+};
+
+async function downloadQrPng(c, btn, errEl) {
+  btn.disabled = true;
+  qrRowError(errEl, '');
+  try {
+    const blob = await qrPngBlob(qrUrl(c.code));
+    if (!blob) return qrRowError(errEl, 'Couldn’t draw that QR. Try the SVG instead.');
+    saveBlob(blob, qrFileName(c, 'png'));
+  } catch {
+    qrRowError(errEl, 'Couldn’t draw that QR.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function downloadQrSvg(c, btn, errEl) {
+  try {
+    qrRowError(errEl, '');
+    saveBlob(qrSvgBlob(qrUrl(c.code)), qrFileName(c, 'svg'));
+  } catch {
+    qrRowError(errEl, 'Couldn’t draw that QR.');
+  }
+}
+
+/* ---------- CSV ----------
+   Both exports come down as an authenticated fetch and then a blob, not as a
+   plain link: every /api/admin call carries a bearer token, and an <a href> has
+   nowhere to put one. Same shape as the poster download above. */
+
+async function exportQrAll(btn) {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Exporting…';
+  qrError('');
+  try {
+    const res = await authFetch('/api/admin/tracked-qr/export');
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) return qrError('Couldn’t export that. Try again.');
+    saveBlob(await res.blob(), 'werewards-qr-codes.csv');
+  } catch {
+    qrError('Couldn’t export that. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function exportQrScans(c, btn) {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Exporting…';
+  try {
+    const res = await authFetch(`/api/admin/tracked-qr/${c.id}/export`);
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) { btn.textContent = 'Export failed'; return; }
+    saveBlob(await res.blob(), `werewards-qr-${c.code}-scans.csv`);
+  } catch {
+    btn.textContent = 'Export failed';
+    return;
+  } finally {
+    btn.disabled = false;
+    // A failure leaves its own word on the button, then puts the label back —
+    // otherwise the row keeps saying "Export failed" long after the operator
+    // has fixed whatever caused it.
+    if (btn.textContent === 'Exporting…') btn.textContent = label;
+    else setTimeout(() => { btn.textContent = label; }, 2400);
+  }
+}
+
+/**
+ * The QR poster tab, which now has two very different things on it.
+ *
+ * Reloads the codes on EVERY open rather than only the first, unlike the pools
+ * tab's one-shot flag. The operator comes to this tab specifically to read scan
+ * counts, so a cached count from whenever the dashboard happened to boot is the
+ * one thing it must never show. It is a single view query.
+ */
+function openPoster() {
+  setView('poster');
+  loadQrCodes();
 }

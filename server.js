@@ -16,6 +16,7 @@ import adminRoutes from './src/routes/admin.js';
 import applyRoutes from './src/routes/apply.js';
 import unsubscribeRoutes from './src/routes/unsubscribe.js';
 import webhookRoutes from './src/routes/webhooks.js';
+import trackedQrRoutes from './src/routes/tracked-qr.js';
 import { supabaseAdmin } from './src/lib/supabase.js';
 import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
@@ -249,6 +250,21 @@ const punchHoldLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a minute and try again.' },
+});
+// A printed banner's QR (migration-050). Deliberately LOOSE, and the looseness
+// is the point: a poster at a club fair is scanned by a crowd standing on one
+// campus wifi NAT, so a tight per-IP cap would throttle exactly the event the
+// operator put the banner up for — the same trap already documented above for
+// referrals. This is a DoS backstop on an unauthenticated write, nothing more.
+// The number to trust against inflation is the UNIQUE visitor count, not this;
+// link-preview crawlers are dropped in src/lib/tracked-qr.js before they ever
+// reach a row.
+const trackedQrLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many scans from this network, wait a minute and try again.' },
 });
 // Unauthenticated password reset for a locked-out vendor (migration-031). The
 // per-code guess cap inside vendor_reset_begin is the fence that actually
@@ -744,6 +760,11 @@ app.use('/api/vendor', vendorRoutes);   // vendor-authenticated endpoints
 app.use('/api/admin', adminRoutes);     // operator-only (ADMIN_EMAILS) analytics + errors
 app.use('/api/apply', applyRoutes);     // public vendor applications (rate-limited above)
 app.use('/api/webhooks', webhookRoutes); // public, Svix-signed (Resend bounces/complaints)
+// A printed banner's QR. Top-level and NOT under /api because this URL goes on
+// vinyl — see src/routes/tracked-qr.js. Mounted here rather than beside
+// /unsubscribe at the top of the file because the limiter above has to be in
+// place first, and above sendNotFound because nothing after it is reachable.
+app.use('/r', trackedQrLimiter, trackedQrRoutes);  // public — poster/banner QR scans
 
 // The cuisine vocabulary, for the two surfaces that have to OFFER it: the
 // public /join application and the admin vendor editors. Public because /join

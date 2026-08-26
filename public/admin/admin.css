@@ -959,3 +959,73 @@ h1, h3 { margin: 0; }
   /* Two-row topbar, so the errors tile's jump has more sticky header to clear. */
   #errors-card { scroll-margin-top: 7.5rem; }
 }
+
+/* ---------- trackable QR codes (migration-050) ---------- */
+/* A second, unrelated card on the QR poster tab. Shaped like .pool-row on
+   purpose — same panel, same border, same small buttons — because it is the
+   same kind of thing to an operator: a list of records with a couple of knobs
+   and a destructive action each. Everything below is only the bits pools
+   doesn't already have: a stats strip, an inline edit row, and a bar chart. */
+.qr-list { display: grid; gap: 0.7rem; margin-top: 0.85rem; }
+.qr-row {
+  display: flex; flex-direction: column; gap: 0.55rem;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+}
+.qr-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+/* The name is the widest thing in the row and the only one worth growing. */
+.qr-head .qr-name { flex: 1 1 14rem; min-width: 0; font-weight: 700; }
+/* Monospace, because this is a URL fragment someone may have to read character
+   by character off a banner that didn't scan — the one moment the whole
+   ambiguity-free alphabet in src/lib/tracked-qr.js exists for. */
+.qr-link {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem; color: var(--muted); white-space: nowrap;
+}
+.qr-switch { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; font-weight: 700; color: var(--muted); cursor: pointer; }
+.qr-switch input { accent-color: var(--accent); }
+
+.qr-stats { display: flex; flex-wrap: wrap; gap: 0.15rem 0.9rem; font-size: 0.78rem; color: var(--muted); }
+/* Full ink on the number and muted on its label: the operator is scanning this
+   strip for figures, not for the words between them. */
+.qr-stat b { color: var(--ink); font-weight: 800; }
+.qr-stat-muted { color: var(--muted); }
+
+.qr-edit { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: flex-end; }
+.qr-field { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.qr-field > span { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); }
+.qr-field-wide { flex: 1 1 12rem; }
+.qr-field .qr-points { width: 6.5rem; }
+.qr-row-error { color: var(--bad); font-size: 0.78rem; font-weight: 700; }
+
+.qr-actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+/* Same two small buttons as .pool-btn / .pool-btn-danger, under names that say
+   which list they belong to. */
+.qr-btn, .qr-btn-danger {
+  flex-shrink: 0; font: inherit; font-size: 0.72rem; font-weight: 700; cursor: pointer;
+  padding: 0.35rem 0.6rem; border-radius: 8px;
+  background: transparent; border: 1px solid var(--line); color: var(--ink);
+}
+.qr-btn:hover { border-color: var(--accent); }
+.qr-btn-danger { color: var(--bad); }
+.qr-btn-danger:hover { background: var(--bad); color: #fff; border-color: var(--bad); }
+.qr-btn:disabled { opacity: 0.55; cursor: default; }
+
+.qr-detail {
+  display: grid; gap: 0.35rem;
+  padding: 0.65rem 0.7rem; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.qr-detail-head { display: flex; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--muted); }
+.qr-detail-head strong { color: var(--ink); }
+.qr-detail-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; }
+
+/* Bars share the width rather than scrolling: 30 days and 24 hours both fit on
+   a phone at this size, and a chart that scrolls sideways inside a card that
+   already scrolls is a trap. */
+.qr-chart { display: flex; align-items: flex-end; gap: 2px; height: 56px; margin-bottom: 0.4rem; }
+.qr-bar-col { flex: 1 1 0; height: 100%; display: flex; align-items: flex-end; min-width: 0; }
+.qr-bar { width: 100%; background: var(--accent); border-radius: 2px 2px 0 0; }
+/* A day with nothing still draws a hairline, so the axis reads as a row of days
+   rather than as a gap in the data. */
+.qr-bar-empty { height: 1px !important; background: var(--line); }

@@ -16,6 +16,12 @@ import {
   getPoster, putPoster, deletePoster, readPoster, decodePosterBody,
   POSTER_MAX_BYTES, POSTER_EXTENSIONS,
 } from '../lib/qr-poster.js';
+import {
+  createTrackedQr,
+  NAME_MAX as QR_NAME_MAX,
+  NOTE_MAX as QR_NOTE_MAX,
+  POINTS_MAX as QR_POINTS_MAX,
+} from '../lib/tracked-qr.js';
 import { emitBalance } from '../lib/realtime.js';
 // The one place the "which table holds this vendor's points" rule is written
 // down (migration-044). Re-deriving it inline in a support screen is how the
@@ -2682,6 +2688,321 @@ router.delete('/errors', async (req, res, next) => {
     const { error } = await q;
     if (error) throw error;
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ===================== Trackable QR codes (migration-050) =====================
+   The operator makes a code here, prints the QR onto a banner, and reads the
+   traffic back here. Everything below is CRUD plus two read shapes; the payout
+   itself is nowhere near this file — it happens at signup, in
+   src/lib/tracked-qr.js, because that is the only moment it can be earned.
+
+   ⚠ Not to be confused with the /qr-poster endpoints above, which are the ONE
+   static "scan here" artwork file every vendor terminal downloads. Same tab in
+   the UI, unrelated features. */
+
+// The list reads the roll-up view, not the table: counting scans in Node would
+// mean pulling every scan row down the wire (see migration-050).
+const TRACKED_QR_COLS = 'id, code, name, note, points, active, created_by, created_at, updated_at, '
+  + 'scans, uniques, first_scan, last_scan, signups, points_awarded';
+
+/**
+ * Validate the admin form. Never throws; the caller turns `error` into a 400.
+ *
+ * `partial` is what makes one validator serve both the create form and the
+ * inline row editor: on a PATCH an absent field means "leave it alone", which
+ * is a different thing from an empty one ("clear it").
+ */
+function validTrackedQr(raw, { partial = false } = {}) {
+  const body = raw ?? {};
+  const out = {};
+
+  if (!partial || body.name != null) {
+    const name = String(body.name ?? '').trim();
+    if (!name || name.length > QR_NAME_MAX) {
+      return { error: `Give the banner a name you'll recognise later (max ${QR_NAME_MAX} characters), e.g. "HUB east entrance".` };
+    }
+    out.name = name;
+  }
+
+  if (!partial || body.note != null) {
+    const note = String(body.note ?? '').trim();
+    if (note.length > QR_NOTE_MAX) {
+      return { error: `Keep the placement note under ${QR_NOTE_MAX} characters.` };
+    }
+    out.note = note || null;
+  }
+
+  if (!partial || body.points != null) {
+    const points = body.points === '' || body.points == null ? 0 : Number(body.points);
+    if (!Number.isInteger(points) || points < 0 || points > QR_POINTS_MAX) {
+      return { error: `The award must be a whole number of community points from 0 to ${QR_POINTS_MAX}. 0 means track traffic only.` };
+    }
+    out.points = points;
+  }
+
+  if (body.active != null) {
+    if (typeof body.active !== 'boolean') return { error: 'Active must be true or false.' };
+    out.active = body.active;
+  }
+
+  return { row: out };
+}
+
+/** GET /api/admin/tracked-qr — every banner with its traffic roll-up. */
+router.get('/tracked-qr', async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('tracked_qr_overview')
+      .select(TRACKED_QR_COLS)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json({ codes: data ?? [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/tracked-qr  { name, note, points }
+ * Mints a code. Harmless until the QR is printed and put somewhere, so there is
+ * no confirmation step here — the dangerous direction is editing the award on a
+ * banner that is already on a wall, which the PATCH below guards instead.
+ */
+router.post('/tracked-qr', async (req, res, next) => {
+  try {
+    const parsed = validTrackedQr(req.body);
+    if (parsed.error) return res.status(400).json({ error: 'BAD_REQUEST', message: parsed.error });
+
+    const row = await createTrackedQr({
+      name: parsed.row.name,
+      note: parsed.row.note ?? null,
+      points: parsed.row.points ?? 0,
+      createdBy: req.user?.email ?? null,
+    });
+    res.status(201).json({
+      ok: true,
+      code: { ...row, scans: 0, uniques: 0, first_scan: null, last_scan: null, signups: 0, points_awarded: 0 },
+    });
+  } catch (err) {
+    if (String(err?.message ?? '') === 'TRACKED_QR_CODE_COLLISION') {
+      return res.status(503).json({
+        error: 'TRACKED_QR_BUSY',
+        message: 'Couldn’t mint a unique code just now. Try once more.',
+      });
+    }
+    next(err);
+  }
+});
+
+/**
+ * PATCH /api/admin/tracked-qr/:id  { name?, note?, points?, active? }
+ *
+ * Editing the award on a banner that is ALREADY PRINTED is the one genuinely
+ * dangerous button in this feature, because the banner cannot be recalled and
+ * community_grants has no reversal path — reverse_transaction only unwinds
+ * transactions rows. So a raise is confirmed in the client before it gets here,
+ * and the ceiling is enforced here regardless of what the client did.
+ */
+router.patch('/tracked-qr/:id', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
+    }
+    const parsed = validTrackedQr(req.body, { partial: true });
+    if (parsed.error) return res.status(400).json({ error: 'BAD_REQUEST', message: parsed.error });
+    if (!Object.keys(parsed.row).length) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to change.' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('tracked_qr_codes')
+      .update({ ...parsed.row, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
+    }
+
+    // Read the roll-up back rather than echoing the update: the row the list
+    // renders carries scan counts this handler never touched, and returning a
+    // half-populated row would blank them until the next refresh.
+    const { data: full, error: readErr } = await supabaseAdmin
+      .from('tracked_qr_overview').select(TRACKED_QR_COLS).eq('id', req.params.id).single();
+    if (readErr) throw readErr;
+    res.json({ ok: true, code: full });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/admin/tracked-qr/:id
+ *
+ * REFUSED once anyone has scanned it, unless ?force=1. A banner with traffic is
+ * a physical object on a wall that people are still scanning; deleting the row
+ * makes every future scan land on the home page with no record that it
+ * happened, and takes the history of the ones that already did. Pausing is
+ * almost always what the operator actually wants, so that is what the refusal
+ * says. The escape hatch exists for the real case this protects against being
+ * annoying about: a banner created by mistake, never printed.
+ */
+router.delete('/tracked-qr/:id', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
+    }
+    const force = String(req.query.force ?? '') === '1';
+
+    const { data: row, error: readErr } = await supabaseAdmin
+      .from('tracked_qr_overview').select('id, name, scans, signups').eq('id', req.params.id).maybeSingle();
+    if (readErr) throw readErr;
+    if (!row) {
+      return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
+    }
+    if (!force && (row.scans > 0 || row.signups > 0)) {
+      return res.status(409).json({
+        error: 'TRACKED_QR_IN_USE',
+        message: `“${row.name}” has been scanned ${row.scans} time${row.scans === 1 ? '' : 's'}. Pause it instead — the banner is still on a wall, and deleting it throws away its history.`,
+      });
+    }
+
+    const { error } = await supabaseAdmin.from('tracked_qr_codes').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET /api/admin/tracked-qr/:id/detail?days=30 — the two series behind one row's panel. */
+router.get('/tracked-qr/:id/detail', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
+    }
+    const days = Math.min(365, Math.max(1, Math.floor(Number(req.query.days) || 30)));
+    const { data, error } = await supabaseAdmin.rpc('tracked_qr_detail', {
+      p_qr_id: req.params.id,
+      p_days: days,
+    });
+    if (error) throw error;
+    res.json(data ?? { days, daily: [], hourly: [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- CSV export ----------
+   Written out by hand because the app has no CSV anywhere else and one
+   serialiser for two endpoints is not worth a dependency.
+
+   TWO ESCAPES, and the second one is the one that gets forgotten. Quoting
+   handles commas, quotes and newlines so the file parses. The leading-quote
+   rule handles the other thing: Excel and Sheets evaluate a cell that starts
+   with = + - or @ as a FORMULA, so a banner an operator innocently named
+   "=HUB entrance" would execute on open. The operator types these names
+   themselves, which makes it less of an attack than a foot-gun — but a
+   user-agent string arrives from the open internet and lands in the same file. */
+const CSV_FORMULA_RE = /^[=+\-@\t\r]/;
+
+export function csvCell(value) {
+  let s = value == null ? '' : String(value);
+  if (CSV_FORMULA_RE.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+const csvRow = (cells) => cells.map(csvCell).join(',');
+
+function sendCsv(res, filename, rows) {
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', `attachment; filename="${filename}"`);
+  res.set('Cache-Control', 'no-store');
+  // A BOM, so Excel on Windows reads it as UTF-8 instead of mangling the curly
+  // quotes and accents that operator-typed names are full of.
+  res.send('\uFEFF' + rows.join('\r\n') + '\r\n');
+}
+
+/** GET /api/admin/tracked-qr/export — one row per banner, the whole roll-up. */
+router.get('/tracked-qr/export', async (req, res, next) => {
+  try {
+    const origin = process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+    const { data, error } = await supabaseAdmin
+      .from('tracked_qr_overview').select(TRACKED_QR_COLS).order('created_at', { ascending: false });
+    if (error) throw error;
+
+    const rows = [csvRow([
+      'Name', 'Code', 'URL', 'Placement note', 'Award (community points)', 'Status',
+      'Scans', 'Unique visitors', 'Signups', 'Points awarded', 'First scan', 'Last scan', 'Created',
+    ])];
+    for (const c of data ?? []) {
+      rows.push(csvRow([
+        c.name, c.code, `${origin}/r/${c.code}`, c.note, c.points, c.active ? 'Active' : 'Paused',
+        c.scans, c.uniques, c.signups, c.points_awarded, c.first_scan, c.last_scan, c.created_at,
+      ]));
+    }
+    sendCsv(res, 'werewards-qr-codes.csv', rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// One page of scans per round trip, and a hard ceiling on how many pages. The
+// ceiling is announced in the file rather than silently applied: a truncated
+// export that looks complete is how someone ends up reporting the wrong number
+// in a meeting.
+const SCAN_EXPORT_PAGE = 1000;
+const SCAN_EXPORT_MAX = 50_000;
+
+/** GET /api/admin/tracked-qr/:id/export — the raw scan log for one banner. */
+router.get('/tracked-qr/:id/export', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
+    }
+    const { data: code, error: codeErr } = await supabaseAdmin
+      .from('tracked_qr_codes').select('code, name').eq('id', req.params.id).maybeSingle();
+    if (codeErr) throw codeErr;
+    if (!code) {
+      return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
+    }
+
+    const rows = [csvRow(['Scanned at (UTC)', 'Visitor', 'Device / user agent'])];
+    let offset = 0;
+    let truncated = false;
+    for (;;) {
+      // pageOf's 416-past-the-end handling isn't needed here: this loop never
+      // asks for a page it hasn't been told exists by the previous one.
+      const { data, error } = await supabaseAdmin
+        .from('tracked_qr_scans')
+        .select('scanned_at, visitor_hash, user_agent')
+        .eq('qr_id', req.params.id)
+        .order('scanned_at', { ascending: false })
+        .range(offset, offset + SCAN_EXPORT_PAGE - 1);
+      if (error) throw error;
+      const page = data ?? [];
+      for (const s of page) {
+        // A short prefix of the hash, not the hash: enough to see the same
+        // phone twice in the file, useless for anything else.
+        rows.push(csvRow([
+          s.scanned_at,
+          s.visitor_hash ? s.visitor_hash.slice(0, 12) : 'no cookie',
+          s.user_agent,
+        ]));
+      }
+      offset += page.length;
+      if (page.length < SCAN_EXPORT_PAGE) break;
+      if (offset >= SCAN_EXPORT_MAX) { truncated = true; break; }
+    }
+    if (truncated) {
+      rows.push(csvRow([`TRUNCATED — only the most recent ${SCAN_EXPORT_MAX} scans are listed.`, '', '']));
+      console.warn(`[tracked-qr] export of ${code.code} truncated at ${SCAN_EXPORT_MAX} rows`);
+    }
+    sendCsv(res, `werewards-qr-${code.code}-scans.csv`, rows);
   } catch (err) {
     next(err);
   }

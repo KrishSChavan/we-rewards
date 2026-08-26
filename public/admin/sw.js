@@ -53,10 +53,10 @@
 // v20: the Edit dialog gained a Logo section — pick, Remove and "Save logo"
 // against PATCH /api/admin/vendors/:id, with the current artwork read back from
 // the new GET /api/admin/vendors/:id/logo (index.html + admin.js + admin.css)
-const CACHE = 'werewards-admin-v23';   // v23: the roster row shows how to reach a location — phone (a real column now, migration-049) and each login's email — and the Edit dialog gained the "Who to call" fields that fill in the pre-049 blanks (index.html + admin.js + admin.css)
+const CACHE = 'werewards-admin-v24';   // v24: the QR poster tab gained a second, separate card — trackable QR codes for banners and posters, each with its own community-points award for signups it brings in, a scan/unique/signup roll-up, a 30-day and time-of-day chart, CSV export and a printable PNG/SVG of the code (index.html + admin.js + admin.css + qrcode.js)
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
-  '/admin/no-zoom.js', '/admin/manifest.json',
+  '/admin/no-zoom.js', '/admin/manifest.json', '/admin/qrcode.js',
   '/admin/icons/icon-192.png', '/admin/icons/icon-512.png',
 ];
 

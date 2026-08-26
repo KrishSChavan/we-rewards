@@ -44,7 +44,11 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 # The SQL now lives in supabase\migrations\ with the CLI's numeric prefixes
 # (00000000000001_schema.sql, 00000000000029_migration-029.sql, ...). The
 # numeric prefix makes plain name sorting the application order, schema first.
-$supa = Join-Path (Split-Path -Parent (Split-Path -Parent $here)) 'supabase\migrations'
+# Join-Path twice rather than one 'supabase\migrations' literal: a backslash is
+# an ordinary character in a path on macOS, not a separator, so the one-string
+# form built a directory literally named "supabase\migrations" and every
+# migration silently went missing. Same reason the two globs below are joined.
+$supa = Join-Path (Join-Path (Split-Path -Parent (Split-Path -Parent $here)) 'supabase') 'migrations'
 $name = 'pgtest-migrations'
 
 function Drop { if (docker ps -a --filter "name=^/$name$" --format '{{.Names}}') { docker rm -f $name | Out-Null } }
@@ -64,7 +68,7 @@ if (-not $up) { Fail 'postgres never accepted connections' }
 foreach ($f in (@('bootstrap.sql', 'checks.sql', $Seed, $Behavior) | Select-Object -Unique)) {
   docker cp (Join-Path $here $f) "${name}:/tmp/$f" | Out-Null
 }
-Get-ChildItem "$supa\*.sql" | ForEach-Object { docker cp $_.FullName "${name}:/tmp/$($_.Name)" | Out-Null }
+Get-ChildItem (Join-Path $supa '*.sql') | ForEach-Object { docker cp $_.FullName "${name}:/tmp/$($_.Name)" | Out-Null }
 
 docker exec $name psql -U postgres -q -c 'create database t;' | Out-Null
 $psql = { param($f) docker exec $name psql -U postgres -d t -q -v ON_ERROR_STOP=1 -f "/tmp/$f" 2>$null | Out-Null }
@@ -73,7 +77,7 @@ $psql = { param($f) docker exec $name psql -U postgres -d t -q -v ON_ERROR_STOP=
 
 # -Migration still takes the short 'migration-NNN.sql' form; resolve it to the
 # prefixed on-disk name. (A full prefixed name is accepted too.)
-$all = Get-ChildItem "$supa\*.sql" | Sort-Object Name | Select-Object -ExpandProperty Name
+$all = Get-ChildItem (Join-Path $supa '*.sql') | Sort-Object Name | Select-Object -ExpandProperty Name
 if ($all -notcontains $Migration) {
   $resolved = @($all | Where-Object { $_ -like "*_$Migration" })
   if ($resolved.Count -ne 1) { Fail "no such migration: $Migration" }

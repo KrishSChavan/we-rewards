@@ -449,6 +449,52 @@
           </div>
         </div>
       </div>
+
+      <!-- ===== TRACKABLE QR CODES ===== -->
+      <!-- Deliberately a SEPARATE card from the scan-here poster above, and the
+           separation is not cosmetic: that one is a single artwork file every
+           vendor downloads, this one is a list of individually tracked codes the
+           operator prints onto their own banners. They share a tab because they
+           share a job — things with QRs on them — and nothing else. -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Trackable QR codes</h3>
+          <span id="qr-count" class="chart-max"></span>
+        </div>
+        <p class="muted">One code per banner or poster, so you can see which ones people actually scan. Each carries its own <strong>community points award</strong>, paid once to anyone who <strong>creates an account</strong> after scanning it — a scan alone never pays, which is what stops a photo of the banner being passed around. Pausing a code stops the award but keeps counting scans, because the banner is still on a wall.</p>
+        <p id="qr-error" class="field-error" role="alert" hidden></p>
+        <p id="qr-ok" class="inc-ok" hidden></p>
+        <div class="list-tools">
+          <button id="qr-export" class="btn-ghost btn-compact" type="button">Export all as CSV</button>
+        </div>
+        <div id="qr-list" class="qr-list"></div>
+      </div>
+
+      <div class="card">
+        <h3>New QR code</h3>
+        <p class="muted">Creates a code and a URL. Nothing happens until you print the QR and put it somewhere, so there is no harm in making one to try it.</p>
+        <form id="qr-new-form" class="inc-form" novalidate>
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="qr-new-name">Where it's going</label>
+            <input id="qr-new-name" class="nv-input" type="text" maxlength="80" autocomplete="off" required placeholder="HUB east entrance banner" />
+            <span class="vendor-edit-hint">Only you see this. Name it so you'll recognise which banner it is in six months.</span>
+          </div>
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="qr-new-points">Award for signing up</label>
+            <input id="qr-new-points" class="nv-input" type="number" min="0" max="5000" step="1" value="0" inputmode="numeric" />
+            <span class="vendor-edit-hint">Community points, paid once per account. <strong>0</strong> tracks traffic and pays nothing.</span>
+          </div>
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="qr-new-note">Placement note (optional)</label>
+            <input id="qr-new-note" class="nv-input" type="text" maxlength="200" autocomplete="off" placeholder="above the water fountain" />
+            <span class="vendor-edit-hint">Where exactly it is, for when you go to take it down.</span>
+          </div>
+          <p id="qr-new-error" class="field-error" role="alert" hidden></p>
+          <div class="inc-actions">
+            <button id="qr-new-submit" class="btn-primary" type="submit">Create code</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <!-- ===== POOLS TAB ===== -->
@@ -802,6 +848,12 @@
 
   <!-- supabase-js, self-hosted and lowered by scripts/build-client.js — see the
        note in public/student/index.html. -->
+  <!-- self-hosted QR encoder (qrcode-generator UMD build, global `qrcode`), the
+       same vendored copy the student and terminal apps use. Needed here so a
+       banner's QR can be drawn and downloaded without the artwork ever leaving
+       this machine — a third-party QR generator would mean pasting a URL that
+       pays community points into someone else's website. -->
+  <script src="/admin/qrcode.js"></script>
   <script src="/admin/supabase.js"></script>
   <script src="/admin/admin.js"></script>
 </body>

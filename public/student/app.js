@@ -264,6 +264,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   }
   capturePunchLink();              // stash a camera-scanned ?punch= link BEFORE anything can navigate it away
   captureReferralLink();           // same, for a friend's ?ref= invite link
+  capturePosterQr();               // same, for a printed banner's ?qr= link (migration-050)
   pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
   InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
@@ -912,13 +913,25 @@ async function submitConsent(session) {
   try {
     const res = await authFetch('/api/me/accept-terms', {
       method: 'POST',
-      body: JSON.stringify({ agreedToTerms: true }),
+      // The banner code rides along with the one call that creates the account,
+      // rather than being claimed afterwards the way an invite code is. It has
+      // to: the award is for signing up through that poster, and a second later
+      // there is no longer any way to tell a new account from an old one.
+      body: JSON.stringify({ agreedToTerms: true, trackedQr: readPendingQr() }),
     });
     if (!res.ok) throw new Error('accept failed');
+    // Read before the stash is dropped: the server has now made its decision,
+    // so keeping the code around could only ever re-ask a settled question.
+    const accepted = await res.json().catch(() => ({}));
+    clearPendingQr();
 
     consentOk = true;
     hideConsentModal();
     render(session ?? (await sb.auth.getSession()).data?.session ?? null);
+    // After render, not before: render() repaints the screen the toast sits on.
+    if (accepted.qrBonus?.points > 0) {
+      punchToast(`Welcome! +${accepted.qrBonus.points} community points for scanning that poster.`);
+    }
   } catch {
     $('consent-error').textContent = 'Couldn’t save that. Check your connection and try again.';
     $('consent-error').hidden = false;
@@ -6140,6 +6153,52 @@ function captureReferralLink() {
     const qs = params.toString();
     history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
     localStorage.setItem(PENDING_REF_KEY, JSON.stringify({ code, at: Date.now() }));
+  } catch { /* malformed URL or private mode — nothing to capture */ }
+}
+
+/* ---------- poster / banner QR attribution (migration-050) ----------
+   A printed banner's QR points at `/r/<code>`. The server counts the scan
+   there and bounces the phone here as `/?qr=<code>`, which this stashes and
+   submitConsent() hands to accept-terms — the moment the account is created,
+   and the only moment a banner award can be earned.
+
+   BELT AND BRACES, NOT THE MECHANISM. /r also set an httpOnly cookie the
+   server reads on its own, so a browser that clears localStorage still gets
+   the credit. This half exists for the reverse case: a browser that refuses
+   the cookie. Neither half is trusted — the server decides what is owed, and
+   the once-per-account index caps it however many codes a client sends.
+
+   localStorage and a 30-day life, matching the invite link above: a poster is
+   scanned on the walk to class and acted on that evening. */
+const PENDING_QR_KEY = 'wr-pending-qr';
+const PENDING_QR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function readPendingQr() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PENDING_QR_KEY) || 'null');
+    if (!raw?.code) return null;
+    if (Date.now() - (raw.at ?? 0) > PENDING_QR_TTL_MS) return null;
+    return raw.code;
+  } catch { return null; }
+}
+
+function clearPendingQr() {
+  try { localStorage.removeItem(PENDING_QR_KEY); } catch { /* private mode */ }
+}
+
+// Runs at boot, before anything can navigate. Stripping the query matters for
+// the same two reasons the invite link strips its own: a reload must not look
+// like a second scan, and Google's OAuth round trip returns the browser to a
+// bare origin URL with every query parameter gone.
+function capturePosterQr() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const code = params.get('qr');
+    if (!code) return;
+    params.delete('qr');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+    localStorage.setItem(PENDING_QR_KEY, JSON.stringify({ code, at: Date.now() }));
   } catch { /* malformed URL or private mode — nothing to capture */ }
 }
 
