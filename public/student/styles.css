@@ -2196,8 +2196,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    Share button in SAFARI'S OWN TOOLBAR, which sits outside the page entirely.
    That is why the arrow is pinned to the very edge of the viewport rather than
    laid out with the copy — it is pointing at browser chrome we cannot draw on
-   and cannot measure. iPhone puts that toolbar along the bottom (Share is the
-   middle of its five icons); iPad puts it top-right, which .is-ipad flips. */
+   and cannot measure. iPhone puts that toolbar along the bottom, with the menu
+   that holds Add to Home Screen at its RIGHT end; iPad puts it top-right, which
+   .is-ipad flips. */
 .install-guide {
   position: fixed; inset: 0; z-index: 60;
   display: flex; justify-content: center;
@@ -2239,12 +2240,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .install-guide-hint { font-size: 0.8rem; font-weight: 700; color: var(--muted); text-align: center; }
 
-/* Full-width strip rather than a centred box, so centring costs no transform —
-   the transform belongs to the bounce, and the two would fight over it. */
+/* Full-width strip rather than a positioned box, so the horizontal placement
+   costs no transform — the transform belongs to the bounce, and the two would
+   fight over it. Aimed at the RIGHT end of the bar, not its middle: that is
+   where Safari's ⋯ menu sits, and the menu is what a student has to open to
+   reach Add to Home Screen. */
 .install-guide-arrow {
   position: absolute; left: 0; right: 0;
   bottom: calc(env(safe-area-inset-bottom) + 0.4rem);
-  text-align: center;
+  text-align: right; padding-right: 1.1rem;
   font-size: 2.75rem; line-height: 1; font-weight: 900;
   color: var(--accent);
   text-shadow: 0 2px 0 var(--edge);
@@ -2256,7 +2260,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .install-guide.is-ipad .install-guide-arrow {
   left: auto; right: 1.1rem; bottom: auto;
   top: calc(env(safe-area-inset-top) + 0.4rem);
-  text-align: right;
+  /* the strip is gone here — right: 1.1rem already does the inset, and keeping
+     the phone's padding on top of it would double the gap from the edge. */
+  text-align: right; padding-right: 0;
   animation-name: install-arrow-up;
 }
 @keyframes install-arrow-down {
