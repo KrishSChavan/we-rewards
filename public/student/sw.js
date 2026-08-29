@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v79';   // v79: the iOS install guide's bouncing arrow moved from the middle of Safari's bottom bar to its right end, over the menu that actually holds Add to Home Screen
+const CACHE = 'werewards-v80';   // v80: the iOS install guide's bouncing arrow moved from the middle of Safari's bottom bar to its right end — over the menu that actually holds Add to Home Screen — and the home install banner now asks for the download in as many words instead of naming the payoff
 // v77: installing is a button, not a lesson — Chromium installs outright from the Home card or the Account row, iPhone gets an arrow pointing at Safari's real Share button instead of a numbered sheet, the card is permanent (dismissible for 14 days) rather than a one-off first-points nudge, and the automatic triggers now only fire where a one-tap install actually exists
 // v76: the Chromium install prompt waits for the student's next tap instead of firing from a timer (Chrome refuses prompt() without a user gesture, so every automatic nudge had been a crash report that also burned a lifetime-cap slot); boot names the step when /api/public-config can't be reached, and retries it once
 // v75: map pins are never translucent — the zero-balance dimming is gone and focus is a scale-up alone, so an unfocused pin is the same size and strength as its neighbours

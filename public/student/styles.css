@@ -2247,8 +2247,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    reach Add to Home Screen. */
 .install-guide-arrow {
   position: absolute; left: 0; right: 0;
-  bottom: calc(env(safe-area-inset-bottom) + 0.4rem);
-  text-align: right; padding-right: 1.1rem;
+  /* the +15px/+25px are eyeballed off a real iPhone: the glyph's own side and
+     baseline bearings sit it up and left of where its box says it is, so the
+     tip lands short of the menu button without them. .is-ipad overrides both
+     properties outright, so this nudge is the phone's alone. */
+  bottom: calc(env(safe-area-inset-bottom) + 0.4rem + 15px);
+  text-align: right; padding-right: calc(1.1rem + 25px);
   font-size: 2.75rem; line-height: 1; font-weight: 900;
   color: var(--accent);
   text-shadow: 0 2px 0 var(--edge);
