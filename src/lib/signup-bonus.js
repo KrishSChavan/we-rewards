@@ -148,8 +148,21 @@ export async function maybeAwardSignupBonus({ userId, email, profileCreatedAt })
     // profiles.created_at IS the signup moment: migration-022 made consent the
     // thing that creates the profile.
     const created = new Date(profileCreatedAt ?? Date.now()).getTime();
-    if (program.starts_at && created < new Date(program.starts_at).getTime()) return 0;
-    if (program.ends_at && created >= new Date(program.ends_at).getTime()) return 0;
+    const opened = program.starts_at ? new Date(program.starts_at).getTime() : null;
+    const closed = program.ends_at ? new Date(program.ends_at).getTime() : null;
+    if ((opened && created < opened) || (closed && created >= closed)) {
+      // The ADDRESS MATCHED and we are still refusing. This is the one rejection
+      // a student argues with — "I signed in with my psu.edu email" — and until
+      // this line it left no trace at all: a silent return, no ledger row, and
+      // nothing in the logs to point at. Nearly always an account that already
+      // existed when the program was created, very much including whoever set it
+      // up testing it on themselves. Worth a line; a non-matching address is
+      // not, since that is most signups and would be pure noise.
+      console.warn(`[signup-bonus] ${userId} matches ${cfg.domains.join(', ')} but signed up `
+        + `${new Date(created).toISOString()}, outside the window `
+        + `(${program.starts_at ?? 'any'} to ${program.ends_at ?? 'any'})`);
+      return 0;
+    }
 
     // ref_id = the student. 039's UNIQUE (ref_id, kind) makes this once per
     // account for good, so a re-accept, a retry or a double-submit cannot pay

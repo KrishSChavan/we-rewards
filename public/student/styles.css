@@ -1217,7 +1217,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    it. So this takes the ordinary paper-card treatment (--card / --edge, the
    same sticker shape as .setting-row and .account-card) and inherits --ink. */
 .nearby-optin {
-  margin: 0 1.3rem 0.9rem;
+  /* 10px of top margin: this card is raised between the home stack above it and
+     the spots block below, and butted straight against the stack it read as a
+     rung of it rather than a separate ask. */
+  margin: 10px 1.3rem 0.9rem;
   background: var(--card); border: 3px solid var(--edge); border-radius: 1.1rem;
   padding: 0.9rem 1rem; box-shadow: 0 4px 0 var(--edge);
   display: flex; flex-direction: column; gap: 0.6rem;

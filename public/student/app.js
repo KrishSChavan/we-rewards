@@ -1006,6 +1006,33 @@ async function acceptConsent() {
   await submitConsent(data?.session ?? null);
 }
 
+/* ---------- what a new account is told it was paid ----------
+   accept-terms is the one call that can pay a student twice over: the signup
+   bonus for a school address (migration-040) and the poster award for the QR
+   they arrived through (migration-050). Both come back on the same response.
+
+   ONE sentence, because there is ONE toast element — punchToast replaces its
+   contents, so a second call wipes the first before anyone can read it.
+
+   This exists because the signup bonus was paid and never mentioned: the server
+   returned it, the client read only qrBonus, and the sole trace was the
+   community card quietly reading 10 instead of 0 — on a card a student seeing
+   the app for the first time has never seen before and has nothing to compare
+   against. Paying someone silently is indistinguishable from not paying them,
+   and it gets reported as the bonus being broken.
+
+   Returns null when there is nothing to announce. */
+function welcomeBonusMessage(accepted) {
+  const signup = Number(accepted?.signupBonus ?? 0);
+  const qr = Number(accepted?.qrBonus?.points ?? 0);
+  const total = signup + qr;
+  if (!(total > 0)) return null;
+  const why = signup > 0 && qr > 0 ? 'to get you started'
+    : signup > 0 ? 'for signing up with your school email'
+    : 'for scanning that poster';
+  return `Welcome! +${total} community points ${why}.`;
+}
+
 // Records the acceptance server-side; this is the call that creates the account.
 async function submitConsent(session) {
   const btn = $('consent-accept');
@@ -1030,9 +1057,8 @@ async function submitConsent(session) {
     hideConsentModal();
     render(session ?? (await sb.auth.getSession()).data?.session ?? null);
     // After render, not before: render() repaints the screen the toast sits on.
-    if (accepted.qrBonus?.points > 0) {
-      punchToast(`Welcome! +${accepted.qrBonus.points} community points for scanning that poster.`);
-    }
+    const welcome = welcomeBonusMessage(accepted);
+    if (welcome) punchToast(welcome);
   } catch {
     $('consent-error').textContent = 'Couldn’t save that. Check your connection and try again.';
     $('consent-error').hidden = false;

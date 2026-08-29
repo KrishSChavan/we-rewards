@@ -7,6 +7,8 @@
 // registered notpsu.edu.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   parseDomains, validSignupConfig, emailMatchesDomains, SIGNUP_DEFAULTS,
 } from '../src/lib/signup-bonus.js';
@@ -99,4 +101,44 @@ test('point bounds are enforced at both ends (boundaries)', () => {
 
 test('a bad domain fails the whole config, not just its own field', () => {
   assert.match(validSignupConfig({ points: 10, domains: 'psu' }).error, /isn’t a valid email domain/);
+});
+
+/* ---------- what the student is actually told ----------
+   The half of this feature that failed in the field. The payout worked; nobody
+   was informed it had, so it was reported as broken. welcomeBonusMessage() is
+   the whole announcement, and it lives in public/student/app.js — a browser
+   script, not a module (build-client.js transforms each file with no bundling),
+   so nothing here can import it. Sliced out and evaluated instead, following
+   test/nearby-client.test.js; the landmarks are deliberately brittle so a moved
+   function throws rather than quietly testing nothing. */
+const APP = fileURLToPath(new URL('../public/student/app.js', import.meta.url));
+const appSrc = readFileSync(APP, 'utf8');
+const from = appSrc.indexOf('function welcomeBonusMessage(');
+const to = appSrc.indexOf('// Records the acceptance server-side');
+assert.ok(from > 0 && to > from, 'welcomeBonusMessage moved in public/student/app.js — re-anchor this test');
+// eslint-disable-next-line no-new-func
+const welcomeBonusMessage = new Function(`${appSrc.slice(from, to)}; return welcomeBonusMessage;`)();
+
+test('a school-email signup is told about its points, not just credited', () => {
+  const msg = welcomeBonusMessage({ signupBonus: 10, qrBonus: null });
+  assert.match(msg, /\+10 community points/);
+  assert.match(msg, /school email/);
+});
+
+test('both awards at once become ONE sentence, because there is one toast', () => {
+  // Two punchToast calls would replace the first before it could be read, so a
+  // student who signed up with a psu.edu address through a poster must not lose
+  // half the news.
+  const msg = welcomeBonusMessage({ signupBonus: 10, qrBonus: { points: 3 } });
+  assert.match(msg, /\+13 community points/, 'the total, not one of the two');
+});
+
+test('a poster award on its own still names the poster', () => {
+  assert.match(welcomeBonusMessage({ signupBonus: 0, qrBonus: { points: 5 } }), /poster/);
+});
+
+test('nothing paid says nothing at all', () => {
+  for (const accepted of [{}, null, undefined, { signupBonus: 0 }, { signupBonus: 0, qrBonus: { points: 0 } }]) {
+    assert.equal(welcomeBonusMessage(accepted), null, JSON.stringify(accepted));
+  }
 });

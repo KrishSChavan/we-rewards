@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v77';   // v77: installing is a button, not a lesson — Chromium installs outright from the Home card or the Account row, iPhone gets an arrow pointing at Safari's real Share button instead of a numbered sheet, the card is permanent (dismissible for 14 days) rather than a one-off first-points nudge, and the automatic triggers now only fire where a one-tap install actually exists
+const CACHE = 'werewards-v78';   // v78: a new account is TOLD what it was just paid — the signup bonus was credited silently (the server returned it, the client only read the poster award), so the community card quietly said 10 and nothing else did; both awards now share one sentence. The nearby-spots ask card gained 10px above it
+// v77: installing is a button, not a lesson — Chromium installs outright from the Home card or the Account row, iPhone gets an arrow pointing at Safari's real Share button instead of a numbered sheet, the card is permanent (dismissible for 14 days) rather than a one-off first-points nudge, and the automatic triggers now only fire where a one-tap install actually exists
 // v76: the Chromium install prompt waits for the student's next tap instead of firing from a timer (Chrome refuses prompt() without a user gesture, so every automatic nudge had been a crash report that also burned a lifetime-cap slot); boot names the step when /api/public-config can't be reached, and retries it once
 // v75: map pins are never translucent — the zero-balance dimming is gone and focus is a scale-up alone, so an unfocused pin is the same size and strength as its neighbours
 // v74: nearby-spot notifications (migration-051) — a local showNotification when the student dwells near somewhere they've never earned, its own tag family so it can't replace an unread deal, and /?spot=<id> deep links open that spot
