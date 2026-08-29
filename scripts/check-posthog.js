@@ -85,6 +85,68 @@ function checkHost() {
   ok(`Events will POST to ${url}`);
 }
 
+/**
+ * Resolve the project token against the region it is configured for.
+ *
+ * This is the check that actually catches a wrong key or a wrong region, and it
+ * has to be a SEPARATE request from the test event below. /batch/ enqueues
+ * first and validates the token later, out of band, so it answers
+ * 200 {"status":"Ok"} to any phc_-shaped string on either cloud — a fabricated
+ * key posted to the wrong region passes it cleanly. Everything behind that 200
+ * is then discarded during ingestion, which is the exact invisible failure this
+ * script exists to prevent.
+ *
+ * /decide/ resolves the token synchronously: 200 for a real project on this
+ * region, 401 otherwise. On a 401 the counterpart region is probed too, because
+ * "the key is fine, the host is wrong" is the most common PostHog setup failure
+ * and it is worth naming outright instead of making the reader guess which half
+ * is broken.
+ */
+async function verifyProjectToken() {
+  const key = process.env.POSTHOG_API_KEY ?? '';
+  const origin = new URL(batchUrl()).origin;
+
+  const resolves = async (host) => {
+    try {
+      const res = await fetch(`${host}/decide/?v=3`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key, distinct_id: 'anon:check-posthog' }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return res.status;
+    } catch {
+      return null;   // a network problem, not an answer about the key
+    }
+  };
+
+  const status = await resolves(origin);
+  if (status === 200) {
+    ok(`The project key resolves to a real project on ${origin}`);
+    return;
+  }
+  if (status === null) {
+    warn(`Could not reach ${origin} to resolve the project key`,
+         'Skipping the key/region check — the send below will report the network problem.');
+    return;
+  }
+  if (status !== 401) {
+    warn(`Resolving the project key returned HTTP ${status}`,
+         'Not a clean yes or no. If the send below succeeds, confirm in PostHog -> Activity.');
+    return;
+  }
+
+  // 401: this host does not know this key. Say whether the other one does.
+  const other = origin.includes('//eu.') ? 'https://us.i.posthog.com' : 'https://eu.i.posthog.com';
+  if (await resolves(other) === 200) {
+    fail(`The project key is valid, but it belongs to ${other} — not ${origin}`,
+         `Set POSTHOG_HOST=${other} in .env and on the deployed app. The wrong region still answers 200 and then drops the events.`);
+    return;
+  }
+  fail(`${origin} rejected the project key (401)`,
+       'Neither region recognises it. Re-copy the "Project API Key" from PostHog -> Settings -> Project.');
+}
+
 /** Show the exact bytes an event turns into, so a shape problem is visible. */
 function showPayload() {
   const sample = toPostHogEvent({
@@ -102,8 +164,13 @@ function showPayload() {
 }
 
 /**
- * Send one real event and report what came back. A 200 here is the only proof
- * that the key, the region and the envelope are ALL correct at once.
+ * Send one real event through the real code path, so the envelope this repo
+ * builds is exercised end to end rather than described.
+ *
+ * Note what this step can and cannot tell you: /batch/ returns 200 before the
+ * token is validated, so a 200 here means "accepted for ingestion", NOT "the key
+ * and region are right". verifyProjectToken() above is what establishes that.
+ * Both together are the proof; neither is on its own.
  */
 async function sendTestEvent() {
   capture({
@@ -158,6 +225,7 @@ if (!posthogEnabled) {
   ok('POSTHOG_API_KEY is set');
   checkKey();
   checkHost();
+  await verifyProjectToken();
   showPayload();
 
   if (process.argv.includes('--dry')) {
