@@ -1,7 +1,9 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v75';   // v75: map pins are never translucent — the zero-balance dimming is gone and focus is a scale-up alone, so an unfocused pin is the same size and strength as its neighbours
+const CACHE = 'werewards-v77';   // v77: installing is a button, not a lesson — Chromium installs outright from the Home card or the Account row, iPhone gets an arrow pointing at Safari's real Share button instead of a numbered sheet, the card is permanent (dismissible for 14 days) rather than a one-off first-points nudge, and the automatic triggers now only fire where a one-tap install actually exists
+// v76: the Chromium install prompt waits for the student's next tap instead of firing from a timer (Chrome refuses prompt() without a user gesture, so every automatic nudge had been a crash report that also burned a lifetime-cap slot); boot names the step when /api/public-config can't be reached, and retries it once
+// v75: map pins are never translucent — the zero-balance dimming is gone and focus is a scale-up alone, so an unfocused pin is the same size and strength as its neighbours
 // v74: nearby-spot notifications (migration-051) — a local showNotification when the student dwells near somewhere they've never earned, its own tag family so it can't replace an unread deal, and /?spot=<id> deep links open that spot
 // v73: a printed banner's QR (/r/<code>) is passed through instead of cached, and ?qr= is stashed at boot so a signup through that poster can be credited (app.js + sw.js)
 // v71: the Deal emails row only appears when the deployment can actually send mail (/api/public-config emailEnabled). A switch that cannot do anything reads as a promise.

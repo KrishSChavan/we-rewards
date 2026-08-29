@@ -234,6 +234,31 @@ const Splash = (() => {
   return { hide, armBackstop, giveUp };
 })();
 
+// The first network call of the run, and the one every line below it needs.
+// WebKit aborts in-flight fetches when the phone locks, the app is backgrounded
+// or the connection changes underneath it, and surfaces that as a bare
+// `TypeError: Load failed` -- no status, no stack. Unguarded, that rejection
+// escaped boot()'s async IIFE as an unhandledrejection: an unattributable
+// "Load failed" row in /admin, and a student watching the splash for the full
+// 9s backstop before the try-again screen. So: retry once (these are
+// overwhelmingly transient), name the step, and give up immediately.
+async function loadPublicConfig() {
+  let last;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch('/api/public-config');
+      // A 5xx from the dyno answers with HTML, and .json() would then throw a
+      // parse error naming a stray '<' instead of the status that caused it.
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      last = err;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+  throw new Error(`/api/public-config unreachable: ${last?.message || last}`);
+}
+
 /* ---------- boot ---------- */
 
 // The globals boot() dereferences without asking first, and the <script> at the
@@ -269,8 +294,11 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
   pendingSpotLink = captureSpotLink();   // same, for a ?spot= nearby-spot notification tap
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
-  InstallPrompt.init({ track });   // capture the deferred prompt + fire pwa_launched if standalone
-  const pub = await (await fetch('/api/public-config')).json();
+  // onChange: Chrome hands over the deferred prompt whenever it likes, often
+  // after first paint, and that is the moment a dead "Add to Home Screen" row
+  // turns into a live one-tap install. Re-ask rather than render it once at boot.
+  InstallPrompt.init({ track, onChange: syncInstallRow });
+  const pub = await loadPublicConfig();
   // Student + vendor apps share this origin and Supabase project, so they MUST
   // use separate auth storage keys — otherwise signing into the vendor terminal
   // overwrites the student's session (and the student then reads the vendor's
@@ -553,7 +581,17 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
       openDealsSheet(id);
     });
   }
-})();
+})().catch((err) => {
+  // boot() is an async IIFE, so anything that throws inside it and isn't caught
+  // becomes an unhandledrejection: the report reaches /admin as the reason's
+  // bare message with no stack and nothing naming boot, and the splash sits
+  // there until the 9s backstop because render() never ran. Catch it here so
+  // the row says which phase died and the student gets the try-again screen at
+  // once. giveUp() is a no-op once the splash has already come down, so a late
+  // failure (after render) reports without yanking the app out from under them.
+  reportClientError(`boot failed: ${err?.message || err}`, err?.stack, { step: 'boot' });
+  Splash.giveUp();
+});
 
 /* Deep links from a notification: /?deals=1 opens the list, /?deal=<id> opens
    it with that campaign pulled to the top. Read once and stripped from the URL
@@ -758,12 +796,18 @@ function render(session) {
    The prompt logic itself lives in install-prompt.js. Here we only keep the
    permanent manual row in sync: show it whenever the app isn't installed (never
    gated by cooldown), plus a dev-only reset for re-testing the prompts. */
+// Both permanent install surfaces at once: the Account row and the Home card.
+// canOffer() rather than isInstalled(): on a desktop browser that never offered
+// an install there is no route to one at all, and a row that opens nothing when
+// tapped is worse than no row. This runs again whenever InstallPrompt says the
+// answer can have changed (see the onChange handed to init).
 function syncInstallRow() {
-  const installed = InstallPrompt.isInstalled();
+  const canOffer = InstallPrompt.canOffer();
   const isDev = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
-  $('account-install').hidden = installed;
+  $('account-install').hidden = !canOffer;
   $('account-install-reset').hidden = !isDev;
-  $('account-app-title').hidden = installed && !isDev;   // hide the header only if the section is empty
+  $('account-app-title').hidden = !canOffer && !isDev;   // hide the header only if the section is empty
+  InstallPrompt.syncCard();
 }
 
 /* ---------- appearance: theme ---------- */

@@ -2159,9 +2159,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* ---------- "add to home screen" prompt ---------- */
 
-/* both the ask and the steps span the sheet's full width */
-.install-ask, .install-steps { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 0.4rem; }
-.install-steps { text-align: left; gap: 0.7rem; }
+/* the steps span the sheet's full width (the "Yes, show me how" stage that
+   used to share this rule is gone — the tap that opens the sheet is the yes) */
+.install-steps { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: left; gap: 0.7rem; }
 
 .install-steps-lead { width: 100%; font-weight: 800; color: var(--ink); font-size: 1.05rem; }
 
@@ -2188,7 +2188,90 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .install-inapp { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 0.7rem; }
 .install-copied { text-align: center; font-weight: 800; color: var(--success); font-size: 0.95rem; }
 
-/* first-points fallback: a small dismissible inline banner on the home screen —
+/* ---------- iOS Safari pointer overlay ----------
+   Not a sheet and not a dialog to dismiss: a scrim with an arrow aimed at the
+   Share button in SAFARI'S OWN TOOLBAR, which sits outside the page entirely.
+   That is why the arrow is pinned to the very edge of the viewport rather than
+   laid out with the copy — it is pointing at browser chrome we cannot draw on
+   and cannot measure. iPhone puts that toolbar along the bottom (Share is the
+   middle of its five icons); iPad puts it top-right, which .is-ipad flips. */
+.install-guide {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; justify-content: center;
+  background: rgba(16, 29, 51, 0.72);
+  opacity: 0; transition: opacity 240ms ease;
+  /* The copy sits at the same end of the screen as the arrow, not floating in
+     the middle of it: centred, the card and the thing it points at read as two
+     unrelated objects, and the student has to work out that "below" means the
+     browser's toolbar rather than the rest of the page. The padding is what
+     keeps the card clear of the arrow. */
+  align-items: flex-end;
+  padding: 1.25rem 1.25rem calc(env(safe-area-inset-bottom) + 4.4rem);
+}
+/* iPad points up at the address bar, so the copy belongs at the top instead. */
+.install-guide.is-ipad {
+  align-items: flex-start;
+  padding: calc(env(safe-area-inset-top) + 4.4rem) 1.25rem 1.25rem;
+}
+.install-guide.is-open { opacity: 1; }
+
+.install-guide-copy {
+  width: 100%; max-width: 21rem;
+  display: flex; flex-direction: column; gap: 0.6rem;
+  background: var(--card);
+  border: 3px solid var(--edge); border-radius: 1.1rem;
+  box-shadow: 0 5px 0 var(--edge);
+  padding: 1rem;
+}
+.install-guide-title { font-weight: 900; font-size: 1.1rem; line-height: 1.25; color: var(--ink); }
+.install-guide-step {
+  display: flex; align-items: flex-start; gap: 0.6rem;
+  font-weight: 600; line-height: 1.4; color: var(--ink);
+}
+.install-guide-num {
+  flex: 0 0 1.5rem; height: 1.5rem;
+  display: grid; place-items: center;
+  background: var(--navy); color: #fff;
+  border-radius: 50%; font-weight: 900; font-size: 0.9rem;
+}
+.install-guide-hint { font-size: 0.8rem; font-weight: 700; color: var(--muted); text-align: center; }
+
+/* Full-width strip rather than a centred box, so centring costs no transform —
+   the transform belongs to the bounce, and the two would fight over it. */
+.install-guide-arrow {
+  position: absolute; left: 0; right: 0;
+  bottom: calc(env(safe-area-inset-bottom) + 0.4rem);
+  text-align: center;
+  font-size: 2.75rem; line-height: 1; font-weight: 900;
+  color: var(--accent);
+  text-shadow: 0 2px 0 var(--edge);
+  animation: install-arrow-down 1.15s ease-in-out infinite;
+}
+/* iPad: Safari's Share button is up in the address bar, at the right. Rotating
+   turns the same glyph into an up arrow, and translateY inside the rotated
+   frame still moves it toward what it points at. */
+.install-guide.is-ipad .install-guide-arrow {
+  left: auto; right: 1.1rem; bottom: auto;
+  top: calc(env(safe-area-inset-top) + 0.4rem);
+  text-align: right;
+  animation-name: install-arrow-up;
+}
+@keyframes install-arrow-down {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(9px); }
+}
+@keyframes install-arrow-up {
+  0%, 100% { transform: rotate(180deg) translateY(0); }
+  50%      { transform: rotate(180deg) translateY(9px); }
+}
+/* A bouncing arrow is the whole point, but it is also motion nobody asked for. */
+@media (prefers-reduced-motion: reduce) {
+  .install-guide-arrow { animation: none; }
+  .install-guide.is-ipad .install-guide-arrow { transform: rotate(180deg); }
+  .install-guide { transition: none; }
+}
+
+/* the permanent install card on Home (was the first-points nudge) —
    not a sheet, so the app stays fully usable. Reuses the sticker look. */
 /* Sized to ONE line of copy. Home has to fit one screen (see .home-main), and
    at 0.75rem padding round two wrapped sentences this banner was 105px on a

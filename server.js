@@ -825,8 +825,11 @@ app.post('/api/client-error', async (req, res) => {
 // so a client rolled ahead of the server never spams errors into its own console.
 const CLIENT_EVENT_SOURCES = new Set(['student', 'vendor', 'admin']);
 const CLIENT_EVENTS = new Set([
-  'install_eligible', 'install_prompt_shown', 'install_prompt_dismissed',
-  'install_accepted', 'pwa_launched',
+  // install_prompt_deferred: Chromium's native prompt was due but the page held
+  // no user activation, so it is armed and waiting on the student's next tap. A
+  // healthy funnel has a matching install_prompt_shown close behind most of these.
+  'install_eligible', 'install_prompt_deferred', 'install_prompt_shown',
+  'install_prompt_dismissed', 'install_accepted', 'pwa_launched',
 ]);
 app.post('/api/client-event', async (req, res) => {
   const b = req.body ?? {};

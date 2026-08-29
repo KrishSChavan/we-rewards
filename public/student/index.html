@@ -505,17 +505,19 @@
                 </div>
               </div>
 
-              <!-- first-points fallback nudge: a small dismissible inline banner,
-                   not a sheet. Last in the stack because it is about the code
-                   button above it. install-prompt.js toggles .is-open.
+              <!-- one of the two permanent ways in to installing (the other is the
+                   Account row). Up whenever an install is possible and the
+                   student has not dismissed it; Add installs outright on
+                   Chromium and opens #install-guide on iOS. Was the first-points
+                   trigger's fallback surface, which is why it is last in the
+                   stack — it is about the code button above it — and why
+                   install-prompt.js drives .is-open rather than CSS.
 
                    One line of copy, not two sentences. This is the most
                    expensive block on the home screen per word — it was 105px on
                    a 360px phone, more than every earn button put together — and
                    it is a nudge the student can dismiss, which makes it the last
-                   thing entitled to that room. What it drops ("Add WeRewards to
-                   your home screen") is said again, at length and with the
-                   actual steps, in the sheet the Add button opens. -->
+                   thing entitled to that room. -->
               <div id="install-banner" class="install-banner" hidden>
                 <span class="install-banner-emoji" aria-hidden="true">📲</span>
                 <span id="install-banner-text" class="install-banner-text">Your code, one tap away</span>
@@ -1304,13 +1306,8 @@
         your code is one tap away. No app store, no download.
       </p>
 
-      <!-- initial ask (iOS Safari / Android) -->
-      <div id="install-ask" class="install-ask">
-        <button id="install-yes" class="btn-redeem" type="button">Yes, show me how</button>
-        <button id="install-no" class="detail-textbtn" type="button">Not now</button>
-      </div>
-
-      <!-- expands on "Yes": per-device steps filled by install-prompt.js -->
+      <!-- menu steps, filled by install-prompt.js. Up on open: the tap that
+           got here already said yes. -->
       <div id="install-steps" class="install-steps" hidden>
         <p id="install-steps-lead" class="install-steps-lead"></p>
         <ol id="install-steps-list" class="install-step-list"></ol>
@@ -1329,6 +1326,30 @@
         </ol>
       </div>
     </div>
+  </div>
+
+  <!-- iOS Safari: the pointer overlay (install-prompt.js → openGuide).
+       iOS has no install API of any kind — Add to Home Screen exists only inside
+       Safari's Share sheet, which a page can neither open nor detect. So the
+       closest thing to a button that installs is a scrim with an arrow aimed at
+       the real Share button in Safari's own toolbar: bottom-centre on iPhone,
+       top-right on iPad (.is-ipad, set by openGuide). Any tap clears it,
+       because the student's next tap belongs to the browser, not to us. -->
+  <div id="install-guide" class="install-guide" hidden role="dialog"
+       aria-label="How to add WeRewards to your home screen">
+    <div class="install-guide-copy">
+      <p class="install-guide-title">Two taps and it’s on your home screen</p>
+      <p class="install-guide-step">
+        <span class="install-guide-num">1</span>
+        <span>Tap <strong>Share</strong> <span aria-hidden="true">⬆️</span> in the bar below</span>
+      </p>
+      <p class="install-guide-step">
+        <span class="install-guide-num">2</span>
+        <span>Scroll down and tap <strong>Add to Home Screen</strong></span>
+      </p>
+      <p class="install-guide-hint">Tap anywhere to close</p>
+    </div>
+    <span class="install-guide-arrow" aria-hidden="true">↓</span>
   </div>
 
   <!-- tier info popover: fades in on the (i), closes via ✕, Esc, or outside click.
