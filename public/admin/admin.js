@@ -1818,6 +1818,21 @@ async function shrinkImage(file, maxPx) {
   return { dataUrl: canvas.toDataURL('image/png') };
 }
 
+/**
+ * The optional first item on the Add vendor form: [] or [ {title, spend, emoji} ],
+ * the same shape /join sends (migration-052). Both blank means the operator is
+ * skipping it; one blank and one filled is a half-typed item, which
+ * firstNewVendorProblem below refuses rather than silently dropping.
+ */
+function newVendorItems() {
+  const title = $('nv-item-title').value.trim();
+  const spend = $('nv-item-spend').value.trim();
+  if (!title && !spend) return [];
+  // The terminal defaults new items to this too, and the vendor can change it
+  // there; a picker on a modal the operator uses at a demo is not worth the room.
+  return [{ title, spend, emoji: '🎁' }];
+}
+
 // Client-side pre-checks mirror the server's rules (validNewVendor) so most
 // mistakes are caught before the round-trip; the server re-validates regardless.
 function firstNewVendorProblem() {
@@ -1830,6 +1845,16 @@ function firstNewVendorProblem() {
   // here saves a round trip on a form the operator has otherwise finished.
   const phone = $('nv-phone').value.trim();
   if (phone && !/^[\d\s()+.-]{7,20}$/.test(phone)) return 'Enter a valid phone number, or leave it blank.';
+  // Half an item is the only way to get this wrong: the field is optional as a
+  // pair, so say which half is missing rather than dropping what was typed.
+  const items = newVendorItems();
+  if (items.length) {
+    if (!items[0].title) return 'Name the first item, or clear its price to skip it.';
+    const spend = Number(items[0].spend);
+    if (!items[0].spend || !Number.isFinite(spend) || spend < 1 || spend > 1000) {
+      return 'For the first item, enter what a customer spends to earn it, from $1 to $1000 (or clear the name to skip it).';
+    }
+  }
   return null;
 }
 
@@ -1861,6 +1886,9 @@ async function createVendor(e) {
         logo: newVendorLogo,
         cuisine: pickedCuisine($('nv-cuisine')),
         priceLevel: $('nv-price').value || null,
+        // [] unless the operator typed one. Priced in dollars; the server
+        // converts at the new vendor's rate (migration-052).
+        rewards: newVendorItems(),
       }),
     });
     if (res.status === 403) return denyAccess();
@@ -2039,6 +2067,29 @@ function paintApplicationRows(list) {
       row.appendChild(box);
     }
 
+    // What this spot will GIVE students (migration-052), and the one part of an
+    // application the operator cannot fix afterwards without a conversation: a
+    // vendor whose only item is "free car" is a decision, not a typo. Shown as
+    // dollars, because dollars is what the applicant typed and what the accept
+    // will convert; a points figure here would be this dashboard guessing at a
+    // rate the vendors row has not been given yet. See src/lib/rewards.js.
+    const items = Array.isArray(a.rewards) ? a.rewards : [];
+    if (items.length) {
+      const box = document.createElement('div');
+      box.className = 'app-locations';
+      const head = document.createElement('span');
+      head.className = 'app-meta';
+      head.textContent = items.length === 1 ? 'Redeemable item:' : `${items.length} redeemable items:`;
+      box.appendChild(head);
+      items.forEach((r) => {
+        const line = document.createElement('span');
+        line.className = 'app-location';
+        // textContent throughout: every part of this is applicant-typed.
+        line.textContent = `${r.emoji || '🎁'} ${r.title} · $${r.spend} of purchases`;
+        box.appendChild(line);
+      });
+      row.appendChild(box);
+    }
     if (a.message) {
       const msg = document.createElement('p');
       msg.className = 'app-message';

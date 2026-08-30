@@ -423,6 +423,23 @@ h1, h3 { margin: 0; }
 .nv-password-row { display: flex; align-items: center; gap: 0.4rem; }
 .nv-password-row .nv-input { flex: 1 1 auto; min-width: 0; }
 
+/* The vendor's first redeemable item (migration-052). Name and price on one
+   line, because they are one field: filling in half of it is the only way to
+   get this wrong, and side by side is what makes that obvious. */
+.nv-item-row { display: flex; align-items: stretch; gap: 0.4rem; margin-top: 0.15rem; }
+.nv-item-row #nv-item-title { flex: 1 1 auto; min-width: 0; }
+.nv-spend {
+  display: flex; align-items: center; flex: 0 0 7rem;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2);
+  padding-left: 0.5rem;
+}
+.nv-spend:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nv-spend .nv-currency { color: var(--muted); font-size: 0.85rem; }
+.nv-spend .nv-input {
+  border: none; background: none; padding-left: 0.25rem; min-width: 0;
+}
+.nv-spend .nv-input:focus-visible { outline: none; }
+
 .nv-logo-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.15rem; }
 .nv-logo-actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .nv-logo-preview {

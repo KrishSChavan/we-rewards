@@ -9,7 +9,7 @@ import { rollupPlatformOverview } from '../lib/analytics.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
 import { sendEmail, emailUrl, emailEnabled } from '../lib/email.js';
 import { applicationAccepted, vendorResetCode } from '../lib/email-templates.js';
-import { validReward, validRatio } from '../lib/rewards.js';
+import { validReward, validRatio, validStarterItems, starterItemToReward } from '../lib/rewards.js';
 import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
 import { validSignupConfig } from '../lib/signup-bonus.js';
 import {
@@ -117,6 +117,16 @@ export function validNewVendor(body) {
   // have come in through the other door.
   if (phone && !PHONE_RE.test(phone)) return { error: 'Enter a valid phone number.' };
 
+  // OPTIONAL HERE, REQUIRED ON /join, the same asymmetry the phone number has
+  // three lines up and for a closely related reason. An applicant is telling us
+  // what their spot will offer and is looking at a form built to ask; an
+  // operator adding a vendor at a demo may not have agreed an item yet, and
+  // refusing the save would push them to invent one. An invented item is worse
+  // than none, because it is an obligation the vendor never agreed to and a
+  // student can walk in and redeem it. The SHAPE is held to /join’s rule
+  // exactly, so anything that gets in here could have come through that door.
+  const starter = validStarterItems(b.rewards, { required: false });
+  if (starter.error) return { error: starter.error };
   // Not validated, NORMALISED (migration-042): both are optional pickers, and
   // an unrecognised tag drops out rather than 400ing a form the operator has
   // otherwise filled in correctly. See src/lib/cuisines.js.
@@ -130,6 +140,7 @@ export function validNewVendor(body) {
     // filled this in" apart from "there is nobody to call".
     contactName: contactName || null,
     phone: phone || null,
+    rewards: starter.items,
   };
 }
 
@@ -452,7 +463,12 @@ async function createVendorRow(loc, config, slugStart) {
  * steps as scripts/onboard-vendor.js. `passwordHash` (an application's stored
  * bcrypt hash) and `password` (plaintext the operator just typed) are the two
  * ways to set the login's credential; pass exactly one. pin_hash stays null
- * (redeem is ungated until the vendor sets a PIN in terminal Settings).
+ * (redeem is ungated until the vendor sets a PIN in terminal Settings). *
+ * `rewards` are the starter items the applicant named on /join (migration-052),
+ * priced in dollars and converted to points per location at that location's own
+ * rate. [] is legal and is what the operator's own "Add vendor" form sends when
+ * they haven't agreed an item yet; the vendor then opens with an empty ITEMS tab,
+ * which is what every vendor did before 052.
  *
  * MULTI-LOCATION (migration-043): `locations` names further branches the same
  * owner is opening — one vendors row each, every one linked to the SAME login,
@@ -477,6 +493,7 @@ async function createVendorRow(loc, config, slugStart) {
 async function onboardVendor({
   name, email, password, passwordHash, address, logo, cuisine, priceLevel,
   locationLabel = null, locations = [], contactName = null, phone = null,
+  rewards = [],
 }) {
   let userId;
   let linkedExisting = false;
@@ -510,9 +527,14 @@ async function onboardVendor({
   // the table defaults and its second location copies its first, so the stores
   // in one application always agree with each other.
   //
-  // CONFIG ONLY. Reward items, deals, balances, history and the staff PIN are
-  // per-location and start empty, so one store's menu never turns up on
-  // another's ITEMS tab and its PIN never unlocks another's till.
+  // CONFIG ONLY. Deals, balances, history and the staff PIN are per-location
+  // and start empty, so one store's takings never turn up on another's stats
+  // and its PIN never unlocks another's till.
+  //
+  // Reward items are per-location too and are NOT inherited from a store this
+  // login already runs — an existing shop’s menu turning up on a new one’s
+  // ITEMS tab would be a guess. They come from `rewards` instead, the items
+  // named on this application, and are created per location below.
   let config = await inheritedConfig(userId);
 
   // Locations sharing a business name (which is most of a chain) all slugify to
@@ -544,6 +566,32 @@ async function onboardVendor({
         .from('vendor_staff')
         .insert({ vendor_id: row.id, user_id: userId, role: 'owner' });
       if (staffErr) throw staffErr;
+
+      // The items the applicant named on /join (migration-052), one rewards
+      // row per item on EVERY location — a chain's branches are independent
+      // vendors and each needs its own copy, which is also what lets one shop
+      // stop doing the cookie without the others losing it.
+      //
+      // Priced HERE rather than at /join, because only now is there a rate to
+      // price against: `row.points_per_dollar` is whatever this location
+      // actually landed on — the table default, or a sibling store's, via the
+      // inheritance a few lines up. An applicant who said "$25 of purchases"
+      // gets 250 points at 10/$ and 125 at 5/$, which is the same promise in
+      // both cases. See starterItemToReward.
+      //
+      // Inside the try on purpose: a failure here unwinds the whole onboard
+      // like any other, and the vendors delete in the catch cascades these
+      // away with it. Better a clean retry than a vendor whose first item
+      // silently did not exist.
+      if (rewards.length) {
+        const { error: rewardErr } = await supabaseAdmin
+          .from('rewards')
+          .insert(rewards.map((item) => ({
+            vendor_id: row.id,
+            ...starterItemToReward(item, row.points_per_dollar),
+          })));
+        if (rewardErr) throw rewardErr;
+      }
     }
 
     // A new spot should appear for students on their next load, not up to the
@@ -610,6 +658,11 @@ router.post('/vendors', async (req, res, next) => {
       // have their number filled in from the roster afterwards.
       contactName: v.contactName,
       phone: v.phone,
+      // The vendor’s first redeemable item, if the operator has one to type
+      // (migration-052). [] means the ITEMS tab opens empty and students see
+      // "No rewards yet" until somebody adds one — which the vendor editor on
+      // this same dashboard can do the moment this returns.
+      rewards: v.rewards,
     });
     if (result.conflict) {
       return res.status(409).json({
@@ -1430,7 +1483,7 @@ router.get('/applications', async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('vendor_applications')
-      .select('id, business_name, contact_name, phone, email, address, location_label, locations, logo, message, cuisine, price_level, created_at')
+      .select('id, business_name, contact_name, phone, email, address, location_label, locations, logo, message, cuisine, price_level, rewards, created_at')
       .order('created_at', { ascending: true });
     if (error) throw error;
     res.json(data ?? []);
@@ -1473,7 +1526,7 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       // also the one field that matters most AFTER acceptance rather than
       // before, because dictating a reset code down the phone (migration-031) is
       // the only recovery left for a vendor who has lost their mailbox too.
-      .select('id, business_name, contact_name, phone, email, password_hash, address, location_label, locations, logo, cuisine, price_level')
+      .select('id, business_name, contact_name, phone, email, password_hash, address, location_label, locations, logo, cuisine, price_level, rewards')
       .eq('id', req.params.id)
       .maybeSingle();
     if (appErr) throw appErr;
@@ -1502,6 +1555,10 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       // is the one that stops the number being thrown away.
       contactName: app.contact_name,
       phone: app.phone,
+      // What this spot will actually GIVE students (migration-052). Created
+      // once per location, at each location’s own rate. [] for an application
+      // submitted before 052 shipped, which onboards exactly as it used to.
+      rewards: Array.isArray(app.rewards) ? app.rewards : [],
     });
     // The taken email's account vanished mid-accept. Nothing was created, so
     // leave the application queued for a retry.

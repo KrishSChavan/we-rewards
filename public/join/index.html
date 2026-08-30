@@ -112,6 +112,67 @@
           <input id="logo-file" type="file" accept="image/png,image/jpeg,image/webp" hidden />
         </div>
 
+        <!-- ===== WHAT CUSTOMERS CAN REDEEM (migration-052) =====
+             The only field on this form that is required without being needed
+             to reach the applicant or build their login, and it is required for
+             the reason everything else here exists: accepting an application
+             that names no items creates a spot students can already earn points
+             at, whose Rewards list reads "No rewards yet, check back soon!".
+             That is a spot that looks broken on the day it opens, and the ten
+             minutes somebody spends on this page is the most engaged they will
+             ever be — asking them to come back later and think of something is
+             a second conversation we have to win first.
+
+             ASKED IN DOLLARS, DELIBERATELY. This page has never had a points
+             per dollar field, so a points figure typed here would be priced
+             against a rate the applicant has not been shown and cannot see.
+             They are asked the question they can answer instead, and the point
+             cost is worked out when the application is accepted, from the rate
+             their vendor row actually gets. Their terminal then shows the same
+             dollar figure back to them under every item's points price, so the
+             two screens never disagree. -->
+        <fieldset id="rewards-field" class="tag-field reward-field">
+          <legend>What can customers redeem? <em class="opt">(at least one)</em></legend>
+          <p class="hint">The reward students are working towards. It is the first thing they see on your card in the app, and you can edit it, add more, or switch it off at any time from your terminal.</p>
+          <div id="reward-rows"></div>
+          <button id="add-reward" class="btn-add-location" type="button">+ Add another item</button>
+        </fieldset>
+
+        <!-- Cloned by join.js, once on load and again per "+ Add another item". -->
+        <template id="reward-template">
+          <div class="rw-row">
+            <div class="rw-row-top">
+              <p class="loc-heading" data-rw-heading></p>
+              <button class="btn-small btn-small-danger" type="button" data-rw-remove>Remove</button>
+            </div>
+            <label>Item
+              <input type="text" maxlength="60" autocomplete="off" placeholder="Free small coffee" data-rw-title />
+            </label>
+            <label>How much should a customer spend with you to earn it?
+              <span class="rw-spend">
+                <span class="rw-currency" aria-hidden="true">$</span>
+                <input type="number" min="1" max="1000" step="any" inputmode="decimal" placeholder="25" data-rw-spend />
+              </span>
+              <span class="hint">Their spend added up over time, not one order. We turn it into points for you.</span>
+            </label>
+            <div class="rw-emoji-field">
+              <!-- A DOZEN, not the twenty the terminal offers. Up to six of these
+                   cards can be on the page at once, and every extra row of icons is
+                   a row the applicant scrolls past six times. The full set is one
+                   tap away from their ITEMS tab once they are set up. -->
+              <span class="hint">Pick an icon</span>
+              <div class="rw-emoji-grid" role="radiogroup" aria-label="Item icon" data-rw-emoji>
+                <button type="button" data-e="🎁">🎁</button><button type="button" data-e="☕">☕</button>
+                <button type="button" data-e="🥤">🥤</button><button type="button" data-e="🧋">🧋</button>
+                <button type="button" data-e="🍕">🍕</button><button type="button" data-e="🍔">🍔</button>
+                <button type="button" data-e="🌯">🌯</button><button type="button" data-e="🥪">🥪</button>
+                <button type="button" data-e="🍟">🍟</button><button type="button" data-e="🍪">🍪</button>
+                <button type="button" data-e="🍩">🍩</button><button type="button" data-e="🍦">🍦</button>
+              </div>
+            </div>
+          </div>
+        </template>
+
         <!-- ===== MORE LOCATIONS =====
              One application, one login, one vendors row per location. Each
              location asks only for what actually DIFFERS between branches:

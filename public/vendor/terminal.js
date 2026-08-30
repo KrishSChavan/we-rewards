@@ -2079,6 +2079,21 @@ function enterManage() {
   renderRewardList();
 }
 
+// What a customer has to spend here, at this spot’s rate, to earn `pts`.
+// Whole dollars read cleaner on a till than "$25.00", but a rate that does
+// not divide evenly (7 pts per $1) would round the target below what it
+// really takes, so cents stay whenever there are any. Returns '' when the
+// rate is missing or zero, which is the caller’s cue to say nothing rather
+// than quote "$Infinity".
+function spendForPoints(pts) {
+  const rate = Number(config?.pointsPerDollar);
+  if (!Number.isFinite(rate) || rate <= 0) return '';
+  // Up to the cent, never down: a figure a customer could spend in full and
+  // still land a point short would be worse than quoting none.
+  const dollars = Math.ceil((pts / rate) * 100) / 100;
+  return `$${Number.isInteger(dollars) ? dollars : dollars.toFixed(2)}`;
+}
+
 function renderRewardList() {
   const list = $('reward-list');
   list.innerHTML = '';
@@ -2096,7 +2111,8 @@ function renderRewardList() {
     // than interpolating a null into "null pts · about $NaN of purchases".
     const bits = [];
     if (r.cost_in_points != null) {
-      bits.push(`${r.cost_in_points} pts · about $${(r.cost_in_points / config.pointsPerDollar).toFixed(2)} of purchases`);
+      const spend = spendForPoints(r.cost_in_points);
+      bits.push(`${r.cost_in_points} pts${spend ? ` (about ${spend} of purchases)` : ''}`);
     }
     if (r.cost_in_visits != null) bits.push(`${r.cost_in_visits} visits`);
     info.innerHTML = `
@@ -2160,7 +2176,7 @@ function updateRewardHint() {
   const cost = Number($('reward-cost').value);
   $('reward-form-hint').textContent =
     cost > 0
-      ? `At ${config.pointsPerDollar} pts per $1, a customer earns this after about $${(cost / config.pointsPerDollar).toFixed(0)} of purchases.`
+      ? `At ${config.pointsPerDollar} pts per $1, a customer earns this after about ${spendForPoints(cost)} of purchases.`
       : '';
 }
 

@@ -822,6 +822,31 @@
           <span class="vendor-edit-hint">Up to 3 tags. Students filter the Spots tab on these; both can be set later from Edit.</span>
         </div>
 
+        <!-- Their first redeemable item (migration-052). OPTIONAL here and
+             required on /join, the same asymmetry the phone number above has.
+             An applicant is telling us what their spot will offer and is
+             looking at a form built to ask; an operator adding a vendor at a
+             demo may not have agreed the item yet, and refusing the save would
+             get one invented, which is worse than leaving it blank: an invented
+             item is an obligation the vendor never agreed to and a student can
+             walk in and redeem it. Left blank, the vendor's ITEMS tab opens
+             empty and students see "No rewards yet" until somebody fills it in,
+             which the Edit dialog on this same page can do straight away.
+
+             Priced in dollars, like /join, and converted to points on save at
+             whatever rate the new vendor lands on. -->
+        <div class="nv-field">
+          <span class="vendor-edit-label">First item <em class="nv-opt">(optional)</em></span>
+          <div class="nv-item-row">
+            <input id="nv-item-title" class="nv-input" type="text" maxlength="60" autocomplete="off" placeholder="Free small coffee" aria-label="Item name" />
+            <span class="nv-spend">
+              <span class="nv-currency" aria-hidden="true">$</span>
+              <input id="nv-item-spend" class="nv-input" type="number" min="1" max="1000" step="any" inputmode="decimal" placeholder="25" aria-label="Spend needed to earn it" />
+            </span>
+          </div>
+          <span class="vendor-edit-hint">What a customer spends with them, over time, to earn it. Saved as points at their rate, so at 10 points per $1 a $25 item becomes 250 points. Leave both blank to skip.</span>
+        </div>
+
         <div class="nv-field">
           <span class="vendor-edit-label">Logo <em class="nv-opt">(optional)</em></span>
           <div class="nv-logo-row">

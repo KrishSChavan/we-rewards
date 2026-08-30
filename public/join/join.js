@@ -189,6 +189,79 @@ function collectLocations() {
   }));
 }
 
+/* ---- redeemable items (migration-052) ----
+   At least one, because accepting an application that names none creates a
+   spot students can already earn points at whose Rewards list reads "No
+   rewards yet, check back soon!". The applicant is here, engaged, and knows
+   what they would give away; asking them to come back and think about it later
+   is a second conversation, and until it happens their spot looks broken.
+
+   PRICED IN DOLLARS. This page has no points-per-dollar field and never has,
+   so a points figure typed here would be a guess against a rate the applicant
+   cannot see. They are asked what a customer should SPEND, and the server turns
+   that into points on accept, at whatever rate their vendor row lands on. Their
+   terminal then prints the same dollar figure back under the points price
+   (spendForPoints in public/vendor/terminal.js), so nobody has to hold two
+   currencies in their head. Keep these bounds in sync with SPEND_MIN /
+   SPEND_MAX / MAX_STARTER_ITEMS in src/lib/rewards.js. */
+
+const MAX_ITEMS = 6;
+const SPEND_MIN = 1;
+const SPEND_MAX = 1000;
+const DEFAULT_EMOJI = '🎁';
+
+const rewardRows = () => [...document.querySelectorAll('#reward-rows .rw-row')];
+
+// Renumber the headings and stop the list at the cap. The first row's Remove
+// button is hidden rather than disabled: one item is the minimum, so there is
+// nothing for it to do, and a dead-looking button invites a tap that does
+// nothing.
+function syncRewards() {
+  const rows = rewardRows();
+  rows.forEach((row, i) => {
+    row.querySelector('[data-rw-heading]').textContent = `Item ${i + 1}`;
+    row.querySelector('[data-rw-remove]').hidden = rows.length === 1;
+  });
+  $('add-reward').disabled = rows.length >= MAX_ITEMS;
+}
+
+function addReward(focus) {
+  if (rewardRows().length >= MAX_ITEMS) return;
+  const row = $('reward-template').content.firstElementChild.cloneNode(true);
+  const grid = row.querySelector('[data-rw-emoji]');
+  // Delegated, so the handler survives however many buttons the grid holds and
+  // however many rows the form grows.
+  grid.addEventListener('click', (e) => {
+    const em = e.target.dataset?.e;
+    if (em) selectEmoji(grid, em);
+  });
+  selectEmoji(grid, DEFAULT_EMOJI);
+  row.querySelector('[data-rw-remove]').addEventListener('click', () => {
+    row.remove();
+    syncRewards();
+  });
+  $('reward-rows').appendChild(row);
+  syncRewards();
+  if (focus) row.querySelector('[data-rw-title]').focus();
+}
+
+function selectEmoji(grid, em) {
+  grid.dataset.picked = em;
+  [...grid.children].forEach((b) => b.classList.toggle('selected', b.dataset.e === em));
+}
+
+function collectRewards() {
+  return rewardRows().map((row) => ({
+    title: row.querySelector('[data-rw-title]').value.trim(),
+    // Sent as typed. Number('') is 0 and Number('abc') is NaN, and the server's
+    // range check refuses both with a message naming the item — turning them
+    // into a number here would only decide which wrong value it complains about.
+    spend: row.querySelector('[data-rw-spend]').value.trim(),
+    emoji: row.querySelector('[data-rw-emoji]').dataset.picked || DEFAULT_EMOJI,
+  }));
+}
+
+
 /* ---- submit ---- */
 
 function showFormError(msg) {
@@ -207,6 +280,17 @@ function firstProblem() {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test($('f-email').value.trim())) return 'Enter a valid email address.';
   if ($('f-password').value.length < 8) return 'Password must be at least 8 characters.';
   if ($('f-password').value.length > 72) return 'Password must be 72 characters or fewer.';
+  // Items sit above the locations block on the page, so they are checked
+  // first: an applicant scrolling up to the message should find the field it
+  // is about on the way, not below it.
+  const items = collectRewards();
+  for (let i = 0; i < items.length; i++) {
+    if (!items[i].title) return `Name item ${i + 1}, or remove it.`;
+    const spend = Number(items[i].spend);
+    if (!items[i].spend || !Number.isFinite(spend) || spend < SPEND_MIN || spend > SPEND_MAX) {
+      return `For item ${i + 1}, enter how much a customer spends to earn it, from $${SPEND_MIN} to $${SPEND_MAX}.`;
+    }
+  }
   // Counting from 2: location one is the form above these rows.
   const blank = collectLocations().findIndex((l) => !l.name);
   if (blank >= 0) return `Enter a business name for location ${blank + 2}.`;
@@ -239,6 +323,9 @@ async function submit(e) {
         // Everything after the first location. [] is the single-shop
         // application, which is what this endpoint has always taken.
         locations: collectLocations(),
+        // At least one, and priced in dollars — the server converts to points
+        // on accept at whatever rate this vendor's row gets (migration-052).
+        rewards: collectRewards(),
         message: $('f-message').value.trim(),
         logo: logoValue,
         // '' when they skipped it (or when the fieldset never loaded), which
@@ -282,5 +369,10 @@ $('logo-file').addEventListener('change', onLogoPick);
 $('logo-remove').addEventListener('click', () => { logoValue = null; setLogoPreview(null); });
 $('apply-form').addEventListener('submit', submit);
 $('add-location').addEventListener('click', addLocation);
+$('add-reward').addEventListener('click', () => addReward(true));
 syncLocations();
+// One item row is on the page from the start rather than behind an "add"
+// button. The field is required, and a required field nobody can see until
+// they press something is a field that gets missed.
+addReward(false);
 void loadCuisines();

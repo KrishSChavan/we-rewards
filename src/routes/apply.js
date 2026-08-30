@@ -14,6 +14,7 @@ import { sendEmail } from '../lib/email.js';
 import { applicationReceived } from '../lib/email-templates.js';
 import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
 import { validLogo } from '../lib/logo.js';
+import { validStarterItems } from '../lib/rewards.js';
 
 const router = Router();
 
@@ -128,6 +129,19 @@ export function validApplication(body) {
     priceLevel: normalizePriceLevel(b.priceLevel),
     logo: logo.value,
   };
+  // THE FIRST THING STUDENTS WILL SEE (migration-052). Required here, and the
+  // only field on this form that is required without being needed to reach the
+  // applicant or build their login — because accepting an application with no
+  // items puts a spot in the student app that says "No rewards yet, check back
+  // soon!" under a points balance students are already earning, and the ten
+  // minutes somebody spends on this form is the most engaged they will ever be.
+  //
+  // Priced in DOLLARS, converted to points at accept. /join has no rate field,
+  // so a points figure typed here would be a guess against a number the
+  // applicant has not been shown; see src/lib/rewards.js and migration-052.
+  const starter = validStarterItems(b.rewards, { required: true });
+  if (starter.error) return { error: starter.error };
+
   const locations = [];
   for (let i = 0; i < extra.length; i++) {
     const l = validLocation(extra[i], i, parent);
@@ -157,6 +171,10 @@ export function validApplication(body) {
       // single-location application that is still the common case.
       location_label: locationLabel || null,
       locations,
+      // One rewards row per item PER LOCATION on accept: locations are
+      // independent vendors with their own ITEMS tab (migration-043), so
+      // every branch opens with the same menu and diverges from there.
+      rewards: starter.items,
     },
     password,
   };

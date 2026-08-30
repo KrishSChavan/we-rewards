@@ -77,7 +77,7 @@ form { display: flex; flex-direction: column; gap: 1.05rem; margin-top: 0.6rem; 
 label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 700; font-size: 1rem; }
 .opt { color: var(--muted); font-weight: 500; font-style: normal; font-size: 0.85rem; }
 
-input[type="text"], input[type="email"], input[type="tel"], input[type="password"], textarea, select {
+input[type="text"], input[type="email"], input[type="tel"], input[type="password"], input[type="number"], textarea, select {
   font: inherit; font-size: 1.15rem; font-weight: 500; padding: 0.85rem;
   border: 2.5px solid var(--ink); border-radius: 0.6rem;
   background: var(--card); color: var(--ink); width: 100%;
@@ -184,6 +184,53 @@ textarea { resize: vertical; min-height: 4.5rem; }
 }
 .btn-add-location:active { background: var(--sky); }
 .btn-add-location:disabled { opacity: 0.35; cursor: default; }
+
+/* ---------- redeemable items (migration-052) ----------
+   Framed exactly like the extra-location cards above: an item is a thing the
+   applicant is adding to a list, and the two lists on this form should not
+   look like different kinds of control. The first row is not removable, since
+   one item is the minimum. */
+
+.reward-field legend { margin-bottom: 0; }
+#reward-rows { display: flex; flex-direction: column; gap: 0.9rem; }
+
+.rw-row {
+  display: flex; flex-direction: column; gap: 0.9rem;
+  padding: 0.9rem;
+  border: 2px solid var(--sky-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.6);
+}
+.rw-row-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+
+/* The currency sign sits inside the field's border rather than beside it, so
+   "$" reads as part of the number and not as a stray character in the layout.
+   The input keeps its own focus ring by lending it to the wrapper. */
+.rw-spend {
+  display: flex; align-items: center; gap: 0.15rem;
+  border: 2.5px solid var(--ink); border-radius: 0.6rem;
+  background: var(--card); padding-left: 0.85rem;
+}
+.rw-spend:focus-within { border-color: var(--navy); box-shadow: 0 0 0 2px var(--sky-line); }
+.rw-currency { font-size: 1.15rem; font-weight: 700; color: var(--muted); }
+.rw-spend input {
+  border: none; border-radius: 0; padding-left: 0.25rem; background: none;
+  min-width: 0;   /* a number input has an intrinsic width that would push the $ out */
+}
+.rw-spend input:focus { outline: none; box-shadow: none; border-color: transparent; }
+
+.rw-emoji-field { display: flex; flex-direction: column; gap: 0.4rem; }
+.rw-emoji-grid { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.rw-emoji-grid button {
+  font: inherit; font-size: 1.25rem; line-height: 1; cursor: pointer;
+  width: 2.4rem; height: 2.4rem; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 2.5px solid var(--sky-line); border-radius: 0.55rem;
+  background: var(--card);
+}
+.rw-emoji-grid button.selected { border-color: var(--navy); background: var(--sky); }
+.rw-emoji-grid button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--sky-line); }
+
 
 .fine-print { color: var(--muted); font-size: 0.8rem; line-height: 1.4; }
 

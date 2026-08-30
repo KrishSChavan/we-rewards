@@ -19,6 +19,11 @@ const GOOD = {
   phone: '814 555 0100',
   email: 'joe@example.com',
   password: 'a-good-password',
+  // Required since migration-052: an application that names no redeemable item
+  // would create a spot whose Rewards list reads "No rewards yet". Priced in
+  // dollars, not points — /join has no rate field. Held to its own rules in
+  // test/starter-items.test.js; here it is just what makes GOOD good.
+  rewards: [{ title: 'Free slice', spend: 30, emoji: '🍕' }],
 };
 
 const apply = (extra) => validApplication({ ...GOOD, ...extra });

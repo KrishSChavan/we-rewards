@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v80';   // v80: the iOS install guide's bouncing arrow moved from the middle of Safari's bottom bar to its right end — over the menu that actually holds Add to Home Screen — and the home install banner now asks for the download in as many words instead of naming the payoff
+const CACHE = 'werewards-v81';   // v81: this worker stops answering for the other apps on the origin. Its scope is '/', so /terminal, /admin, /scan, /join, /legal and /unsubscribe all sat inside it, and an offline navigation to any of them was answered with the student shell
+// v80: the iOS install guide's bouncing arrow moved from the middle of Safari's bottom bar to its right end — over the menu that actually holds Add to Home Screen — and the home install banner now asks for the download in as many words instead of naming the payoff
 // v77: installing is a button, not a lesson — Chromium installs outright from the Home card or the Account row, iPhone gets an arrow pointing at Safari's real Share button instead of a numbered sheet, the card is permanent (dismissible for 14 days) rather than a one-off first-points nudge, and the automatic triggers now only fire where a one-tap install actually exists
 // v76: the Chromium install prompt waits for the student's next tap instead of firing from a timer (Chrome refuses prompt() without a user gesture, so every automatic nudge had been a crash report that also burned a lifetime-cap slot); boot names the step when /api/public-config can't be reached, and retries it once
 // v75: map pins are never translucent — the zero-balance dimming is gone and focus is a scale-up alone, so an unfocused pin is the same size and strength as its neighbours
@@ -39,6 +40,25 @@ const CACHE = 'werewards-v80';   // v80: the iOS install guide's bouncing arrow 
 // find the shell in cache and then fail on the CDN.
 const SHELL = ['/', '/boot-guard.js', '/theme-init.js', '/no-zoom.js', '/styles.css', '/supabase.js', '/app.js', '/qrcode.js', '/jsQR.js', '/leaflet/leaflet.js', '/leaflet/leaflet.css', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
+/* Paths this worker must never answer for. It registers as '/sw.js' (app.js), so
+   its scope is the WHOLE ORIGIN and every other app on we-rewards.com sits inside
+   it. Online that is invisible — the fetch below is network-first, so the real page
+   still arrives and the only cost is a wasted cache entry. Offline it is wrong: the
+   catch falls back to caches.match('/'), which is the STUDENT shell, so a vendor
+   opening the /terminal/ link in their approval email would get the student app
+   sitting at a /terminal/ URL.
+
+   /terminal, /admin and /scan each register a worker at their own, narrower scope,
+   and the longest matching scope wins — but only on a device where those apps are
+   installed. On a phone that has just the student app, this worker is the only one
+   there is. /join, /legal and /unsubscribe ship no worker at all; the server renders
+   them. Passing them through costs the student nothing: none of them is in SHELL,
+   and app.js only ever reaches /legal as a target="_blank" navigation.
+
+   The mount itself matches as well as everything under it, because server.js answers
+   both '/terminal' and '/terminal/'. */
+const FOREIGN = /^\/(?:terminal|admin|scan|join|legal|unsubscribe)(?:\/|$)/;
+
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
@@ -68,6 +88,7 @@ self.addEventListener('fetch', (e) => {
   // response is a redirect, which for a navigation request arrives here as an
   // opaqueredirect that Cache.put rejects on, unhandled, below.
   if (url.pathname.startsWith('/r/')) return;
+  if (FOREIGN.test(url.pathname)) return;         // another app's page, or the server's — see FOREIGN
   if (url.pathname.startsWith('/socket.io/')) return; // let the realtime transport pass through
 
   e.respondWith(
