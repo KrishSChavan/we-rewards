@@ -82,6 +82,7 @@
       <button id="tab-incentives" class="tab" type="button">Incentives</button>
       <button id="tab-poster" class="tab" type="button">QR poster</button>
       <button id="tab-pools" class="tab" type="button">Pools</button>
+      <button id="tab-ambassadors" class="tab" type="button">Ambassadors</button>
     </nav>
 
     <main>
@@ -531,7 +532,124 @@
       </div>
     </div>
 
+    <!-- ===== AMBASSADORS TAB (migration-053) ===== -->
+    <!-- People, not walls. Each one gets a short code they chose and a QR to
+         put in a bio or on the back of a phone; the row reads back what it
+         actually did. Deliberately its own tab and not a third card on the QR
+         poster tab: that tab is about printed artwork, and an ambassador is a
+         person with a name, an email and a phone number.
+
+         NOTHING HERE PAYS ANYBODY. There is no award field on purpose — see
+         migration-053. If one is ever added it needs an evaluator too, not just
+         an input. -->
+    <div id="view-ambassadors" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>Ambassadors</h3>
+          <span id="amb-count" class="chart-max"></span>
+        </div>
+        <p class="muted">One person, one code, one QR. The code goes wherever they'll share it and points at the same <strong>/r/</strong> link a printed banner uses, so you can see how many people scanned it and how many of those signed up. Each signup pays the ambassador the <strong>community points</strong> you set on their row, into their own student account, which is why they need one before you can add them. <strong>Turning someone off</strong> stops their link working and keeps their history.</p>
+        <p id="amb-error" class="field-error" role="alert" hidden></p>
+        <p id="amb-ok" class="inc-ok" hidden></p>
+        <div class="list-tools">
+          <button id="amb-add-btn" class="btn-primary btn-compact" type="button">Add ambassador</button>
+        </div>
+        <div id="amb-list" class="amb-list"></div>
+      </div>
+    </div>
+
     </main>
+  </div>
+
+  <!-- ===== AMBASSADOR EDITOR ===== -->
+  <!-- One dialog for both "Add ambassador" and a row's Edit, because the fields
+       and every rule about them are identical and two dialogs would drift.
+       openAmbModal(null) is the add case; openAmbModal(row) fills it in.
+
+       EVERY FIELD CARRIES ITS OWN ERROR SLOT. The two refusals that actually
+       happen are "that code is taken" and "that email is already an
+       ambassador", and both are about one specific input — put at the top of
+       the dialog they would make the operator hunt for which box to fix. The
+       server sends a `field` with each one for exactly this. #amb-form-error
+       is the fallback for everything with no field to blame. -->
+  <div id="amb-modal" class="overlay" hidden>
+    <div class="reset-card vendor-edit-card" role="dialog" aria-modal="true" aria-labelledby="amb-modal-title">
+      <h2 id="amb-modal-title">Add ambassador</h2>
+      <p class="muted">They get a link and a QR built from the code you set here. Changing a code later breaks every QR already out there, so pick one they can say out loud.</p>
+
+      <form id="amb-form" novalidate>
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="amb-name">Name</label>
+          <input id="amb-name" class="nv-input" type="text" maxlength="80" autocomplete="off" required />
+          <p class="field-error amb-field-error" data-for="name" hidden></p>
+        </div>
+
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="amb-email">Email</label>
+          <input id="amb-email" class="nv-input" type="email" maxlength="254" inputmode="email" autocomplete="off" required />
+          <!-- The account requirement is stated BEFORE the save, not only in the
+               error it would produce. This is the one refusal an operator cannot
+               fix by retyping: the person has to go and sign up. -->
+          <span class="vendor-edit-hint">Their <strong>student account</strong> address. It is where their points get paid, so they have to have signed up already. No two ambassadors can share one.</span>
+          <p class="field-error amb-field-error" data-for="email" hidden></p>
+        </div>
+
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="amb-points">Community points per signup</label>
+          <input id="amb-points" class="nv-input amb-points-input" type="number" min="0" max="5000" step="1" value="0" inputmode="numeric" />
+          <span class="vendor-edit-hint">Paid to <strong>them</strong>, once for each account created through their code. <strong>0</strong> tracks who they bring in and pays nothing. Points already paid out cannot be reversed.</span>
+          <p class="field-error amb-field-error" data-for="points" hidden></p>
+        </div>
+
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="amb-phone">Phone <em class="nv-opt">(optional)</em></label>
+          <input id="amb-phone" class="nv-input" type="tel" maxlength="20" inputmode="tel" autocomplete="off" placeholder="814 555 0134" />
+          <p class="field-error amb-field-error" data-for="phone" hidden></p>
+        </div>
+
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="amb-code">Code</label>
+          <!-- text-transform:uppercase in CSS shows what will actually be
+               stored while it is being typed; the value is uppercased again in
+               JS on save, because the CSS is only paint. -->
+          <input id="amb-code" class="nv-input amb-code-input" type="text" minlength="3" maxlength="10"
+                 autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="SARAH7" />
+          <span class="vendor-edit-hint">3 to 10 letters or numbers, no spaces or symbols. Case doesn't matter: it is stored and shown uppercase. It has to be unique, and their link becomes <span id="amb-code-preview" class="amb-code-preview">/r/CODE</span>.</span>
+          <p class="field-error amb-field-error" data-for="code" hidden></p>
+        </div>
+
+        <p id="amb-form-error" class="field-error" role="alert" hidden></p>
+
+        <div class="push-actions">
+          <button id="amb-submit" class="btn-primary" type="submit">Create ambassador</button>
+          <button id="amb-cancel" class="btn-ghost" type="button">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== AMBASSADOR QR ===== -->
+  <!-- Opened from a row's "Show QR". Who it belongs to at the top so the right
+       QR gets handed to the right person, and the symbol itself as large as the
+       dialog allows, because the usual way this gets used is somebody pointing
+       a phone at this screen. -->
+  <div id="amb-qr-modal" class="overlay" hidden>
+    <div class="reset-card amb-qr-card" role="dialog" aria-modal="true" aria-labelledby="amb-qr-title">
+      <h2 id="amb-qr-title">Ambassador QR</h2>
+      <p id="amb-qr-contact" class="amb-qr-contact"></p>
+      <p id="amb-qr-code" class="amb-qr-code"></p>
+      <!-- The canvas is drawn in JS at print resolution and scaled down by CSS,
+           so it stays sharp on a retina screen and is the same artwork the
+           Download button saves. -->
+      <div id="amb-qr-holder" class="amb-qr-holder"></div>
+      <p id="amb-qr-link" class="amb-qr-link"></p>
+      <p id="amb-qr-error" class="field-error" role="alert" hidden></p>
+      <div class="push-actions">
+        <button id="amb-qr-copy" class="btn-ghost" type="button">Copy link</button>
+        <button id="amb-qr-png" class="btn-ghost" type="button">Download PNG</button>
+        <button id="amb-qr-close" class="btn-primary" type="button">Close</button>
+      </div>
+    </div>
   </div>
 
   <!-- ===== ENABLE-NOTIFICATIONS POPUP ===== -->

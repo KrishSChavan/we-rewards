@@ -53,7 +53,13 @@
 // v20: the Edit dialog gained a Logo section — pick, Remove and "Save logo"
 // against PATCH /api/admin/vendors/:id, with the current artwork read back from
 // the new GET /api/admin/vendors/:id/logo (index.html + admin.js + admin.css)
-const CACHE = 'werewards-admin-v25';   // v25: the application review card lists the redeemable items the applicant named on /join, and Add vendor takes an optional first item, both priced in dollars (index.html + admin.js + admin.css)
+// v25: the application review card lists the redeemable items the applicant named
+// on /join, and Add vendor takes an optional first item, both priced in dollars
+// (index.html + admin.js + admin.css).
+// v26: new Ambassadors tab — add a person with a code they chose, copy it, show
+// its QR, edit them, turn their link off or delete them; scans and signups roll
+// up per person off the shared /r/ rail (index.html + admin.js + admin.css).
+const CACHE = 'werewards-admin-v27';   // v27: an ambassador now carries a community-points payout per signup, credited to their own student account, so the dialog takes a rate and refuses an email with no account behind it; the row shows the rate, what they have earned, and a red "No account" when there is nowhere to pay (index.html + admin.js + admin.css)
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json', '/admin/qrcode.js',

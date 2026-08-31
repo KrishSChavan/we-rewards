@@ -30,9 +30,34 @@
 //   a banner is deleted, the person holding the phone still deserves to land in
 //   the app rather than on an error page, so it redirects home and the operator
 //   finds the mistake in the logs instead.
+//
+// TWO KINDS OF CODE RESOLVE HERE (migration-053 added the second). A BANNER code
+// is 8 lowercase characters this server minted; an AMBASSADOR code is 3-10
+// uppercase characters an operator typed for a person. They share this route
+// rather than getting one each, because everything above — the 302, the
+// no-store, the service-worker exemption, the rate limiter in server.js and the
+// URIError guard at the foot of this file — was learned the hard way and would
+// not be got right twice. Banners are tried FIRST and the order is fixed, so a
+// string that somehow satisfied both shapes always resolves to the banner; the
+// admin form refuses an ambassador code that collides with an existing banner's,
+// which is the only direction a human can actually cause.
+//
+// ⚠ THE SECOND ARM WIDENED WHAT THIS ENDPOINT WILL LOOK UP, and that is worth
+// knowing before adding a third. A banner code is 8 characters of a restricted
+// alphabet, so almost every junk path was refused by a regex and cost nothing.
+// An ambassador code is ANY 3-10 alphanumerics, so /r/hello and /r/test now each
+// cost one indexed lookup. That is inherent — a code that short cannot be ruled
+// out without asking — and the controls are the unique-index lookup being cheap
+// and the 600-per-quarter-hour-per-IP limiter in server.js. It also means a test
+// probe that used to touch no database may now touch one; see the note at the
+// top of test/tracked-qr.test.js, where exactly that happened.
 
 import { Router } from 'express';
 import { recordScan, normalizeCode } from '../lib/tracked-qr.js';
+import {
+  recordScan as recordAmbassadorScan,
+  normalizeCode as normalizeAmbassadorCode,
+} from '../lib/ambassadors.js';
 
 const router = Router();
 
@@ -46,23 +71,48 @@ router.get('/:code', async (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
 
-    const code = normalizeCode(req.params.code);
-    if (!code) {
-      console.warn(`[tracked-qr] malformed code scanned: ${String(req.params.code).slice(0, 40)}`);
-      return res.redirect(302, '/');
+    const raw = req.params.code;
+
+    // ---- 1. a printed banner (migration-050) ----
+    // normalizeCode is strict — exactly 8 characters of a lowercase alphabet
+    // with no 0/1/l/o/i — so this arm silently declines anything shaped like an
+    // ambassador code without a query, and vice versa.
+    const code = normalizeCode(raw);
+    if (code) {
+      const banner = await recordScan({ req, res, rawCode: code });
+      if (banner) {
+        // The query parameter is belt and braces over the cookie recordScan
+        // just set: a browser that refuses cookies still attributes the signup,
+        // and a browser that refuses query strings does not exist. app.js
+        // strips it at boot, before Google's OAuth round trip can lose it.
+        return res.redirect(302, `/?qr=${encodeURIComponent(banner.code)}`);
+      }
     }
 
-    const banner = await recordScan({ req, res, rawCode: code });
-    if (!banner) {
-      console.warn(`[tracked-qr] unknown code scanned: ${code}`);
-      return res.redirect(302, '/');
+    // ---- 2. an ambassador (migration-053) ----
+    // Deliberately reached even when arm 1 matched the SHAPE but found no
+    // banner, so a deleted banner's code can later be reissued to a person
+    // without the old one shadowing it.
+    //
+    // Note this hands back the SAME `?qr=` parameter. The client never
+    // interprets the code — it stashes it and posts it to accept-terms, where
+    // two evaluators each ignore what isn't theirs — so one parameter serves
+    // both features and public/student/app.js needed no change for this.
+    const ambCode = normalizeAmbassadorCode(raw);
+    if (ambCode) {
+      const amb = await recordAmbassadorScan({ req, res, rawCode: ambCode });
+      // Null covers "no such ambassador" AND "paused", and the two are
+      // deliberately indistinguishable from out here: a retired ambassador's
+      // link is supposed to stop working, unlike a paused banner's.
+      if (amb) return res.redirect(302, `/?qr=${encodeURIComponent(amb.code)}`);
     }
 
-    // The query parameter is belt and braces over the cookie recordScan just
-    // set: a browser that refuses cookies still attributes the signup, and a
-    // browser that refuses query strings does not exist. app.js strips it at
-    // boot, before Google's OAuth round trip can lose it.
-    return res.redirect(302, `/?qr=${encodeURIComponent(banner.code)}`);
+    if (!code && !ambCode) {
+      console.warn(`[tracked-qr] malformed code scanned: ${String(raw).slice(0, 40)}`);
+    } else {
+      console.warn(`[tracked-qr] unknown code scanned: ${String(raw).slice(0, 40)}`);
+    }
+    return res.redirect(302, '/');
   } catch (err) {
     console.warn(`[tracked-qr] resolve failed: ${err?.message ?? err}`);
     return res.redirect(302, '/');

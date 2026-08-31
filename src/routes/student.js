@@ -14,6 +14,11 @@ import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
 import { maybeAwardTrackedQr, readVisitorCookie, TRACKED_QR_COOKIE } from '../lib/tracked-qr.js';
+import {
+  attributeSignup as attributeAmbassadorSignup,
+  readAmbassadorCookie,
+  AMBASSADOR_COOKIE,
+} from '../lib/ambassadors.js';
 import { loadVendorCatalogue, loadRecommendedVendorIds } from '../lib/cache.js';
 // Where a vendor's points live (migration-044). Nothing in this file re-derives
 // that rule inline: a second copy of it that disagreed with the SQL functions
@@ -170,6 +175,27 @@ router.post('/accept-terms', async (req, res, next) => {
     // Consumed. Clearing is belt and braces over the ten-minute new-account
     // window in the evaluator, and the path MUST match the one it was set with.
     if (qrBonus) res.clearCookie(TRACKED_QR_COOKIE, { path: '/' });
+
+    // Ambassador attribution (migration-053). Same two sources as the banner
+    // above and the same never-throws contract, but NO MONEY MOVES HERE — this
+    // writes one row saying who recruited this account and nothing else. It is
+    // therefore not reported back to the client: there is no bonus to announce,
+    // and a key in this response that the student app renders nothing for is a
+    // key somebody later mistakes for one.
+    //
+    // ⚠ BOTH EVALUATORS RUN, and that is correct rather than an oversight. The
+    // shared `?qr=` handoff means one code arrives here for whichever feature
+    // owns it; each ignores what isn't its shape. A student who genuinely
+    // scanned a banner AND an ambassador's code is credited to both, which is
+    // what two separate programs should do — there is no double spend to
+    // prevent, because this half spends nothing.
+    const ambFromCookie = readAmbassadorCookie(req)?.code ?? null;
+    const ambassador = await attributeAmbassadorSignup({
+      userId,
+      rawCode: req.body?.trackedQr ?? ambFromCookie,
+      profileCreatedAt: profile?.created_at,
+    });
+    if (ambassador) res.clearCookie(AMBASSADOR_COOKIE, { path: '/' });
 
     res.json({ ok: true, termsVersion: TERMS_VERSION, acceptedAt: now, signupBonus, qrBonus });
   } catch (err) {

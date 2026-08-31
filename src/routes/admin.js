@@ -22,6 +22,19 @@ import {
   NOTE_MAX as QR_NOTE_MAX,
   POINTS_MAX as QR_POINTS_MAX,
 } from '../lib/tracked-qr.js';
+// Aliased on the way in, all of them: this file already has a NAME_MAX, an
+// EMAIL_RE and a normalizeCode-shaped idea of its own, and the ambassador rules
+// are deliberately different from every one of them (migration-053).
+import {
+  normalizeCode as normalizeAmbassadorCode,
+  normalizeEmail as normalizeAmbassadorEmail,
+  findAccountByEmail,
+  isValidPhone,
+  NAME_MAX as AMB_NAME_MAX,
+  CODE_MIN as AMB_CODE_MIN,
+  CODE_MAX as AMB_CODE_MAX,
+  POINTS_MAX as AMB_POINTS_MAX,
+} from '../lib/ambassadors.js';
 import { emitBalance } from '../lib/realtime.js';
 // The one place the "which table holds this vendor's points" rule is written
 // down (migration-044). Re-deriving it inline in a support screen is how the
@@ -3060,6 +3073,380 @@ router.get('/tracked-qr/:id/export', async (req, res, next) => {
       console.warn(`[tracked-qr] export of ${code.code} truncated at ${SCAN_EXPORT_MAX} rows`);
     }
     sendCsv(res, `werewards-qr-${code.code}-scans.csv`, rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ===================== Ambassadors (migration-053) =====================
+   A person recruiting for the app, with a short code they chose and a QR the
+   operator hands them. Everything below is CRUD plus one read shape.
+
+   ⚠ NO MONEY IS ANYWHERE NEAR THIS BLOCK. There is no points field to validate
+   and no grant to make: an ambassador is measured, not paid (migration-053).
+
+   ⚠ Sibling of the trackable-QR block above, and three rules do NOT carry over:
+   the code is typed rather than minted, the email is unique, and `active` stops
+   the LINK rather than a payout. See src/lib/ambassadors.js.
+
+   THE ERRORS HERE ARE SHAPED FOR THE FORM. A create that collides comes back
+   with a `field` naming which input was wrong ('code' or 'email'), because the
+   dialog puts its red text under that input rather than at the top of the
+   dialog. Any handler that adds a new refusal must carry a `field` too, or the
+   message lands nowhere. */
+
+const AMBASSADOR_COLS = 'id, code, name, email, phone, active, points, user_id, has_account, '
+  + 'created_by, created_at, updated_at, '
+  + 'scans, uniques, first_scan, last_scan, signups, points_awarded';
+
+/**
+ * Validate the ambassador dialog. Never throws.
+ *
+ * Returns `{ row }`, or `{ error, field }` — the field is what lets the client
+ * put the message under the right input. `partial` makes one validator serve
+ * both the create form and the edit form: on a PATCH an absent key means "leave
+ * it alone", which is a different thing from an empty one ("clear it").
+ */
+function validAmbassador(raw, { partial = false } = {}) {
+  const body = raw ?? {};
+  const out = {};
+
+  if (!partial || body.name != null) {
+    const name = String(body.name ?? '').trim();
+    if (!name || name.length > AMB_NAME_MAX) {
+      return { error: `Enter a name, up to ${AMB_NAME_MAX} characters.`, field: 'name' };
+    }
+    out.name = name;
+  }
+
+  if (!partial || body.email != null) {
+    const email = normalizeAmbassadorEmail(body.email);
+    if (!email) return { error: 'Enter a valid email address.', field: 'email' };
+    out.email = email;
+  }
+
+  // Optional, so blank is a real answer and clears the column. Only a non-empty
+  // string that doesn't look like a phone number is refused.
+  if (!partial || body.phone != null) {
+    const phone = String(body.phone ?? '').trim();
+    if (phone && !isValidPhone(phone)) {
+      return { error: 'That doesn’t look like a phone number. Digits, spaces and ( ) + - . only.', field: 'phone' };
+    }
+    out.phone = phone || null;
+  }
+
+  if (!partial || body.code != null) {
+    // Passed RAW, not pre-stringified: normalizeCode refuses a non-string on
+    // purpose, and String()-ing it here would hand it "true" or "42" and undo
+    // that. `typed` below is only ever used to word the error.
+    const code = normalizeAmbassadorCode(body.code);
+    const typed = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!code) {
+      // Two different mistakes, worded apart, because "invalid code" leaves the
+      // operator guessing which of the two rules they broke.
+      const stripped = typed.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (typed && stripped !== typed.toUpperCase()) {
+        return { error: 'Letters and numbers only, no spaces or symbols.', field: 'code' };
+      }
+      return {
+        error: `The code must be ${AMB_CODE_MIN} to ${AMB_CODE_MAX} letters or numbers.`,
+        field: 'code',
+      };
+    }
+    out.code = code;
+  }
+
+  // What one signup through their code pays THEM. 0 is a real setting: measure
+  // somebody and pay them nothing. Absent on a PATCH means "leave it alone",
+  // which is why this is not folded into the `points ?? 0` shorthand.
+  if (!partial || body.points != null) {
+    const points = body.points === '' || body.points == null ? 0 : Number(body.points);
+    if (!Number.isInteger(points) || points < 0 || points > AMB_POINTS_MAX) {
+      return {
+        error: `The payout must be a whole number of community points from 0 to ${AMB_POINTS_MAX}. 0 pays nothing.`,
+        field: 'points',
+      };
+    }
+    out.points = points;
+  }
+
+  if (body.active != null) {
+    if (typeof body.active !== 'boolean') return { error: 'Active must be true or false.', field: 'active' };
+    out.active = body.active;
+  }
+
+  return { row: out };
+}
+
+/**
+ * Resolve the student account an ambassador is paid into, from their email.
+ *
+ * ⚠ THIS IS A REFUSAL, NOT A WARNING, and the reason is that the alternative
+ * fails silently. grant_community_points raises GRANT_STUDENT_UNKNOWN for a
+ * user with no profiles row, and the evaluator swallows that (it must — a
+ * payout may never cost a student their consent). So an ambassador created
+ * against an address nobody has signed up with would recruit people, show
+ * signups climbing on their row, and simply never be paid, with the only trace
+ * a line on stderr. Refusing at the door is the difference between an operator
+ * fixing a typo now and somebody being owed points a month later.
+ *
+ * Returns `{ userId }`, or a `{ error, field, message }` the caller can send back.
+ */
+async function resolveAmbassadorAccount(email) {
+  const account = await findAccountByEmail(email);
+  if (account) return { userId: account.user_id };
+  return {
+    error: 'AMBASSADOR_NO_ACCOUNT',
+    field: 'email',
+    message: `No WeRewards account uses ${email}. They need to sign up in the student app first, then you can add them here.`,
+  };
+}
+
+/**
+ * Is this code or email already spoken for? Returns a `{ error, field }` the
+ * caller can send straight back, or null.
+ *
+ * WHY A LOOKUP AND NOT JUST THE UNIQUE CONSTRAINT. The constraint is the real
+ * guard and is still caught below — but it can only say "duplicate key", and
+ * the dialog has to say WHICH field and, more usefully, WHO already has it.
+ * "SARAH7 already belongs to Sarah Chen" is the difference between an operator
+ * fixing it in five seconds and an operator filing a bug.
+ *
+ * `exceptId` is what makes this reusable for the edit form: a row is allowed to
+ * keep its own code and email.
+ */
+async function ambassadorConflict({ code, email, exceptId = null }) {
+  const checks = [];
+  if (code) checks.push(['code', code]);
+  if (email) checks.push(['email', email]);
+
+  for (const [field, value] of checks) {
+    let q = supabaseAdmin.from('ambassadors').select('id, name, code, email').eq(field, value).limit(1);
+    if (exceptId) q = q.neq('id', exceptId);
+    const { data, error } = await q;
+    if (error) throw error;
+    const clash = data?.[0];
+    if (!clash) continue;
+    return field === 'code'
+      ? { error: 'AMBASSADOR_CODE_TAKEN', field: 'code', message: `${clash.code} is already ${clash.name}’s code.` }
+      : { error: 'AMBASSADOR_EMAIL_TAKEN', field: 'email', message: `${clash.email} is already an ambassador (${clash.name}).` };
+  }
+
+  // The other namespace sharing /r/<code>. A banner's code is 8 lowercase
+  // characters, so an operator can genuinely type one in (SARAHXYZ is legal
+  // here and lowercases into a legal banner code), and the resolver tries
+  // banners FIRST — the ambassador would simply never be reached, with nothing
+  // on screen to explain why. Refused here, where it can be explained.
+  //
+  // Only this direction is guarded: a minted banner code landing on an existing
+  // ambassador's is 1 in 31^8, and the mint loop would have to grow a second
+  // query per attempt to catch it. See migration-053.
+  if (code) {
+    const { data, error } = await supabaseAdmin
+      .from('tracked_qr_codes').select('name').eq('code', code.toLowerCase()).limit(1);
+    if (error) throw error;
+    if (data?.[0]) {
+      return {
+        error: 'AMBASSADOR_CODE_TAKEN',
+        field: 'code',
+        message: `${code} is already a poster QR code (“${data[0].name}”). Pick another.`,
+      };
+    }
+  }
+
+  return null;
+}
+
+/** The UNIQUE constraint firing anyway — a second operator saved the same code
+ *  between the lookup above and the write. Rarer than the pre-check it backs
+ *  up, and it can only name the column, not the person holding it. */
+function ambassadorDupe(err, row) {
+  if (err?.code !== '23505') return null;
+  const on = String(err.details ?? err.message ?? '');
+  if (on.includes('email')) {
+    return { error: 'AMBASSADOR_EMAIL_TAKEN', field: 'email', message: 'That email is already an ambassador.' };
+  }
+  return {
+    error: 'AMBASSADOR_CODE_TAKEN',
+    field: 'code',
+    message: `${row?.code ?? 'That code'} is already taken. Pick another.`,
+  };
+}
+
+/** GET /api/admin/ambassadors — everyone, with their scan/signup roll-up. */
+router.get('/ambassadors', async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('ambassador_overview')
+      .select(AMBASSADOR_COLS)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json({ ambassadors: data ?? [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/admin/ambassadors  { name, email, phone?, code } */
+router.post('/ambassadors', async (req, res, next) => {
+  try {
+    const parsed = validAmbassador(req.body);
+    if (parsed.error) {
+      return res.status(400).json({ error: 'BAD_REQUEST', field: parsed.field, message: parsed.error });
+    }
+
+    const clash = await ambassadorConflict({ code: parsed.row.code, email: parsed.row.email });
+    if (clash) return res.status(409).json(clash);
+
+    // They must already be a student, because that is the account the payout
+    // lands in. Checked even when the rate is 0: a 0-rate ambassador is very
+    // often one the operator is about to give a rate to, and discovering then
+    // that there was never an account is discovering it too late.
+    const account = await resolveAmbassadorAccount(parsed.row.email);
+    if (account.error) return res.status(409).json(account);
+
+    const { data, error } = await supabaseAdmin
+      .from('ambassadors')
+      .insert({ ...parsed.row, user_id: account.userId, created_by: req.user?.email ?? null })
+      .select('id, code, name, email, phone, active, points, user_id, created_by, created_at, updated_at')
+      .single();
+    if (error) {
+      const dupe = ambassadorDupe(error, parsed.row);
+      if (dupe) return res.status(409).json(dupe);
+      throw error;
+    }
+
+    // The list renders roll-up columns this insert never touched. A brand-new
+    // ambassador has none of them, so they are filled in as zeros rather than
+    // read back — the alternative is a second query for a row we already know
+    // the answer for. has_account is computed the same way the view computes it.
+    res.status(201).json({
+      ok: true,
+      ambassador: {
+        ...data,
+        has_account: data.user_id != null,
+        scans: 0, uniques: 0, first_scan: null, last_scan: null, signups: 0, points_awarded: 0,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH /api/admin/ambassadors/:id  { name?, email?, phone?, code?, active? } */
+router.patch('/ambassadors/:id', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'AMBASSADOR_NOT_FOUND', message: 'That ambassador no longer exists.' });
+    }
+    const parsed = validAmbassador(req.body, { partial: true });
+    if (parsed.error) {
+      return res.status(400).json({ error: 'BAD_REQUEST', field: parsed.field, message: parsed.error });
+    }
+    if (!Object.keys(parsed.row).length) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to change.' });
+    }
+
+    // exceptId, or saving a row without touching its code would collide with
+    // itself and the dialog would refuse an edit that changed nothing.
+    const clash = await ambassadorConflict({
+      code: parsed.row.code,
+      email: parsed.row.email,
+      exceptId: req.params.id,
+    });
+    if (clash) return res.status(409).json(clash);
+
+    /* A CHANGED EMAIL IS A CHANGED PAYEE. The stored user_id was resolved from
+       the old address, so leaving it alone would keep paying the previous person
+       indefinitely — the worst possible outcome of an edit that looks purely
+       cosmetic.
+
+       ⚠ COMPARED AGAINST THE CURRENT ROW, not merely "is email present". The
+       edit dialog posts all four fields on every save, so a presence check would
+       re-resolve on every edit — and then an ambassador whose student account
+       has since been deleted (user_id is null, by ON DELETE SET NULL) could not
+       be renamed, or even switched off, because a save that changed nothing
+       would be refused for an account nobody was asking about. */
+    const { data: before, error: beforeErr } = await supabaseAdmin
+      .from('ambassadors').select('email, user_id').eq('id', req.params.id).maybeSingle();
+    if (beforeErr) throw beforeErr;
+    if (!before) {
+      return res.status(404).json({ error: 'AMBASSADOR_NOT_FOUND', message: 'That ambassador no longer exists.' });
+    }
+
+    if (parsed.row.email && parsed.row.email !== before.email) {
+      const account = await resolveAmbassadorAccount(parsed.row.email);
+      if (account.error) return res.status(409).json(account);
+      parsed.row.user_id = account.userId;
+    } else if (before.user_id == null) {
+      // Same address, no account on file. They deleted their account and have
+      // since signed up again, or the row predates this column. Saving re-links
+      // them if an account is there now, and quietly leaves it null if not —
+      // this is a heal, not a gate, so it must never refuse the edit.
+      const account = await resolveAmbassadorAccount(before.email);
+      if (!account.error) parsed.row.user_id = account.userId;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('ambassadors')
+      .update({ ...parsed.row, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select('id')
+      .maybeSingle();
+    if (error) {
+      const dupe = ambassadorDupe(error, parsed.row);
+      if (dupe) return res.status(409).json(dupe);
+      throw error;
+    }
+    if (!data) {
+      return res.status(404).json({ error: 'AMBASSADOR_NOT_FOUND', message: 'That ambassador no longer exists.' });
+    }
+
+    // Read the roll-up back rather than echoing the update: the row the list
+    // renders carries scan counts this handler never touched, and returning a
+    // half-populated row would blank them until the next refresh.
+    const { data: full, error: readErr } = await supabaseAdmin
+      .from('ambassador_overview').select(AMBASSADOR_COLS).eq('id', req.params.id).single();
+    if (readErr) throw readErr;
+    res.json({ ok: true, ambassador: full });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/admin/ambassadors/:id
+ *
+ * REFUSED once the code has been scanned, unless ?force=1 — the same bargain
+ * the tracked-QR delete strikes, for a slightly different reason. The code is
+ * in somebody's bio and on the back of their phone, and deleting the row makes
+ * every future scan land on the home page and throws away the record of the
+ * students they already brought in. Turning them OFF does the first without the
+ * second, so that is what the refusal points at.
+ */
+router.delete('/ambassadors/:id', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'AMBASSADOR_NOT_FOUND', message: 'That ambassador no longer exists.' });
+    }
+    const force = String(req.query.force ?? '') === '1';
+
+    const { data: row, error: readErr } = await supabaseAdmin
+      .from('ambassador_overview').select('id, name, scans, signups').eq('id', req.params.id).maybeSingle();
+    if (readErr) throw readErr;
+    if (!row) {
+      return res.status(404).json({ error: 'AMBASSADOR_NOT_FOUND', message: 'That ambassador no longer exists.' });
+    }
+    if (!force && (row.scans > 0 || row.signups > 0)) {
+      return res.status(409).json({
+        error: 'AMBASSADOR_IN_USE',
+        message: `${row.name}’s code has been scanned ${row.scans} time${row.scans === 1 ? '' : 's'}. Turn them off instead: deleting throws away the ${row.signups} signup${row.signups === 1 ? '' : 's'} they brought in.`,
+      });
+    }
+
+    const { error } = await supabaseAdmin.from('ambassadors').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

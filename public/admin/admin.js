@@ -42,7 +42,7 @@ const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now"
 // evaluating — declared below the boot IIFE it would be in its temporal dead
 // zone at that moment, and the throw is swallowed, so the report would quietly
 // arrive missing the context it exists for.
-const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'pools', 'students'];
+const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'students'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -100,6 +100,22 @@ function bootFailed(message) {
   $('qr-new-form').addEventListener('submit', createQr);
   $('qr-export').addEventListener('click', () => exportQrAll($('qr-export')));
   $('tab-pools').addEventListener('click', openPools);
+  $('tab-ambassadors').addEventListener('click', openAmbassadors);
+  $('amb-add-btn').addEventListener('click', () => openAmbModal(null));
+  $('amb-form').addEventListener('submit', submitAmbassador);
+  $('amb-cancel').addEventListener('click', closeAmbModal);
+  // Live preview of the link the code will build, so a typo is visible before
+  // it is saved into a QR somebody prints.
+  $('amb-code').addEventListener('input', syncAmbCodePreview);
+  $('amb-modal').addEventListener('click', (e) => {
+    if (e.target === $('amb-modal')) closeAmbModal();       // backdrop only, not the card
+  });
+  $('amb-qr-close').addEventListener('click', closeAmbQrModal);
+  $('amb-qr-copy').addEventListener('click', () => copyAmbLink($('amb-qr-copy')));
+  $('amb-qr-png').addEventListener('click', () => downloadAmbQrPng($('amb-qr-png')));
+  $('amb-qr-modal').addEventListener('click', (e) => {
+    if (e.target === $('amb-qr-modal')) closeAmbQrModal();  // backdrop only, not the card
+  });
   $('tot-errors-card').addEventListener('click', jumpToErrors);
   $('tot-students-card').addEventListener('click', openStudents);
   $('students-back').addEventListener('click', () => setView('dashboard'));
@@ -166,6 +182,10 @@ function bootFailed(message) {
     if (!$('vendor-modal').hidden) closeVendorModal();
     if (!$('new-vendor-modal').hidden) closeNewVendorModal();
     if (!$('student-modal').hidden) closeStudentDetail();
+    // The QR dialog is opened FROM the editor's list and can sit over it, so it
+    // is closed first — one Escape should peel one layer, not both.
+    if (!$('amb-qr-modal').hidden) closeAmbQrModal();
+    else if (!$('amb-modal').hidden) closeAmbModal();
   });
   $('poster-pick').addEventListener('click', () => $('poster-file').click());
   $('poster-file').addEventListener('change', onPosterPick);
@@ -224,6 +244,10 @@ function render(session) {
     closeResetModal();
     closeVendorModal();
     closeNewVendorModal();
+    // Same reason as the two above: this dialog holds a real person's email and
+    // phone number, and this dashboard sits open on a desk.
+    closeAmbModal();
+    closeAmbQrModal();
     $('dash').hidden = true;
     $('login').hidden = false;
     return;
@@ -280,6 +304,9 @@ async function loadAll() {
       // button is what this card's own load-failure message tells the operator
       // to press, so it has to be reachable from here or that sentence is a lie.
       qrLoaded ? loadQrCodes() : null,
+      // Same bargain again for the ambassadors tab: one view query, paid for
+      // only once somebody has opened the screen it draws.
+      ambLoaded ? loadAmbassadors() : null,
       // Unauthenticated and tiny, but it belongs to a dialog only an admin can
       // open, so it rides along here rather than firing on the sign-in screen.
       loadCuisineVocab(),
@@ -4888,12 +4915,24 @@ function makeQr(text) {
   return qr;
 }
 
-/** A PNG about 1240px square: enough to print at ~4 inches without a soft edge. */
-function qrPngBlob(text) {
+/**
+ * The symbol as a <canvas>, about `target` pixels square.
+ *
+ * Separate from qrPngBlob below because the ambassadors tab shows a QR ON
+ * SCREEN as well as saving one, and the two must be the SAME artwork: an
+ * operator holds a phone up to this screen to test the code, and a QR that
+ * scanned in the dialog but not in the downloaded file (or the reverse) would
+ * be a bug nobody could reproduce.
+ *
+ * The size is rounded to a whole number of modules rather than set exactly, so
+ * every module is the same integer number of pixels. A fractional scale is what
+ * produces the faintly uneven QR that reads on one phone and not another.
+ */
+function drawQrCanvas(text, target = 1240) {
   const qr = makeQr(text);
   const count = qr.getModuleCount();
   const units = count + QR_QUIET * 2;
-  const scale = Math.max(4, Math.round(1240 / units));
+  const scale = Math.max(4, Math.round(target / units));
   const px = units * scale;
 
   const canvas = document.createElement('canvas');
@@ -4911,6 +4950,12 @@ function qrPngBlob(text) {
       if (qr.isDark(r, c)) ctx.fillRect((c + QR_QUIET) * scale, (r + QR_QUIET) * scale, scale, scale);
     }
   }
+  return canvas;
+}
+
+/** A PNG about 1240px square: enough to print at ~4 inches without a soft edge. */
+function qrPngBlob(text) {
+  const canvas = drawQrCanvas(text, 1240);
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
 }
 
@@ -5019,4 +5064,614 @@ async function exportQrScans(c, btn) {
 function openPoster() {
   setView('poster');
   loadQrCodes();
+}
+
+/* ===================== Ambassadors (migration-053) =====================
+   People who recruit for the app. The operator adds one, gives them a code they
+   chose, and hands them a QR; the row reads back how many people scanned it and
+   how many of those signed up.
+
+   ⚠ NOTHING ON THIS TAB PAYS ANYBODY. There is no award field, by design. See
+   migration-053 before adding one — an input alone would be a lie, because the
+   evaluator that would pay it does not exist.
+
+   ⚠ Sibling of the trackable-QR card on the poster tab, and it shares that
+   feature's /r/<code> rail, but three rules are different: the code is TYPED
+   rather than minted, the email is unique, and the on/off switch stops the LINK
+   rather than a payout (a banner is bolted to a wall; a person can be told they
+   are finished). */
+
+let ambassadors = [];
+// Set on the first successful load. Same bargain as poolsLoaded and qrLoaded:
+// boot does not pay for a tab nobody has opened, but once opened, the refresh
+// button refreshes it like everything else on screen.
+let ambLoaded = false;
+// The row the editor dialog is currently working on, or null for "Add". This is
+// what makes one dialog serve both jobs.
+let ambEditing = null;
+// The row the QR dialog is showing, so its Copy and Download buttons know what
+// they are acting on without reading it back out of the DOM.
+let ambShowing = null;
+
+function ambError(msg) {
+  const el = $('amb-error');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+function ambOkMsg(msg) {
+  const el = $('amb-ok');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+/** The URL the QR encodes. Built from where the dashboard itself is served, so
+ *  staging hands out staging links and production production ones, with nothing
+ *  to configure and nothing to get wrong. Same rule as the banner codes. */
+const ambUrl = (code) => `${location.origin}/r/${code}`;
+
+async function loadAmbassadors() {
+  try {
+    const res = await authFetch('/api/admin/ambassadors');
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      ambError('Couldn’t load the ambassadors. Hit ↻ to try again.');
+      return;
+    }
+    const d = await res.json().catch(() => ({}));
+    ambassadors = d.ambassadors ?? [];
+    ambLoaded = true;
+    ambError('');
+    renderAmbassadors();
+  } catch {
+    ambError('Couldn’t load the ambassadors. Check the connection and try again.');
+  }
+}
+
+function renderAmbassadors() {
+  const list = $('amb-list');
+  list.textContent = '';
+  $('amb-count').textContent = ambassadors.length
+    ? `${ambassadors.length} ambassador${ambassadors.length === 1 ? '' : 's'}`
+    : '';
+
+  if (!ambassadors.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No ambassadors yet. Add one and they get a code and a QR straight away.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const a of ambassadors) list.appendChild(buildAmbRow(a));
+}
+
+/** Row-local failures go beside the row, not at the top of the card: a repaint
+ *  destroys anything pinned inside a row, so the two live in different places
+ *  on purpose (the same split the pool and QR rows use). */
+function ambRowError(el, msg) {
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+function buildAmbRow(a) {
+  const row = document.createElement('div');
+  row.className = 'amb-row';
+  if (!a.active) row.classList.add('is-off');
+
+  /* ---- line 1: who they are, small, on one line ---- */
+  const who = document.createElement('div');
+  who.className = 'amb-who';
+  const name = document.createElement('span');
+  name.className = 'amb-name';
+  name.textContent = a.name ?? '';
+  who.appendChild(name);
+  // Phone is optional, so the separator before it has to be too — a trailing
+  // "·" with nothing after it reads as missing data rather than as no data.
+  for (const part of [a.email, a.phone].filter(Boolean)) {
+    const sep = document.createElement('span');
+    sep.className = 'amb-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    sep.textContent = '·';
+    who.appendChild(sep);
+    const span = document.createElement('span');
+    span.className = 'amb-contact';
+    span.textContent = part;
+    who.appendChild(span);
+  }
+  if (!a.active) {
+    const off = document.createElement('span');
+    off.className = 'amb-off-tag';
+    off.textContent = 'Off';
+    who.appendChild(off);
+  }
+  // ⚠ THE ONE ROW STATE THAT COSTS SOMEBODY MONEY. has_account goes false when
+  // an ambassador deletes their student account: the code keeps working and
+  // keeps recruiting, but there is nowhere to pay them and the evaluator can
+  // only log it. Only worth saying when there is a rate to lose — a 0-rate
+  // ambassador with no account has nothing going wrong.
+  if (a.has_account === false && (a.points ?? 0) > 0) {
+    const gone = document.createElement('span');
+    gone.className = 'amb-noacct-tag';
+    gone.textContent = 'No account';
+    gone.title = 'They have no student account, so their points cannot be paid. Re-save this row once they have signed up again.';
+    who.appendChild(gone);
+  }
+  row.appendChild(who);
+
+  /* ---- line 2: the code, big, with its two buttons at the right end ---- */
+  const codeLine = document.createElement('div');
+  codeLine.className = 'amb-code-line';
+  const code = document.createElement('span');
+  code.className = 'amb-code';
+  code.textContent = a.code ?? '';
+  code.title = ambUrl(a.code);
+  codeLine.appendChild(code);
+
+  const codeActions = document.createElement('div');
+  codeActions.className = 'amb-code-actions';
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'amb-btn';
+  copyBtn.textContent = 'Copy';
+  copyBtn.title = 'Copy the code itself. The full link is in Show QR.';
+  copyBtn.addEventListener('click', () => copyAmbCode(a, copyBtn));
+  codeActions.appendChild(copyBtn);
+  const qrBtn = document.createElement('button');
+  qrBtn.type = 'button';
+  qrBtn.className = 'amb-btn';
+  qrBtn.textContent = 'Show QR';
+  qrBtn.addEventListener('click', () => openAmbQrModal(a));
+  codeActions.appendChild(qrBtn);
+  codeLine.appendChild(codeActions);
+  row.appendChild(codeLine);
+
+  /* ---- line 3: what the code has actually done ---- */
+  const stats = document.createElement('div');
+  stats.className = 'amb-stats';
+  stats.appendChild(qrStat(a.scans, a.scans === 1 ? 'scan' : 'scans'));
+  // "people" rather than "unique visitors", for the same reason the banner rows
+  // say it: one phone scanning twice is one person.
+  stats.appendChild(qrStat(a.uniques, 'people'));
+  stats.appendChild(qrStat(a.signups, a.signups === 1 ? 'signup' : 'signups'));
+  // The rate and the running total are different questions ("what do they earn"
+  // vs "what have they earned") and both belong here. points_awarded is summed
+  // from what each recruit was worth AT THE TIME, so it will not equal
+  // signups x rate once the rate has ever been edited — which is the point.
+  stats.appendChild(qrStat(a.points_awarded, 'points earned'));
+  const rate = document.createElement('span');
+  rate.className = 'qr-stat qr-stat-muted';
+  rate.textContent = (a.points ?? 0) > 0 ? `${a.points} per signup` : 'pays nothing';
+  stats.appendChild(rate);
+  const last = document.createElement('span');
+  last.className = 'qr-stat qr-stat-muted';
+  last.textContent = `last scan ${qrWhen(a.last_scan)}`;
+  stats.appendChild(last);
+  row.appendChild(stats);
+
+  const rowError = document.createElement('p');
+  rowError.className = 'amb-row-error';
+  rowError.hidden = true;
+  row.appendChild(rowError);
+
+  /* ---- line 4: the buttons ---- */
+  const actions = document.createElement('div');
+  actions.className = 'amb-actions';
+
+  // The on/off switch saves ON CHANGE rather than waiting for a Save button,
+  // because it is the only control here with nothing to type: an operator who
+  // flips it and walks away has said what they meant.
+  const sw = document.createElement('label');
+  sw.className = 'qr-switch';
+  const active = document.createElement('input');
+  active.type = 'checkbox';
+  active.checked = !!a.active;
+  sw.appendChild(active);
+  const swText = document.createElement('span');
+  swText.textContent = a.active ? 'On' : 'Off';
+  sw.appendChild(swText);
+  active.addEventListener('change', () => toggleAmbassador(a, active, swText, rowError));
+  actions.appendChild(sw);
+
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'amb-btn';
+  edit.textContent = 'Edit';
+  edit.addEventListener('click', () => openAmbModal(a));
+  actions.appendChild(edit);
+
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'amb-btn amb-btn-danger';
+  del.textContent = 'Delete';
+  del.addEventListener('click', () => deleteAmbassador(a, del, rowError));
+  actions.appendChild(del);
+
+  row.appendChild(actions);
+  return row;
+}
+
+/* ---------- the editor dialog ----------
+   One dialog, two jobs. `ambEditing` is the whole difference: null means Add.
+   Keeping them in one place is deliberate — the validation, the field-level
+   error slots and the uniqueness messages are identical, and two dialogs would
+   drift the moment one of those changed. */
+
+/** Clear every red message in the dialog: the four per-field ones and the
+ *  catch-all. Called before each submit so a fixed error actually disappears. */
+function clearAmbErrors() {
+  document.querySelectorAll('.amb-field-error').forEach((el) => {
+    el.textContent = '';
+    el.hidden = true;
+  });
+  $('amb-form-error').textContent = '';
+  $('amb-form-error').hidden = true;
+  ['amb-name', 'amb-email', 'amb-phone', 'amb-code', 'amb-points'].forEach((id) => {
+    $(id).classList.remove('is-bad');
+    $(id).removeAttribute('aria-invalid');
+  });
+}
+
+/**
+ * Put one red message under the input it is about, and move focus there.
+ *
+ * `field` comes from the server for a uniqueness refusal and from the local
+ * checks otherwise, so both halves land in the same place. Anything with no
+ * field to blame — or a field name this dialog does not have an input for —
+ * falls through to the dialog-level line, which is the case that would
+ * otherwise be silent.
+ */
+function ambFieldError(field, msg) {
+  const el = document.querySelector(`.amb-field-error[data-for="${field}"]`);
+  const input = el ? $(`amb-${field}`) : null;
+  if (!el || !input) {
+    $('amb-form-error').textContent = msg;
+    $('amb-form-error').hidden = false;
+    return;
+  }
+  el.textContent = msg;
+  el.hidden = false;
+  input.classList.add('is-bad');
+  input.setAttribute('aria-invalid', 'true');
+  input.focus();
+}
+
+// Uppercase as it is typed, in the hint, so the operator sees the code that
+// will actually be stored rather than what their keyboard produced.
+function syncAmbCodePreview() {
+  const code = $('amb-code').value.trim().toUpperCase();
+  $('amb-code-preview').textContent = code ? `/r/${code}` : '/r/CODE';
+}
+
+function openAmbModal(a) {
+  ambEditing = a ?? null;
+  clearAmbErrors();
+  ambOkMsg('');
+
+  $('amb-modal-title').textContent = a ? 'Edit ambassador' : 'Add ambassador';
+  $('amb-submit').textContent = a ? 'Save changes' : 'Create ambassador';
+  $('amb-submit').disabled = false;
+  $('amb-name').value = a?.name ?? '';
+  $('amb-email').value = a?.email ?? '';
+  $('amb-phone').value = a?.phone ?? '';
+  $('amb-code').value = a?.code ?? '';
+  // String(), not a truthiness shortcut: a rate of 0 is falsy, and an `a.points
+  // || ''` here would render an empty box for the very setting the field exists
+  // to make visible. Showing the 0 is what makes "pays nothing" a choice the
+  // operator can see rather than one they have to infer from a blank.
+  $('amb-points').value = String(a?.points ?? 0);
+  syncAmbCodePreview();
+
+  $('amb-modal').hidden = false;
+  $('amb-name').focus();
+}
+
+function closeAmbModal() {
+  $('amb-modal').hidden = true;
+  ambEditing = null;
+  // reset() also wipes a real person's email and phone number out of the DOM,
+  // which is why this runs on sign-out too.
+  $('amb-form').reset();
+  clearAmbErrors();
+  // reset() restores the markup's value="0", but being explicit costs nothing
+  // and survives somebody editing that attribute out.
+  $('amb-points').value = '0';
+  syncAmbCodePreview();
+}
+
+/* The client half of the rules in src/lib/ambassadors.js. Duplicated on purpose
+   and NOT authoritative: the server validates everything again and its answer
+   wins. This exists so a typo is caught without a round trip, and so the
+   message lands under the right box either way. */
+const AMB_CODE_RE = /^[A-Z0-9]{3,10}$/;
+const AMB_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const AMB_PHONE_RE = /^[\d\s()+.-]{7,20}$/;
+
+async function submitAmbassador(e) {
+  e.preventDefault();
+  clearAmbErrors();
+
+  const name = $('amb-name').value.trim();
+  const email = $('amb-email').value.trim().toLowerCase();
+  const phone = $('amb-phone').value.trim();
+  // Uppercased here as well as in CSS: the CSS is only paint, and what gets
+  // sent has to be what was shown.
+  const code = $('amb-code').value.trim().toUpperCase();
+
+  if (!name) return ambFieldError('name', 'Enter their name.');
+  if (!AMB_EMAIL_RE.test(email)) return ambFieldError('email', 'Enter a valid email address.');
+  if (phone && !AMB_PHONE_RE.test(phone)) {
+    return ambFieldError('phone', 'That doesn’t look like a phone number. Digits, spaces and ( ) + - . only.');
+  }
+  if (!AMB_CODE_RE.test(code)) {
+    return ambFieldError('code', code && /[^A-Z0-9]/.test(code)
+      ? 'Letters and numbers only, no spaces or symbols.'
+      : 'The code must be 3 to 10 letters or numbers.');
+  }
+  /* ⚠ A type="number" BOX NEVER HANDS BACK THE TEXT SOMEONE TYPED. Its value
+     is either a parseable number or the empty string, so `Number(value)` turns
+     every unusable entry into 0 — and a plain range check then passes it,
+     silently paying an ambassador nothing instead of saying no. On the field
+     that decides what somebody earns, quietly meaning something else is the
+     worst outcome available, so both unusable shapes are refused:
+
+       plain letters ("lots") are rejected by the input outright. The box ends
+       up EMPTY and badInput stays FALSE, so the empty check is what catches it.
+
+       a half-typed number ("1e-") is accepted as text and cannot be parsed.
+       The box also reads empty, and badInput is TRUE.
+
+     Empty is therefore refused rather than read as 0, which is safe because the
+     dialog always opens with a 0 already in it: an empty box means the operator
+     cleared it or typed something the browser threw away, and neither is a
+     request to pay nothing. badInput is checked first only so that case gets
+     the more specific sentence. */
+  const pointsBox = $('amb-points');
+  if (pointsBox.validity?.badInput) {
+    return ambFieldError('points', 'That isn’t a number. Enter a whole number from 0 to 5000.');
+  }
+  if (pointsBox.value.trim() === '') {
+    return ambFieldError('points', 'Enter a payout, or 0 to pay nothing.');
+  }
+  const points = Number(pointsBox.value);
+  if (!Number.isInteger(points) || points < 0 || points > 5000) {
+    return ambFieldError('points', 'The payout must be a whole number from 0 to 5000. 0 pays nothing.');
+  }
+
+  // ⚠ THE ONE EDIT THAT BREAKS SOMETHING ALREADY IN THE WORLD. Every QR handed
+  // out carries the old code, and there is no redirect from it — changing this
+  // makes those dead. Confirmed rather than refused, because a code typed wrong
+  // an hour ago is exactly the case this screen has to allow.
+  if (ambEditing && code !== ambEditing.code) {
+    const ok = confirm(
+      `Change ${ambEditing.name}’s code from ${ambEditing.code} to ${code}?\n\n`
+      + 'Every QR and link already using the old code stops working. Their scan and signup history is kept.'
+    );
+    if (!ok) return;
+  }
+
+  // ⚠ THE ONE EDIT THAT SPENDS MONEY. community_grants has no reversal path —
+  // reverse_transaction only unwinds `transactions` rows — so points paid out
+  // at a raised rate cannot come back. A RAISE is therefore confirmed; a cut is
+  // not, because the worst case of a cut is a conversation rather than points
+  // that cannot be recovered. Same split, and the same 100-point floor, as the
+  // trackable-QR award above.
+  if (ambEditing && points > (ambEditing.points ?? 0) && points >= 100) {
+    const ok = confirm(
+      `Pay ${ambEditing.name} ${points} community points for every signup?\n\n`
+      + 'Points paid out cannot be reversed, and there is no cap on how many signups they can bring in.'
+    );
+    if (!ok) return;
+  }
+
+  const btn = $('amb-submit');
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = ambEditing ? 'Saving…' : 'Creating…';
+  try {
+    const res = ambEditing
+      ? await authFetch(`/api/admin/ambassadors/${ambEditing.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name, email, phone, code, points }),
+      })
+      : await authFetch('/api/admin/ambassadors', {
+        method: 'POST',
+        body: JSON.stringify({ name, email, phone, code, points }),
+      });
+    if (res.status === 403) return denyAccess();
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // `field` is what turns "that code is taken" into red text under the code
+      // box rather than a line at the top the operator has to map back onto an
+      // input themselves. Everything without one falls through to the dialog.
+      return ambFieldError(body.field ?? 'form', body.message || 'Couldn’t save that.');
+    }
+
+    const saved = body.ambassador;
+    if (ambEditing) {
+      const i = ambassadors.findIndex((x) => x.id === ambEditing.id);
+      if (i >= 0 && saved) ambassadors[i] = saved;
+      ambOkMsg(`Saved ${saved?.name ?? name}.`);
+    } else {
+      if (saved) ambassadors.unshift(saved);
+      ambOkMsg(`Added ${saved?.name ?? name}. Their QR is the Show QR button on their row.`);
+    }
+    renderAmbassadors();
+    closeAmbModal();
+  } catch {
+    ambFieldError('form', 'Couldn’t save that. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+/* ---------- the row's own controls ---------- */
+
+/**
+ * Flip someone on or off.
+ *
+ * ⚠ OFF STOPS THEIR LINK, unlike a paused banner, which keeps resolving and
+ * only stops paying. That difference is why the switch is put BACK if the save
+ * fails: a row showing "Off" over an ambassador whose link is still live is
+ * worse than a click that visibly did nothing.
+ */
+async function toggleAmbassador(a, input, labelEl, errEl) {
+  const next = input.checked;
+  input.disabled = true;
+  labelEl.textContent = next ? 'On' : 'Off';
+  ambRowError(errEl, '');
+  ambOkMsg('');
+  try {
+    const res = await authFetch(`/api/admin/ambassadors/${a.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ active: next }),
+    });
+    if (res.status === 403) return denyAccess();
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      input.checked = !next;
+      labelEl.textContent = !next ? 'On' : 'Off';
+      return ambRowError(errEl, body.message || 'Couldn’t change that.');
+    }
+    const i = ambassadors.findIndex((x) => x.id === a.id);
+    if (i >= 0 && body.ambassador) ambassadors[i] = body.ambassador;
+    renderAmbassadors();
+    ambOkMsg(next ? `${a.name}’s link is on.` : `${a.name}’s link is off. Their history is kept.`);
+  } catch {
+    input.checked = !next;
+    labelEl.textContent = !next ? 'On' : 'Off';
+    ambRowError(errEl, 'Couldn’t change that. Check the connection and try again.');
+  } finally {
+    input.disabled = false;
+  }
+}
+
+async function deleteAmbassador(a, btn, errEl) {
+  // The server refuses a delete once a code has traffic; this only asks first so
+  // the refusal isn't the operator's first hint that it might matter.
+  const warn = a.scans > 0 || a.signups > 0
+    ? `${a.name}’s code has ${a.scans} scan${a.scans === 1 ? '' : 's'} and ${a.signups} signup${a.signups === 1 ? '' : 's'}.\n\n`
+      + 'Deleting throws that history away and stops every QR they have handed out. Turning them off does the same to the link and keeps the record. Delete anyway?'
+    : `Delete ${a.name}? Their code has never been scanned, so nothing is lost.`;
+  if (!confirm(warn)) return;
+
+  btn.disabled = true;
+  ambRowError(errEl, '');
+  ambOkMsg('');
+  try {
+    const force = a.scans > 0 || a.signups > 0 ? '?force=1' : '';
+    const res = await authFetch(`/api/admin/ambassadors/${a.id}${force}`, { method: 'DELETE' });
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return ambRowError(errEl, body.message || 'Couldn’t delete that.');
+    }
+    ambassadors = ambassadors.filter((x) => x.id !== a.id);
+    renderAmbassadors();
+    ambOkMsg(`Deleted ${a.name}.`);
+  } catch {
+    ambRowError(errEl, 'Couldn’t delete that. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** Copies the CODE, not the link — the link is behind Show QR, which is also
+ *  where somebody would be if they wanted to send it. */
+async function copyAmbCode(a, btn) {
+  const label = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(a.code);
+    btn.textContent = 'Copied';
+  } catch {
+    // Clipboard is permission-gated and fails outright on http:// origins.
+    // Showing the code beats a button that silently does nothing.
+    btn.textContent = a.code;
+  }
+  setTimeout(() => { btn.textContent = label; }, 1600);
+}
+
+/* ---------- the QR dialog ---------- */
+
+function openAmbQrModal(a) {
+  ambShowing = a;
+  const url = ambUrl(a.code);
+
+  $('amb-qr-title').textContent = a.name ?? 'Ambassador QR';
+  // Phone is optional; the separator goes with it rather than being left
+  // dangling. Same rule as the row above.
+  $('amb-qr-contact').textContent = [a.email, a.phone].filter(Boolean).join(' · ');
+  $('amb-qr-code').textContent = a.code ?? '';
+  $('amb-qr-link').textContent = url;
+  $('amb-qr-error').hidden = true;
+
+  const holder = $('amb-qr-holder');
+  holder.textContent = '';
+  try {
+    // Drawn at print resolution and scaled down by CSS, so it is sharp on a
+    // retina screen AND is the same artwork Download PNG saves.
+    const canvas = drawQrCanvas(url, 1240);
+    canvas.className = 'amb-qr-canvas';
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', `QR code for ${a.name}, ${url}`);
+    holder.appendChild(canvas);
+  } catch {
+    $('amb-qr-error').textContent = 'Couldn’t draw that QR. The link below still works.';
+    $('amb-qr-error').hidden = false;
+  }
+
+  $('amb-qr-modal').hidden = false;
+  $('amb-qr-close').focus();
+}
+
+function closeAmbQrModal() {
+  $('amb-qr-modal').hidden = true;
+  ambShowing = null;
+  // Drop the canvas rather than leaving it parked in the DOM: at 1240px square
+  // it is several megabytes of pixel data, and there is no reason to hold one
+  // per ambassador the operator has looked at.
+  $('amb-qr-holder').textContent = '';
+}
+
+async function copyAmbLink(btn) {
+  if (!ambShowing) return;
+  const label = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(ambUrl(ambShowing.code));
+    btn.textContent = 'Copied';
+  } catch {
+    btn.textContent = 'Copy failed';
+  }
+  setTimeout(() => { btn.textContent = label; }, 1600);
+}
+
+async function downloadAmbQrPng(btn) {
+  if (!ambShowing) return;
+  const a = ambShowing;
+  btn.disabled = true;
+  $('amb-qr-error').hidden = true;
+  try {
+    const blob = await qrPngBlob(ambUrl(a.code));
+    if (!blob) throw new Error('no blob');
+    const slug = String(a.name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    saveBlob(blob, `werewards-ambassador-${slug || 'code'}-${a.code}.png`);
+  } catch {
+    $('amb-qr-error').textContent = 'Couldn’t save that QR. The link below still works.';
+    $('amb-qr-error').hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/**
+ * The Ambassadors tab.
+ *
+ * Reloads on EVERY open rather than only the first, the same as the poster tab
+ * and unlike the pools one. The operator comes here to read scan counts, so a
+ * cached count from whenever the dashboard happened to boot is the one thing it
+ * must never show. It is a single view query.
+ */
+function openAmbassadors() {
+  setView('ambassadors');
+  loadAmbassadors();
 }

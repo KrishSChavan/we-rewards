@@ -203,7 +203,15 @@ test('a cell that a spreadsheet would EXECUTE is defused', () => {
    /r/%zzREWARD_NOT_FOUND answered 404 REWARD_NOT_FOUND.
 
    Every case below is rejected before any query is attempted, so this needs no
-   database — which is the whole reason it can live in the always-on suite. */
+   database — which is the whole reason it can live in the always-on suite.
+
+   ⚠ THAT INVARIANT IS NOW LOAD-BEARING ON THE PROBE STRINGS THEMSELVES.
+   /r/<code> tries a banner code and then an AMBASSADOR one (migration-053), and
+   an ambassador code is any 3-10 alphanumerics — a far wider net than the
+   banner's exactly-8-from-a-restricted-alphabet. A probe that satisfies either
+   shape does a real lookup, which in this suite means a retrying fetch at a
+   Supabase that is not running. Adding a case here means checking it against
+   BOTH normalizers first. */
 import express from 'express';
 import http from 'node:http';
 import trackedQrRoutes from '../src/routes/tracked-qr.js';
@@ -272,15 +280,24 @@ test('a caller cannot steer the central error handler through the code', async (
   });
 });
 
-test('a well-formed but impossible code is refused before any query', async () => {
-  // Wrong length, or a glyph the alphabet deliberately excludes. normalizeCode
-  // rejects these in the handler, so no database is touched and the visitor
-  // still lands somewhere useful — the QR is printed on a wall.
+test('a code impossible for BOTH namespaces is refused before any query', async () => {
+  // Every probe here has to be unusable as a banner code AND as an ambassador
+  // code (migration-053), because /r/ now tries the two in turn. That is a real
+  // constraint on this list rather than pedantry: the earlier version probed
+  // /r/abc, /r/aaaaaaaaa and /r/00000000, all of which are perfectly good
+  // AMBASSADOR shapes, so the moment the second arm existed they reached the
+  // database. The test still passed — it just took thirty seconds and had
+  // quietly stopped testing the thing in its own name.
+  //
+  // So: shorter than both minimums, longer than both maximums, or carrying a
+  // glyph neither alphabet has. The banner alphabet's own exclusions (0/1/l/o/i)
+  // are covered at unit level above, where asserting them costs nothing.
   await withServer(async (base) => {
-    for (const path of ['/r/abc', '/r/aaaaaaaaa', '/r/00000000', '/r/AAAA1111']) {
+    for (const path of ['/r/ab', '/r/aaaaaaaaaaa', '/r/aaaa-111', '/r/aaaa.111']) {
       const res = await get(base, path);
       assert.equal(res.status, 302, `${path} should redirect`);
       assert.equal(res.headers.get('location'), '/');
+      assert.match(res.headers.get('cache-control') ?? '', /no-store/, `${path} must not be cacheable`);
     }
   });
 });

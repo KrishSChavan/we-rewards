@@ -1046,3 +1046,117 @@ h1, h3 { margin: 0; }
 /* A day with nothing still draws a hairline, so the axis reads as a row of days
    rather than as a gap in the data. */
 .qr-bar-empty { height: 1px !important; background: var(--line); }
+
+/* ---------- ambassadors (migration-053) ---------- */
+/* The row is deliberately shaped the opposite way round to the QR rows above:
+   there, the NAME is the big thing and the code is a muted URL fragment. Here
+   the code is the largest text in the row, because it is the thing the operator
+   reads out, checks against a QR and copies. Who it belongs to sits above it in
+   small type, on one line. */
+.amb-list { display: grid; gap: 0.7rem; margin-top: 0.85rem; }
+.amb-row {
+  display: flex; flex-direction: column; gap: 0.45rem;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+}
+/* Faded, not hidden: somebody turned off is still on the roster, still holds
+   their code, and still has the history the operator came to read. */
+.amb-row.is-off .amb-who, .amb-row.is-off .amb-code-line { opacity: 0.6; }
+
+.amb-who {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.3rem;
+  font-size: 0.78rem; color: var(--muted); min-width: 0;
+}
+.amb-name { font-weight: 800; color: var(--ink); overflow-wrap: anywhere; }
+.amb-contact { overflow-wrap: anywhere; }
+/* Dimmed muted, NOT var(--line). --line is a border colour (#263a5e) and sits
+   almost invisibly on --panel-2, which left the three parts of this line looking
+   merely spaced rather than separated. It has to be quieter than the text it
+   divides and still legible against the row. */
+.amb-sep { color: var(--muted); opacity: 0.55; }
+.amb-off-tag, .amb-noacct-tag {
+  font-size: 0.62rem; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase;
+  border-radius: 999px; padding: 0.05rem 0.4rem; margin-left: 0.15rem;
+  border: 1px solid currentColor;
+}
+/* Warn for "Off", which the operator chose. BAD for "No account", which they did
+   not: it means a rate they set is silently not being paid, and it is the only
+   state on this row that is losing somebody money. */
+.amb-off-tag { color: var(--warn); }
+.amb-noacct-tag { color: var(--bad); cursor: help; }
+
+/* The code left, its two buttons pinned to the right end of a full-width row.
+   `margin-right: auto` on the code rather than `justify-content: space-between`
+   so that when the row wraps on a phone the buttons stay together as a pair
+   instead of being flung to opposite edges. */
+.amb-code-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.amb-code {
+  margin-right: auto; min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.35rem; font-weight: 800; letter-spacing: 0.06em;
+  color: var(--ink); overflow-wrap: anywhere;
+}
+.amb-code-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+
+.amb-stats { display: flex; flex-wrap: wrap; gap: 0.15rem 0.9rem; font-size: 0.78rem; color: var(--muted); }
+.amb-row-error { color: var(--bad); font-size: 0.78rem; font-weight: 700; margin: 0; }
+.amb-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+/* Same two small buttons as .qr-btn / .qr-btn-danger, under names that say which
+   list they belong to. */
+.amb-btn, .amb-btn-danger {
+  flex-shrink: 0; font: inherit; font-size: 0.72rem; font-weight: 700; cursor: pointer;
+  padding: 0.35rem 0.6rem; border-radius: 8px;
+  background: transparent; border: 1px solid var(--line); color: var(--ink);
+}
+.amb-btn:hover { border-color: var(--accent); }
+.amb-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.amb-btn-danger { color: var(--bad); }
+.amb-btn-danger:hover { background: var(--bad); color: #fff; border-color: var(--bad); }
+.amb-btn:disabled, .amb-btn-danger:disabled { opacity: 0.55; cursor: default; }
+
+/* ---------- the editor dialog ---------- */
+/* Uppercase while it is being typed, so what is on screen is what will be
+   stored. Paint only — admin.js uppercases the value again on submit, because a
+   text-transform does not change what an input reports. */
+.amb-code-input {
+  text-transform: uppercase;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+.amb-code-preview { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); }
+/* Narrow, like the trackable-QR award box: a number-entry field stretched to the
+   dialog width invites a phone number to be typed into it. */
+.amb-points-input { width: 8rem; }
+/* The per-field red text. .field-error carries margin-top:0.75rem for the login
+   card's stack; inside a field that gap reads as a missing line, so it goes. */
+.amb-field-error { margin: 0.25rem 0 0; font-weight: 700; }
+/* Ring the box the message is about, so the two are connected at a glance and
+   not only by proximity. */
+.nv-input.is-bad { border-color: var(--bad); }
+.nv-input.is-bad:focus-visible { outline-color: var(--bad); }
+
+/* ---------- the QR dialog ---------- */
+.amb-qr-card { width: min(440px, 100%); text-align: center; }
+.amb-qr-contact { color: var(--muted); font-size: 0.82rem; margin: 0.35rem 0 0; overflow-wrap: anywhere; }
+.amb-qr-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.5rem; font-weight: 800; letter-spacing: 0.08em;
+  margin: 0.5rem 0 0; overflow-wrap: anywhere;
+}
+/* White plate around the symbol, and it is not decoration. The dialog is dark,
+   and the quiet zone a QR needs to scan is WHITE — a black margin around the
+   code is one of the two reliable ways to make one unreadable (the other,
+   inverting it, is why drawQrCanvas hard-codes its colours). The padding here
+   widens that zone rather than replacing the 4 modules the canvas already
+   carries. */
+.amb-qr-holder {
+  margin: 0.9rem auto 0; width: min(300px, 100%);
+  background: #fff; border-radius: 12px; padding: 0.6rem;
+}
+.amb-qr-canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+.amb-qr-link {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem; color: var(--muted); margin: 0.7rem 0 0; overflow-wrap: anywhere;
+}
+.amb-qr-card #amb-qr-error { margin-top: 0.6rem; }

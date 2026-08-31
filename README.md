@@ -355,6 +355,13 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   `{ errors, total, offset, limit }`, where `total` counts the log under the same
   `source` filter — the same envelope `/students`, `/referrals` and `/grants`
   return, so the dashboard can say how much it is not showing.
+- `GET/POST /api/admin/ambassadors` + `PATCH`/`DELETE /api/admin/ambassadors/:id`
+  — the **Ambassadors** tab (migration-053): people recruiting for the app, each
+  with a code they chose, a QR to hand out, and a community-points rate paid to
+  them per signup. A 409 on a duplicate code, a duplicate email, or an email with
+  **no student account behind it** carries a `field` so the dialog can put its red
+  text under the offending input; a delete on a code with traffic is refused
+  unless `?force=1`. See "Ambassadors" below.
 
 ## Nearby spot alerts (migration-051)
 
@@ -505,6 +512,130 @@ per-code raw scan log export.
 Deleting a code that has traffic is refused — pausing keeps the history and the
 banner on the wall keeps resolving. `active = false` stops the payout only;
 scans still count, because the poster is still up.
+
+## Ambassadors (migration-053)
+
+People, rather than walls. An operator adds someone in **/admin → Ambassadors**
+with their name, email, an optional phone number, and a **short code they chose
+themselves** (3-10 letters or numbers, unique, stored uppercase). The row hands
+back a code to copy and a QR to show, and reads back how many people scanned it
+and how many of those signed up.
+
+### The ambassador is paid, into their own account
+
+Each row carries a **community points per signup** rate. When somebody creates an
+account through that code, the ambassador is credited that many points — through
+`grant_community_points()` (migration-039), so no new SQL moves points and the
+migration-025 write guard, the ledger and the idempotency index all apply
+unchanged. `0` is a real setting: measure somebody and pay them nothing.
+
+⚠ **Which is why they must already have an account.** `grant_community_points`
+raises `GRANT_STUDENT_UNKNOWN` for a user with no `profiles` row, and the
+evaluator swallows that — it has to, since a payout may never cost a student
+their consent. So an ambassador created against an address nobody has signed up
+with would recruit people, show signups climbing, and never be paid, with the
+only trace a line on stderr. The admin form therefore resolves the account from
+the email **at create time** and refuses if there isn't one, with the message
+under the email box. `ambassadors.user_id` pins the resolved account; it is a
+real FK rather than a repeated email lookup because `profiles.email` is neither
+unique nor `not null`.
+
+Changing an ambassador's email **re-resolves the payee** — the stored `user_id`
+belonged to the old address, and leaving it would keep paying the previous
+person from an edit that looks cosmetic. The check is against the row's current
+email, not merely "was an email sent", so an ambassador whose student account
+has since been deleted can still be renamed or switched off.
+
+**The idempotency key is the recruit, not the ambassador.** The grant is written
+with `ref_id = the new student` and `kind = 'ambassador'`, so 039's
+`unique (ref_id, kind)` index means one ambassador payout per account created,
+ever. That is what pays one ambassador a hundred times (once per distinct
+recruit) while making a second payout for the same recruit impossible. A recruit
+can still separately be worth a poster award, because the `kind` differs.
+
+⚠ **No incentives row, so no shared budget ceiling, and no lifetime cap.** Same
+trade migration-050 made: incentives carry a one-active-deal-per-kind index, so
+every ambassador would have shared one row and one budget. The guards are the
+per-ambassador rate cap (5000, matching the signup bonus) and
+`grant_community_points`' own 100000 typo stop. **A 5000-point rate times a
+thousand recruits is five million points and nothing stops it** — raising a rate
+to 100 or more is confirmed in the dialog for that reason, since
+`community_grants` has no reversal path. To add a real ceiling: widen
+`incentives_kind_check` the way 040 did and pass `p_incentive_id`.
+
+If an ambassador later deletes their student account, `user_id` goes null
+(`on delete set null`), their code keeps working, and their row shows a red
+**No account** tag — flagged only when they have a non-zero rate, since a 0-rate
+ambassador with no account has nothing going wrong. Re-saving the row re-links
+them once they have signed up again.
+
+### It shares the `/r/` rail with the printed banners
+
+The QR encodes the same `https://<origin>/r/<code>` a poster does.
+`src/routes/tracked-qr.js` tries a **banner** code first and falls through to an
+**ambassador** one. One printed-URL rail means one rate limiter, one `no-store`
+header, one service-worker exemption and one `URIError` guard — each of which was
+learned the hard way in that file and none of which would be got right twice. The
+redirect hands back the same `?qr=` parameter either way, because the client never
+interprets the code: it stashes it and posts it to `accept-terms`, where two
+evaluators each ignore what is not theirs. `public/student/app.js` needed no change.
+
+⚠ **The second arm widened what `/r/` will look up.** A banner code is 8
+characters of a restricted alphabet, so almost every junk path was refused by a
+regex and cost nothing. An ambassador code is *any* 3-10 alphanumerics, so
+`/r/hello` now costs one indexed lookup. That is inherent — a code that short
+cannot be ruled out without asking — and the controls are the lookup being a
+unique-index hit and the 600-per-quarter-hour-per-IP limiter in `server.js`. It
+also means a test probe that used to touch no database may now touch one; see the
+note atop `test/tracked-qr.test.js`, where exactly that happened and turned a
+4ms test into a 31-second one.
+
+### Three rules that do NOT carry over from the banners
+
+| | Trackable QR (050) | Ambassador (053) |
+|---|---|---|
+| the code | 8 random characters, minted | 3-10, **typed by the operator** |
+| `active = false` | pauses the **payout**; the URL keeps resolving and counting | stops the **link**; `/r/` redirects home and records nothing |
+| identity | a name only | name + **unique** email + optional phone |
+| who gets paid | the **new student** who signed up | the **ambassador**, into their own account |
+| `kind` | `tracked_qr` | `ambassador` |
+
+The middle row is the one to keep straight. A banner is bolted to a wall and
+cannot be recalled, so pausing it could only ever mean "stop paying". A person
+can simply be told they are finished, so turning them off stops their link —
+and keeps their history, which is what the button promises.
+
+⚠ **The two code namespaces can collide, and the guard is in Node.** An
+8-character ambassador code lowercases into a legal banner code (`SARAHXYZ` →
+`sarahxyz`), and the database will hold both happily. Because the resolver tries
+banners first, such an ambassador would never be reached — so
+`ambassadorConflict()` in `src/routes/admin.js` refuses the create. Only that
+direction is guarded: a *minted* banner code landing on an existing ambassador's
+is 1 in 31⁸. `behavior-053.sql` asserts the hazard is real so nobody deletes the
+guard as redundant.
+
+### Uniqueness is a promise the schema keeps
+
+The dialog promises "SARAH7 is already Sarah Chen's code" and "that email is
+already an ambassador", with the red text under the offending input rather than
+at the top — the API sends a `field` with each 409 for exactly that. That rests
+on two column CHECKs: `code = upper(code)` and `email = lower(email)`. Without
+them, plain `UNIQUE` stops being a case-insensitive check and `SARAH7`/`sarah7`
+become two rows the resolver picks between arbitrarily.
+
+One attribution per account is a unique index on `ambassador_signups.user_id`,
+belt and braces with the ledger index above — that one stops the money moving
+twice, this one stops a second ambassador claiming a recruit when the rate was
+**zero**, since a 0-rate ambassador writes no grant for the ledger index to see.
+`ambassador_signups.points` records what each recruit was worth **at the time**,
+so raising the rate never rewrites what past recruits earned.
+
+The same ten-minute new-account window as the banners applies, for the same
+reason: `accept-terms` is re-POSTed by every existing student on a
+`TERMS_VERSION` bump. Now that money is involved there is also a **self-signup
+guard** — an ambassador who deletes their account and signs up again through
+their own code is a genuinely new account inside that window, and without the
+check that would be a renewable payout.
 
 ## Vendor deals (campaigns)
 
@@ -700,6 +831,8 @@ powershell -File test/sql/run.ps1 -Migration migration-050.sql `
            -Seed seed-050.sql -Behavior behavior-050.sql # trackable QR codes
 powershell -File test/sql/run.ps1 -Migration migration-051.sql `
            -Seed seed-051.sql -Behavior behavior-051.sql # nearby spot alerts
+powershell -File test/sql/run.ps1 -Migration migration-053.sql `
+           -Seed seed-053.sql -Behavior behavior-053.sql # ambassadors
 ```
 
 Each migration brings its own `-Seed` / `-Behavior` pair, because a seed written
