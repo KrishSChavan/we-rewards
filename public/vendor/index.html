@@ -133,6 +133,18 @@
 
   <!-- ===== APP SHELL ===== -->
   <div id="shell" hidden>
+    <!-- Operator impersonation (src/lib/terminal-admin.js). Hidden and empty for
+         every real vendor; unhidden only when GET /api/vendor/locations answers
+         `admin: true`. A strip rather than a subtler badge because the whole
+         risk of this feature is forgetting which of the two you are: every
+         control below it moves REAL points on REAL customers of a business that
+         is not yours, and "I thought I was on staging" is the mistake it exists
+         to make impossible. The tinted topbar (body.is-admin) is the same
+         signal at a glance; this is the one that names the shop. -->
+    <div id="admin-banner" class="admin-banner" hidden>
+      <span class="admin-banner-tag">ADMIN</span>
+      <span id="admin-banner-text" class="admin-banner-text"></span>
+    </div>
     <header id="topbar">
       <!-- One login can run several locations (migration-043), and the vendor
            name IS the switcher: it is already the thing in this bar that says
@@ -147,7 +159,21 @@
           <span id="vendor-name" class="store-name"></span>
           <span id="store-caret" class="store-caret" aria-hidden="true" hidden>▾</span>
         </button>
-        <div id="store-menu" class="store-menu" role="listbox" aria-label="Choose a store" hidden></div>
+        <div id="store-menu" class="store-menu" role="listbox" aria-label="Choose a store" hidden>
+          <!-- Sticky filter, shown only once the menu holds more than a
+               handful (see STORE_FILTER_FROM in terminal.js). A vendor's own
+               switcher is two or three shops and a box there would be noise;
+               the operator's is every business on the platform, which is a list
+               you search rather than read. Outside #store-list so it stays put
+               while the results scroll under it. -->
+          <div id="store-filter-wrap" class="store-filter-wrap" hidden>
+            <input id="store-filter" class="store-filter" type="search" autocomplete="off"
+                   autocorrect="off" autocapitalize="none" spellcheck="false"
+                   placeholder="Search vendors" aria-label="Search vendors" />
+          </div>
+          <div id="store-list" class="store-list"></div>
+          <p id="store-empty" class="store-empty" hidden>No vendor matches that.</p>
+        </div>
       </div>
       <!-- The tab row is ONE line that scrolls sideways — it never wraps and it
            never squeezes a label. The terminal runs on phones and on iPads of
@@ -173,6 +199,22 @@
     </header>
 
     <main id="main">
+
+      <!-- ===== PICK A VENDOR (operator only) =====
+           Where an operator session lands before it has chosen a shop. It exists
+           so that state is a SCREEN rather than a scan screen with nothing
+           behind it: show('screen-scan') starts the camera (syncScanners), and a
+           viewfinder that would answer every code with "choose a vendor first"
+           is a worse answer than not opening one. Unreachable for a vendor —
+           they always have at least one store resolved before the shell is
+           unhidden. -->
+      <section id="screen-pick" class="screen pick-screen" hidden>
+        <h2 class="scan-title">CHOOSE A VENDOR</h2>
+        <p class="manage-note">Tap the name at the top left to open any spot on the platform and work its terminal as if you were them.</p>
+        <div class="pad-actions">
+          <button id="pick-open" class="btn-primary" type="button">Choose a vendor</button>
+        </div>
+      </section>
 
       <!-- ===== SCAN: ONE CAMERA FOR AWARD AND REDEEM =====
            A 6-digit earn code and a 4-digit redemption code are told apart by
@@ -630,8 +672,13 @@
             </div>
 
             <!-- Login password. Its own button calls Supabase auth directly
-                 (no server route). -->
-            <div class="stats-card">
+                 (no server route) — which is why it is HIDDEN for an operator
+                 session (paintAdminChrome in terminal.js): sb.auth.updateUser
+                 changes whoever is signed in, and that is the operator's own
+                 env-var account, not this vendor's. It would not do what the
+                 card says, and the next deploy would revert it anyway. To
+                 actually reset a vendor's password, mint a code in /admin. -->
+            <div id="settings-password-card" class="stats-card">
               <h3>Login password</h3>
               <p class="manage-note">Change the password for this terminal's email login. You'll stay signed in on this device, so use the new password next time you sign in.</p>
               <label class="settings-field">New password

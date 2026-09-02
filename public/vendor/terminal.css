@@ -130,6 +130,82 @@ button { font-family: inherit; border: none; cursor: pointer; }
 .store-item-mark { flex: none; font-weight: 900; color: var(--success); }
 .store-item-mark[hidden] { display: none; }
 
+/* ---------- operator terminal (src/lib/terminal-admin.js) ----------
+
+   Drawn only for the env-configured operator login, which can open ANY vendor's
+   till. Everything here exists to answer one question at a glance — "am I
+   looking at my own dashboard or at a real business's counter?" — because every
+   control below the bar moves real points for real customers of a shop that
+   isn't ours. Crimson is the same colour a TEST deployment tints its PWA with
+   (TEST_THEME_COLOR in server.js); nothing else in this app is this colour, and
+   that is the whole point.                                                    */
+
+.admin-banner {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.45rem 1.4rem;
+  background: #b3261e; color: #fff;
+  font-weight: 900; font-size: 0.82rem; letter-spacing: 0.06em; text-transform: uppercase;
+  /* Above #topbar's stacking context, so the store menu can't paint over the
+     one strip that says whose till this is. */
+  position: relative; z-index: 36;
+}
+.admin-banner[hidden] { display: none; }
+
+.admin-banner-tag {
+  flex: none;
+  padding: 0.1rem 0.45rem;
+  background: #fff; color: #b3261e;
+  border-radius: 2px;
+}
+/* One line, ellipsised: a long business name must not push the ADMIN tag off
+   the row on a phone, since the tag is the half that carries the warning. */
+.admin-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The at-a-glance half of the same signal, for anyone whose eye is already on
+   the vendor name rather than the strip above it. */
+body.is-admin #topbar { background: #fdecea; border-bottom-color: #b3261e; }
+/* The tab rail's scroll fades are hard-coded to fade to var(--card) (white),
+   which on the tinted bar reads as two pale smears either side of the tabs
+   rather than as the bar running under them. Re-point them at the tint. */
+body.is-admin .tab-rail::before { background: linear-gradient(to right, #fdecea, rgba(253, 236, 234, 0)); }
+body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea, rgba(253, 236, 234, 0)); }
+
+/* ---------- store menu search (long lists) ----------
+   Shown only from STORE_FILTER_FROM stores up, which in practice means the
+   operator's roster of every vendor rather than a chain's two or three. */
+
+.store-filter-wrap {
+  position: sticky; top: 0; z-index: 1;
+  padding: 0.5rem;
+  background: var(--card);
+  border-bottom: 2px solid var(--ink);
+}
+.store-filter-wrap[hidden] { display: none; }
+
+.store-filter {
+  width: 100%; box-sizing: border-box;
+  padding: 0.5rem 0.6rem;
+  border: 2px solid var(--sky-line);
+  background: var(--card); color: inherit;
+  font: inherit; font-weight: 700;
+  /* iOS zooms the page when a focused input's text is under 16px, and on a till
+     that leaves the terminal scrolled sideways with no way back. */
+  font-size: 1rem;
+  -webkit-appearance: none; appearance: none;
+}
+.store-filter:focus { outline: none; border-color: var(--navy); }
+
+.store-empty {
+  margin: 0; padding: 0.9rem;
+  color: var(--muted); font-weight: 700; font-size: 0.85rem;
+}
+.store-empty[hidden] { display: none; }
+
+/* ---------- pick-a-vendor screen (operator, no vendor chosen) ---------- */
+
+.pick-screen { text-align: center; padding: 2.5rem 1.4rem; }
+.pick-screen .manage-note { max-width: 30rem; margin: 0.8rem auto 1.4rem; }
+
 /* A store the operator switched off. Listed rather than hidden — see
    GET /api/vendor/locations — but not selectable: requireVendor would answer
    VENDOR_DISABLED and strand the till on a screen it can't use. */
@@ -776,6 +852,10 @@ button { font-family: inherit; border: none; cursor: pointer; }
   background: var(--card); border: 3px solid var(--ink); border-radius: 1rem;
   padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.8rem;
 }
+/* `display: flex` above beats the UA's [hidden] rule, so hiding one of these
+   from script (paintAdminChrome hides the Login-password card for an operator
+   session) needs saying explicitly or the element stays on screen. */
+.stats-card[hidden] { display: none; }
 .stats-card h3 { font-size: 1.15rem; font-weight: 900; letter-spacing: 0.02em; }
 .stats-card-head { display: flex; align-items: baseline; justify-content: space-between; }
 .chart-max { font-size: 0.9rem; font-weight: 700; color: var(--muted); }

@@ -363,6 +363,115 @@ must be in the `ADMIN_EMAILS` env allow-list — enforced server-side by
   text under the offending input; a delete on a code with traffic is refused
   unless `?force=1`. See "Ambassadors" below.
 
+## Operator terminal login (act as any vendor)
+
+Set `TERMINAL_ADMIN_EMAIL` + `TERMINAL_ADMIN_PASSWORD` and the store menu at the
+top left of `/terminal` — the one a multi-location owner already uses to switch
+between their own shops — lists **every vendor on the platform** for that one
+account. Pick any of them and the terminal is theirs: scan, award, redeem, items,
+deals, stats and settings, with the staff PIN not asked for. It is the same app a
+vendor sees, which is the point — the operator is looking at what the vendor is
+looking at.
+
+**Both vars, or nothing.** Unset either one and the account is never created, the
+branch in `requireVendor` cannot fire, and the feature does not exist. That is
+the entire switch; there is no separate enable flag. Boot says which state it is
+in, next to the Resend / PostHog / Gemini lines, because it otherwise fails
+silently — an unprovisioned account just refuses the sign-in, which looks exactly
+like a typo. A password under 16 characters switches the feature **off** with a
+warning rather than being accepted (`MIN_PASSWORD_LENGTH` in
+`src/lib/terminal-admin.js`).
+
+> **This is a different grant from `ADMIN_EMAILS`, and they are deliberately not
+> the same setting.** That list is Google-gated and read-mostly; this is one
+> password with write access to every shop on the platform. Use a **dedicated
+> address that is not in `ADMIN_EMAILS`** — reusing one gives that Google account
+> an email+password identity too, so guessing this string would also open
+> `/admin`. Boot warns if you do. Sign-in goes to Supabase GoTrue rather than to
+> this app, so none of the `express-rate-limit` ceilings in `server.js` apply to
+> guessing it; GoTrue's own limits are the brake. Generate the value, don't
+> invent it.
+
+**How it works.** A *real* Supabase account, provisioned from the env vars at
+boot by `ensureTerminalAdmin` and re-synced on every boot so the config var stays
+the source of truth (rotate = change the value and restart). Real, rather than a
+token we mint ourselves, because the terminal is a Supabase client end to end and
+`vendor_pin_sessions.user_id` carries a foreign key to `auth.users`
+(migration-007) — so nothing downstream has to learn a new identity shape, and
+`error_logs` records the operator as the actor rather than the vendor.
+
+**It fails closed, and that is load-bearing.** The account is stamped at
+creation with `app_metadata.wr_terminal_admin = true`, and that flag does two
+jobs. It is how boot tells *our* account from a real person's — the obvious
+alternative ("no `profiles` row and no `vendor_staff` link, so it must be ours")
+is a guess, and it is wrong for the address most likely to be typed here by
+mistake, since an `/admin` operator's Google account has neither. If the address
+turns out to be somebody else's, boot refuses to reset their password **and
+switches the whole feature off for that dyno**, because refusing to *provision*
+has to also mean refusing to *authorise*: their own password still works, so an
+env-only check would hand them every till. Provisioning that can't finish at all
+(a Supabase hiccup, a failed ownership lookup) latches off the same way and the
+boot line says `restart to retry` — for one credential with write access to
+every shop, guessing is not a defensible default. The latch is set *before* the
+first `await`, in the same tick as `server.listen()`, so there is no window where
+a request is served while the answer is still pending. A process that never ran
+boot (the unit tests, any `import { app }` harness) falls back to the env alone,
+which is how those drive the feature without a Supabase.
+
+The flag's second job is **migration-054**. `prune_unconsented_signups` deletes
+`auth.users` rows with no profile, no `vendor_staff` link and no consent record —
+which is precisely the shape of this account, so without the exemption the
+operator login would be created at boot and swept at 04:43 UTC the following
+night: working the day you set it up, gone the next morning, with nothing in the
+app to explain why. The sweep now skips accounts carrying the flag. Matched on
+the flag rather than on the address, so nothing in SQL has to be kept in step
+with a config var and the credential can be rotated freely. `ADMIN_FLAG` in
+`src/lib/terminal-admin.js` and the string in that migration are one name and
+must be changed together. Note `updateUserById` replaces `app_metadata`
+wholesale, so the re-sync path re-stamps it every boot.
+
+- `requireVendor` branches on `isTerminalAdmin(req.user.email)` **before** the
+  `vendor_staff` lookup and resolves `X-Vendor-Id` against the whole `vendors`
+  table. The ordering is load-bearing: `chooseVendorLink` has a "this account
+  runs exactly one shop, so the header is redundant" case, and reaching it as an
+  operator would silently ring every sale up at that one shop while the header
+  named another. The header is shape-checked (`chooseAdminVendorId`) and **never
+  defaulted** — no vendor id is guessed out of a roster of strangers, so an
+  operator with nothing chosen is answered `ADMIN_PICK_VENDOR` and shown a picker.
+- **No `active` check.** The kill-switch stops a *vendor* selling; the operator is
+  the one who threw it, and a spot they can't open is a spot they can't fix. The
+  menu still marks it `OFF` and the banner says `SWITCHED OFF`.
+- **`requirePin` is skipped.** `pin_hash` is bcrypt, so there is nothing to look
+  a PIN up from, and every route this feature exists to reach sits behind that
+  gate. Making the operator *type* one would be worse than useless: a wrong guess
+  calls `record_pin_result`, which locks the **vendor** after five failures
+  (migration-020), so five idle taps would take a real shop's redemptions offline.
+- **The terminal says so, loudly** — a crimson `ADMIN — acting as JOE'S PIZZA`
+  strip and a tinted topbar (the same crimson a test deployment tints its PWA
+  with). Every control under that bar moves real points for real customers of a
+  business that isn't yours, and "I thought I was on staging" is the mistake the
+  banner exists to make impossible.
+- **The Settings "Login password" card is hidden** for this session. It calls
+  `sb.auth.updateUser`, which changes *whoever is signed in* — the operator's own
+  env-var account, not the vendor's — so it would not do what the card says, and
+  the next deploy would revert it anyway. To reset a vendor's password, mint a
+  code in `/admin`.
+- The store menu grows a **search box** at 8+ entries (`STORE_FILTER_FROM`),
+  matching on name, location label and address; Enter opens the vendor when the
+  filter has narrowed to one.
+
+Two behaviours are unchanged and worth knowing before you edit someone's
+Settings, because they are the vendor's own rules and the operator inherits them:
+changing `points_per_dollar` on a **pooled** vendor fans the new rate out to every
+sibling in the pool (migration-044), and changing the **staff PIN** deletes that
+vendor's `vendor_pin_sessions`, signing every one of their live terminals out
+mid-shift.
+
+Covered by `test/terminal-admin.test.js` (the pure decisions — the unconfigured
+cases are the load-bearing ones, since a false positive there hands out every
+till in the app). The fallback POS at `/scan` is **not** included: it is a
+separate client with its own GoTrue session, and it was not part of this change.
+
 ## Nearby spot alerts (migration-051)
 
 A student walking past somewhere they have never earned at gets one

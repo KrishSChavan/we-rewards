@@ -82,7 +82,7 @@
 // changed, so the cache has to move or an installed terminal keeps the old
 // terminal.js beside a fresh index.html and the tags never appear
 // (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v30';   // v30: an item's points price on ITEMS (and in the add/edit hint) now names the spend that earns it, in parentheses, so a vendor prices in dollars rather than in points.
+const CACHE = 'werewards-terminal-v31';   // v31: operator terminal login (TERMINAL_ADMIN_EMAIL/PASSWORD) — the store menu at the top left lists every vendor for that one account, with a search box and a crimson ADMIN banner naming whose till is open. Must be bumped: the ADMIN banner, the pick-a-vendor screen and the search box are all in the precached index.html, so an already-installed counter would run the new terminal.js against the old markup without it.
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch

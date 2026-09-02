@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../lib/supabase.js';
 import { resolveUserFromToken } from '../lib/jwt.js';
 import { TERMS_VERSION } from '../lib/terms.js';
+import { isTerminalAdmin, chooseAdminVendorId } from '../lib/terminal-admin.js';
 
 /**
  * Reads `Authorization: Bearer <jwt>` and resolves it to a user, attaching
@@ -268,6 +269,50 @@ export async function requireVendor(req, res, next) {
     const rejection = await authenticate(req);
     if (rejection) return res.status(rejection.status).json(rejection.body);
 
+    // ---- Operator impersonation (lib/terminal-admin.js) ----
+    //
+    // BEFORE the vendor_staff lookup, and that ordering is load-bearing rather
+    // than tidy. chooseVendorLink below has a "this account runs exactly one
+    // shop, so the header is redundant" case; if the operator's account ever
+    // acquired a single vendor_staff row — onboarded as a test vendor, linked by
+    // mistake — falling through to it would IGNORE X-Vendor-Id entirely and
+    // silently ring every sale up at that one shop while the terminal's header
+    // named a different business. Branching first means that path cannot be
+    // reached by an operator at all.
+    if (isTerminalAdmin(req.user.email)) {
+      const vendorId = chooseAdminVendorId(req.headers['x-vendor-id']);
+      if (!vendorId) {
+        // Never guessed. Distinct from VENDOR_AMBIGUOUS because the client's
+        // answer is different: a vendor is told to name one of THEIR stores,
+        // an operator is told to pick from every store on the platform.
+        return res.status(400).json({
+          error: 'ADMIN_PICK_VENDOR',
+          message: 'Choose which vendor to open from the menu.',
+        });
+      }
+
+      const { data: vendor, error: vendorErr } = await supabaseAdmin
+        .from('vendors')
+        .select('*')
+        .eq('id', vendorId)
+        .maybeSingle();
+      if (vendorErr) throw vendorErr;
+      if (!vendor) {
+        return res.status(404).json({ error: 'VENDOR_NOT_FOUND', message: 'That vendor no longer exists.' });
+      }
+
+      // NO active check, unlike the vendor path below. The kill-switch exists to
+      // stop a vendor selling; the operator is the one who threw it, and a spot
+      // they cannot open is a spot they cannot diagnose or fix. The terminal
+      // labels it instead (see paintAdminChrome in public/vendor/terminal.js).
+      req.vendor = vendor;
+      // Read by requirePin (which the operator does not have to satisfy — they
+      // cannot know each shop's bcrypt-hashed PIN) and by the routes that want
+      // to say an action was an operator's. Set ONLY here.
+      req.terminalAdmin = true;
+      return next();
+    }
+
     const { data: staff, error } = await supabaseAdmin
       .from('vendor_staff')
       .select('vendor_id, vendors(*)')
@@ -324,6 +369,15 @@ const PIN_IDLE_MINUTES = 30;
  */
 export async function requirePin(req, res, next) {
   try {
+    // The operator, acting as this vendor (see requireVendor). Not gated, and it
+    // could not be: pin_hash is bcrypt, so there is nothing to look the PIN up
+    // from, and every route this feature exists to reach — items, settings,
+    // deals, redeem — sits behind this gate. Making them TYPE one would be worse
+    // than useless: a wrong guess calls record_pin_result, which locks the
+    // VENDOR (not the caller) after five failures (migration-020), so five idle
+    // taps by an operator would take a real shop's redemptions offline mid-shift.
+    if (req.terminalAdmin) return next();
+
     if (!req.vendor?.pin_hash) return next(); // no PIN set for this vendor → not gated
 
     const token = req.headers['x-vendor-pin'];

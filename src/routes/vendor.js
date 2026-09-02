@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireUser, requireVendor, requirePin } from '../middleware/auth.js';
+import { isTerminalAdmin } from '../lib/terminal-admin.js';
 import { emitBalance, emitPunch, emitDeal } from '../lib/realtime.js';
 import { CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS } from '../lib/campaigns.js';
 import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WINDOW_SECONDS } from '../lib/punch.js';
@@ -55,8 +56,40 @@ const router = Router();
  * VENDOR_DISABLED if they pick one), and silently dropping it would show a
  * one-location vendor an empty switcher with nothing to explain it.
  */
+const asLocation = (v) => ({
+  id: v.id,
+  name: v.name,
+  locationLabel: v.location_label ?? null,
+  address: v.address ?? null,
+  active: v.active !== false,
+});
+
 router.get('/locations', requireUser, async (req, res, next) => {
   try {
+    // The operator (lib/terminal-admin.js) holds no vendor_staff rows, so the
+    // query below would answer them `[]` — indistinguishable, to the terminal,
+    // from an account that staffs nothing. They get the whole platform instead,
+    // which is the list their switcher is choosing from.
+    //
+    // NAME order, not created_at: the vendor's own switcher is a two-or-three
+    // item menu where a stable "the shop you opened first stays on top" beats
+    // alphabetical, but a roster of every business on the platform is something
+    // you SCAN for a name, and the operator has no memory of the order they were
+    // onboarded in.
+    if (isTerminalAdmin(req.user.email)) {
+      const { data, error } = await supabaseAdmin
+        .from('vendors')
+        .select('id, name, location_label, address, active')
+        .order('name', { ascending: true })
+        .order('location_label', { ascending: true, nullsFirst: true });
+      if (error) throw error;
+      // `admin: true` is how the client learns to draw itself as an operator
+      // terminal. It rides on THIS response rather than /config because
+      // /locations is the first authenticated call enterApp() makes, and because
+      // /config cannot answer until a vendor has already been chosen.
+      return res.json({ locations: (data ?? []).map(asLocation), admin: true });
+    }
+
     const { data, error } = await supabaseAdmin
       .from('vendor_staff')
       .select('vendor_id, role, vendors(id, name, location_label, address, active, created_at)')
@@ -70,13 +103,7 @@ router.get('/locations', requireUser, async (req, res, next) => {
       // switcher for good, so the list doesn't reshuffle under the staff when
       // another location is added.
       .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
-      .map((v) => ({
-        id: v.id,
-        name: v.name,
-        locationLabel: v.location_label ?? null,
-        address: v.address ?? null,
-        active: v.active !== false,
-      }));
+      .map(asLocation);
 
     res.json({ locations });
   } catch (err) {
@@ -222,6 +249,15 @@ router.get('/config', async (req, res, next) => {
       // Display only, and ACTIVE members only (see poolFacts). 1 means this
       // counter and nothing else, which is what an unpooled terminal renders.
       poolSize: pool?.poolSize ?? 1,
+      // ---- operator impersonation (lib/terminal-admin.js) ----
+      // Repeated on every /config rather than read once at sign-in, because a
+      // store switch refetches ONLY this endpoint (applyStoreSwitch), and the
+      // chrome that says "you are not this vendor" has to survive that.
+      admin: req.terminalAdmin === true,
+      // Only an operator can be standing at a switched-off vendor's till —
+      // requireVendor answers VENDOR_DISABLED to everyone else — so this is
+      // false exactly nowhere else, and the banner uses it to say so.
+      active: req.vendor.active !== false,
     });
   } catch (err) {
     next(err);
@@ -658,6 +694,17 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
 router.post('/verify-pin', async (req, res, next) => {
   try {
     const { pin } = req.body ?? {};
+
+    // The operator never has to satisfy the PIN gate (requirePin in
+    // middleware/auth.js), and the terminal no longer offers them the pad — but
+    // this endpoint is reachable directly, and reaching it would be actively
+    // harmful rather than merely useless: a wrong guess calls record_pin_result,
+    // which locks the VENDOR, not the caller, after five failures
+    // (migration-020). An operator must not be able to take a real shop's
+    // redemptions offline by poking at this. Answered before the compare, so no
+    // guess is ever recorded.
+    if (req.terminalAdmin) return res.json({ ok: true, note: 'Operator session — PIN not required.' });
+
     if (!req.vendor.pin_hash) return res.json({ ok: true, note: 'No PIN set for this vendor.' });
 
     // Per-vendor lockout (independent of the per-IP pinLimiter): if this vendor

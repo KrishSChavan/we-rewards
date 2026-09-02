@@ -34,6 +34,7 @@ import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
 import { geminiConfigured, geminiModel } from './src/lib/gemini-receipt.js';
 import { emailEnabled, emailFrom } from './src/lib/email.js';
+import { ensureTerminalAdmin } from './src/lib/terminal-admin.js';
 import { buildClientAssets, buildRoot, ensureFresh } from './scripts/build-client.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 import {
@@ -1220,6 +1221,22 @@ if (isMain) {
   console.log(posthogEnabled
     ? `Analytics: mirroring client_events to PostHog (${new URL(batchUrl()).origin})`
     : 'Analytics: client_events only — set POSTHOG_API_KEY to mirror to PostHog');
+
+  // The operator's terminal login (src/lib/terminal-admin.js). Same reason the
+  // three lines above exist: with the env vars unset the app is unchanged and
+  // the feature simply isn't there, which is invisible from the outside — and
+  // with them set this is one password in front of EVERY shop's till, which is
+  // worth seeing written down on every boot. Never throws and never blocks the
+  // listener; a provisioning failure just leaves the account absent and says so.
+  ensureTerminalAdmin({
+    supabaseAdmin,
+    // Only so it can warn about reusing a dashboard address; the two grants are
+    // otherwise unrelated and neither implies the other. Parsed here rather than
+    // imported because middleware/auth.js keeps its copy private on purpose.
+    adminEmails: (process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim()).filter(Boolean),
+  })
+    .then((line) => console.log(line))
+    .catch((err) => console.log(`Terminal admin: OFF — ${err.message}`));
 
   // Pre-build the OCR worker (receipt scanning) so the first student's scan
   // doesn't also pay the ~2-4s wasm init. Still worth warming when the AI

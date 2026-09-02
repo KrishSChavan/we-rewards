@@ -22,6 +22,15 @@ let locations = [];        // every store this login runs (GET /api/vendor/locat
 let vendorId = null;       // the store this terminal is ringing up for, sent as
                            // X-Vendor-Id on every /api/vendor/* call
 let storeSwitching = false;  // a store switch is mid-flight (guards double-taps)
+let isAdmin = false;       // this is the OPERATOR's terminal login, not a
+                           // vendor's (src/lib/terminal-admin.js). Set from the
+                           // `admin` flag on GET /api/vendor/locations, and it
+                           // changes what `locations` MEANS: every vendor on the
+                           // platform rather than the ones this account staffs.
+                           // Never inferred client-side — the server is the only
+                           // thing that knows, and a terminal that decided for
+                           // itself would be a terminal that could be told.
+let storeFilter = '';      // the operator's search text in the store menu
 let config = null;         // vendor config from /api/vendor/config
 let rewards = [];          // vendor's rewards from /api/vendor/rewards
 let mode = 'scan';         // 'scan' | 'punch' | 'manage' | 'deals' | 'stats' | 'settings'
@@ -129,7 +138,7 @@ function installErrorReporter() {
 }
 
 const screens = [
-  'screen-login', 'screen-recover', 'screen-scan', 'screen-pad',
+  'screen-login', 'screen-recover', 'screen-pick', 'screen-scan', 'screen-pad',
   'screen-pin', 'screen-redeem-confirm', 'screen-manage', 'screen-stats',
   'screen-settings', 'screen-punch', 'screen-deals',
 ];
@@ -197,6 +206,24 @@ function bootFailed(message) {
   // locations; it ships disabled, so this does nothing until paintStoreSwitcher
   // finds a second store.
   $('store-btn').addEventListener('click', toggleStoreMenu);
+  // Search inside the store menu — only ever visible for a list long enough to
+  // need it (STORE_FILTER_FROM), which in practice means the operator's roster
+  // of every vendor. Re-renders only the rows, so the input keeps focus.
+  $('store-filter').addEventListener('input', (e) => {
+    storeFilter = e.target.value;
+    renderStoreItems();
+  });
+  // Enter on a filter that has narrowed to exactly one vendor opens it, so the
+  // whole switch is type-a-few-letters-and-go without reaching for the list.
+  $('store-filter').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const needle = storeFilter.trim().toLowerCase();
+    const shown = locations.filter((l) => storeMatches(l, needle));
+    if (shown.length === 1) requestStoreSwitch(shown[0].id);
+  });
+  // The operator's no-vendor-chosen screen. Same action as tapping the name in
+  // the header, spelled out for someone seeing this terminal for the first time.
+  $('pick-open').addEventListener('click', openStoreMenu);
   $('tab-scan').addEventListener('click', () => switchMode('scan'));
   $('tab-punch').addEventListener('click', () => switchMode('punch'));
   $('tab-manage').addEventListener('click', () => switchMode('manage'));
@@ -482,9 +509,17 @@ async function enterApp() {
   locations = await fetchLocations();
   vendorId = chooseStore(savedStore());
 
+  // An operator who hasn't picked yet (first sign-in on this device, or the
+  // vendor they were on has since been deleted). /config cannot answer without
+  // an X-Vendor-Id, and there is no sensible one to guess out of every business
+  // on the platform — so open the menu and let them choose. enterApp resumes
+  // through applyStoreSwitch when they do.
+  if (isAdmin && !vendorId) return enterAdminPicker();
+
   if (!(await loadConfig())) return;   // it has already said why, on the login card
 
   paintStoreSwitcher();
+  paintAdminChrome();
   $('signout-vendor').textContent = config.name;   // Settings -> Sign out card
   $('shell').hidden = false;
   $('screen-login').hidden = true;
@@ -492,6 +527,83 @@ async function enterApp() {
   refreshRewards();
   refreshLastActivity();
   enterScan();
+}
+
+/* ---------- operator terminal (src/lib/terminal-admin.js) ----------
+
+   One env-configured login that can open ANY vendor's till and work it as that
+   vendor. Everything below is the client's half; the server's is the branch at
+   the top of requireVendor, which resolves X-Vendor-Id against the whole vendors
+   table instead of this account's vendor_staff rows.
+
+   Three things differ from a vendor session and each is here for a reason:
+     • the store menu lists every business, so it gets a search box;
+     • the shell says loudly whose till this is, because the controls under it
+       move real points for a business that isn't ours;
+     • the "Login password" card goes away, because sb.auth.updateUser changes
+       the OPERATOR's own account, not this vendor's.
+   Nothing else about the terminal changes: it is deliberately the same app, so
+   what the operator sees is what the vendor is looking at.                    */
+
+// Below this many stores a search box is noise; at or above it the list is
+// something you search rather than read. A vendor's own switcher never reaches
+// it (a chain with 8 locations is already unusual); the operator's roster
+// passes it as soon as the platform does.
+const STORE_FILTER_FROM = 8;
+
+/** No vendor chosen yet: the shell, with nothing but the picker to act on. */
+function enterAdminPicker() {
+  config = null;
+  vendorId = null;
+  paintStoreSwitcher();
+  paintAdminChrome();
+  $('signout-vendor').textContent = '';
+  $('shell').hidden = false;
+  $('screen-login').hidden = true;
+  // Its own screen rather than the scan one: show() runs syncScanners, and a
+  // viewfinder with no vendor behind it would answer every code with an error.
+  show('screen-pick');
+  openStoreMenu();
+}
+
+/**
+ * Everything that says "you are the operator, not this vendor".
+ *
+ * Called on sign-in AND after every store switch, because a switch refetches
+ * only /config — so this is what keeps the banner naming the shop currently
+ * under the cursor rather than the one before it.
+ */
+function paintAdminChrome() {
+  // body.is-admin drives the tinted topbar in terminal.css. Toggled rather than
+  // set so a sign-out (resetToLogin) genuinely puts it back.
+  document.body.classList.toggle('is-admin', isAdmin);
+  $('admin-banner').hidden = !isAdmin;
+  // Set both ways, not just hidden-when-admin: the same terminal is signed out
+  // of and back into, and a vendor who followed an operator on this device must
+  // get their own password card back.
+  $('settings-password-card').hidden = isAdmin;
+
+  // The tab row is hidden ONLY in the operator's no-vendor-chosen state (every
+  // tab's loader would answer ADMIN_PICK_VENDOR). Restored here rather than at
+  // each call site so there is one place that decides, and a vendor signing in
+  // after an operator can never inherit a hidden one.
+  const rail = $('tab-rail');
+  const hideRail = isAdmin && !config;
+  if (rail.hidden !== hideRail) {
+    rail.hidden = hideRail;
+    if (!hideRail) syncTabRail();   // it measures, so it must re-measure once visible
+  }
+
+  if (!isAdmin) return;
+
+  // config.active is false only here: requireVendor answers VENDOR_DISABLED to
+  // everyone else, so no vendor can ever be standing at a switched-off till.
+  // Worth saying, because the terminal otherwise looks completely normal while
+  // the spot is hidden from every student in the app.
+  const off = config && config.active === false ? ' — SWITCHED OFF' : '';
+  $('admin-banner-text').textContent = config
+    ? `acting as ${configTitle()}${off}`
+    : 'choose a vendor to open';
 }
 
 /**
@@ -508,6 +620,35 @@ async function loadConfig() {
       return true;
     }
     const data = await res.json().catch(() => ({}));
+
+    // ---- operator sessions ----
+    //
+    // Driven off the SERVER's answer as well as the client's flag, and the
+    // `||` is the load-bearing half. ADMIN_PICK_VENDOR is proof this account is
+    // the operator — only requireVendor's impersonation branch emits it — and
+    // that proof can arrive when `isAdmin` is still false: a transient 5xx on
+    // /locations leaves fetchLocations returning [] with the flag unset, and
+    // without this the operator would fall into the sign-out branch below and
+    // be bounced to the login card by a blip.
+    if (isAdmin || data.error === 'ADMIN_PICK_VENDOR') {
+      isAdmin = true;                     // the server just settled it
+      // Their remembered vendor went away (deleted in /admin), or none was
+      // chosen. NEVER fall through to the fallback below: `locations` is every
+      // business on the platform, so "another one" is an arbitrary stranger's
+      // shop, and the terminal would open it and name it in a header nobody was
+      // reading.
+      if (locations.length) {
+        enterAdminPicker();
+        return false;
+      }
+      // The roster itself didn't load, so there is nothing to pick from. Keep
+      // the session — the account is fine, the network isn't — and say so.
+      $('login-error').textContent = 'Couldn’t load the vendor list. Check the connection and try again.';
+      $('login-error').hidden = false;
+      $('shell').hidden = true;
+      show('screen-login');
+      return false;
+    }
 
     // The remembered store was switched off, or this login lost access to it,
     // while the app was closed - and there is another one to fall back to. Take
@@ -564,10 +705,15 @@ function rememberStore() {
 }
 
 async function fetchLocations() {
+  // Assume vendor until the server says otherwise, and reset every time: this
+  // runs again on a re-sign-in, and an operator flag left over from the previous
+  // session would draw the ADMIN banner over a real vendor's till.
+  isAdmin = false;
   try {
     const res = await authFetch('/api/vendor/locations');
     if (!res.ok) return [];
     const body = await res.json();
+    isAdmin = body?.admin === true;
     return Array.isArray(body?.locations) ? body.locations : [];
   } catch {
     // Offline or a 5xx. A single-location login still works from here (the
@@ -578,8 +724,16 @@ async function fetchLocations() {
 }
 
 /** The store to open on: the remembered one while it is still usable, else the
- *  first one this login runs. Null when the list didn't load. */
+ *  first one this login runs. Null when the list didn't load.
+ *
+ *  For the OPERATOR there is no "else": `locations` is every business on the
+ *  platform, so falling back to the first one would open an arbitrary stranger's
+ *  till and start ringing sales up on it. They get null and the picker instead
+ *  (see enterApp). A remembered id is still honoured — including a switched-off
+ *  vendor, which only an operator can open at all — because that is the whole
+ *  point of remembering: come back to the shop you were working on. */
 function chooseStore(savedId) {
+  if (isAdmin) return locations.find((l) => l.id === savedId)?.id ?? null;
   const usable = locations.filter((l) => l.active);
   const saved = usable.find((l) => l.id === savedId);
   return (saved ?? usable[0] ?? locations[0])?.id ?? null;
@@ -597,20 +751,54 @@ const configTitle = () =>
 /** Repaint the header name and, for a multi-location login, the store menu. */
 function paintStoreSwitcher() {
   const btn = $('store-btn');
-  const many = locations.length > 1;
+  // An operator's menu is a control even when it holds ONE vendor: there is
+  // always somewhere else to go, and on a platform with a single vendor the
+  // picker is still how they open it after a sign-out.
+  const many = isAdmin || locations.length > 1;
 
-  $('vendor-name').textContent = configTitle();
+  // Before a vendor is chosen there is no config to name, and an empty header
+  // reads as a broken app rather than a prompt.
+  $('vendor-name').textContent = configTitle() || (isAdmin ? 'CHOOSE A VENDOR' : '');
   // Disabled = the single-location case: the plain name this bar always showed,
   // not a control and not a tab stop.
   btn.disabled = !many;
   $('store-caret').hidden = !many;
   closeStoreMenu();
 
-  const menu = $('store-menu');
-  menu.innerHTML = '';
-  if (!many) return;
+  // The filter is only wired up for a list worth searching; below that it stays
+  // hidden and `storeFilter` stays empty, so renderStoreItems draws everything.
+  const filtered = locations.length >= STORE_FILTER_FROM;
+  $('store-filter-wrap').hidden = !filtered;
+  if (!filtered) storeFilter = '';
+  $('store-filter').value = storeFilter;
 
-  locations.forEach((l) => {
+  renderStoreItems();
+}
+
+/** Match a store against the operator's search text. Name, label and address:
+ *  the three things they might remember about a shop, and the address is the
+ *  only one that is always different between two branches of a chain. */
+function storeMatches(l, needle) {
+  if (!needle) return true;
+  return `${l.name} ${l.locationLabel ?? ''} ${l.address ?? ''}`.toLowerCase().includes(needle);
+}
+
+/** Draw the menu's rows for the current filter. Split out of paintStoreSwitcher
+ *  because typing re-runs THIS and nothing else — repainting the whole switcher
+ *  on every keystroke would blur the input it is being typed into. */
+function renderStoreItems() {
+  const menu = $('store-list');
+  menu.innerHTML = '';
+  if (!(isAdmin || locations.length > 1)) {
+    $('store-empty').hidden = true;
+    return;
+  }
+
+  const needle = storeFilter.trim().toLowerCase();
+  const shown = locations.filter((l) => storeMatches(l, needle));
+  $('store-empty').hidden = shown.length > 0;
+
+  shown.forEach((l) => {
     const item = document.createElement('button');
     item.type = 'button';
     item.className = `store-item${l.id === vendorId ? ' is-current' : ''}`;
@@ -619,7 +807,11 @@ function paintStoreSwitcher() {
     // A store the operator switched off: listed so its absence isn't a mystery,
     // but not selectable. requireVendor answers VENDOR_DISABLED, and the till
     // would land on a screen it can't use.
-    item.disabled = !l.active;
+    //
+    // Except for the operator, who is the one who threw that switch: requireVendor
+    // skips the active check for them, and a spot they cannot open is a spot they
+    // cannot diagnose or fix. The OFF badge below still marks it.
+    item.disabled = !l.active && !isAdmin;
 
     const text = document.createElement('span');
     text.className = 'store-item-text';
@@ -655,9 +847,17 @@ function paintStoreSwitcher() {
 }
 
 function openStoreMenu() {
-  if (locations.length < 2) return;
+  if (!isAdmin && locations.length < 2) return;
   $('store-menu').hidden = false;
   $('store-btn').setAttribute('aria-expanded', 'true');
+  // Land in the search box on a list long enough to have one, so the operator
+  // types the shop's name instead of scrolling for it. Not on a touch keyboard
+  // though: focus() there throws up the on-screen keyboard over the very list
+  // it is meant to help you read.
+  if (!$('store-filter-wrap').hidden && !window.matchMedia?.('(pointer: coarse)')?.matches) {
+    $('store-filter').focus();
+    $('store-filter').select();
+  }
   // Dismiss on the next tap anywhere else, or on Escape. Capture phase, so a
   // control that stops propagation still closes the menu; and registering it
   // from inside the opening click is safe, since document's capture listeners
@@ -693,7 +893,10 @@ function requestStoreSwitch(id) {
   closeStoreMenu();
   if (storeSwitching || busy || id === vendorId) return;
   const target = locations.find((l) => l.id === id);
-  if (!target || !target.active) return;
+  // Inactive is a dead end for a vendor (requireVendor answers VENDOR_DISABLED)
+  // but not for the operator, who is allowed in to fix whatever got it switched
+  // off. Mirrors item.disabled in renderStoreItems.
+  if (!target || (!target.active && !isAdmin)) return;
 
   if (mode === 'settings' && isSettingsDirty()) {
     pendingMode = null;
@@ -734,6 +937,15 @@ async function applyStoreSwitch(id) {
     vendorId = previousId;
     config = previousConfig;
     storeSwitching = false;
+    // ...unless there wasn't one. An operator's FIRST pick comes from the
+    // picker, where previousId is null, and restoring that would leave a shell
+    // with no vendor, no config and a header naming nothing. Back to the picker,
+    // which is a screen that means something.
+    if (isAdmin && !previousId) {
+      enterAdminPicker();
+      flood('error', 'COULDN’T OPEN', data?.message || 'Check the connection and try again.');
+      return;
+    }
     repaintForStore();
     flood('error', 'COULDN’T SWITCH', data?.message || 'Check the connection and try again.');
     return;
@@ -749,6 +961,9 @@ async function applyStoreSwitch(id) {
 /** Redraw every part of the shell that names or reads the current store. */
 function repaintForStore() {
   paintStoreSwitcher();
+  // A switch refetches /config and nothing else, so this is what keeps the
+  // operator banner naming the shop now under the cursor rather than the last one.
+  paintAdminChrome();
   $('signout-vendor').textContent = config?.name ?? '';
   syncPunchTab();
   refreshRewards();
@@ -893,7 +1108,12 @@ async function authFetch(path, opts = {}) {
  *  redeeming gated now that it shares the un-gated SCAN tab with awarding —
  *  the server gates /redeem-preview and /redeem regardless. */
 function requirePin(action) {
-  if (!config?.hasPin || pinUnlocked) { action(); return; }
+  // The operator is not gated, and this is not cosmetic: the server already
+  // waves them through (requirePin in middleware/auth.js), so without the same
+  // rule here the terminal would put up a pad for a PIN they cannot know, in
+  // front of every route the feature exists to reach. Worse, a guess calls
+  // record_pin_result and locks the REAL vendor out after five failures.
+  if (isAdmin || !config?.hasPin || pinUnlocked) { action(); return; }
   pinAction = action;
   pinValue = '';
   renderPinDots();
@@ -1053,7 +1273,9 @@ function proceedSwitchMode(next) {
 
   // manage, deals, stats and settings are behind the PIN — but only once per
   // page session. pinUnlocked is a plain in-memory flag, so refreshing re-asks.
-  if (config.hasPin && !pinUnlocked) {
+  // Not for the operator: see requirePin above. ITEMS, DEALS, STATS and SETTINGS
+  // are most of what this feature is for, and every one of them is behind here.
+  if (!isAdmin && config.hasPin && !pinUnlocked) {
     mode = next;
     pinTarget = next;
     setTabs(next);
@@ -3439,6 +3661,10 @@ async function pushSettings(body, afterTarget) {
       here.address = data.address || null;
     }
     paintStoreSwitcher();
+    // The banner names the vendor from the same config the line above repaints
+    // the header from, so a rename on this form would otherwise leave the ADMIN
+    // strip reading the old name until the next store switch.
+    paintAdminChrome();
     syncPunchTab();   // the PUNCH tab appears/disappears with the toggle
 
     if (data.pinChanged) {
@@ -3687,6 +3913,13 @@ function resetToLogin() {
   locations = [];
   vendorId = null;
   storeSwitching = false;
+  // The operator session too, and BEFORE the repaints below: they both read
+  // isAdmin, and leaving it set would hand the next sign-in — a real vendor, on
+  // a shared iPad — an ADMIN banner and a picker over every business we have.
+  isAdmin = false;
+  storeFilter = '';
+  paintAdminChrome();     // drops body.is-admin, hides the banner, restores the
+                          // password card for whoever signs in next
   paintStoreSwitcher();   // back to a plain, disabled, empty name
 
   $('login-email').value = '';
