@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v81';   // v81: this worker stops answering for the other apps on the origin. Its scope is '/', so /terminal, /admin, /scan, /join, /legal and /unsubscribe all sat inside it, and an offline navigation to any of them was answered with the student shell
+const CACHE = 'werewards-v82';   // v82: the server-rendered public pages (/spots, /spots/<slug>, /how-it-works, /faq) and the two crawler files (/robots.txt, /sitemap.xml) join FOREIGN. This worker's scope is '/', so without it an installed PWA answered a navigation to any of them from cache, and an offline one with the student shell sitting at a /spots/<slug> URL. Those pages exist to be crawled and shared, so they must always come from the server
+// v81: this worker stops answering for the other apps on the origin. Its scope is '/', so /terminal, /admin, /scan, /join, /legal and /unsubscribe all sat inside it, and an offline navigation to any of them was answered with the student shell
 // v80: the iOS install guide's bouncing arrow moved from the middle of Safari's bottom bar to its right end — over the menu that actually holds Add to Home Screen — and the home install banner now asks for the download in as many words instead of naming the payoff
 // v77: installing is a button, not a lesson — Chromium installs outright from the Home card or the Account row, iPhone gets an arrow pointing at Safari's real Share button instead of a numbered sheet, the card is permanent (dismissible for 14 days) rather than a one-off first-points nudge, and the automatic triggers now only fire where a one-tap install actually exists
 // v76: the Chromium install prompt waits for the student's next tap instead of firing from a timer (Chrome refuses prompt() without a user gesture, so every automatic nudge had been a crash report that also burned a lifetime-cap slot); boot names the step when /api/public-config can't be reached, and retries it once
@@ -57,7 +58,7 @@ const SHELL = ['/', '/boot-guard.js', '/theme-init.js', '/no-zoom.js', '/styles.
 
    The mount itself matches as well as everything under it, because server.js answers
    both '/terminal' and '/terminal/'. */
-const FOREIGN = /^\/(?:terminal|admin|scan|join|legal|unsubscribe)(?:\/|$)/;
+const FOREIGN = /^\/(?:terminal|admin|scan|join|legal|unsubscribe|spots|how-it-works|faq|robots\.txt|sitemap\.xml)(?:\/|$)/;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

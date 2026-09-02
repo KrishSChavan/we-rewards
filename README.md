@@ -916,6 +916,91 @@ addresses are vendor logins. The per-login cooldown is not mainly an
 anti-mailbomb measure: minting supersedes any outstanding code, so without it
 anyone who knows a vendor's address could invalidate their live code on repeat.
 
+## Search discoverability (SEO)
+
+Five apps share this origin and only three are meant to be found: the landing
+page at `/`, the vendor pitch at `/join`, and the server-rendered public pages
+below. `/terminal`, `/admin` and `/scan` are login walls, and a crawler that
+indexes one turns a search for the brand into a result that reads like an
+internal tool.
+
+**Where it lives.** `src/lib/seo.js` (robots.txt, the sitemap, the canonical
+origin), `src/lib/page-shell.js` (the shared document shell and the Organization
+/ WebSite structured data), `src/lib/spots-page.js` (`/spots`), and
+`src/lib/content-pages.js` (`/how-it-works`, `/faq`). The five hand-authored
+shells under `public/` keep their own head tags in place; the absolute URLs in
+both have to agree, which is why every one of them is built from
+`CANONICAL_ORIGIN`.
+
+**`CANONICAL_ORIGIN` is not `APP_ORIGIN`, and merging them breaks the site's
+canonicals.** `APP_ORIGIN` is where THIS deployment is reached, which is what an
+email link or a printed QR needs, and on staging that is correctly the herokuapp
+address. `CANONICAL_ORIGIN` is where the site is officially published, the same
+string on every deployment. Build a `rel=canonical` from `APP_ORIGIN` and the
+staging dyno starts declaring itself the canonical copy of the whole site.
+
+**Two deployments, two different jobs.**
+
+| | production | staging (`APP_ENV` != production) |
+|---|---|---|
+| `robots.txt` | crawl allowed, staff mounts disallowed | crawl **allowed** |
+| `X-Robots-Tag` | absent on public pages | `noindex, nofollow` on everything |
+
+Staging is deliberately crawlable. `Disallow: /` is the tempting wrong answer:
+robots.txt governs the FETCH, and the `noindex` header lives inside the response
+that fetch would have returned, so blocking the crawl means the instruction is
+never read while a pasted staging URL stays eligible for indexing as a bare
+address.
+
+**Public pages and their content sources.**
+
+| Route | Source | Notes |
+|---|---|---|
+| `/spots` | `loadVendorCatalogue()` | alphabetical, `ItemList` structured data |
+| `/spots/<slug>` | same cached read | `Restaurant`/`LocalBusiness` + `PostalAddress` |
+| `/how-it-works` | constants in `content-pages.js` | `HowTo` |
+| `/faq` | one `FAQ` array | rendered AND marked up from the same array, so they cannot drift |
+| `/robots.txt`, `/sitemap.xml` | `seo.js` | sitemap lists only indexable spots |
+
+**Three rules the spot pages follow, each for a reason that is not obvious.**
+
+1. **No vendor logos.** `legal/vendor-standard-agreement.html` licenses the logo
+   "solely for identifying the Vendor within the WeRewards app". A page built to
+   be indexed is not obviously inside that grant. Names, addresses and reward
+   menus are not made confidential by either agreement, so those ship. Restoring
+   logos is a licence change first and a code change second.
+2. **A spot with no active reward is `noindex, follow`, not a 404.** Thin pages
+   drag the whole section down, but a 404 would break a real URL for a real
+   business mid-setup. `isIndexable()` is the bar, and the sitemap uses it too.
+3. **A failed catalogue read is 503 with `Retry-After`, never 500 and never an
+   empty 200.** A crawler keeps a 503'd URL and drops a repeatedly-500'd one, and
+   a truthful-looking empty directory would replace a good page in the index over
+   a transient Supabase blip.
+
+**The service worker must not shadow these.** `public/student/sw.js` registers at
+`/` so its scope is the whole origin. Every server-rendered path is listed in its
+`FOREIGN` regex; miss one and an installed PWA answers that navigation from
+cache, offline serving the student shell at a `/spots/<slug>` URL. Adding a
+public route means adding it to `FOREIGN` and bumping `CACHE`.
+
+**`#landing` must never carry `hidden` again.** `[hidden]` is
+`display: none !important`, so the whole marketing page was invisible to any
+crawler that does not execute JavaScript. It is visually inert to remove because
+`#splash` covers the viewport from the first frame until `app.js` has settled
+which screen the visitor belongs on.
+
+**Structured data note.** The `<script type="application/ld+json">` blocks are
+data, never executed, so helmet's `script-src 'self'` does not block them
+(verified against the live policy). They carry vendor-authored text, so
+`page-shell.js` escapes `<`, `>` and `&` to `\u00xx` before embedding: a business
+name containing `</script>` would otherwise close the block and have the rest of
+its name parsed as markup.
+
+**Off-site work the code cannot do.** Google Search Console and Bing Webmaster
+Tools verification, sitemap submission, social profiles feeding `SOCIAL_PROFILES`
+(the `sameAs` array), and confirming Cloudflare is neither replacing
+`/robots.txt` nor challenging Bingbot and Applebot.
+
 ## Tests
 
 `node:test`, no extra runtime deps. `npm test` runs everything; `npm run test:unit`

@@ -1937,7 +1937,17 @@ function drawQr(canvas, payload, targetCss) {
 // that the QR, not the digits, is the thing students hold up at the counter.
 function drawMockQr() {
   try {
-    drawQr($('mock-code-qr'), 'WRW:E:742916', 130);
+    // 116, not 130, and the exact number is load-bearing. This canvas is on the
+    // landing page, which is now served visible to crawlers, so any resize it
+    // does after first paint is a measured layout shift on the LCP viewport.
+    //
+    // drawQr picks scale = round(target * dpr / units) with units = 29 here, so
+    // the CSS size it settles on is (29 * scale) / dpr. At 116 the arithmetic is
+    // exact: scale comes out as 4 * dpr for dpr 1, 2 and 3, and the CSS size is
+    // 116px on all three. At 130 it was 116px, 130.5px and 125.67px, so the box
+    // moved by up to 14px depending on the device. The <canvas width/height> in
+    // index.html reserves that same 116px box before this ever runs.
+    drawQr($('mock-code-qr'), 'WRW:E:742916', 116);
   } catch {
     $('mock-code').hidden = true;   // no encoder → drop the block rather than leave an empty white box
   }

@@ -16,9 +16,17 @@
   <!-- in <head> so the gesture listeners are attached before the first paint a
        user could pinch on -->
   <script src="/admin/no-zoom.js"></script>
-  <title>Admin · WeRewards</title>
+  <title>Operator dashboard sign in · WeRewards</title>
   <meta name="description" content="WeRewards operator dashboard: platform analytics and error logs." />
   <meta name="theme-color" content="#0f1826" />
+  <!-- Not a public page. This is a login wall for staff, and indexed it turns a
+       search for the brand into a result that reads like an internal tool. Three
+       things say so, deliberately: this tag, the `Disallow` in robots.txt, and
+       the `X-Robots-Tag` header server.js sets on this mount. robots.txt only
+       stops the CRAWL, so a URL somebody links or pastes could still be indexed
+       without ever being fetched; the tag and the header are what forbid the
+       INDEXING, and a crawler has to be let in to read either one. -->
+  <meta name="robots" content="noindex, nofollow" />
   <!-- Installable PWA (scoped to /admin) so operators can add it to a phone. -->
   <link rel="manifest" href="/admin/manifest.json" />
   <link rel="apple-touch-icon" href="/admin/icons/icon-192.png" />

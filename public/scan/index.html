@@ -10,9 +10,17 @@
        in public/vendor/index.html. Source: public/shared/boot-guard.js. -->
   <script src="/scan/boot-guard.js"></script>
   <script src="/scan/no-zoom.js"></script>
-  <title>Scan · WeRewards</title>
+  <title>Scanner sign in · WeRewards</title>
   <meta name="description" content="WeRewards fallback scanner: award points and redeem rewards on devices too old for the full terminal." />
   <meta name="theme-color" content="#12294b" />
+  <!-- Not a public page. This is a login wall for staff, and indexed it turns a
+       search for the brand into a result that reads like an internal tool. Three
+       things say so, deliberately: this tag, the `Disallow` in robots.txt, and
+       the `X-Robots-Tag` header server.js sets on this mount. robots.txt only
+       stops the CRAWL, so a URL somebody links or pastes could still be indexed
+       without ever being fetched; the tag and the header are what forbid the
+       INDEXING, and a crawler has to be let in to read either one. -->
+  <meta name="robots" content="noindex, nofollow" />
   <!-- Installable PWA (scoped to /scan) so a vendor can add it to a device.
        apple-mobile-web-app-capable goes in the slot below, and server.js decides
        whether to emit it: for iOS older than 16.4, UNLESS this install has told

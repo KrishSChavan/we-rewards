@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from 'socket.io';
 import helmet from 'helmet';
+import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import 'dotenv/config';
 
@@ -40,6 +41,9 @@ import { TERMS_DOCUMENTS } from './src/lib/terms.js';
 import {
   verifyPunchToken, mintPunchBinding, PUNCH_BINDING_COOKIE, PUNCH_HOLD_TTL_SECONDS,
 } from './src/lib/punch.js';
+import { robotsTxt, sitemapXml, STATIC_SITEMAP_PATHS } from './src/lib/seo.js';
+import { spotsIndexHtml, spotPageHtml, publicSpots, publicSpot, isIndexable } from './src/lib/spots-page.js';
+import { howItWorksHtml, faqHtml } from './src/lib/content-pages.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -99,6 +103,59 @@ app.use(helmet({
   // Google avatars are cross-origin; don't let COEP/CORP block them.
   crossOriginEmbedderPolicy: false,
 }));
+
+// ---- Response compression ----
+// A single logged-out landing view ships a bit over 1.2 MB of text (HTML, the
+// lowered app bundles, styles, the vendored leaflet/jsQR copies), and neither
+// Heroku's router nor Cloudflare compresses on our behalf for a dyno that does
+// not offer it. gzip takes that to roughly 280 KB.
+//
+// Placed after helmet so the security headers are set first, and above every
+// route so it covers serveShell, the static mirror, the server-rendered public
+// pages and the API alike. Two things that usually break a drop-in were checked
+// and do not apply here: nothing in this app streams server-sent events, and the
+// two responses that set Content-Length by hand (the QR poster PDF and the
+// vendor logo PNG) are binary types compression's default filter already skips.
+// socket.io hangs off the raw http server and never reaches Express, so its own
+// permessage-deflate is untouched.
+//
+// Worth being honest about the SEO value: page speed is a very small ranking
+// factor and this alone will not move a brand query. It is here because it is
+// one line, it is the biggest single UX win available, and a slow first byte is
+// what makes Search Console's URL inspection time out at the moment you press
+// Request Indexing.
+app.use(compression());
+
+// ---- Indexing rules (see src/lib/seo.js for the whole story) ----
+//
+// Two separate jobs, and they are different headers on purpose.
+//
+// 1. A TEST DEPLOYMENT MUST NEVER BE INDEXED. It serves the same pages as
+//    production from a URL nobody should land on, so every response gets
+//    `noindex`. robots.txt already says `Disallow: /` there, but robots.txt only
+//    stops the CRAWL: a URL somebody links or pastes can still be indexed
+//    without ever being fetched, and only a header or meta tag forbids that.
+//    This is mounted ABOVE every route so it covers the shells, the assets, the
+//    404 and the API alike.
+//
+// 2. THE STAFF APPS ARE NOT PUBLIC PAGES. `/terminal`, `/admin` and `/scan` are
+//    login walls. Indexed, they turn a search for the brand into a result that
+//    reads like an internal tool. robots.txt disallows them too, and this is the
+//    same belt-and-braces: the header is what a crawler that arrived by link
+//    rather than by crawl actually obeys.
+//
+// APP_ENV is read here rather than passed in because the constant is defined
+// further down, next to the rest of the deployment story.
+app.use((_req, res, next) => {
+  if ((process.env.APP_ENV || 'production') !== 'production') {
+    res.set('X-Robots-Tag', 'noindex, nofollow');
+  }
+  next();
+});
+app.use(['/terminal', '/admin', '/scan'], (_req, res, next) => {
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  next();
+});
 
 // ABOVE the JSON-only gate, and the only thing that is. RFC 8058 one-click
 // unsubscribe is a POST carrying `List-Unsubscribe=One-Click` as
@@ -670,6 +727,117 @@ function serveTestSw(root) {
   };
 }
 
+// ---- Crawler-facing routes ----
+// Mounted ABOVE the shells and the static mirror so nothing can shadow them,
+// and so `/robots.txt` stays a decision this process makes rather than a file
+// somebody has to remember to drop into public/student/ (where it would also
+// have to be right for BOTH deployments, which it cannot be).
+//
+// Cached at the edge for an hour: Cloudflare fronts the dyno, both bodies are
+// identical for every visitor, and an hour is short enough that a new vendor
+// reaches the sitemap the same afternoon they are approved.
+app.get('/robots.txt', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.type('text/plain').send(robotsTxt({ isTestEnv: IS_TEST_ENV }));
+});
+
+app.get('/sitemap.xml', async (req, res) => {
+  // Vendor pages come off the SAME cached catalogue the student home screen
+  // reads (src/lib/cache.js), so a crawler fetching this cannot cost a database
+  // query that students are not already paying for. A catalogue read that fails
+  // must not 500 the sitemap: the static pages are the ones that matter, and a
+  // sitemap missing its vendor section for an hour is a far smaller problem
+  // than one that answers Googlebot with an error.
+  let spotPaths = [];
+  try {
+    const spots = await publicSpots();
+    // Only the spots that are actually indexable. A page this app serves with
+    // `noindex` and simultaneously submits in its sitemap sends two opposite
+    // instructions, and Search Console reports the whole sitemap as containing
+    // errors rather than quietly taking the noindex at its word.
+    spotPaths = spots.filter(isIndexable).map((s) => `/spots/${s.slug}`);
+  } catch (err) {
+    await logError({
+      source: 'server',
+      message: `sitemap vendor section: ${err?.message}`,
+      stack: err?.stack,
+      path: req.originalUrl,
+      method: req.method,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.type('application/xml').send(sitemapXml([...STATIC_SITEMAP_PATHS, ...spotPaths]));
+});
+
+// ---- Evergreen public pages (src/lib/content-pages.js) ----
+// Rendered per request rather than memoised: the strings are constant, the
+// render is string concatenation, and a cache here would be the kind of
+// optimisation that only ever costs a bug. Cloudflare holds the result for an
+// hour, which is where the saving actually is.
+app.get(['/how-it-works', '/how-it-works/'], (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.type('html').send(howItWorksHtml());
+});
+app.get(['/faq', '/faq/'], (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.type('html').send(faqHtml());
+});
+
+// ---- Public, crawlable spot pages (src/lib/spots-page.js) ----
+// The only pages on this origin that name a real local business, and therefore
+// the only ones that can ever answer a search for one. Server-rendered because
+// a crawler cannot sign in to the student app.
+//
+// Five minutes of shared caching. The catalogue underneath is already cached
+// in-process, so this is about Cloudflare absorbing a crawl, not about the
+// database. Short enough that an approved vendor appears almost immediately.
+// A catalogue read that fails answers 503, not 500, and the distinction is the
+// whole reason this helper exists. Both are errors, but a crawler treats 503 as
+// "the site is briefly unwell, come back" and holds the URL in the index, while
+// a 500 on a page it has already indexed counts against the site and, repeated,
+// gets the page dropped. `Retry-After` says how briefly. Never 200 with an empty
+// list here either: "this directory has no spots" is a truthful-looking page
+// that would replace a good one in the index over a transient Supabase blip.
+async function spotsUnavailable(err, req, res) {
+  await logError({
+    source: 'server',
+    message: `spot pages unavailable: ${err?.message}`,
+    stack: err?.stack,
+    path: req.originalUrl,
+    method: req.method,
+    status: 503,
+    userAgent: req.headers['user-agent'],
+  });
+  res.status(503).set('Retry-After', '120').set('Cache-Control', 'no-store');
+  res.type('html').send('<!doctype html><meta charset="utf-8"><title>Spots are briefly unavailable</title>'
+    + '<p>The spots list could not be loaded just now. Please try again in a minute.</p>');
+}
+
+app.get(['/spots', '/spots/'], async (req, res) => {
+  try {
+    const spots = await publicSpots();
+    res.set('Cache-Control', 'public, max-age=300');
+    res.type('html').send(spotsIndexHtml(spots));
+  } catch (err) {
+    await spotsUnavailable(err, req, res);
+  }
+});
+
+app.get('/spots/:slug', async (req, res) => {
+  try {
+    const spot = await publicSpot(String(req.params.slug || '').toLowerCase());
+    // A slug that is not a live partner is a genuine 404, not an empty page:
+    // a vendor who leaves must stop being indexed, and soft-404s (a 200 that
+    // says "nothing here") are the thing Google penalises a directory for.
+    if (!spot) return sendNotFound(req, res);
+    res.set('Cache-Control', 'public, max-age=300');
+    res.type('html').send(spotPageHtml(spot));
+  } catch (err) {
+    await spotsUnavailable(err, req, res);
+  }
+});
+
 // Versioned HTML shells first, so they win over express.static's own index.html.
 for (const { mount, root } of shells) {
   app.get(mount === '/' ? ['/'] : [mount, mount + '/'], serveShell(mount, root));
@@ -700,7 +868,24 @@ if (IS_TEST_ENV) {
 // stat() calls on every asset request.
 for (const { mount, dir, root } of shells) {
   if (IS_TEST_ENV) app.use(mount, freshenAsset(dir));
-  app.use(mount, express.static(root, { index: false }));
+  app.use(mount, express.static(root, {
+    index: false,
+    // versionAssets() stamps ?v=<content hash> onto every local .js/.css
+    // reference in the served HTML, which makes a STAMPED url immutable by
+    // construction: different bytes can only ever arrive under a different
+    // query string. Without this they were served max-age=0 and every repeat
+    // visit revalidated all twelve of them for nothing.
+    //
+    // The extension test is not decoration. Unstamped urls (/sw.js,
+    // /manifest.json, the icons, and the bare paths the worker precaches) MUST
+    // keep revalidating, and it also means a hostile /manifest.json?v=1 cannot
+    // talk a visitor's browser into caching that file for a year.
+    setHeaders(res) {
+      if (res.req?.query?.v && /\.(?:js|css)$/i.test(res.req.path)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
 }
 
 // Every page above declares its own <link rel="icon">, but a browser still asks

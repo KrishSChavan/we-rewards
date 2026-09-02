@@ -286,7 +286,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .mock-code-label { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.18em; color: #7a8aa3; }
 /* drawQr() sets the canvas's own width/height in px (crisp 1:1 device pixels),
-   so nothing here may size it — same white-background rule as the in-app QR. */
+   so nothing here may size it — same white-background rule as the in-app QR.
+   The element carries width="116" height="116" in the markup instead, which
+   reserves the identical box drawQr lands on at every device pixel ratio, so the
+   landing hero does not reflow when app.js paints. */
 .mock-code-qr { display: block; }
 
 .mock-hint { font-size: 0.9rem; font-weight: 700; color: var(--sky); }

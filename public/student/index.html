@@ -31,8 +31,104 @@
        auto-zoom when iOS focuses an input. See no-zoom.js for the browsers
        that ignore this and what covers them. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <title>WeRewards · eat local, earn free food</title>
-  <meta name="description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
+  <title>WeRewards | Penn State student rewards app, State College PA</title>
+  <meta name="description" content="WeRewards (We Rewards) is the free student rewards app for Penn State. Earn points at local State College spots and redeem them for free food. No download needed." />
+  <!-- `index, follow` is the default and inert; the other two are the point.
+       max-image-preview:large is what lets the share card appear as a large
+       thumbnail on a phone result instead of a 60px square, and max-snippet:-1
+       lifts the cap on how much of the page can be quoted underneath. -->
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+
+  <!-- ================= SEARCH ENGINES =================
+       Everything below is for a crawler, not a browser. Four jobs:
+
+       1. CANONICAL. This document is served at exactly one public URL, but it
+          is also served by the staging dyno at a herokuapp.com address that is
+          reachable by anyone. An absolute canonical pointing at production is
+          what stops that copy from competing with this one if it is ever
+          crawled. Absolute, and hard-coded to production, for that reason: a
+          canonical built from the request's own host would have staging declare
+          ITSELF canonical, which is the failure it exists to prevent. Kept in
+          sync by hand with PUBLIC_ORIGIN in src/lib/seo.js.
+
+       2. OPEN GRAPH / TWITTER. What a link to this page looks like when it is
+          pasted into iMessage, Instagram, Discord or a group chat, which is how
+          most students will actually receive it. Without these, the preview is
+          the bare URL. og-image.png is the 1200x630 share card.
+
+       3. JSON-LD. The Organization node is the only place anything states that
+          "WeRewards", "We Rewards" and "we-rewards.com" name one entity. That
+          is the single most useful thing this file can tell Google, because the
+          brand is written as one word everywhere and searched for as two.
+
+       4. The WebApplication node says what this thing IS: a free web app, no
+          install. It is what makes an "is there an app" query answerable.
+
+       The ld+json blocks are DATA, never executed, so helmet's
+       `script-src 'self'` does not block them (verified against the live policy,
+       not assumed). Keep them free of any literal `</script`.
+       ================================================= -->
+  <link rel="canonical" href="https://we-rewards.com/" />
+  <meta property="og:site_name" content="WeRewards" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="WeRewards | Penn State student rewards app, State College PA" />
+  <meta property="og:description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
+  <meta property="og:url" content="https://we-rewards.com/" />
+  <meta property="og:image" content="https://we-rewards.com/icons/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="We Rewards: eat local, earn points, eat free." />
+  <meta property="og:locale" content="en_US" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="WeRewards | Penn State student rewards app, State College PA" />
+  <meta name="twitter:description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
+  <meta name="twitter:image" content="https://we-rewards.com/icons/og-image.png" />
+  <meta name="twitter:image:alt" content="We Rewards: eat local, earn points, eat free." />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": "https://we-rewards.com/#organization",
+        "name": "WeRewards",
+        "alternateName": ["We Rewards", "we-rewards", "WeRewards Penn State"],
+        "url": "https://we-rewards.com/",
+        "email": "contactwerewards@gmail.com",
+        "description": "WeRewards is a free rewards program for students at local restaurants, cafes and food spots around Penn State in State College, Pennsylvania.",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://we-rewards.com/icons/icon-512.png",
+          "width": 512,
+          "height": 512
+        },
+        "image": "https://we-rewards.com/icons/og-image.png",
+        "areaServed": { "@type": "Place", "name": "State College, Pennsylvania" }
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://we-rewards.com/#website",
+        "url": "https://we-rewards.com/",
+        "name": "WeRewards",
+        "alternateName": ["We Rewards", "we-rewards.com"],
+        "inLanguage": "en-US",
+        "publisher": { "@id": "https://we-rewards.com/#organization" }
+      },
+      {
+        "@type": "WebApplication",
+        "@id": "https://we-rewards.com/#app",
+        "name": "WeRewards",
+        "alternateName": "We Rewards",
+        "url": "https://we-rewards.com/",
+        "applicationCategory": "LifestyleApplication",
+        "operatingSystem": "Any device with a web browser",
+        "browserRequirements": "Runs in the browser. No download required.",
+        "publisher": { "@id": "https://we-rewards.com/#organization" },
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    ]
+  }
+  </script>
   <meta name="theme-color" content="#12294b" />
   <!-- FIRST script on the page, before anything that could fail. Everything here
        is lowered for old browsers by scripts/build-client.js, but some device is
@@ -75,7 +171,7 @@
        that gap and slides away once app.js knows which of the two to show. It is
        NOT [hidden]: it must be on screen at first paint, before any script runs.
        app.js (see Splash) is the only thing that takes it down. -->
-  <div id="splash" role="status" aria-live="polite" aria-label="Loading WeRewards">
+  <div id="splash" role="status" aria-live="polite" aria-label="Loading We Rewards">
     <div class="splash-inner">
       <span class="splash-wordmark">We<em>Rewards</em></span>
       <span class="splash-bar" aria-hidden="true"><i></i></span>
@@ -83,7 +179,24 @@
   </div>
 
   <!-- ================= LANDING + AUTH ================= -->
-  <div id="landing" hidden>
+  <!-- NOT hidden, deliberately, and this attribute is the difference between
+       having a marketing page and not having one. Everything below (the hero,
+       HOW IT WORKS, the footer) is the only content on this origin a search
+       engine can read without signing in, and `[hidden]` in styles.css is
+       `display: none !important`. A crawler that does not execute JavaScript
+       (Bingbot in most passes, DuckDuckBot, Applebot, and every social and LLM
+       fetcher) therefore saw an empty document, and app.js is what used to
+       reveal it, after supabase-js loads and /api/public-config and getSession()
+       both come back.
+
+       Removing it is visually inert: #splash is `position: fixed; inset: 0;
+       z-index: 100` painted from the stylesheet on the very first frame, it
+       covers this entirely, and app.js only takes it down once render() has
+       settled which screen the visitor belongs on. By then render() has already
+       run `$('landing').hidden = ready`, so a signed-in visitor never sees this.
+       If app.js dies outright, Splash.giveUp() unhides this same element anyway,
+       so a visitor now gets the marketing page instead of a blank one. -->
+  <div id="landing">
     <!-- Nav + hero are grouped so the CSS can size them together as one
          "first screen" that stops just short of the viewport, leaving a
          sliver of the navy band below visible as the scroll cue. -->
@@ -146,7 +259,10 @@
                  out entirely if the encoder isn't available. -->
             <div id="mock-code" class="mock-code">
               <span class="mock-code-label">YOUR CODE</span>
-              <canvas id="mock-code-qr" class="mock-code-qr"></canvas>
+              <!-- width/height reserve the exact box drawQr settles on (see drawMockQr).
+                   Without them a canvas is 300x150 by default and the hero card
+                   visibly reflowed the moment app.js painted it. -->
+              <canvas id="mock-code-qr" class="mock-code-qr" width="116" height="116"></canvas>
             </div>
             <p class="mock-hint">35 pts to a free drink</p>
           </div>
@@ -181,9 +297,22 @@
       <div class="footer-inner">
         <div class="footer-brand">
           <span class="footer-word">We<em>Rewards</em></span>
-          <p class="footer-tag">Made in State College for Penn State students &amp; the local spots that feed them.</p>
+          <!-- "We Rewards" spelled out, once, on purpose. The brand is one word
+               everywhere in this product and the domain hyphenates it, but the
+               thing a student types into a search bar is two words. This is the
+               only visible text on the site that contains that spelling, and it
+               pairs with the alternateName list in the JSON-LD block up in the
+               head. It is a sentence a person can read, not a keyword line. -->
+          <p class="footer-tag">WeRewards, also written We Rewards, is made in State College for Penn State students &amp; the local spots that feed them.</p>
         </div>
+        <!-- These four links are also how a crawler finds the server-rendered
+             pages at all: nothing else on this document points at them, and a
+             page nothing links to is a page Google has to be told about twice
+             (sitemap AND request-indexing) before it ever gets crawled. -->
         <nav class="footer-links" aria-label="Footer">
+          <a href="/spots">All spots</a>
+          <a href="/how-it-works">How it works</a>
+          <a href="/faq">FAQ</a>
           <a href="/join">Partner with us</a>
           <a href="/legal/student-terms-of-service.html" target="_blank" rel="noopener">Terms of Service</a>
           <a href="/legal/student-privacy-policy.html" target="_blank" rel="noopener">Privacy Policy</a>
@@ -1639,7 +1768,7 @@
       <h2 class="detail-title">Turn location on</h2>
       <p class="detail-desc">Your browser has location switched off for WeRewards, and only you can switch it back on. Here’s where:</p>
       <ol id="nearby-help-steps" class="nearby-help-steps"></ol>
-      <p class="setting-note">We only read your location while the app is open, and it never leaves your phone — we only ever tell the server which spot you’re next to.</p>
+      <p class="setting-note">We only read your location while the app is open, and it never leaves your phone. We only ever tell the server which spot you’re next to.</p>
     </div>
   </div>
 

@@ -7,8 +7,56 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Become a vendor · WeRewards</title>
-  <meta name="description" content="Apply to join WeRewards and reward your student customers with points on every purchase." />
+  <title>Loyalty rewards for State College restaurants | WeRewards</title>
+  <meta name="description" content="Add WeRewards to your State College or Penn State area shop. Students earn points at your counter and come back to spend them." />
+  <!-- `index, follow` is the default and inert; the other two are the point.
+       max-image-preview:large is what lets the share card appear as a large
+       thumbnail on a phone result instead of a 60px square, and max-snippet:-1
+       lifts the cap on how much of the page can be quoted underneath. -->
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+
+  <!-- Crawler tags. Same rules as public/student/index.html, where the long
+       explanation lives: absolute URLs hard-coded to production so the staging
+       copy of this page can never claim to be the canonical one, and an
+       Organization node that ties "WeRewards" to "We Rewards".
+       This page is the vendor-acquisition side of the site, so it carries its
+       own description aimed at a business owner rather than a student. -->
+  <link rel="canonical" href="https://we-rewards.com/join" />
+  <meta property="og:site_name" content="WeRewards" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Loyalty rewards for State College restaurants | WeRewards" />
+  <meta property="og:description" content="Add WeRewards to your State College or Penn State area shop. Students earn points at your counter and come back to spend them." />
+  <meta property="og:url" content="https://we-rewards.com/join" />
+  <meta property="og:image" content="https://we-rewards.com/icons/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="We Rewards: eat local, earn points, eat free." />
+  <meta property="og:locale" content="en_US" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Loyalty rewards for State College restaurants | WeRewards" />
+  <meta name="twitter:description" content="Add WeRewards to your State College or Penn State area shop. Students earn points at your counter and come back to spend them." />
+  <meta name="twitter:image" content="https://we-rewards.com/icons/og-image.png" />
+  <meta name="twitter:image:alt" content="We Rewards: eat local, earn points, eat free." />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "@id": "https://we-rewards.com/join#webpage",
+    "url": "https://we-rewards.com/join",
+    "name": "Partner with WeRewards",
+    "description": "Apply to join WeRewards and reward your student customers with points on every purchase.",
+    "inLanguage": "en-US",
+    "isPartOf": { "@id": "https://we-rewards.com/#website" },
+    "about": {
+      "@type": "Organization",
+      "@id": "https://we-rewards.com/#organization",
+      "name": "WeRewards",
+      "alternateName": ["We Rewards", "we-rewards"],
+      "url": "https://we-rewards.com/",
+      "areaServed": { "@type": "Place", "name": "State College, Pennsylvania" }
+    }
+  }
+  </script>
   <meta name="theme-color" content="#12294b" />
   <!-- Browser tab icon. public/join/ has no icons/ of its own and is not an
        installable app, so this points at the student app's artwork on the root
@@ -90,10 +138,10 @@
         <label>Typical price <em class="opt">(optional)</em>
           <select id="f-price">
             <option value="" selected>Prefer not to say</option>
-            <option value="1">$ — most orders under $10</option>
-            <option value="2">$$ — around $10–20</option>
-            <option value="3">$$$ — around $20–35</option>
-            <option value="4">$$$$ — $35 and up</option>
+            <option value="1">$: most orders under $10</option>
+            <option value="2">$$: around $10-20</option>
+            <option value="3">$$$: around $20-35</option>
+            <option value="4">$$$$: $35 and up</option>
           </select>
           <span class="hint">Roughly what one person spends on a normal order. Only used for filtering.</span>
         </label>

@@ -24,9 +24,17 @@
   <!-- in <head> so the gesture listeners are attached before the first paint a
        user could pinch on -->
   <script src="/terminal/no-zoom.js"></script>
-  <title>Terminal · WeRewards</title>
+  <title>Vendor terminal sign in · WeRewards</title>
   <meta name="description" content="WeRewards vendor terminal: award points, redeem rewards, and manage items." />
   <meta name="theme-color" content="#12294b" />
+  <!-- Not a public page. This is a login wall for staff, and indexed it turns a
+       search for the brand into a result that reads like an internal tool. Three
+       things say so, deliberately: this tag, the `Disallow` in robots.txt, and
+       the `X-Robots-Tag` header server.js sets on this mount. robots.txt only
+       stops the CRAWL, so a URL somebody links or pastes could still be indexed
+       without ever being fetched; the tag and the header are what forbid the
+       INDEXING, and a crawler has to be let in to read either one. -->
+  <meta name="robots" content="noindex, nofollow" />
   <!-- Installable PWA (scoped to /terminal) so a vendor can add it to a device. -->
   <link rel="manifest" href="/terminal/manifest.json" />
   <link rel="apple-touch-icon" href="/terminal/icons/icon-192.png" />
