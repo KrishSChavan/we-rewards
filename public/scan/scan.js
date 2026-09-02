@@ -4,7 +4,10 @@
    comments on JS_TARGET in scripts/build-client.js). Same SCAN-tab feature set
    as the terminal (scan or type a code, award an earn code, PIN-confirm a
    redeem code, undo the last transaction) and the same email+password sign-in,
-   but nothing else: no ITEMS, PUNCH, DEALS, STATS or SETTINGS.
+   plus the terminal's VISITS tab, which is display-only and so needs nothing
+   this device cannot do. Nothing else: no ITEMS, DEALS, STATS or SETTINGS. A
+   vendor who runs their counter from here still turns visits ON in the full
+   terminal's Settings, or asks the WeRewards team to.
 
    TWO RULES THIS FILE MUST KEEP, OR IT STOPS PARSING ON THE TARGET DEVICE:
 
@@ -32,6 +35,9 @@
 
 if (window.__wrBooted) window.__wrBooted();
 
+var mode = 'scan';             // which tab: 'scan' | 'punch'. VISITS only ever
+                               // DISPLAYS a rotating code, so like SCAN it sits
+                               // outside the staff PIN gate.
 var config = null;             // vendor config from /api/vendor/config
 var accountId = null;          // signed-in auth user id - keys the remembered store
 var locations = [];            // every store this login runs (GET /api/vendor/locations)
@@ -177,16 +183,20 @@ function installErrorReporter() {
   });
 }
 
-var screens = ['screen-login', 'screen-recover', 'screen-scan', 'screen-pad', 'screen-pin', 'screen-redeem-confirm'];
+var screens = ['screen-login', 'screen-recover', 'screen-scan', 'screen-pad', 'screen-pin',
+               'screen-redeem-confirm', 'screen-punch'];
 
 function show(id) {
   screens.forEach(function (s) { $(s).hidden = s !== id; });
   clearTimeout(idleTimeout);
   // If the vendor walks away mid-transaction, fall back to the scan screen.
+  // Deliberately not screen-punch: that screen is MEANT to be left standing
+  // unattended as a counter-top sign, and a timeout would take the sign down.
   if (id === 'screen-pad' || id === 'screen-redeem-confirm') {
     idleTimeout = setTimeout(function () { enterScan(); }, 60000);
   }
   syncScanners();   // camera runs only while its scan screen is the visible one
+  syncPunch();      // and the rotating code refreshes only while VISITS shows
 }
 
 /* ---------- boot ---------- */
@@ -222,6 +232,16 @@ function wireEvents() {
   // locations; it ships disabled, so this does nothing until paintStoreSwitcher
   // finds a second store.
   $('store-btn').addEventListener('click', toggleStoreMenu);
+  $('tab-scan').addEventListener('click', function () { switchMode('scan'); });
+  $('tab-punch').addEventListener('click', function () { switchMode('punch'); });
+  $('punch-fullscreen').addEventListener('click', enterPunchFullscreen);
+  $('punch-exit-fs').addEventListener('click', exitPunchFullscreen);
+  // Leaving fullscreen by the platform's own gesture (Esc, the system chrome)
+  // has to take the CSS kiosk layer with it, or the stage stays pinned over the
+  // whole app with nothing on screen to get out of it.
+  document.addEventListener('fullscreenchange', function () {
+    if (!document.fullscreenElement && document.body.classList.contains('punch-fs')) exitPunchFullscreen();
+  });
   $('signout-btn').addEventListener('click', openSignOutConfirm);
   $('signout-cancel').addEventListener('click', closeSignOutConfirm);
   $('signout-go').addEventListener('click', signOut);
@@ -357,6 +377,7 @@ async function enterApp() {
   if (!(await loadConfig())) return;   // it has already said why, on the login card
 
   paintStoreSwitcher();
+  syncPunchTab();
   $('shell').hidden = false;
   $('screen-login').hidden = true;
   refreshLastActivity();
@@ -542,7 +563,7 @@ function paintStoreSwitcher() {
   // it, and painting this line for them would push the viewfinder down on the
   // one device this screen exists for. Ungated, this would be a visible change
   // to today's screen, which step 2 is not allowed to make.
-  $('scan-store').textContent = pointsShared() ? configTitle() : '';
+  $('scan-store').textContent = pointsAreShared() ? configTitle() : '';
   btn.disabled = !many;
   $('store-caret').hidden = !many;
   closeStoreMenu();
@@ -679,6 +700,10 @@ async function applyStoreSwitch(id) {
 
 function repaintForStore() {
   paintStoreSwitcher();
+  // Visits are a per-store setting, so the tab can appear or vanish with the
+  // switch. enterScan() below is what makes that safe to do while VISITS is on
+  // screen: the code being displayed belongs to the store just left.
+  syncPunchTab();
   refreshLastActivity();
   enterScan();
 }
@@ -1047,8 +1072,10 @@ function setupQrScanning() {
   $('scan-camera-btn').addEventListener('click', function () { setManualMode(false); });
 
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) { scanUi.scanner.stop(); }
-    else { syncScanners(); }
+    // Same for the punch loop: no point refreshing a code nobody can see, and a
+    // backgrounded timer falls behind anyway. syncPunch restarts it cleanly.
+    if (document.hidden) { scanUi.scanner.stop(); stopPunchLoop(); }
+    else { syncScanners(); syncPunch(); }
   });
 }
 
@@ -1114,8 +1141,34 @@ function enterScan() {
   currentMultiplier = 1;
   pendingRedeemCode = null;
   pendingRedeemKind = 'reward';
+  mode = 'scan';
+  setTabs('scan');
   show('screen-scan');
   $('scan-code-input').value = '';
+}
+
+/* ---------- tabs ----------
+   Two of them, and the row only exists when both do (syncPunchTab). The award
+   pad, the PIN pad and the redeem confirm are steps INSIDE the scan flow rather
+   than tabs of their own, so SCAN stays lit throughout them, same as the full
+   terminal. */
+
+function setTabs(active) {
+  $('tab-scan').classList.toggle('is-active', active === 'scan');
+  $('tab-punch').classList.toggle('is-active', active === 'punch');
+}
+
+function switchMode(next) {
+  if (busy || storeSwitching) return;
+  if (next === mode) return;
+  if (next === 'punch') {
+    if (!(config && config.punchEnabled)) return;
+    mode = 'punch';
+    setTabs('punch');
+    enterPunch();
+    return;
+  }
+  enterScan();
 }
 
 function submitTypedCode() {
@@ -1399,6 +1452,191 @@ async function confirmRedeem() {
   }
 }
 
+/* ---------- VISITS (rotating punch-in code) ----------
+
+   A port of the terminal's PUNCH tab, and the one screen in this app that
+   never talks to a customer's code: it DISPLAYS a QR of a server-signed URL
+   that changes every 30 seconds (src/lib/punch.js). Students scan it with the
+   WeRewards app or a plain phone camera, and the app claims the visit. Nothing
+   here mutates anything, which is why the tab sits outside the PIN gate.
+
+   Kept deliberately close to the matching block in terminal.js, so the two stay
+   easy to compare. The only differences are this file's own rules: var-and-
+   function style, and no destructuring anywhere (see the file header). */
+
+/** Paint `payload` as a crisp QR (Byte mode: it's a URL, so the alphanumeric
+ *  alphabet doesn't cover it). Whole device pixels per module, hard-coded
+ *  dark-on-white, same as the terminal's drawPunchQr. */
+function drawPunchQr(canvas, payload, targetCss) {
+  var qr = qrcode(0, 'M');           // 0 = smallest version that fits
+  qr.addData(payload);               // default Byte mode handles URLs
+  qr.make();
+
+  var quiet = 4;
+  var count = qr.getModuleCount();
+  var units = count + quiet * 2;
+  var dpr = window.devicePixelRatio || 1;
+  var scale = Math.max(2, Math.round((targetCss * dpr) / units));
+  var px = units * scale;
+
+  canvas.width = px;
+  canvas.height = px;
+  canvas.style.width = (px / dpr) + 'px';
+  canvas.style.height = (px / dpr) + 'px';
+
+  var ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, px, px);
+  ctx.fillStyle = '#000000';
+  var r, c;
+  for (r = 0; r < count; r += 1) {
+    for (c = 0; c < count; c += 1) {
+      if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+    }
+  }
+}
+
+var punchLoopTimer = null;   // 250ms tick: countdown bar + refresh-on-expiry
+var punchExpiresAt = 0;      // when the displayed code's 30s slot ends (ms epoch)
+var punchWindowMs = 30000;
+var punchFetching = false;
+var punchHasQr = false;      // something is drawn (Reconnecting… vs Can't load)
+
+function enterPunch() {
+  show('screen-punch');      // show() runs syncPunch()
+}
+
+// Show or hide the VISITS tab per the vendor's setting, and never leave the
+// screen pointing at a tab that just disappeared. One tab on its own is not a
+// choice, so the whole row goes with it.
+function syncPunchTab() {
+  var on = Boolean(config && config.punchEnabled);
+  $('tab-punch').hidden = !on;
+  $('tabs').hidden = !on;
+  // The phone layout floats .tabs as a fixed bottom bar, so #main has to
+  // reserve its height - but only when there is a bar. See scan.css.
+  document.body.classList.toggle('has-tabs', on);
+  if (!on) {
+    // Leave kiosk mode first: the stage is about to be hidden, and on platforms
+    // with the real Fullscreen API a hidden fullscreen element leaves a blank
+    // top layer that looks like a dead app.
+    if (document.body.classList.contains('punch-fs')) exitPunchFullscreen();
+    if (mode === 'punch') switchMode('scan');
+  }
+}
+
+// The rotating code refreshes only while its screen is actually visible -
+// called from show() and the visibilitychange handler, like syncScanners().
+function syncPunch() {
+  var visible = !$('screen-punch').hidden && !document.hidden && Boolean(config && config.punchEnabled);
+  if (visible) startPunchLoop();
+  else stopPunchLoop();
+}
+
+function startPunchLoop() {
+  if (punchLoopTimer) return;
+  punchExpiresAt = 0;                       // force an immediate fetch
+  punchLoopTimer = setInterval(punchTick, 250);
+  punchTick();
+}
+
+function stopPunchLoop() {
+  clearInterval(punchLoopTimer);
+  punchLoopTimer = null;
+}
+
+function punchTick() {
+  var left = punchExpiresAt - Date.now();
+  if (left <= 0) { fetchPunchToken(); return; }
+  var frac = Math.max(0, Math.min(1, left / punchWindowMs));
+  $('punch-timer-fill').style.width = (frac * 100) + '%';
+}
+
+async function fetchPunchToken() {
+  if (punchFetching) return;
+  punchFetching = true;
+  try {
+    var res = await authFetch('/api/vendor/punch-token');
+    var data = await res.json().catch(function () { return {}; });
+    if (!res.ok) {
+      // Turned off (in the full terminal's Settings, or by the operator) since
+      // this tab was opened: put the tab away and go back to SCAN.
+      if (data.error === 'PUNCH_DISABLED' && config) {
+        config.punchEnabled = false;
+        stopPunchLoop();
+        syncPunchTab();
+        return;
+      }
+      throw new Error('punch token fetch failed');
+    }
+    drawPunchQr($('punch-qr'), data.url, punchQrSize());
+    punchHasQr = true;
+    $('punch-qr-cover').hidden = true;
+    punchWindowMs = (data.windowSeconds ?? 30) * 1000;
+    punchExpiresAt = Date.now() + Math.max(1, data.expiresIn ?? 30) * 1000;
+    // No vendor-level card since migration-029: visits are a currency, and each
+    // item carries its own visit price on the terminal's ITEMS tab.
+    $('punch-reward-line').textContent = 'Customers scan this once a night to collect a visit';
+  } catch (e) {
+    // The shown code is stale (or absent): cover it so nobody scans a dead
+    // code, and retry shortly. Recovers by itself when the connection does.
+    $('punch-qr-cover').hidden = false;
+    $('punch-qr-cover-text').textContent = punchHasQr
+      ? 'Reconnecting…'
+      : 'Can’t load the code. Check the connection.';
+    $('punch-timer-fill').style.width = '0%';
+    punchExpiresAt = Date.now() + 2000;
+  } finally {
+    punchFetching = false;
+  }
+}
+
+// How big to draw the QR: as much of the screen as fits after the copy above
+// and below it, bounded so tablets don't balloon and phones stay scannable.
+//
+// Measure the height-CONSTRAINED box, never .punch-stage in normal layout - the
+// stage is content-sized and the canvas is part of that content, so measuring
+// it would feed each size into the next and the QR would creep bigger every 30
+// seconds (and stay fullscreen-sized after leaving kiosk mode).
+function punchQrSize() {
+  var box = document.body.classList.contains('punch-fs')
+    ? $('punch-stage')     // kiosk: fixed inset:0, so it IS the viewport
+    : $('screen-punch');   // normal: flex:1 of #main, independent of the canvas
+  var w = box.clientWidth || window.innerWidth;
+  var h = box.clientHeight || window.innerHeight;
+  return Math.max(200, Math.min(560, Math.min(w - 64, h - 300)));
+}
+
+/* Fullscreen: a CSS kiosk mode (fixed, fills the viewport) plus the real
+   Fullscreen API where the platform has it. The CSS layer is the one that
+   always works, and on this app's target device it is the ONLY one: iOS Safari
+   has no Element.requestFullscreen at all, which is why every call below is
+   guarded rather than optional-chained onto a promise. */
+function enterPunchFullscreen() {
+  document.body.classList.add('punch-fs');
+  $('punch-exit-fs').hidden = false;
+  var stage = $('punch-stage');
+  try {
+    if (stage.requestFullscreen) {
+      var p = stage.requestFullscreen();
+      if (p && p.catch) p.catch(function () {});
+    }
+  } catch (e) { /* unsupported */ }
+  punchExpiresAt = 0;   // redraw at the new size on the next tick
+}
+
+function exitPunchFullscreen() {
+  document.body.classList.remove('punch-fs');
+  $('punch-exit-fs').hidden = true;
+  if (document.fullscreenElement) {
+    try {
+      var p = document.exitFullscreen && document.exitFullscreen();
+      if (p && p.catch) p.catch(function () {});
+    } catch (e) { /* already out */ }
+  }
+  punchExpiresAt = 0;   // redraw at the normal size
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, function (c) {
     var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -1604,6 +1842,7 @@ function resetToLogin() {
   vendorId = null;
   storeSwitching = false;
   paintStoreSwitcher();   // back to a plain, disabled, empty name
+  syncPunchTab();         // config is gone, so the tab row goes with it
 
   $('login-email').value = '';
   $('login-password').value = '';

@@ -92,7 +92,7 @@
     </div>
   </section>
 
-  <!-- ===== APP SHELL: one screen, no tabs ===== -->
+  <!-- ===== APP SHELL: SCAN, plus VISITS when the vendor has visits on ===== -->
   <div id="shell" hidden>
     <header id="topbar">
       <!-- One login can run several locations (migration-043), and the vendor
@@ -107,6 +107,19 @@
         </button>
         <div id="store-menu" class="store-menu" role="listbox" aria-label="Choose a store" hidden></div>
       </div>
+      <!-- Two tabs, and only when there are two: the row is hidden outright
+           while visits are switched off (syncPunchTab), which is every vendor
+           that has not turned them on in the full terminal's Settings. A lone
+           SCAN tab is not a choice, and on the phone layout .tabs is a fixed
+           bottom bar - a whole bar to press the screen you are already on.
+           No scrolling rail here, unlike terminal.css: two labels fit on one
+           line at every width this app is opened at. -->
+      <nav id="tabs" class="tabs" aria-label="Mode" hidden>
+        <!-- One SCAN tab for both directions. The scanned (or typed) code says
+             whether it's an award or a redemption. -->
+        <button id="tab-scan" class="tab is-active" type="button">SCAN</button>
+        <button id="tab-punch" class="tab tab-punch" type="button" hidden>VISITS</button>
+      </nav>
       <button id="signout-btn" class="btn-ghost btn-compact" type="button">Sign out</button>
     </header>
 
@@ -254,6 +267,38 @@
         </div>
       </section>
 
+      <!-- ===== VISITS: ROTATING PUNCH-IN CODE =====
+           The same screen the full terminal's VISITS tab shows. Customers scan
+           this with the WeRewards app or a plain phone camera (the QR is a URL
+           that deep-links into the app) and the app claims the visit. This
+           screen only ever DISPLAYS a code: nothing here mutates anything,
+           which is why it sits outside the PIN gate exactly as SCAN does.
+
+           The code is server-signed and rotates every 30 seconds (src/lib/punch.js),
+           so a photo of it is dead almost immediately. Fullscreen turns the
+           iPad into a counter-top sign, which on this device - too old to run
+           /terminal at all - is the whole reason to want the tab here. -->
+      <section id="screen-punch" class="screen punch-screen" hidden>
+        <div id="punch-stage" class="punch-stage">
+          <h2 class="scan-title punch-title">SCAN TO <br />ADD A VISIT</h2>
+          <p id="punch-reward-line" class="punch-reward-line"></p>
+          <div class="punch-qr-wrap">
+            <div class="qr-card-terminal">
+              <canvas id="punch-qr" class="punch-qr" role="img" aria-label="Rotating punch-in QR code"></canvas>
+            </div>
+            <div id="punch-qr-cover" class="punch-qr-cover" hidden>
+              <p id="punch-qr-cover-text">Reconnecting…</p>
+            </div>
+          </div>
+          <div class="punch-timer" aria-hidden="true"><div id="punch-timer-fill" class="punch-timer-fill"></div></div>
+          <p class="punch-hint">Scan with your phone camera or the WeRewards app · one visit per night</p>
+          <div class="punch-actions">
+            <button id="punch-fullscreen" class="btn-ghost" type="button">Fullscreen</button>
+          </div>
+          <button id="punch-exit-fs" class="punch-exit-fs" type="button" hidden>✕ Exit fullscreen</button>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -287,6 +332,11 @@
        endpoints directly with fetch, because the UMD SDK bundle cannot be
        lowered to run on this device (see scripts/build-client.js). -->
   <script src="/scan/jsQR.js"></script>
+  <!-- Draws the rotating visit code on the VISITS tab - same generator the full
+       terminal and the student app use. It lowers cleanly to the safari12 floor
+       this app is built to (checked with esbuild, not assumed), unlike the
+       supabase bundle above it. Before scan.js. -->
+  <script src="/scan/qrcode.js"></script>
   <script src="/scan/scan.js"></script>
 </body>
 </html>

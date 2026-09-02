@@ -23,10 +23,15 @@
 // location spends from a purse shared with its siblings. Both are shell changes
 // (index.html/scan.css/scan.js), so an installed iPad keeps serving the old
 // three from cache until this constant moves.
-const CACHE = 'werewards-scan-v5';
+// v6: the VISITS tab. A header tab row (hidden until the vendor has visits on)
+// and the rotating punch-in code the full terminal shows, which brings a new
+// precached file with it: /scan/qrcode.js, the QR generator. All four of the
+// others changed too, so an installed iPad keeps serving the old shell until
+// this constant moves.
+const CACHE = 'werewards-scan-v6';
 const SHELL = [
   '/scan/', '/scan/boot-guard.js', '/scan/scan.css', '/scan/scan.js',
-  '/scan/jsQR.js', '/scan/no-zoom.js', '/scan/manifest.json',
+  '/scan/jsQR.js', '/scan/qrcode.js', '/scan/no-zoom.js', '/scan/manifest.json',
   '/scan/icons/icon-192.png', '/scan/icons/icon-512.png',
 ];
 

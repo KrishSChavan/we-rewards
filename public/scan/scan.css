@@ -1051,6 +1051,10 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
    the visits price box showed even for vendors with visits turned off. */
 #shell[hidden] { display: none; }
 .form-card label[hidden] { display: none; }
+/* The whole tab row is hidden while visits are off, and one SCAN tab on its own
+   is not a choice worth a row (syncPunchTab). .tabs is display:flex, so it needs
+   this the same way #shell does. */
+.tabs[hidden] { display: none; }
 
 
 /* =====================================================
@@ -1126,10 +1130,13 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
   }
   .tab-settings.is-active.is-dirty::after { background: var(--redeem); }
 
-  /* public/scan has no tab bar (single screen flow, no .tabs element at all),
-     so unlike terminal.css there is nothing fixed at the bottom to clear —
-     just the safe area itself. */
+  /* Keep the scroll area clear of the fixed bar — the 3px is the bar's own
+     border-top, since --nav-h is only the .tab height. Unlike terminal.css this
+     is CONDITIONAL: /scan has a tab bar only when the vendor has visits on, and
+     the rest of the time the row is hidden outright, leaving nothing at the
+     bottom to clear but the safe area itself. syncPunchTab() owns the class. */
   #main { padding-bottom: env(safe-area-inset-bottom); }
+  body.has-tabs #main { padding-bottom: calc(var(--nav-h) + 3px + env(safe-area-inset-bottom)); }
 
   /* ---------- safe areas ----------
 
