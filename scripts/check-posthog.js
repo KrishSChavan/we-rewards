@@ -237,4 +237,10 @@ if (!posthogEnabled) {
 }
 
 console.log(failed ? '\nFAILED\n' : '\nOK\n');
-process.exit(failed ? 1 : 0);
+// Set the code rather than calling process.exit(): exiting while the fetch
+// handles are still unwinding trips a libuv assertion on Windows
+// ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)"), which prints a
+// scary crash after a perfectly good report AND replaces the exit code with 9 —
+// so a PASSING check reads as a failing one. Same note, same reason, as
+// scripts/check-gemini.js and scripts/check-resend.js.
+process.exitCode = failed ? 1 : 0;

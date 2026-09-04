@@ -1196,6 +1196,64 @@ app.use(async (err, req, res, _next) => {
     return res.status(err.status).json({ error: 'BAD_BODY', message });
   }
 
+  // A NUL BYTE IN A USER-SUPPLIED STRING. Postgres `text` cannot hold one at
+  // all — it answers 22P05 "unsupported Unicode escape sequence" — and JSON can
+  // carry one, so every string field in this app was a 500 waiting to happen: a
+  // vendor's reward title, a campaign headline, a location label, an address,
+  // and (unauthenticated) a /join application. Each one also wrote a row into
+  // the operator's error log for what is only ever a malformed request.
+  //
+  // Handled centrally rather than by teaching two dozen validators to strip
+  // control characters, for the same reason the body-parser branch above is
+  // central: the next field somebody adds gets the correct answer for free.
+  // Refused rather than silently stripped — a title the vendor cannot see the
+  // whole of is worse than one they are told to retype.
+  if (err?.code === '22P05') {
+    return res.status(400).json({
+      error: 'BAD_TEXT',
+      message: 'That text contains a character we can’t store. Retype it and try again.',
+    });
+  }
+
+  // A MALFORMED PERCENT-ESCAPE IN THE PATH — GET /spots/%, /api/vendor-logo/%,
+  // a misread QR, a link a chat client mangled. Express decodes :params inside
+  // Layer.match, BEFORE any handler body runs, so no route can try/catch it and
+  // it arrives here as an ordinary error.
+  //
+  // TWO REASONS THIS CANNOT BE LEFT TO THE 500 BRANCH, and the second is the
+  // one that matters:
+  //
+  //   • /spots/:slug is public, indexed and carries no rate limiter, so every
+  //     hit answered 500 AND wrote an error_logs row. That is a one-line way to
+  //     bury real failures on the operator's dashboard under junk.
+  //   • the thrown message EMBEDS THE RAW PARAM ("Failed to decode param '%'")
+  //     and the `known` scan below matches by SUBSTRING — so
+  //     /spots/%zzPOOL_NOT_FOUND came back 404 POOL_NOT_FOUND. An anonymous
+  //     caller could pick which error code and status this server reports.
+  //     Hence this branch sits ABOVE that scan, not below it.
+  //
+  // src/routes/tracked-qr.js catches the same class for /r/<code> (where the
+  // right answer is a 302 home rather than an error) and explains it at length;
+  // this is the fallback for every other route with a :param. Answered the way
+  // any other unusable URL is — sendNotFound, which already gives an API caller
+  // JSON, a person the 404 page and a subresource two words of text/plain.
+  //
+  // MATCHED ON EXPRESS'S OWN FINGERPRINT, not on `instanceof URIError` alone.
+  // decode_param (express/lib/router/layer.js) rewrites the message to
+  // "Failed to decode param '<raw>'" AND stamps status/statusCode 400 before
+  // rethrowing, so requiring one of those is what separates a mangled URL from
+  // a URIError raised by our own code deeper in a handler. That distinction is
+  // load-bearing: encodeURIComponent throws URIError on a lone surrogate, and
+  // src/lib/geocode.js can raise one from a vendor's address — which is a real
+  // bug in our code and must stay a logged 500, not become a silent 404 saying
+  // the endpoint does not exist for a settings save that plainly does.
+  const decodeFailed = err instanceof URIError
+    && (err.status === 400 || /Failed to decode param/i.test(String(err.message ?? '')));
+  if (decodeFailed) {
+    if (res.headersSent) return;
+    return sendNotFound(req, res);
+  }
+
   const known = {
     INSUFFICIENT_POINTS: [400, 'Not enough points for this reward.'],
     REWARD_NOT_FOUND: [404, 'Reward not found or inactive.'],

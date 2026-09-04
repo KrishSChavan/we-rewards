@@ -16,7 +16,7 @@
 //
 // Runs in the default suite (no DB): everything below is either a pure function
 // or a route whose Supabase read is allowed to fail.
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { robotsTxt, sitemapXml, absoluteUrl, CANONICAL_ORIGIN, STATIC_SITEMAP_PATHS } from '../src/lib/seo.js';
@@ -24,6 +24,57 @@ import { layout, organizationJsonLd, webSiteJsonLd } from '../src/lib/page-shell
 import { spotsIndexHtml, spotPageHtml, streetOnly, cuisinePhrase, rewardCost, isIndexable } from '../src/lib/spots-page.js';
 import { howItWorksHtml, faqHtml, _FAQ } from '../src/lib/content-pages.js';
 import { app } from '../server.js';
+
+/**
+ * ONE listener for the whole file, drained on the way out.
+ *
+ * This file makes more real HTTP requests than any other in the suite (the
+ * crawler routes, the noindex headers, the spot pages), and it used to open a
+ * fresh `app.listen(0)` per request and call `listener.close()` in a finally.
+ * Two things are wrong with that, and the second is why this helper exists:
+ *
+ *   • `listener.address()` is null until the 'listening' event, so reading
+ *     `.port` straight after listen() is a race that happens to win on most
+ *     runs;
+ *   • `close()` stops the server ACCEPTING, it does not hang up the connections
+ *     already open — and fetch() keeps its socket alive. So every request left
+ *     a live socket pinning a closed server, and the process could only exit
+ *     once each of them idled out. This file was intermittently taking a minute
+ *     to exit rather than five seconds, which `node --test` reports as the whole
+ *     FILE hanging with no failing test to point at.
+ *
+ * One listener, awaited properly, with closeAllConnections() at the end makes
+ * the teardown deterministic instead of dependent on keep-alive timers.
+ */
+const server = (() => {
+  let ready = null;
+  return {
+    async port() {
+      if (!ready) {
+        ready = new Promise((resolve, reject) => {
+          const l = app.listen(0);
+          l.once('listening', () => resolve(l));
+          l.once('error', reject);
+        });
+      }
+      return (await ready).address().port;
+    },
+    async close() {
+      if (!ready) return;
+      const l = await ready;
+      ready = null;
+      l.closeAllConnections();
+      await new Promise((resolve) => l.close(resolve));
+    },
+  };
+})();
+after(() => server.close());
+
+/** One request against that listener. */
+async function fetchApp(pathname, init) {
+  const port = await server.port();
+  return fetch(`http://127.0.0.1:${port}${pathname}`, init);
+}
 
 /** Every application/ld+json block on a page, parsed. Throws if one is broken. */
 function jsonLdBlocks(html) {
@@ -110,15 +161,9 @@ describe('sitemap.xml', () => {
     // A sitemap advertising a 404 is worse than one that omits the page: it is
     // the single clearest "this site is unmaintained" signal Search Console
     // reports. Legal docs are skipped, they are files on disk.
-    const listener = app.listen(0);
-    try {
-      const port = listener.address().port;
-      for (const p of STATIC_SITEMAP_PATHS.filter((x) => !x.startsWith('/legal/') && x !== '/spots')) {
-        const res = await fetch(`http://127.0.0.1:${port}${p}`);
-        assert.equal(res.status, 200, `${p} is in the sitemap but answered ${res.status}`);
-      }
-    } finally {
-      listener.close();
+    for (const p of STATIC_SITEMAP_PATHS.filter((x) => !x.startsWith('/legal/') && x !== '/spots')) {
+      const res = await fetchApp(p);
+      assert.equal(res.status, 200, `${p} is in the sitemap but answered ${res.status}`);
     }
   });
 });
@@ -127,14 +172,8 @@ describe('sitemap.xml', () => {
 
 describe('crawler routes', () => {
   async function get(pathname) {
-    const listener = app.listen(0);
-    try {
-      const port = listener.address().port;
-      const res = await fetch(`http://127.0.0.1:${port}${pathname}`);
-      return { status: res.status, headers: res.headers, body: await res.text() };
-    } finally {
-      listener.close();
-    }
+    const res = await fetchApp(pathname);
+    return { status: res.status, headers: res.headers, body: await res.text() };
   }
 
   test('/robots.txt is served as plain text', async () => {
@@ -155,13 +194,28 @@ describe('crawler routes', () => {
   });
 
   test('the staff apps carry a noindex header and the public pages do not', async () => {
-    for (const staff of ['/terminal', '/admin', '/scan']) {
-      const res = await get(staff);
-      assert.match(res.headers.get('x-robots-tag') || '', /noindex/, `${staff} must be noindex`);
-    }
-    for (const open of ['/', '/join', '/faq', '/how-it-works']) {
-      const res = await get(open);
-      assert.equal(res.headers.get('x-robots-tag'), null, `${open} must stay indexable`);
+    // PINNED TO PRODUCTION, exactly as the next test pins itself to staging.
+    // The header middleware reads APP_ENV per request, so this assertion is
+    // about the PRODUCTION rule and inherits whatever the developer's own .env
+    // happens to say otherwise — and a checkout carrying APP_ENV=staging (which
+    // is what a laptop pointed at the test deployment has) failed here with
+    // "/ must stay indexable" for no reason connected to the code. Restored the
+    // same way, so the two tests cannot leak into each other whatever order
+    // they run in.
+    const before = process.env.APP_ENV;
+    process.env.APP_ENV = 'production';
+    try {
+      for (const staff of ['/terminal', '/admin', '/scan']) {
+        const res = await get(staff);
+        assert.match(res.headers.get('x-robots-tag') || '', /noindex/, `${staff} must be noindex`);
+      }
+      for (const open of ['/', '/join', '/faq', '/how-it-works']) {
+        const res = await get(open);
+        assert.equal(res.headers.get('x-robots-tag'), null, `${open} must stay indexable`);
+      }
+    } finally {
+      if (before == null) delete process.env.APP_ENV;
+      else process.env.APP_ENV = before;
     }
   });
 

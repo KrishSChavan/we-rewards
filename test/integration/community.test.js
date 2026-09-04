@@ -221,22 +221,34 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
   });
 
   test('the monthly inbound cap stops a transfer that would exceed it → VENDOR_CAP_REACHED', async () => {
+    // ITS OWN STUDENT, FUNDED HERE. This test needs a full 100 community points
+    // and it is the only one in the file that does — every other transfer test
+    // spends 5 or 80 of whatever the shared `student` happens to be holding.
+    // Reading the shared balance meant this test's precondition depended on how
+    // much its predecessors had spent, and the moment they spent 85 of it the
+    // assertion that used to guard that ("test needs 100 community points")
+    // started failing for a reason that had nothing to do with the cap.
+    //
+    // 1000 award-points mints exactly 100 community points, and a brand-new
+    // student is nowhere near the 200/day mint cap, so this is deterministic.
     const capped = await createVendor({ pointsPerDollar: 10 });
+    const payer = await createUser();
     try {
       await admin.from('vendors').update({ community_monthly_cap: 100 }).eq('id', capped.id);
-      assert.ok((await community()).balance >= 100, 'test needs 100 community points');
+      await award(1000, { userId: payer.id });
+      assert.equal((await community(payer.id)).balance, 100, 'the fixture mints exactly 100');
 
-      const ok = await transfer(80, { vendorId: capped.id });
+      const ok = await transfer(80, { userId: payer.id, vendorId: capped.id });
       assert.equal(ok.error, null, '80 of 100 is fine');
 
-      const over = await transfer(30, { vendorId: capped.id });
+      const over = await transfer(30, { userId: payer.id, vendorId: capped.id });
       assert.ok(over.error, '80 + 30 > 100 must raise');
       assert.match(over.error.message, /VENDOR_CAP_REACHED/);
 
-      const exact = await transfer(20, { vendorId: capped.id });
+      const exact = await transfer(20, { userId: payer.id, vendorId: capped.id });
       assert.equal(exact.error, null, 'filling the cap exactly is allowed');
     } finally {
-      await cleanup({ vendorId: capped.id });
+      await cleanup({ vendorId: capped.id, userIds: [payer.id] });
     }
   });
 

@@ -1400,6 +1400,18 @@ router.patch('/settings', requirePin, async (req, res, next) => {
       delete updates.address; // unchanged — don't rewrite it or its coords
     }
 
+    // Dropping an unchanged address can empty the patch entirely — a body of
+    // `{ address: <what is already stored> }` and nothing else. An empty
+    // `.update({})` is not a no-op at PostgREST: it comes back with zero rows,
+    // `.single()` turns that into PGRST116, and the vendor gets a 500 plus a
+    // row in the operator's error log for a save that had nothing to do. The
+    // honest answer is the one every other no-op save gives — the current
+    // settings, unchanged. Checked AFTER the delete rather than in
+    // validSettings, because only this line knows the address was a no-op.
+    if (!Object.keys(updates).length) {
+      return res.json({ ...settingsView(req.vendor), pinChanged: false });
+    }
+
     // RATE PARITY across a shared purse (migration-046). Locations that share
     // points must charge the same points per dollar, or one systematically
     // funds the other; pool_join refuses a mismatch at the door, and this is

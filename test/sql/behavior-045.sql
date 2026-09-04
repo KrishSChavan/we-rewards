@@ -223,6 +223,41 @@ begin
   if r.new_balance = 400 then raise notice 'PASS undo: undoing a redemption puts the points back in the purse';
   else raise notice 'FAIL undo: purse came back % after undoing a redemption, expected 400', r.new_balance; end if;
 
+  -- ---------- 8b. undo expires after one minute ----------
+  -- THE ONLY PLACE THIS RULE IS ACTUALLY TESTED. The JS suite cannot reach it:
+  -- ageing a row means a direct UPDATE on `transactions`, and migration-025's
+  -- guard refuses any that does not announce itself with app.points_write —
+  -- which PostgREST has no way to set. test/integration/money.test.js used to
+  -- try anyway, ignore the refusal, and assert against a row that was still
+  -- fresh. Here the GUC is set at the top of this file, so the row can be aged
+  -- honestly.
+  --
+  -- It matters because the window is the whole anti-abuse story for undo: a
+  -- cashier can void their own mistake, and cannot quietly claw a customer's
+  -- points back an hour after they walked out.
+  update public.pool_balances set balance = 400 where user_id = s1 and pool_id = pool;
+  perform public.award_points(s1, down, 30, 3, null);
+  select id into tx from public.transactions
+   where user_id = s1 and vendor_id = down and type = 'earn' and points = 30
+   order by created_at desc limit 1;
+
+  update public.transactions set created_at = now() - interval '2 minutes' where id = tx;
+
+  begin
+    perform public.reverse_transaction(tx, down);
+    raise notice 'FAIL expiry: a two-minute-old transaction was still undoable';
+  exception when others then
+    if sqlerrm like '%REVERSAL_EXPIRED%' then
+      raise notice 'PASS expiry: an undo past the one-minute window is refused';
+    else
+      raise notice 'FAIL expiry: expected REVERSAL_EXPIRED, got %', sqlerrm;
+    end if;
+  end;
+
+  select reversed_by into tx from public.transactions where id = tx;
+  if tx is null then raise notice 'PASS expiry: the expired transaction is NOT marked reversed';
+  else raise notice 'FAIL expiry: an expired undo still marked the row reversed'; end if;
+
   -- ---------- 9. the 'close' audience finds pooled customers, once ----------
   -- Campus sells a 300-point coffee, so 'close' wants 150 <= balance < 300.
   update public.pool_balances set balance = 200 where user_id = s1 and pool_id = pool;

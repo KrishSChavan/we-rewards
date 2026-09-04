@@ -169,20 +169,53 @@ describe('money paths (RPCs)', { skip: dbConfigured ? false : 'set TEST_SUPABASE
     }
   });
 
-  test('reverse_transaction refuses to undo a transaction older than one minute', async () => {
+  /*
+   * THE ONE-MINUTE UNDO WINDOW CANNOT BE TESTED FROM HERE, and this test used
+   * to claim it was.
+   *
+   * It awarded, backdated the row with a plain `.update({ created_at })`, and
+   * asserted that reverse_transaction then raised REVERSAL_EXPIRED. But
+   * migration-025's guard trigger refuses every direct UPDATE on `transactions`
+   * that does not announce itself with the app.points_write GUC — which
+   * PostgREST has no way to set. So the backdate raised P0001, the result was
+   * never looked at, the row's timestamp never moved, and the reversal
+   * succeeded. `assert.ok(res.error)` was failing on a transaction that was
+   * simply still fresh.
+   *
+   * There is no honest way to age a row through PostgREST, so the expiry rule
+   * is asserted in test/sql/behavior-045.sql instead, which runs as `postgres`
+   * with the GUC set and can age a row legitimately:
+   *
+   *   npm run test:sql -- -Migration migration-045.sql -Seed seed-045.sql `
+   *                       -Behavior behavior-045.sql
+   *
+   * What IS worth proving here is the guard itself. It is the thing standing
+   * between a leaked service-role key and a rewritten ledger, and until now the
+   * only test of it was on community_balances (test/integration/community.test.js).
+   */
+  test('transactions cannot be rewritten directly — only through the RPCs (migration-025)', async () => {
     await admin.rpc('award_points', { p_user_id: student.id, p_vendor_id: vendor.id, p_points: 40, p_dollar_amount: 4 });
     const { data: tx } = await admin
-      .from('transactions').select('id')
+      .from('transactions').select('id, created_at, points')
       .eq('user_id', student.id).eq('vendor_id', vendor.id).eq('type', 'earn')
       .order('created_at', { ascending: false }).limit(1).single();
 
-    // Backdate it past the 1-minute anti-abuse window.
-    await admin.from('transactions')
+    const backdate = await admin.from('transactions')
       .update({ created_at: new Date(Date.now() - 2 * 60 * 1000).toISOString() })
       .eq('id', tx.id);
+    assert.ok(backdate.error, 'a direct UPDATE on transactions must be refused');
+    assert.match(backdate.error.message, /terminal-managed/);
 
-    const res = await admin.rpc('reverse_transaction', { p_transaction_id: tx.id, p_vendor_id: vendor.id });
-    assert.ok(res.error, 'a stale transaction cannot be reversed');
-    assert.match(res.error.message, /REVERSAL_EXPIRED/);
+    const points = await admin.from('transactions').update({ points: 999_999 }).eq('id', tx.id);
+    assert.ok(points.error, 'and it must not be possible to rewrite the amount either');
+
+    const del = await admin.from('transactions').delete().eq('id', tx.id);
+    assert.ok(del.error, 'nor to delete the row');
+
+    // Nothing moved: the row is exactly as award_points wrote it.
+    const { data: after } = await admin
+      .from('transactions').select('created_at, points').eq('id', tx.id).single();
+    assert.equal(after.created_at, tx.created_at);
+    assert.equal(after.points, tx.points);
   });
 });

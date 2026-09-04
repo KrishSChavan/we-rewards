@@ -815,8 +815,21 @@ function syncInstallRow() {
 const THEME_KEY = 'psu-theme';
 
 // an explicit saved choice wins; otherwise default to dark
+//
+// GUARDED, like every other localStorage touch in this file and like the copy
+// of this same read in theme-init.js. Reading localStorage is not merely
+// allowed to return null — on a browser with site data blocked (Chrome and Edge
+// under "block third-party cookies and site data", an enterprise policy, or an
+// in-app webview) the PROPERTY ACCESS ITSELF throws a SecurityError.
+//
+// This one runs inside boot(), so unguarded it took the whole app down: the
+// boot catch reported "boot failed: Access is denied for this document." and
+// Splash.giveUp() told the student "Couldn't reach WeRewards. Check your
+// connection and try again." on a perfectly good connection — with nothing on
+// screen, and nothing in the error log, pointing at a browser setting.
 function currentTheme() {
-  const saved = localStorage.getItem(THEME_KEY);
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch { /* site data blocked */ }
   if (saved === 'dark' || saved === 'light') return saved;
   return 'dark';
 }
@@ -829,7 +842,11 @@ function applyTheme(theme) {
 }
 
 function setTheme(theme) {
-  localStorage.setItem(THEME_KEY, theme);
+  // Same guard as currentTheme above, and the order matters: apply it either
+  // way. A student whose browser refuses to remember the choice should still
+  // get the theme they just tapped for the rest of the session, rather than a
+  // toggle that does nothing.
+  try { localStorage.setItem(THEME_KEY, theme); } catch { /* site data blocked */ }
   applyTheme(theme);
 }
 

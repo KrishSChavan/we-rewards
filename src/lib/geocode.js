@@ -22,8 +22,15 @@ export async function geocode(address) {
   const q = String(address ?? '').trim();
   if (!q) return null;
 
-  const url = `${NOMINATIM_URL}?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`;
   try {
+    // INSIDE the try, and that is the whole point of this line's position.
+    // encodeURIComponent throws URIError('URI malformed') on a lone surrogate,
+    // and `q` is a vendor- or operator-typed address checked only for length
+    // (routes/vendor.js, routes/admin.js) — JSON.parse turns the escape \ud800
+    // into exactly that. Built one line higher, outside the try, it threw
+    // straight past this function's "best-effort, returns null" contract and
+    // out of whichever settings save called it.
+    const url = `${NOMINATIM_URL}?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`;
     const res = await fetch(url, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
       signal: AbortSignal.timeout(5000),

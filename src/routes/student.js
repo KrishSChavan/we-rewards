@@ -217,9 +217,20 @@ router.post('/accept-terms', async (req, res, next) => {
  * vendor exploring the student side and saying no thanks), deleting the auth
  * user would cascade vendor_staff away and destroy their terminal login.
  * Instead, remove only the student side: the profiles row if one exists.
+ *
+ * FORGETS THE PUSH ENDPOINTS FIRST, exactly as /delete does — the two do the
+ * same deletion and had drifted. push_subscriptions carries no foreign key on
+ * user_id (see forgetPushSubscriptions at the foot of this file), so nothing
+ * about deleting the auth user or the profile reaches it, and the rows would
+ * have outlived the account they belong to. That matters most for the very case
+ * this route exists to serve on the revision path: someone declining new terms
+ * has been USING the app, so they are the student most likely to have a live
+ * subscription — the first-time decliner this was written for has none.
  */
 router.post('/decline', async (req, res, next) => {
   try {
+    await forgetPushSubscriptions(req.user.id);
+
     const { count, error: staffErr } = await supabaseAdmin
       .from('vendor_staff')
       .select('vendor_id', { count: 'exact', head: true })
