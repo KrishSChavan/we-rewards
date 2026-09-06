@@ -501,6 +501,11 @@ async function submitRecover() {
 async function enterApp() {
   const { data } = await sb.auth.getSession();
   accountId = data?.session?.user?.id ?? null;
+  // File this terminal's session replay under the account that opened the till.
+  // Only the id goes over — never the email, which on a vendor account is the
+  // login credential's other half. resetToLogin() below is the matching call,
+  // and on a shared counter iPad it is the load-bearing one.
+  Analytics.identify(accountId, { role: 'vendor' });
 
   // WHICH STORE first, before anything else asks the server for vendor data:
   // every /api/vendor/* call carries the choice as X-Vendor-Id, and a login
@@ -3913,6 +3918,10 @@ function resetToLogin() {
   locations = [];
   vendorId = null;
   storeSwitching = false;
+  // Forget the operator, and start a NEW session id with them: two shifts on
+  // one iPad have to be two recordings, not one long one filed under whoever
+  // signed in first.
+  Analytics.reset();
   // The operator session too, and BEFORE the repaints below: they both read
   // isAdmin, and leaving it set would hand the next sign-in — a real vendor, on
   // a shared iPad — an ADMIN banner and a picker over every business we have.

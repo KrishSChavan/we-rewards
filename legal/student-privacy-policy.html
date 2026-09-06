@@ -58,7 +58,7 @@
   <div class="doc-header">
     <p class="doc-label">Legal Document — Student &amp; Vendor-Facing</p>
     <h1>WeRewards<br>Privacy Policy</h1>
-    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: August 26, 2026</p>
+    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: September 6, 2026</p>
   </div>
 
   <div class="notice">
@@ -122,13 +122,14 @@
   <p>This is the only place we record your IP address. We keep these records for as long as your account exists; they are deleted with it. If we revise the documents and ask you to accept again, that creates a new record rather than replacing the old one, so the history of what you agreed to and when stays intact.</p>
 
   <h3>2.8 Information Stored on Your Device</h3>
-  <p>WeRewards does not use tracking cookies, advertising cookies, or any third-party analytics. We do store the following in your browser's local storage:</p>
+  <p>WeRewards does not use advertising cookies, and nothing here is used to build a profile of you for marketing or sold to anyone. We do use one analytics provider, PostHog, which is described in Section 2.14 below. What is stored in your browser is:</p>
   <ul>
     <li><strong>Your sign-in session.</strong> When you sign in with Google, our authentication provider (Supabase) stores an access token and a refresh token in your browser so you stay signed in between visits. These are what keep you logged in; clearing your browser storage signs you out.</li>
     <li><strong>Your appearance preference.</strong> Your light/dark theme choice is saved locally so the app opens the way you left it.</li>
     <li><strong>An offline app cache.</strong> The app registers a service worker that caches its own pages and styles so it loads quickly and works on a poor connection. This cache holds application files, not your personal data.</li>
+    <li><strong>An analytics identifier.</strong> PostHog stores a random identifier for your browser, in local storage and in one cookie. It is a random value, not your name or email, and it is what ties the pages of a single visit together. See Section 2.14.</li>
   </ul>
-  <p>All three are stored on your device rather than sent to us as a separate collection of data. You can clear them at any time through your browser's site-data settings.</p>
+  <p>All of these are stored on your device rather than sent to us as a separate collection of data. You can clear them at any time through your browser's site-data settings.</p>
 
   <h3>2.9 Location</h3>
   <p>Two features in WeRewards can use your location. Both ask your permission first, both work only while the app is open, and you can refuse or switch off either one without losing anything else.</p>
@@ -194,7 +195,23 @@
     <li>Biometric data</li>
     <li>Contacts, or files from your device</li>
     <li>Your photo library. The receipt scanner reads the single image you choose to submit and keeps none of it (Section 2.10); it has no access to any other photo on your device.</li>
+    <li>Anything you type. Session recording (Section 2.14) masks every input field before the recording leaves your device, so what you type into WeRewards is not collected even where it is being recorded around you.</li>
+    <li>Your screen outside WeRewards. A session recording is built from this app's own pages and can see nothing else &mdash; not another tab, not another app, not your camera or microphone.</li>
   </ul>
+
+  <h3>2.14 Product Analytics and Session Recording</h3>
+  <p>We use <strong>PostHog</strong> to understand how the app is actually used &mdash; which screens people reach, where something breaks, and where a step is confusing enough that people give up on it. We want to be specific about what that involves, because one part of it goes further than analytics usually does.</p>
+  <p><strong>Events.</strong> We record named events such as opening the app, installing it to your home screen, or dismissing the install prompt. Each carries your user identifier if you are signed in, the page you were on, and your browser and device type.</p>
+  <p><strong>Session recording.</strong> PostHog also makes a <strong>recording of what the app looked like on your screen</strong> while you used it, together with your taps and scrolling, so that a problem can be watched back rather than guessed at. This is not a video and it is not your camera or microphone: it is a reconstruction of the app's own screens from the instructions your browser used to draw them. Specifically:</p>
+  <ul>
+    <li><strong>Everything you type is hidden.</strong> Text you enter into any field &mdash; search boxes, forms, passwords &mdash; is replaced with dots before the recording leaves your device. It is never sent and we cannot recover it.</li>
+    <li><strong>Your email address is hidden</strong> where the app displays it on your account screen.</li>
+    <li><strong>The contents of network requests are not recorded.</strong> The recording carries no access tokens and no data from our servers beyond what was drawn on the screen.</li>
+    <li><strong>Other text on screen is recorded as it appeared</strong> &mdash; your points balance, the spots you looked at, the rewards you redeemed. That is the part that makes a recording useful, and it is the part worth knowing about.</li>
+    <li>If you are signed in, the recording is <strong>linked to your account</strong> by your user identifier, so that we can look at a problem you have reported to us. Your name and email address are not sent to PostHog.</li>
+  </ul>
+  <p>Recordings are kept by PostHog under the retention period set on our account and are deleted when it expires. They are visible only to the people who operate WeRewards, and are never shared with vendors or with anyone else.</p>
+  <p>You can switch this off for yourself in two ways that we cannot override: turn on <em>Do Not Track</em> or your browser's tracking protection, or block <code>posthog.com</code> in a content blocker. Doing either leaves every other part of WeRewards working normally. If you would rather we deleted recordings already associated with your account, ask us at the address in Section 12 and we will.</p>
 
   <!-- ══════════════════════════════════════════════════════════ -->
   <h2>3. How We Use Your Information</h2>
@@ -213,6 +230,7 @@
       <tr><td>Award points for a receipt you photograph, and check the receipt is genuine and not already claimed</td><td>The receipt photo (read, then discarded — see Section 2.10), and the business, total, and printed date and time read from it</td></tr>
       <tr><td>Debug and fix platform errors</td><td>Error logs, user agent, user ID</td></tr>
       <tr><td>Operate platform analytics (admin-only)</td><td>Aggregated/anonymized transaction data</td></tr>
+      <tr><td>Diagnose problems and improve the app (Section 2.14)</td><td>User ID, pages visited, device and browser type, and a masked recording of the app's screens as you used them</td></tr>
       <tr><td>Select who receives a vendor's deal</td><td>User ID, transaction history at that vendor, balance at that vendor</td></tr>
       <tr><td>Deliver deal notifications and cap their frequency</td><td>User ID, push subscription, email address, notification history</td></tr>
       <tr><td>Credit a signup promotion</td><td>The email domain of your account and the date it was created</td></tr>
@@ -259,6 +277,12 @@
         <td>Reading the printed text on a receipt you submit, and checking that it is a photograph of a real printed receipt rather than a screenshot or an edited image</td>
         <td>The receipt photo itself, sent from our server at the moment you submit it and not stored by us. No name, email, or user identifier is sent with it. Google's terms for free-of-charge API use permit them to use submitted content to improve their models; paid API use does not</td>
         <td>policies.google.com/privacy · ai.google.dev/gemini-api/terms</td>
+      </tr>
+      <tr>
+        <td><strong>PostHog</strong><br>(us.i.posthog.com)</td>
+        <td>Product analytics and session recording (Section 2.14) &mdash; understanding how the app is used and diagnosing faults</td>
+        <td>Your user identifier, the pages you visit, your browser and device type, your browser IP, and a recording of the app's screens as they appeared to you, with everything you type masked before it leaves your device. Not your name and not your email address</td>
+        <td>posthog.com/privacy</td>
       </tr>
       <tr>
         <td><strong>OpenStreetMap</strong><br>(openstreetmap.org, tile.openstreetmap.org)</td>

@@ -863,23 +863,14 @@ batched (20, or every 10s) and POSTed to `{POSTHOG_HOST}/batch/`, so no
 third-party network hop ever lands on a path a student is waiting on. The queue
 is flushed on SIGTERM, which is the shutdown Heroku announces on every deploy.
 
-**This is server-side only.** No `posthog-js` runs in the browser, which is a
-deliberate choice, not an omission — the CSP stays `script-src 'self'`, the
-es2017 / safari12 bundle floor is untouched, and no service-worker cache needs
-bumping. Two consequences worth knowing before you go looking for them:
-
-- **No autocapture, session replay, or feature flags.** Those need the browser
-  SDK. Adding it is a `public/` change (plus a `sw.js` `CACHE` bump per app),
-  and `/scan` almost certainly cannot run it at all — it targets `safari12`,
-  which already could not parse supabase-js.
-- **Pre-login events have no person.** `pwa_launched` and most of the install
-  funnel fire before sign-in, and this deployment sends no client-side anon id,
-  so they go with `$process_person_profile: false`. They are queryable as counts
-  and breakdowns but cannot be stitched into a true PostHog funnel. Signed-in
-  events carry the Supabase user id and behave normally. Bucketing anonymous
-  traffic under one shared id would have bought a funnel at the cost of
-  inventing a single hyperactive "user" and corrupting every person metric in
-  the project, which is not a trade worth making.
+**Pre-login events have no person.** `pwa_launched` and most of the install
+funnel fire before sign-in, and this module does not read the browser's
+anonymous id, so they go with `$process_person_profile: false`. They are
+queryable as counts and breakdowns but cannot be stitched into a true PostHog
+funnel. Signed-in events carry the Supabase user id and behave normally.
+Bucketing anonymous traffic under one shared id would have bought a funnel at
+the cost of inventing a single hyperactive "user" and corrupting every person
+metric in the project, which is not a trade worth making.
 
 Failures split the way `push.js` prunes endpoints — keep what might still land,
 drop what provably won't. A 5xx / 429 / network error re-queues; a 4xx is
@@ -896,6 +887,105 @@ npm run check:posthog -- --dry # config and payload only, send nothing
 Region matters: a US key posted to the EU host is rejected and vice versa.
 `POSTHOG_HOST` defaults to `https://us.i.posthog.com`; EU projects must set
 `https://eu.i.posthog.com` explicitly.
+
+### Session replay
+
+The same `POSTHOG_API_KEY` also turns on **session replay** in the browser, on
+the student app (`/`), the vendor terminal (`/terminal`) and `/join`. Not
+`/admin` (an operator tool nobody needs to watch) and not `/scan` (it targets
+`safari12`, on a device already too old for the main terminal). Find a
+student's recordings by filtering PostHog's replay list on their person — the
+Supabase user id, the same id the server-side mirror above sends — or on the
+`app` property: `student` / `vendor` / `join`.
+
+Three pieces:
+
+| File | Role |
+| --- | --- |
+| `scripts/build-client.js` | vendors `posthog-js` out of `node_modules` and fans it out to the three apps as `posthog.js`, minified and lowered like everything else |
+| `public/shared/analytics.js` | one source, fanned out beside it as `analytics.js`; calls `posthog.init()` and exposes `window.Analytics` |
+| `server.js` (`serveShell`) | stamps the project key into each shell as `<meta name="posthog-key">` |
+
+**Which posthog-js build, and why it is not the obvious one.** The default
+`dist/array.js` is less than half the size because it *lazy-loads the recorder*
+from `us-assets.i.posthog.com` when recording starts. Under this app's CSP that
+fetch is blocked, so recording never begins — with no console error and no
+failed request the page reports. We ship `dist/array.full.no-external.js`, which
+has rrweb compiled in and no remote loading at all.
+
+Measured in a real browser against a deliberately-broken build, because the
+detection below depends on the exact signature:
+
+| | `sessionRecording.status` | `sessionRecordingStarted()` | `POST /s/` |
+| --- | --- | --- | --- |
+| `array.full.no-external.js` | `active` | `true` | yes |
+| a lazy-loading build | `lazy_loading` (forever) | `false` | none |
+| Do Not Track | `disabled` (+ `has_opted_out_capturing()`) | — | none |
+
+Events keep flowing in the broken case, which is what makes it so easy to miss:
+PostHog looks alive, and only the replay list is empty.
+
+**Three layers now stop that shipping**, because a comment would not:
+
+1. `assertRecorderBundle()` in `scripts/build-client.js` **fails the build**
+   unless the lowered bytes can actually record. `scripts/check-client.js` runs
+   it too, so it gates a deploy *before* the push, not just at dyno boot.
+   Note what it does **not** look for: the strings `rrweb` and `$snapshot`
+   appear in every posthog-js build including the ones that cannot record (7
+   and 2 occurrences), so the obvious check passes and catches nothing. It
+   looks for `MutationObserver` and `IncrementalSnapshot` — rrweb's
+   implementation rather than posthog's intentions — which are exactly 0 in
+   every lazy-loading build.
+2. **Boot** asks PostHog whether replay is on in the project and prints a
+   second, corrected line (`describeReplayProject()`). Not awaited: a
+   third-party fetch never sits between a dyno starting and it serving.
+3. **Runtime.** `analytics.js` waits 30s and, if recording never reached
+   `active`, posts once to `/api/client-error` naming the status and the
+   likely cause. This is the only layer that runs where failures actually
+   happen, so it catches the ones no pre-deploy check can see — the project
+   switch flipped later, a blocked request, an exhausted recording quota.
+   Rate-limited to **once per browser per day**: if replay is off
+   project-wide then every session is a failing session, and per-session
+   reporting would replace a silent failure with a useless one. Do Not Track
+   and project sampling are excluded — those are the system working.
+
+**The key is in the HTML.** It is the PostHog *project* key (`phc_…`), a
+write-only ingestion token, published exactly as PostHog's own install snippet
+publishes it. It arrives as a `<meta>` tag rather than an inline `<script>`
+because `script-src` is `'self'` with no `'unsafe-inline'` — the same reason
+`theme-init.js` is a file. A *personal* key (`phx_`/`phs_`) can read, and
+`check:posthog` refuses one outright.
+
+**What the CSP gained:** the ingestion host in `connect-src`, and nothing else.
+`script-src` stays `'self'`, because the SDK is served from this origin. The
+`-assets` sibling is allowed too — posthog-js fetches its remote *config* (not
+code) from `/array/<token>/config`, verified in a real browser.
+
+**Privacy.** Every input is masked before the recording leaves the device
+(passwords always), request headers and bodies are never captured, and
+`data-ph-mask` masks arbitrary text — currently `#account-email`.
+`respect_dnt: true` is set, because the Privacy Policy (§2.14) promises Do Not
+Track switches recording off. Anonymous visitors are recorded but mint no person
+(`person_profiles: 'identified_only'`), matching the server-side rule. Shipping
+this bumped `TERMS_VERSION`: §2.8 previously said the app used "no third-party
+analytics", which is the kind of change `src/lib/terms.js` re-prompts for.
+
+**Load order is load-bearing.** `posthog.js` → `analytics.js` → the app's own
+script, all plain `<script>` tags at the end of `<body>`. Deferring either one
+would run it *after* `app.js`, so `window.Analytics` would not exist at the
+moment `app.js` restores a session and identifies the student.
+
+**Two switches, and only one is in this repo.** The browser has to ship the
+recorder (`POSTHOG_API_KEY` set, `POSTHOG_SESSION_REPLAY` not turned off) *and*
+replay has to be enabled in the PostHog project. `npm run check:posthog` asks
+PostHog directly before a deploy, boot asks again on every dyno start, and the
+runtime check catches it if the switch is flipped afterwards. All three read the
+same `fetchReplayConfig()`, so they cannot check a different URL from the one
+the browser uses to decide whether to record.
+
+**Emergency stop:** the project switch in PostHog, not the env var. It takes
+effect on every device at once; `POSTHOG_SESSION_REPLAY=off` needs a deploy
+*and* a `sw.js` `CACHE` bump before an already-installed PWA picks it up.
 
 ## Vendor password recovery
 

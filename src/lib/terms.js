@@ -58,7 +58,24 @@
 // phone — but a granted claim writes a row saying this student was next to that
 // spot at that time, and that is coarse location data we did not previously
 // hold. Disclosing it is not optional and neither is re-consenting to it.
-export const TERMS_VERSION = '2026-08-26';
+// 2026-09-06: session recording (Policy §2.8, §2.13, a new §2.14, and a new
+// processor in §4). Material on both of the tests the bumps above were made
+// against, and the first one is the plainest yet: §2.8 did not merely fail to
+// mention analytics, it stated "WeRewards does not use tracking cookies,
+// advertising cookies, or any third-party analytics" — while PostHog is now
+// sent a masked RECORDING of the app's screens as a student used them, keyed
+// to their user id, and sets an identifier in their browser. Second, §4 lists
+// every third party student data reaches and PostHog was not on it (it should
+// have been added when the server-side event mirror shipped; recording makes
+// the gap much larger than a missing row).
+//
+// Everything a student types is masked before the recording leaves the device
+// and no request bodies are captured — but "we record your screen" is not a
+// thing to tell people after the fact, whatever the masking. The Policy also
+// now promises that Do Not Track switches it off, which public/shared/
+// analytics.js honours with respect_dnt; that promise is part of what is being
+// consented to here.
+export const TERMS_VERSION = '2026-09-06';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

@@ -33,7 +33,9 @@ import esbuild from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { JS_TARGET, SCAN_JS_TARGET, CSS_TARGET } from './build-client.js';
+import {
+  JS_TARGET, SCAN_JS_TARGET, CSS_TARGET, POSTHOG_SRC, assertRecorderBundle,
+} from './build-client.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -77,22 +79,31 @@ for (const app of APPS) {
   }
 }
 
-// The two files build-client.js fans out rather than mirrors. They are served
-// by every app, so a parse failure in either is the same crashed dyno — and
-// neither lives under public/<app>/, so the walk above never sees them.
-// fanOut() lowers both at the default JS target, so check them the same way.
-for (const [label, file] of [
+// The files build-client.js fans out rather than mirrors. They are served by
+// every app, so a parse failure in any of them is the same crashed dyno — and
+// none lives under public/<app>/, so the walk above never sees them.
+// fanOut() lowers them all at the default JS target, so check them the same way.
+//
+// posthog.js carries a `verify` as well as a parse check, and that is the point
+// of listing it here. Swapping posthog-js for one of its other builds parses
+// perfectly and then records NOTHING, with no error anywhere — see
+// assertRecorderBundle. buildClientAssets() already refuses it, but that runs at
+// dyno boot, i.e. after the push. This is the gate that runs BEFORE one.
+for (const [label, file, verify] of [
   ['public/shared/boot-guard.js', path.join(ROOT, 'public/shared/boot-guard.js')],
+  ['public/shared/analytics.js', path.join(ROOT, 'public/shared/analytics.js')],
   ['supabase-js (umd, from node_modules)', path.join(ROOT, 'node_modules/@supabase/supabase-js/dist/umd/supabase.js')],
+  ['posthog-js (from node_modules)', POSTHOG_SRC, assertRecorderBundle],
 ]) {
   if (!fs.existsSync(file)) {
     failures.push({ rel: label, message: 'Missing. Run `npm install`.' });
     continue;
   }
   try {
-    esbuild.transformSync(fs.readFileSync(file, 'utf8'), {
+    const out = esbuild.transformSync(fs.readFileSync(file, 'utf8'), {
       loader: 'js', target: JS_TARGET, sourcefile: label,
     });
+    verify?.(out.code, label);
     checked += 1;
   } catch (err) {
     failures.push({ rel: label, message: err.message });

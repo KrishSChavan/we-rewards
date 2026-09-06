@@ -68,6 +68,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <!-- Session replay configuration, stamped in by serveShell (server.js) and
+       read by /terminal/analytics.js at the bottom of this file. See the same
+       comment in public/student/index.html for why it is a meta tag. -->
+  <!--POSTHOG-->
   <link rel="stylesheet" href="/terminal/terminal.css" />
 </head>
 <body>
@@ -832,6 +836,12 @@
   <!-- QR encoder (qrcode-generator UMD, global `qrcode`) for the rotating
        punch-in code — same build the student app uses. Before terminal.js. -->
   <script src="/terminal/qrcode.js"></script>
+  <!-- PostHog + our init layer. Must load in this order and before terminal.js;
+       see public/student/index.html for the whole note. This is a SHARED iPad,
+       so Analytics.reset() on sign-out is what stops one operator's recording
+       being filed under the last one's account. -->
+  <script src="/terminal/posthog.js"></script>
+  <script src="/terminal/analytics.js"></script>
   <script src="/terminal/terminal.js"></script>
 </body>
 </html>

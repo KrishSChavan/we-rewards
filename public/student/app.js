@@ -732,6 +732,14 @@ function render(session) {
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
     InstallPrompt.clearUser();  // stop keying install suppression to the signed-out user
+    // Only on a real sign-OUT, never on a signed-out render. render(null) runs
+    // at least twice on any ordinary landing-page load (onAuthStateChange's
+    // INITIAL_SESSION, then the explicit getSession), and an unconditional
+    // reset() there would throw away the anonymous id and start a new session
+    // id on every one of them — chopping a single visit into a pile of
+    // three-second recordings. wasSignedOut is false only when the app shell
+    // was up, which is exactly when identify() had run.
+    if (!wasSignedOut) Analytics.reset();   // stop filing this device's replay under them
     currentUserId = null;       // …and stop rolling the next student's recommendations as this one
     return;
   }
@@ -764,6 +772,14 @@ function render(session) {
   // seed that went null mid-session would reshuffle the Recommended row under
   // a student who had not touched anything.
   currentUserId = session.user?.id ?? null;
+  // Put the session replay on this student's PostHog person. Set here rather
+  // than in the wasSignedOut branch above for the same reason currentUserId is:
+  // a silent token refresh re-enters render() without passing through it, and a
+  // recording that started before the refresh has to stay attached to them.
+  // The id is the ONLY thing sent — deliberately no email or name, so replay
+  // gives PostHog no personal data the server-side mirror wasn't already
+  // sending as a distinct_id. Repeat calls with the same id are a no-op.
+  Analytics.identify(currentUserId, { role: 'student' });
   const vendorsReady = loadVendors();
   loadTier();
   loadCommunity();

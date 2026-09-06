@@ -130,6 +130,13 @@
   }
   </script>
   <meta name="theme-color" content="#12294b" />
+  <!-- Session replay configuration, stamped in by serveShell (server.js) and
+       read by /analytics.js at the bottom of this file. Replaced with nothing at
+       all when POSTHOG_API_KEY is unset or POSTHOG_SESSION_REPLAY turns replay
+       off. It is a <meta> tag rather than the inline <script> PostHog's own
+       install snippet uses because this page's CSP is script-src 'self' with no
+       'unsafe-inline' — the same reason theme-init.js below is a file. -->
+  <!--POSTHOG-->
   <!-- FIRST script on the page, before anything that could fail. Everything here
        is lowered for old browsers by scripts/build-client.js, but some device is
        always older than the target, and a script that fails to parse leaves this
@@ -1018,7 +1025,11 @@
                 </span>
                 <span class="account-id">
                   <span id="account-name" class="account-name" hidden></span>
-                  <span id="account-email" class="account-email"></span>
+                  <!-- data-ph-mask: the one persistent piece of PII on screen.
+                       Session replay records text as it appears, so without this
+                       every recording of the Account screen carries the
+                       student's email address. -->
+                  <span id="account-email" class="account-email" data-ph-mask></span>
                 </span>
               </div>
 
@@ -1901,6 +1912,13 @@
   <!-- Leaflet (UMD, window.L) for the spots map. Self-hosted alongside the two
        QR libraries above, so no CDN and no SRI; must load before app.js. -->
   <script src="/leaflet/leaflet.js"></script>
+  <!-- PostHog (self-hosted, see scripts/build-client.js) and our init layer.
+       Plain scripts in this block, not deferred in <head>, and in THIS order:
+       a deferred script runs after the classic ones at the end of <body>, so
+       window.Analytics would not exist yet when app.js restores a session and
+       identifies the student. The pair is inert without the meta tags above. -->
+  <script src="/posthog.js"></script>
+  <script src="/analytics.js"></script>
   <script src="/install-prompt.js"></script>
   <script src="/app.js"></script>
 </body>

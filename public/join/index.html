@@ -65,6 +65,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;900&display=swap" rel="stylesheet" />
+  <!-- Session replay configuration, stamped in by serveShell (server.js) and
+       read by /join/analytics.js at the bottom of this file. See the same
+       comment in public/student/index.html for why it is a meta tag. -->
+  <!--POSTHOG-->
   <link rel="stylesheet" href="/join/join.css" />
 </head>
 <body>
@@ -269,6 +273,12 @@
 
   </main>
 
+  <!-- PostHog + our init layer, before join.js and in this order (see
+       public/student/index.html). Nobody signs in here, so every recording of
+       this page is anonymous — posthog-js masks input values by default, so the
+       application form's contents are not in the recording. -->
+  <script src="/join/posthog.js"></script>
+  <script src="/join/analytics.js"></script>
   <script src="/join/join.js"></script>
 </body>
 </html>

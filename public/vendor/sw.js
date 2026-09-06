@@ -82,7 +82,8 @@
 // changed, so the cache has to move or an installed terminal keeps the old
 // terminal.js beside a fresh index.html and the tags never appear
 // (index.html + terminal.js + terminal.css).
-const CACHE = 'werewards-terminal-v31';   // v31: operator terminal login (TERMINAL_ADMIN_EMAIL/PASSWORD) — the store menu at the top left lists every vendor for that one account, with a search box and a crimson ADMIN banner naming whose till is open. Must be bumped: the ADMIN banner, the pick-a-vendor screen and the search box are all in the precached index.html, so an already-installed counter would run the new terminal.js against the old markup without it.
+const CACHE = 'werewards-terminal-v32';   // v32: PostHog session replay. index.html is precached as '/terminal/', and it is the file that gained the two <script> tags — so without this bump an installed counter iPad would keep serving the old shell and record nothing while the server reported replay as on
+// v31: operator terminal login (TERMINAL_ADMIN_EMAIL/PASSWORD) — the store menu at the top left lists every vendor for that one account, with a search box and a crimson ADMIN banner naming whose till is open. Must be bumped: the ADMIN banner, the pick-a-vendor screen and the search box are all in the precached index.html, so an already-installed counter would run the new terminal.js against the old markup without it.
 // '/terminal/supabase.js' is precached now that it is served from this origin
 // instead of jsDelivr (see scripts/build-client.js). It was never cacheable
 // before: the fetch handler skips cross-origin requests, so an offline launch
@@ -90,6 +91,10 @@ const CACHE = 'werewards-terminal-v31';   // v31: operator terminal login (TERMI
 const SHELL = [
   '/terminal/', '/terminal/boot-guard.js', '/terminal/terminal.css', '/terminal/terminal.js',
   '/terminal/supabase.js', '/terminal/jsQR.js', '/terminal/qrcode.js',
+  // Precached like every other script the shell loads — the fetch handler is
+  // network-first, so an offline launch answers from here or not at all, and
+  // terminal.js calls Analytics.identify()/reset() unguarded.
+  '/terminal/posthog.js', '/terminal/analytics.js',
   '/terminal/no-zoom.js', '/terminal/manifest.json',
   '/terminal/icons/icon-192.png', '/terminal/icons/icon-512.png',
 ];

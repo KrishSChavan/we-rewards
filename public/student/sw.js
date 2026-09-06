@@ -1,7 +1,8 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v83';   // v83: the app boots on a browser with site data blocked. Reading localStorage there THROWS rather than returning null, and the theme read in boot() was the one unguarded call left — so the whole app died and told the student "Couldn't reach WeRewards. Check your connection and try again." on a perfectly good connection
+const CACHE = 'werewards-v84';   // v84: PostHog session replay. index.html is precached as '/', and it is the file that gained the two <script> tags — so without this bump an installed PWA would keep serving the old shell, never request /posthog.js or /analytics.js, and record nothing at all while the server reported replay as on
+// v83: the app boots on a browser with site data blocked. Reading localStorage there THROWS rather than returning null, and the theme read in boot() was the one unguarded call left — so the whole app died and told the student "Couldn't reach WeRewards. Check your connection and try again." on a perfectly good connection
 // v82: the server-rendered public pages (/spots, /spots/<slug>, /how-it-works, /faq) and the two crawler files (/robots.txt, /sitemap.xml) join FOREIGN. This worker's scope is '/', so without it an installed PWA answered a navigation to any of them from cache, and an offline one with the student shell sitting at a /spots/<slug> URL. Those pages exist to be crawled and shared, so they must always come from the server
 // v81: this worker stops answering for the other apps on the origin. Its scope is '/', so /terminal, /admin, /scan, /join, /legal and /unsubscribe all sat inside it, and an offline navigation to any of them was answered with the student shell
 // v80: the iOS install guide's bouncing arrow moved from the middle of Safari's bottom bar to its right end — over the menu that actually holds Add to Home Screen — and the home install banner now asks for the download in as many words instead of naming the payoff
@@ -40,7 +41,15 @@ const CACHE = 'werewards-v83';   // v83: the app boots on a browser with site da
 // jsDelivr (see scripts/build-client.js). It was never cacheable before: the
 // fetch handler below skips cross-origin requests, so an offline launch used to
 // find the shell in cache and then fail on the CDN.
-const SHELL = ['/', '/boot-guard.js', '/theme-init.js', '/no-zoom.js', '/styles.css', '/supabase.js', '/app.js', '/qrcode.js', '/jsQR.js', '/leaflet/leaflet.js', '/leaflet/leaflet.css', '/install-prompt.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+// '/posthog.js' and '/analytics.js' are precached for the same reason every
+// other script the shell loads is: the fetch handler below is network-first,
+// so an offline launch answers from here or not at all. analytics.js is the
+// load-bearing one — app.js calls Analytics.identify() and Analytics.reset()
+// unguarded, exactly as it calls InstallPrompt, so that file has to be as
+// reliable as install-prompt.js is. posthog.js is much the larger entry
+// (~200 KB gzipped) but costs nothing extra in practice: the page requests it
+// on this same load anyway, so install() is filling from the HTTP cache.
+const SHELL = ['/', '/boot-guard.js', '/theme-init.js', '/no-zoom.js', '/styles.css', '/supabase.js', '/app.js', '/qrcode.js', '/jsQR.js', '/leaflet/leaflet.js', '/leaflet/leaflet.css', '/install-prompt.js', '/posthog.js', '/analytics.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 /* Paths this worker must never answer for. It registers as '/sw.js' (app.js), so
    its scope is the WHOLE ORIGIN and every other app on we-rewards.com sits inside

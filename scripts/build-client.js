@@ -105,6 +105,100 @@ const SUPABASE_SRC = path.join(ROOT, 'node_modules/@supabase/supabase-js/dist/um
 const SUPABASE_APPS = ['student', 'vendor', 'admin'];
 const SUPABASE_FILE = 'supabase.js';
 
+// ---- posthog-js, for session replay ----
+//
+// Self-hosted out of node_modules for the same two reasons supabase-js is: the
+// CSP is script-src 'self' (server.js) and adding a CDN back to it for an
+// analytics vendor would undo a deliberate decision, and a script this repo
+// cannot transpile is a script that cannot meet the syntax floor above.
+//
+// WHICH BUILD, AND WHY IT MATTERS. posthog-js ships several. The default
+// (dist/array.js) is small because it LAZY-LOADS the session recorder from
+// us-assets.i.posthog.com at the moment recording starts — under this CSP that
+// fetch is blocked, so recording would silently never begin and the failure
+// would look exactly like "replay is off". 'array.full.no-external' is the
+// build with every extension compiled in and remote loading removed, which is
+// the only variant that records without a second origin. Verified rather than
+// assumed: rrweb is present in these bytes, and neither an assets host nor a
+// dynamically created <script> is.
+//
+// The cost is honest — ~200 KB gzipped, against ~95 KB for the lazy build. It
+// is loaded at the end of <body> and precached by each app's service worker, so
+// it is a first-visit cost, not a per-visit one. If that ever needs to come
+// down, the lever is a same-origin copy of dist/recorder.js registered into
+// window.__PosthogExtensions__ before init, NOT the lazy build.
+export const POSTHOG_SRC = path.join(ROOT, 'node_modules/posthog-js/dist/array.full.no-external.js');
+// Deliberately NOT 'admin' and NOT 'scan'. Admin is an operator tool whose
+// sessions nobody needs to watch. scan targets safari12 (see SCAN_JS_TARGET) and
+// is the fallback screen for a device already too old for the main terminal —
+// rrweb's DOM observer is the last thing that iPad mini needs.
+const POSTHOG_APPS = ['student', 'vendor', 'join'];
+const POSTHOG_FILE = 'posthog.js';
+
+// Our own init/identify layer, fanned out beside it from a single source the
+// same way the boot guard is, so the copies cannot drift. It reads its
+// configuration from <meta> tags that serveShell stamps into the HTML — see the
+// header of public/shared/analytics.js.
+const ANALYTICS_SRC = path.join(ROOT, 'public/shared/analytics.js');
+const ANALYTICS_FILE = 'analytics.js';
+
+/**
+ * Refuse to build a posthog-js bundle that cannot record.
+ *
+ * WHY THIS IS AN ASSERTION AND NOT A COMMENT. Picking the wrong posthog-js
+ * build is a one-word edit to the path above, and the result SHIPS CLEANLY:
+ * the page loads, no console error appears, no request visibly fails, and
+ * posthog reports sessionRecording.status === 'lazy_loading' forever while
+ * uploading nothing. Reproduced in a real browser rather than assumed — the
+ * wrong build gives `started: false, status: 'lazy_loading'` and zero /s/
+ * posts, against `started: true, status: 'active'` for the right one.
+ *
+ * Nothing else would catch it. The lowering succeeds, every existing test
+ * passes, and the boot log still says replay is on. So the check lives at BUILD
+ * time, where it takes the boot down rather than letting a deploy quietly stop
+ * recording — and it is exported so the deploy gate (scripts/check-client.js)
+ * runs it too, before anything is pushed.
+ *
+ * @param {string} code   the LOWERED bytes, so a transform that mangled
+ *                        something it should not have is caught as well
+ * @param {string} label  what to name in the error
+ */
+export function assertRecorderBundle(code, label) {
+  // rrweb IS the recorder. Without it posthog-js falls back to fetching one
+  // from us-assets.i.posthog.com, which this app's CSP (script-src 'self')
+  // refuses — and neither the SDK nor the browser reports that as an error.
+  //
+  // NOT looked for: the string 'rrweb', or '$snapshot'. Both appear in every
+  // posthog-js build, recorder or not — the SDK names the extension it intends
+  // to load and the event it intends to emit whether or not the code to do
+  // either is present. Checking for them looks right, passes, and catches
+  // nothing; measured across all four builds, they were 7 and 2 in the ones
+  // that CANNOT record.
+  //
+  // These two are properties of rrweb's implementation rather than of
+  // posthog's intentions, and are absent (0 occurrences, exactly) from every
+  // build that lazy-loads: a DOM recorder that cannot observe mutations or
+  // emit an incremental snapshot is not a DOM recorder.
+  if (!code.includes('MutationObserver') || !code.includes('IncrementalSnapshot')) {
+    throw new Error(
+      'build-client: ' + label + ' does not contain the session recorder.\n' +
+      'posthog-js ships several builds and only the "full" ones compile rrweb in; the rest ' +
+      'lazy-load it from us-assets.i.posthog.com, which script-src \'self\' blocks. The app ' +
+      'would look completely healthy and record nothing. Use dist/array.full.no-external.js.'
+    );
+  }
+  // The other half of the same invariant: even a "full" build is wrong for us
+  // if it can still reach for a remote script, because that request is the one
+  // the CSP kills.
+  if (code.includes('assets.i.posthog.com') || /createElement\((["'])script\1\)/.test(code)) {
+    throw new Error(
+      'build-client: ' + label + ' can load a remote script at runtime.\n' +
+      'Under script-src \'self\' that request is blocked and whatever depended on it silently ' +
+      'never starts. Use the "no-external" variant.'
+    );
+  }
+}
+
 // The boot guard is fanned out the same way, from a single source, so the apps
 // can't drift. It is the screen a device too old even for the lowered bundles
 // gets instead of a white page. public/shared is not an app root and is never
@@ -340,14 +434,17 @@ function withFlexGapFallbacks(css) {
   return `${css}\n/* flex-gap fallbacks for browsers below Safari 14.1 (see scripts/build-client.js) */\n${rules.join('\n')}\n`;
 }
 
-function transpile(code, loader, label, jsTarget) {
+function transpile(code, loader, label, jsTarget, minify = false) {
   let out;
   try {
     out = esbuild.transformSync(code, {
       loader,
       target: loader === 'css' ? CSS_TARGET : (jsTarget || JS_TARGET),
-      // Keep it readable in devtools; see the header note.
-      minify: false,
+      // Keep it readable in devtools; see the header note. The single exception
+      // is posthog-js, which arrives already minified: pretty-printing 667 KB of
+      // someone else's minified output does not make it readable, it just makes
+      // it 918 KB. Nothing hand-authored in this repo is minified.
+      minify,
       legalComments: 'inline',
     }).code;
   } catch (err) {
@@ -392,8 +489,9 @@ export function buildRoot(app) {
 // per-app service-worker cache and the plain <script src> in each shell all keep
 // working the way they already do for the QR libraries vendored into both
 // public/student and public/vendor.
-function fanOut(srcFile, apps, outName, label) {
-  const lowered = transpile(fs.readFileSync(srcFile, 'utf8'), 'js', label);
+function fanOut(srcFile, apps, outName, label, { minify = false, verify } = {}) {
+  const lowered = transpile(fs.readFileSync(srcFile, 'utf8'), 'js', label, undefined, minify);
+  verify?.(lowered, label);
   for (const app of apps) {
     const out = path.join(buildRoot(app), outName);
     fs.mkdirSync(path.dirname(out), { recursive: true });
@@ -425,6 +523,20 @@ export function buildClientAssets({ log = () => {} } = {}) {
   fanOut(SUPABASE_SRC, SUPABASE_APPS, SUPABASE_FILE, 'supabase-js (umd)');
 
   fanOut(GUARD_SRC, GUARD_APPS, GUARD_FILE, path.relative(ROOT, GUARD_SRC));
+
+  // Session replay. Missing bytes here are a missing dependency, not an
+  // optional feature being off — the shells load /posthog.js unconditionally
+  // and analytics.js is what makes that harmless when no key is configured, so
+  // a build that silently skipped this would 404 on every page load.
+  if (!fs.existsSync(POSTHOG_SRC)) {
+    throw new Error(
+      `build-client: ${path.relative(ROOT, POSTHOG_SRC)} is missing. ` +
+      'posthog-js is a dependency (session replay), not a CDN script. Run `npm install`.'
+    );
+  }
+  fanOut(POSTHOG_SRC, POSTHOG_APPS, POSTHOG_FILE, 'posthog-js (array.full.no-external)',
+    { minify: true, verify: assertRecorderBundle });
+  fanOut(ANALYTICS_SRC, POSTHOG_APPS, ANALYTICS_FILE, path.relative(ROOT, ANALYTICS_SRC));
 
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
   log(`client build: ${APPS.length} apps lowered to ${JS_TARGET.join(',')}/${CSS_TARGET.join(',')} ` +

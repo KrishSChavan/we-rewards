@@ -25,7 +25,10 @@ import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
 import { logError, requestContext, isCrawler } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
-import { posthogEnabled, flushPostHog, batchUrl } from './src/lib/posthog.js';
+import {
+  posthogEnabled, flushPostHog, batchUrl,
+  sessionReplayEnabled, posthogClientConfig, posthogConnectOrigins, describeReplayProject,
+} from './src/lib/posthog.js';
 import { isUuid } from './src/lib/ids.js';
 import { loadVendorLogo } from './src/lib/cache.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
@@ -89,12 +92,22 @@ app.use(helmet({
       // Google avatars + OpenStreetMap tiles for the vendor map thumbnails
       // (keyless; served straight from tile.openstreetmap.org).
       'img-src': ["'self'", 'data:', 'https://*.googleusercontent.com', 'https://tile.openstreetmap.org'],
-      // Only two connection targets: our own origin ('self' — covers the REST API
-      // and the same-origin Socket.IO transport, which falls back to same-origin
-      // long-polling if a browser won't upgrade ws under 'self') and Supabase
-      // (auth + REST). No bare ws:/wss: wildcard, so injected code can't open a
-      // socket to an arbitrary host and exfiltrate tokens.
-      'connect-src': ["'self'", supabaseOrigin].filter(Boolean),
+      // Our own origin ('self' — covers the REST API and the same-origin
+      // Socket.IO transport, which falls back to same-origin long-polling if a
+      // browser won't upgrade ws under 'self'), Supabase (auth + REST), and —
+      // only when session replay is switched on — PostHog's ingestion host,
+      // which is where the browser posts recordings and events.
+      //
+      // Still no bare ws:/wss: wildcard, so injected code can't open a socket to
+      // an arbitrary host and exfiltrate tokens. And note what is NOT here:
+      // posthog is absent from script-src, because the SDK is served from this
+      // origin (scripts/build-client.js) in the build that loads no remote code.
+      // Analytics did not cost this app a third-party script origin.
+      'connect-src': [
+        "'self'",
+        supabaseOrigin,
+        ...(sessionReplayEnabled ? posthogConnectOrigins() : []),
+      ].filter(Boolean),
       'object-src': ["'none'"],
       'base-uri': ["'self'"],
       'upgrade-insecure-requests': null, // don't force https in local dev
@@ -543,9 +556,30 @@ function markTestEnv(html) {
     .replace(/<title>([^<]*)<\/title>/i, (_full, title) => `<title>TEST · ${title}</title>`);
 }
 
+// PostHog session replay, stamped into the shells that record (see
+// POSTHOG_APPS in scripts/build-client.js). public/shared/analytics.js reads
+// these tags; the long version of why it is a <meta> tag and not an inline
+// <script> is in that file's header, but the short version is the CSP directly
+// above — script-src is 'self' with no 'unsafe-inline', and a meta tag is not
+// script. With replay off the slot is replaced with nothing at all, analytics.js
+// finds no key, and the page behaves exactly as it did before any of this.
+const POSTHOG_SLOT = '<!--POSTHOG-->';
+const escapeAttr = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+function posthogMeta(dir) {
+  const cfg = posthogClientConfig(dir);
+  if (!cfg) return '';
+  return [
+    `<meta name="posthog-key" content="${escapeAttr(cfg.key)}" />`,
+    `<meta name="posthog-host" content="${escapeAttr(cfg.host)}" />`,
+    `<meta name="posthog-ui-host" content="${escapeAttr(cfg.uiHost)}" />`,
+    `<meta name="posthog-app" content="${escapeAttr(cfg.app)}" />`,
+  ].join('\n  ');
+}
+
 const renderedShells = new Map();   // "<index.html path>|<variant>" -> versioned HTML string
-function serveShell(mount, root) {
+function serveShell(mount, root, dir) {
   const htmlPath = path.join(root, 'index.html');
+  const replayMeta = posthogMeta(dir);
   return (req, res) => {
     const legacy = needsLegacyCapable(req.get('user-agent'))
       && !NO_STANDALONE_CAM.test(req.get('cookie') || '');
@@ -553,7 +587,8 @@ function serveShell(mount, root) {
     let html = renderedShells.get(key);
     if (html == null) {
       html = versionAssets(fs.readFileSync(htmlPath, 'utf8'), mount, root)
-        .replace(CAPABLE_SLOT, legacy ? CAPABLE_META : '');
+        .replace(CAPABLE_SLOT, legacy ? CAPABLE_META : '')
+        .replace(POSTHOG_SLOT, replayMeta);
       if (IS_TEST_ENV) html = markTestEnv(html);
       renderedShells.set(key, html);
     }
@@ -839,8 +874,8 @@ app.get('/spots/:slug', async (req, res) => {
 });
 
 // Versioned HTML shells first, so they win over express.static's own index.html.
-for (const { mount, root } of shells) {
-  app.get(mount === '/' ? ['/'] : [mount, mount + '/'], serveShell(mount, root));
+for (const { mount, dir, root } of shells) {
+  app.get(mount === '/' ? ['/'] : [mount, mount + '/'], serveShell(mount, root, dir));
 }
 // Then the test-only rewrites, which must also beat express.static to the file.
 // Only the apps that actually ship a manifest / worker get a route (public/join
@@ -1464,6 +1499,31 @@ if (isMain) {
   console.log(posthogEnabled
     ? `Analytics: mirroring client_events to PostHog (${new URL(batchUrl()).origin})`
     : 'Analytics: client_events only — set POSTHOG_API_KEY to mirror to PostHog');
+
+  // And the browser half, which is the one that produces session replays. It
+  // fails quietly in a way of its own: the bundle ships and runs whatever the
+  // configuration is, so a shell served with no key looks completely normal and
+  // simply records nothing. Note what this line cannot tell you — that replay is
+  // also switched ON in the PostHog project itself. `npm run check:posthog`
+  // asks the API that question directly, and it is the likelier of the two to
+  // be the reason a replay list is empty.
+  console.log(sessionReplayEnabled
+    ? 'Session replay: shipping to /, /terminal and /join (mask-all-inputs; no request bodies)'
+    : posthogEnabled
+      ? 'Session replay: off — POSTHOG_SESSION_REPLAY disables it; unset that var to record'
+      : 'Session replay: off — needs POSTHOG_API_KEY');
+
+  // ...and then ask PostHog the half of the question this process cannot answer
+  // for itself: is replay actually enabled IN THE PROJECT. Deliberately not
+  // awaited — a third-party fetch must never sit between a dyno starting and it
+  // serving — so the line above says only what we are shipping, and this one
+  // arrives a moment later and says whether it will amount to anything. Heroku
+  // restarts often enough that this is re-checked continually for free.
+  if (sessionReplayEnabled) {
+    void describeReplayProject()
+      .then((line) => { if (line) console.log(line); })
+      .catch(() => { /* best effort; check:posthog is the deliberate version */ });
+  }
 
   // The operator's terminal login (src/lib/terminal-admin.js). Same reason the
   // three lines above exist: with the env vars unset the app is unchanged and
