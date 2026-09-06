@@ -16,7 +16,7 @@ import {
   normalizeCode, normalizeEmail, isValidPhone,
   CODE_MIN, CODE_MAX, NAME_MAX, EMAIL_MAX, POINTS_MAX, GRANT_KIND,
   readAmbassadorCookie, ambassadorCookieOptions, AMBASSADOR_COOKIE,
-  isLikelyBot,
+  isLikelyBot, findByUserId,
 } from '../src/lib/ambassadors.js';
 import { POINTS_MAX as TRACKED_QR_POINTS_MAX } from '../src/lib/tracked-qr.js';
 import {
@@ -268,4 +268,20 @@ test('a rate of 0 is a real setting and is distinguishable from an absent one', 
   // route's validator draws that line and this is the shape it draws it on.
   assert.equal(Number.isInteger(0), true);
   assert.equal(0 > 0, false, 'a 0 rate must skip grant_community_points, which refuses non-positive amounts');
+});
+
+/* ---------- the payout lookup ---------- */
+
+test('findByUserId refuses a missing id before it queries anything', async () => {
+  // The guard is load-bearing rather than tidy: the caller is a route that hands
+  // it req.user.id, and a falsy one would otherwise become
+  // `.eq('user_id', undefined)` — which PostgREST answers with the FIRST active
+  // ambassador row in the table, handing a student somebody else's code.
+  //
+  // Also the only assertion in this file that can touch the network, and it
+  // proves it does not: supabaseAdmin points at .invalid here (test/setup.js),
+  // so a query would reject rather than resolve to null.
+  for (const empty of [null, undefined, '', 0, false]) {
+    assert.equal(await findByUserId(empty), null, `${JSON.stringify(empty)} should not be queried`);
+  }
 });

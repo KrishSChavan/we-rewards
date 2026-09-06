@@ -218,6 +218,43 @@ export async function findAccountByEmail(rawEmail) {
 }
 
 /**
+ * The ambassador an account belongs to, or null — the inverse of findByCode,
+ * and what the student app asks for to decide whether to show anybody the
+ * "my QR code" button.
+ *
+ * READS THE ROLL-UP VIEW, NOT THE TABLE, because the one screen this feeds
+ * wants "43 scans, 6 joined" and PostgREST cannot GROUP BY. The view is
+ * security_invoker and granted to service_role alone (migration-053 §5), so
+ * this is reachable with the admin client and by nothing else — the student's
+ * own token cannot read it, which is why the numbers come back through an
+ * endpoint rather than a direct query from the app.
+ *
+ * ⚠ PAUSED AMBASSADORS ARE FILTERED OUT HERE, unlike findByCode, which returns
+ * them and makes its callers decide. There is no second caller to disagree with:
+ * `active = false` means the link is dead (see migration-053), and handing
+ * somebody a QR that redirects home would be worse than showing them nothing.
+ *
+ * ⚠ A STUDENT CAN OWN AT MOST ONE ROW IN PRACTICE AND NOT BY CONSTRAINT.
+ * ambassadors.user_id carries no unique index — two rows could name the same
+ * account if an operator added the same person twice under two addresses. The
+ * order + limit(1) makes which one wins deterministic (oldest, so a
+ * long-standing code doesn't get replaced by a newer duplicate under somebody's
+ * feet) rather than whatever the planner returned that day.
+ */
+export async function findByUserId(userId) {
+  if (!userId) return null;
+  const { data, error } = await supabaseAdmin
+    .from('ambassador_overview')
+    .select('id, code, name, active, points, scans, uniques, signups, points_awarded, created_at')
+    .eq('user_id', userId)
+    .eq('active', true)
+    .order('created_at', { ascending: true })
+    .limit(1);
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
+/**
  * Count one resolution of /r/<code> and refresh the visitor's cookie.
  *
  * BEST EFFORT, ALWAYS. The visitor is mid-redirect with a phone in their hand;

@@ -528,6 +528,27 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('earn-grab').addEventListener('pointermove', onEarnDragMove);
   $('earn-grab').addEventListener('pointerup', onEarnDragEnd);
   $('earn-grab').addEventListener('pointercancel', onEarnDragEnd);
+  // ambassador code: same four ways in and out as the earn sheet above, because
+  // it is the same sheet with a different payload (migration-053). The button
+  // itself only exists for the handful of students who have a code.
+  $('ambassador-btn').addEventListener('click', openAmbassadorSheet);
+  $('ambassador-close').addEventListener('click', closeAmbassadorSheet);
+  $('ambassador-modal').addEventListener('click', (e) => {
+    if (e.target === $('ambassador-modal')) closeAmbassadorSheet();   // backdrop only, not the card
+  });
+  $('ambassador-grab').addEventListener('pointerdown', onAmbassadorDragStart);
+  $('ambassador-grab').addEventListener('pointermove', onAmbassadorDragMove);
+  $('ambassador-grab').addEventListener('pointerup', onAmbassadorDragEnd);
+  $('ambassador-grab').addEventListener('pointercancel', onAmbassadorDragEnd);
+  $('ambassador-share').addEventListener('click', shareAmbassador);
+  // The QR is drawn to fit the viewport it was opened on, so a rotation with the
+  // sheet up would leave a symbol sized for the other orientation — too small to
+  // scan comfortably, or wide enough to force the sheet to scroll. Guarded on
+  // is-open so this costs nothing for the ~everyone who never opens it. The earn
+  // sheet needs no equivalent: its two-minute refresh redraws its own QR anyway.
+  window.addEventListener('resize', () => {
+    if ($('ambassador-modal').classList.contains('is-open')) renderAmbassadorSheet();
+  });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     // The map screen covers everything under it, so while it is up it owns Esc
@@ -538,6 +559,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     // press that closed a sheet *and* this would be one press doing two jobs.
     if (!$('home-lens-menu').hidden) { closeHomeLensMenu(); return; }
     closeEarnSheet();
+    closeAmbassadorSheet();
     closeReceiptSheet();
     closeDealsSheet();
     closeMoveSheet();
@@ -718,6 +740,9 @@ function render(session) {
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
+    dropAmbassadorSheet();      // same — and it names the previous student's code
+    resetAmbassador();          // …and put the Account button away: loadAmbassador() hides it
+                                //    for a non-ambassador, but not for one that never ran (offline)
     dropHub();                  // same
     dropMoveSheet();            // same
     dropReceiptSheet();         // same, and it may hold a photo preview the next student must not see
@@ -788,6 +813,11 @@ function render(session) {
   connectSocket();
   void claimPendingPunch();   // a camera-scanned punch waiting through sign-in lands now
   void claimPendingReferral().then(loadReferral);   // an invite link that waited through sign-in, then the share card
+  // Almost nobody is an ambassador, so this is one small request that answers
+  // "no" for nearly everyone and reveals the Account section for the rest. Not
+  // awaited and not on the critical path: the button appearing a beat after the
+  // shell does is invisible, because Account is never the tab a sign-in lands on.
+  void loadAmbassador();
 
   // A notification tap that had to go through sign-in first opens its sheet
   // once the list has actually loaded, so it never flashes the empty state on
@@ -1928,9 +1958,16 @@ async function authFetch(path, opts = {}) {
 // fast-scanning modules). The numeric code itself is exactly what the server
 // mints — the QR is pure transport, and reading the digits out loud at the
 // counter still works as the fallback.
-function drawQr(canvas, payload, targetCss) {
+//
+// `mode` is the encoder's, and the two callers want different ones. The earn and
+// redeem payloads are uppercase by construction, so Alphanumeric packs them into
+// a smaller symbol with bigger, easier-to-scan modules. The ambassador QR
+// carries a URL, and QR Alphanumeric mode has NO LOWERCASE IN ITS ALPHABET —
+// asking for it there throws inside the encoder rather than degrading, which is
+// why this is a parameter and not a guess made per call site.
+function drawQr(canvas, payload, targetCss, mode = 'Alphanumeric') {
   const qr = qrcode(0, 'M');               // 0 = smallest version that fits
-  qr.addData(payload, 'Alphanumeric');     // default is Byte — force alnum
+  qr.addData(payload, mode);               // library default is Byte
   qr.make();
 
   // Crispness: an integer number of device pixels per module (including a
@@ -2120,6 +2157,255 @@ function onEarnDragEnd(e) {
   void card.offsetWidth;                  // …with the dragged offset as its start point
   if (dy >= height / 2) closeEarnSheet(); // past halfway → let it carry on down
   else card.style.transform = '';         // short of it → snap cleanly back to the top
+}
+
+/* ---------- ambassador code (migration-053) ----------
+   An ambassador is an ordinary student who also has a short code in /admin. The
+   Account tab grows a button for them, and that button opens the same kind of
+   sheet the earn code uses, holding the QR a recruit scans and the code they
+   put in a bio.
+
+   ⚠ THE QR IS A URL, NOT A CODE, and that is the one thing here that is not
+   like the earn sheet. The earn QR carries "WRW:E:<digits>" and is read by the
+   vendor terminal, which knows the contract. This one is read by a stranger's
+   camera app, which will only ever offer to open a link — so it encodes the
+   full https://…/r/<CODE> the operator printed on their card, and the SERVER
+   builds that string (see GET /api/me/ambassador) rather than this file
+   assembling it from location.origin. One origin, decided in one place, so a
+   student on a staging host cannot hand somebody a link into staging.
+
+   NOTHING HERE IS TRUSTED TO BE PRESENT. A deployment where migration-053 has
+   not been applied answers `{ ambassador: null }` for everybody, which is the
+   same answer every non-ambassador gets, so this whole feature simply does not
+   appear rather than erroring. */
+
+let ambassadorState = null;   // last /api/me/ambassador payload's row, or null
+
+// Who this is: called once per sign-in, from render(). Silent about every
+// failure — the button stays hidden, which is what it already was.
+async function loadAmbassador() {
+  try {
+    const res = await authFetch('/api/me/ambassador');
+    if (!res.ok) return;                 // leave the button as it is
+    const { ambassador } = await res.json();
+    ambassadorState = ambassador ?? null;
+  } catch {
+    return;                              // offline — same
+  }
+
+  const btn = $('ambassador-btn');
+  const title = $('ambassador-title');
+  if (!btn || !title) return;
+  if (!ambassadorState?.code || !ambassadorState.shareUrl) {
+    // Covers the ordinary case (not an ambassador) AND the one that matters:
+    // an ambassador who has just been paused. Their button has to go away on
+    // the next sign-in, because the link behind it now redirects home.
+    title.hidden = true;
+    btn.hidden = true;
+    dropAmbassadorSheet();               // …and it must not be left open over the tab
+    return;
+  }
+
+  // The line under the button, written BEFORE it is unhidden so it is never
+  // reachable without one. Three states, ranked by what the ambassador most
+  // wants to know: nobody yet, people who joined, and what that has paid.
+  const { code, signups, pointsEarned } = ambassadorState;
+  let desc;
+  if (!signups) {
+    desc = `Code ${code} · nobody has joined through it yet`;
+  } else if (pointsEarned > 0) {
+    desc = `Code ${code} · ${signups} joined · ${pointsEarned} points earned`;
+  } else {
+    desc = `Code ${code} · ${signups} joined`;
+  }
+  $('ambassador-btn-desc').textContent = desc;
+  title.hidden = false;
+  btn.hidden = false;
+}
+
+// Put the section away and forget whose it was. Called on sign-out, where
+// loadAmbassador() cannot be relied on to do it: it returns early on a network
+// failure and leaves the button exactly as it found it, which would show the
+// previous student's code to the next one on a phone with no signal.
+function resetAmbassador() {
+  ambassadorState = null;
+  const btn = $('ambassador-btn');
+  const title = $('ambassador-title');
+  if (btn) btn.hidden = true;
+  if (title) title.hidden = true;
+}
+
+/* ---------- the sheet ----------
+   Deliberately its own open/close/drag rather than a generalised one shared
+   with #earn-modal. That sheet re-fetches a code that expires every two minutes
+   and is the flow a student runs at a till; this one shows a string that does
+   not change and is opened a handful of times a term. Merging them would mean
+   one function carrying both sets of conditions, and the earn path is the one
+   that must not break. The mechanics below are the same three transitions and
+   they read the same, which is the part that actually has to match. */
+
+let ambassadorDrag = null;
+
+function openAmbassadorSheet() {
+  if (!ambassadorState?.shareUrl) return;   // no code → nothing to show
+  const ov = $('ambassador-modal');
+  // Guard on is-open, not on hidden: hidden stays false through the 400ms close
+  // animation, and reopening inside that window has to catch the sheet on its
+  // way down rather than being swallowed. Same note as openEarnSheet.
+  if (ov.classList.contains('is-open')) return;
+  const card = $('ambassador-card');
+  ambassadorDrag = null;
+  card.classList.remove('is-dragging');
+  card.style.transform = '';
+  ov.hidden = false;
+  void ov.offsetWidth;                      // reflow so the slide-up runs
+  ov.classList.add('is-open');
+  $('ambassador-btn').setAttribute('aria-expanded', 'true');
+  renderAmbassadorSheet();                  // …sized to THIS viewport
+  $('ambassador-close').focus({ preventScroll: true });
+}
+
+// Paint the sheet's contents. Split out from the open above because the QR is
+// sized to the viewport, so a rotation while it is up has to redraw it.
+function renderAmbassadorSheet() {
+  const a = ambassadorState;
+  if (!a) return;
+  $('ambassador-value').textContent = a.code;
+  // The link without its scheme: it is here to be checked against a printed
+  // card, and "https://" is eight characters of every line that carries no
+  // information. The QR and the share button carry the real thing.
+  $('ambassador-link').textContent = a.shareUrl.replace(/^https?:\/\//, '');
+
+  const stats = $('ambassador-stats');
+  if (a.signups > 0) {
+    const paid = a.pointsEarned > 0 ? ` · ${a.pointsEarned} points earned` : '';
+    stats.textContent = `${a.signups} joined through your code${paid}`;
+    stats.hidden = false;
+  } else if (a.points > 0) {
+    // Nobody yet, but there is money on it — worth saying, because it is the
+    // reason to hold the screen up to somebody.
+    stats.textContent = `You get ${a.points} points for each person who joins`;
+    stats.hidden = false;
+  } else {
+    stats.hidden = true;
+  }
+
+  try {
+    // The same arithmetic the earn sheet uses: the sheet grows to fit the QR, so
+    // this is what decides how far up the screen it reaches. Capped at 300 so it
+    // doesn't balloon on a tablet, floored at 180 so a cramped landscape phone
+    // still gets a scannable symbol. 320 rather than the earn sheet's 300
+    // because there is a share button under this one.
+    const room = Math.min(window.innerWidth - 90, window.innerHeight - 320);
+    drawQr($('ambassador-qr'), a.shareUrl, Math.max(180, Math.min(300, room)), 'Byte');
+    $('ambassador-qr-card').hidden = false;
+  } catch {
+    // No encoder, or a payload it refused. The code and the link below are still
+    // on screen and both still work, so drop the box rather than leave a blank
+    // white square that looks like a QR nobody can scan.
+    $('ambassador-qr-card').hidden = true;
+  }
+}
+
+function closeAmbassadorSheet() {
+  const ov = $('ambassador-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;   // already closing/closed
+  const card = $('ambassador-card');
+  ambassadorDrag = null;
+  card.classList.remove('is-dragging');
+  card.style.transform = '';         // hand the slide-down back to the CSS transition
+  ov.classList.remove('is-open');
+  const btn = $('ambassador-btn');
+  btn.setAttribute('aria-expanded', 'false');
+  // Only pull focus back if it is still inside the sheet — a close triggered by
+  // something else (sign-out, Esc from elsewhere) must not yank it.
+  if (card.contains(document.activeElement)) btn.focus({ preventScroll: true });
+  setTimeout(() => {
+    if (!ov.classList.contains('is-open')) ov.hidden = true;    // unless it reopened mid-slide
+  }, 400);
+}
+
+// Hard reset, no animation — for sign-out (same reason as dropEarnSheet): the
+// app shell disappears out from under the sheet, and sliding it down over the
+// landing page looks broken.
+function dropAmbassadorSheet() {
+  const ov = $('ambassador-modal');
+  const card = $('ambassador-card');
+  if (!ov || !card) return;
+  ambassadorDrag = null;
+  card.classList.remove('is-dragging');
+  card.style.transform = '';
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('ambassador-btn').setAttribute('aria-expanded', 'false');
+}
+
+function onAmbassadorDragStart(e) {
+  if (ambassadorDrag) return;                                          // one finger owns the sheet
+  if (!$('ambassador-modal').classList.contains('is-open')) return;    // not one that's leaving
+  if (e.target.closest('#ambassador-close')) return;                   // the X is a tap, not a handle
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const card = $('ambassador-card');
+  // Grabbing mid-animation must not teleport the sheet: pin it where it visually
+  // is, and only then cut the easing.
+  const base = sheetOffset(card);
+  card.style.transform = `translateY(${base}px)`;
+  card.classList.add('is-dragging');
+  ambassadorDrag = {
+    id: e.pointerId,
+    y0: e.clientY,
+    base,
+    dy: base,
+    height: card.getBoundingClientRect().height || window.innerHeight,
+  };
+  e.currentTarget.setPointerCapture(e.pointerId);
+}
+
+function onAmbassadorDragMove(e) {
+  if (!ambassadorDrag || e.pointerId !== ambassadorDrag.id) return;
+  // downward only — dragging up would tear the sheet off the top of the screen
+  ambassadorDrag.dy = Math.max(0, ambassadorDrag.base + (e.clientY - ambassadorDrag.y0));
+  $('ambassador-card').style.transform = `translateY(${ambassadorDrag.dy}px)`;
+}
+
+function onAmbassadorDragEnd(e) {
+  if (!ambassadorDrag || e.pointerId !== ambassadorDrag.id) return;
+  const { dy, height } = ambassadorDrag;
+  ambassadorDrag = null;
+  const card = $('ambassador-card');
+  card.classList.remove('is-dragging');      // easing back on for either outcome…
+  void card.offsetWidth;                     // …with the dragged offset as its start point
+  if (dy >= height / 2) closeAmbassadorSheet();
+  else card.style.transform = '';            // short of halfway → snap back to the top
+}
+
+/* Hand the link to the OS share sheet where there is one, and fall back to the
+   clipboard where there isn't. Identical ladder to shareInvite(), including the
+   part that is easy to get wrong: a cancelled share sheet throws AbortError,
+   which is a decision and not a failure, so it must NOT fall through to the
+   clipboard and claim it copied something. */
+async function shareAmbassador() {
+  const a = ambassadorState;
+  if (!a?.shareUrl) return;
+  const text = 'Join me on WeRewards — points back at spots around campus.';
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'WeRewards', text, url: a.shareUrl });
+      return;
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+      /* share unavailable in this context → clipboard below */
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(a.shareUrl);
+    punchToast('Link copied!');
+  } catch {
+    // No share sheet and no clipboard permission. The link is already on screen
+    // above this button, so say the short thing they can read out instead.
+    punchToast(`Your code: ${a.code}`);
+  }
 }
 
 /* ---------- hub: tier meter (30-day score → earn multiplier) ---------- */

@@ -1033,6 +1033,39 @@
                 </span>
               </div>
 
+              <!-- ---------- ambassador (migration-053) ----------
+                   Hidden for everyone, and unhidden by loadAmbassador() only
+                   when the server says this account owns an ACTIVE ambassador
+                   row. Almost nobody does, which is why this is a section that
+                   appears rather than a button that greys out.
+
+                   WHY IT LIVES IN ACCOUNT AND NOT ON HOME. Home's three earn
+                   buttons are fitted to one screen by arithmetic that is spelt
+                   out at .home-main and re-run by syncHomeDensity() — a fourth
+                   would either claim a row of its own or make a three-way split
+                   of the second row that reads as ~99px per button on a 360px
+                   phone. Account also happens to be where it belongs: this is
+                   not a way for the student to earn at a counter, it is a fact
+                   about who they are, sitting directly under their name.
+
+                   FIRST in the account body, above Notifications, because an
+                   ambassador opens this screen FOR this button and nothing else
+                   here is something they came for. -->
+              <h2 id="ambassador-title" class="account-section-title" hidden>Ambassador</h2>
+              <button id="ambassador-btn" class="data-btn" type="button" hidden
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="ambassador-modal">
+                <span class="data-btn-label">
+                  <span class="data-btn-name">Show my QR code</span>
+                  <!-- Live state, written by loadAmbassador() before the button
+                       is unhidden — never reachable without a line under it.
+                       The markup's copy is what a brand-new ambassador with no
+                       scans yet gets, so it is a real sentence rather than a
+                       placeholder. -->
+                  <span id="ambassador-btn-desc" class="data-btn-desc">Your code for signing people up</span>
+                </span>
+                <span class="data-btn-chevron" aria-hidden="true">→</span>
+              </button>
+
               <!-- notifications: the opt-out the Privacy Policy promises.
                    ONE SETTING, TWO CHANNELS (migration-047), and the switches
                    are independent because that is what their labels say.
@@ -1835,6 +1868,55 @@
         </div>
         <span id="my-code-value" class="mc-value earn-value">••••••</span>
         <span class="mc-sub">Scan at the counter or, read out this code</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- ambassador code: full-screen sheet (migration-053) ----------
+       Opened by the button in Account. Same markup and the same classes as
+       #earn-modal above — a sheet that slides up, closes on the ✕, on Esc, on a
+       tap above it, or on a drag past halfway — because it IS the same thing
+       held up to the same phone camera, and two sheets that behaved differently
+       at the same gesture would be a bug the student felt before they could
+       name it. Nothing here needs its own CSS.
+
+       ⚠ THE QR ENCODES A URL, NOT THE CODE. #my-code-qr above carries
+       "WRW:E:<digits>", a private contract with the vendor terminal, and is
+       scanned by an app that already knows what to do with it. This one is
+       scanned by a stranger's camera app, which will only ever offer to open a
+       link — so the payload is the full https://…/r/<CODE> the operator also
+       printed. That difference is why drawQr is asked for Byte mode here: URLs
+       contain lowercase, and QR Alphanumeric mode has no lowercase in its
+       alphabet at all. -->
+  <div id="ambassador-modal" class="overlay earn-sheet" hidden>
+    <div id="ambassador-card" class="earn-card" role="dialog" aria-modal="true" aria-labelledby="ambassador-heading">
+      <div id="ambassador-grab" class="earn-grab">
+        <span class="earn-pill" aria-hidden="true"></span>
+        <button id="ambassador-close" class="earn-close" type="button" aria-label="Close">✕</button>
+      </div>
+
+      <div class="earn-body">
+        <h2 id="ambassador-heading" class="mc-label earn-heading">YOUR AMBASSADOR CODE</h2>
+        <!-- Hidden until a QR has actually been drawn: an empty white square is
+             worse than nothing, and the code beneath is still readable out loud
+             on a device where the encoder failed to load. -->
+        <div id="ambassador-qr-card" class="qr-card qr-card-xl" hidden>
+          <canvas id="ambassador-qr" class="qr-canvas" role="img"
+                  aria-label="Your ambassador link as a QR code, have it scanned to sign someone up"></canvas>
+        </div>
+        <!-- The code on its own, big. Not a fallback for the QR so much as the
+             other half of the feature: it goes in an Instagram bio and gets
+             read out loud, which a QR cannot do. .earn-value is sized for six
+             digits; a code can be ten characters, so ambassador-value tightens
+             it to fit without wrapping on a narrow phone. -->
+        <span id="ambassador-value" class="mc-value earn-value ambassador-value">••••</span>
+        <span id="ambassador-link" class="mc-sub ambassador-link"></span>
+        <!-- Filled by openAmbassadorSheet() from live state — how many have
+             joined, and what that has paid. -->
+        <span id="ambassador-stats" class="mc-sub" hidden></span>
+        <!-- The OS share sheet where there is one, the clipboard where there
+             isn't. Same ladder, and the same reasoning, as shareInvite(). -->
+        <button id="ambassador-share" class="btn-redeem" type="button">Share my link</button>
       </div>
     </div>
   </div>

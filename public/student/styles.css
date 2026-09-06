@@ -2058,6 +2058,37 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .qr-card-xl { padding: 0.7rem; border-radius: 1.2rem; margin: 0; }
 .earn-value { font-size: 2.4rem; margin-top: 0.75rem; }
 
+/* ---------- ambassador sheet (migration-053) ----------
+   The sheet itself is #earn-modal's markup with different ids, so everything
+   above already styles it. These three rules exist only because what it holds
+   is a WORD, not six digits.
+
+   .earn-value is 2.4rem with .mc-value's 0.18em tracking and white-space:
+   nowrap, which fits "742916" and overflows a ten-character code on a 360px
+   phone — nowrap means it overflows rather than wrapping, so it would run off
+   the side of the card. clamp() keeps the common short code at full size and
+   only shrinks the long ones, and the tighter tracking buys back the rest.
+   Letters, unlike digits, do not need the loose spacing to be read back
+   correctly anyway. */
+.ambassador-value {
+  font-size: clamp(1.5rem, 9vw, 2.4rem);
+  letter-spacing: 0.1em; text-indent: 0.1em;
+}
+/* The printed URL under the code. Small, muted and allowed to break, because it
+   is there to be READ and checked against a card rather than typed — the QR and
+   the Share button are how it actually travels. Breaking anywhere beats nowrap:
+   an origin like we-rewards-staging-d6e9af355d07.herokuapp.com has no space in
+   it to break at. */
+.ambassador-link {
+  font-size: 0.82rem; line-height: 1.35; max-width: 100%;
+  overflow-wrap: anywhere; word-break: break-all;
+}
+/* The stats line is optional (see loadAmbassador), and an author `display:` on
+   .mc-sub would beat the hidden attribute. It does not have one today — the
+   global [hidden] rule at the top of this file carries !important — but this
+   costs nothing and the trap has been paid for here before. */
+#ambassador-stats[hidden] { display: none; }
+
 .detail-emoji { font-size: 3.4rem; }
 .detail-title { font-size: 1.7rem; font-weight: 900; line-height: 1.1; }
 .detail-cost { font-weight: 900; color: var(--brand); font-size: 1.15rem; }

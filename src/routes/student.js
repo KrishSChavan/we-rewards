@@ -16,6 +16,7 @@ import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
 import { maybeAwardTrackedQr, readVisitorCookie, TRACKED_QR_COOKIE } from '../lib/tracked-qr.js';
 import {
   attributeSignup as attributeAmbassadorSignup,
+  findByUserId as findAmbassadorByUserId,
   readAmbassadorCookie,
   AMBASSADOR_COOKIE,
 } from '../lib/ambassadors.js';
@@ -1069,6 +1070,67 @@ router.post('/referral', requireConsent, async (req, res, next) => {
   }
 });
 
+
+/* ---------- ambassador (migration-053) ---------- */
+
+/**
+ * GET /api/me/ambassador — "am I an ambassador, and what is my code?"
+ *
+ * The student app calls this once per sign-in and shows a button in Account
+ * only when the answer is yes. A recruit scans the QR it opens, which is the
+ * SAME /r/<code> URL the operator printed in /admin — one rail, so a person who
+ * shows the screen and a person who scans the printed card are counted the same
+ * way and there is no second thing to keep in step.
+ *
+ * ⚠ NEVER 500s, AND THAT IS THE POINT rather than defensive habit. Almost
+ * nobody is an ambassador, this runs on every sign-in for all of them, and the
+ * tables it reads are migration-053's — which is not applied on every
+ * deployment yet. A throw here would be an error toast, an error_logs row and a
+ * PostHog event for every student on a database that simply has no ambassadors
+ * table. Failure is therefore reported as "you are not an ambassador", which is
+ * true for everyone it will reach, and logged so that the one case where it
+ * isn't leaves a trail.
+ *
+ * ⚠ WHAT IS DELIBERATELY NOT IN THE RESPONSE: email, phone, created_by, and the
+ * row id. The app needs a code, a link and something honest to say underneath;
+ * the rest is the operator's copy of a person's contact details and has no
+ * business crossing to a client just because the same view holds it.
+ */
+router.get('/ambassador', requireConsent, async (req, res, next) => {
+  try {
+    const amb = await findAmbassadorByUserId(req.user.id);
+    if (!amb) return res.json({ ambassador: null });
+
+    // The printed rail, built the way /api/me/referral builds its own share
+    // link: APP_ORIGIN when the deployment names one, and the request's own
+    // origin otherwise, so this is right on localhost and on a staging dyno
+    // without either being configured.
+    const origin = process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+
+    res.json({
+      ambassador: {
+        code: amb.code,
+        name: amb.name,
+        shareUrl: `${origin}/r/${encodeURIComponent(amb.code)}`,
+        // What ONE signup through this code pays them. 0 is a real setting
+        // (migration-053) and the client says nothing about points when it is.
+        points: amb.points ?? 0,
+        // Scans are the roll-up's `uniques`, not its `scans`: total counts the
+        // ambassador's own test scan every time they check their QR still
+        // works, and a number that goes up when you look at it is not a number
+        // anybody can use.
+        scans: amb.uniques ?? 0,
+        signups: amb.signups ?? 0,
+        pointsEarned: amb.points_awarded ?? 0,
+      },
+    });
+  } catch (err) {
+    // See the header: a student who is not an ambassador and a database with no
+    // ambassadors table are the same answer, and neither is worth an error.
+    console.warn(`[ambassadors] lookup failed for ${req.user.id}: ${err?.message ?? err}`);
+    res.json({ ambassador: null });
+  }
+});
 /* ---------- history ---------- */
 
 // The default window, the ceiling "Load older" walks out to one step at a time,
