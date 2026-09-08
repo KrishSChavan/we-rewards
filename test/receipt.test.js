@@ -66,6 +66,44 @@ test('matchVendor: two plausible vendors is a rejection, not a guess', () => {
   assert.equal(matchVendor(text, ambiguous), null);
 });
 
+// A chain prints the SAME header at every location, so its rows can only ever
+// tie. Before this, the ambiguity guard read that tie as "two vendors both look
+// right" and refused every receipt Sher Halal (two rows, identical name) and
+// Yallah Taco (pooled with "Yallah Taco 2") ever printed — permanently.
+test('matchVendor: two locations of one business is not an ambiguity', () => {
+  const chain = [
+    { id: 'v-sher-b', name: 'Sher Halal Gyro and Grill' },
+    { id: 'v-sher-a', name: 'Sher Halal Gyro and Grill' },
+    { id: 'v-bagel', name: 'Bagel Crust' },
+  ];
+  // The header as the AI reader actually transcribes it off the paper.
+  const text = 'Sher halal gyro&grill\n137 Logan Ave\nSTATE COLLEGE, PA\n\nTotal  5.30';
+  const hit = matchVendor(text, chain);
+  assert.ok(hit, 'a two-location chain must still match');
+  assert.equal(hit.vendor.id, 'v-sher-a', 'ties resolve by id, not query order');
+});
+
+test('matchVendor: pooled locations with different names are one business', () => {
+  const pool = 'p-yallah';
+  const chain = [
+    { id: 'v-yal-1', name: 'Yallah Taco', pool_id: pool },
+    { id: 'v-yal-2', name: 'Yallah Taco 2', pool_id: pool },
+  ];
+  const hit = matchVendor('YALLAH TACO\n123 College Ave', chain);
+  assert.ok(hit, 'a pooled chain must match despite the 0.091 score gap');
+  assert.equal(hit.vendor.id, 'v-yal-1');
+});
+
+// The stable pick is not cosmetic: receipt_claims is UNIQUE on
+// (vendor_id, receipt_at, total), so a winner that moved between two reads
+// would let one piece of paper be claimed once per location.
+test('matchVendor: the winner among tied locations is stable across orderings', () => {
+  const rows = [{ id: 'v-a', name: 'Twin Grill' }, { id: 'v-b', name: 'Twin Grill' }];
+  const first = matchVendor('TWIN GRILL\nTOTAL 9.00', rows);
+  const reversed = matchVendor('TWIN GRILL\nTOTAL 9.00', [...rows].reverse());
+  assert.equal(first.vendor.id, reversed.vendor.id);
+});
+
 test('matchVendor: gibberish or an empty vendor list matches nothing', () => {
   assert.equal(matchVendor('lorem ipsum dolor\nsit amet', VENDORS), null);
   assert.equal(matchVendor('ROOTS NATURAL KITCHEN', []), null);

@@ -58,9 +58,35 @@ const MATCH_MIN = 0.6;
 const MATCH_MARGIN = 0.1;
 
 /**
+ * Whether two vendor rows are the same BUSINESS rather than the same till.
+ *
+ * A chain's locations are separate rows and the receipt names the business,
+ * not the row: both Sher Halal storefronts print the identical header, so
+ * scoring them can only ever produce a tie. Without this, the ambiguity guard
+ * below reads that tie as "two vendors both look right" and refuses every
+ * receipt the chain prints, permanently. Collapsing them puts the guard back on
+ * the question it was written for: is this business A, or business B?
+ *
+ * A shared pool_id is the strong signal — those locations already spend one
+ * balance, so choosing between them costs the customer nothing. An identical
+ * printed name is the weak one, and it is what carries a chain that has not
+ * been pooled yet. "Campus Cafe" vs "Campus Cafe West" satisfies neither and
+ * stays a rejection.
+ */
+function sameBusiness(a, b) {
+  if (a?.pool_id && a.pool_id === b?.pool_id) return true;
+  return normalizeName(a?.name) === normalizeName(b?.name);
+}
+
+/**
  * Find which participating vendor printed this receipt.
- * `vendors` is the active-vendor list ({ id, name, ... }); returns
+ * `vendors` is the active-vendor list ({ id, name, pool_id, ... }); returns
  * { vendor, score } or null when nothing matches confidently.
+ *
+ * A chain resolves to ONE of its locations (see sameBusiness): the header a
+ * receipt prints is the same at every till, so it cannot say which one, and
+ * neither could a person holding the paper. Which one is decided by id, which
+ * makes it stable across re-reads — see the sort below.
  */
 export function matchVendor(text, vendors) {
   const lines = String(text ?? '')
@@ -84,11 +110,19 @@ export function matchVendor(text, vendors) {
     }
     scored.push({ vendor, score });
   }
-  scored.sort((x, y) => y.score - x.score);
+  // Score descending, then by id. The vendors query has no ORDER BY, so
+  // without a stable tie-break the winner between two equal-scoring locations
+  // could differ between two reads of the same receipt — and the dedup index
+  // is (vendor_id, receipt_at, total), so an unstable pick would let one piece
+  // of paper be claimed once per location.
+  scored.sort((x, y) => y.score - x.score
+    || String(x.vendor?.id ?? '').localeCompare(String(y.vendor?.id ?? '')));
 
   const best = scored[0];
   if (!best || best.score < MATCH_MIN) return null;
-  const runnerUp = scored[1];
+  // The runner-up that matters is the best-scoring DIFFERENT business. This
+  // chain's other locations are the same answer printed twice, not a rival.
+  const runnerUp = scored.find((c) => !sameBusiness(c.vendor, best.vendor));
   if (runnerUp && runnerUp.score >= MATCH_MIN && best.score - runnerUp.score < MATCH_MARGIN) {
     return null; // two vendors both look right — refuse rather than guess
   }
