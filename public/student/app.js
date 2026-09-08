@@ -44,6 +44,13 @@ let communityPoints = 0;    // cross-vendor wallet (see community-points.md)
 let communityReady = false; // first community count shown yet? (same reason)
 const tickRaf = new WeakMap(); // per-element requestAnimationFrame id for the counting ticker
 let toastTimer = null;
+// Is each vendor's `visited` flag all-time truth, or the server's narrower
+// stand-in? Mirrored from the balances payload (`visitedKnown`, one value
+// repeated on every row). Only the unlock toast reads it — see unlockToast for
+// why that one alone cannot live with the doubt. Defaults to FALSE, so a client
+// that has not loaded yet, or is talking to a server too old to send the field,
+// says nothing rather than guessing.
+let visitedAllTime = false;
 let activeTab = 0;          // index into TABS (see there)
 let vendorOrigin = 0;       // which tab the open vendor screen was entered from
 let historyLoaded = false;  // has the history tab fetched at least once?
@@ -3123,19 +3130,65 @@ async function submitMove() {
   }
 }
 
-// Same pill the earn/redeem pushes use, so a move reads as the same kind of event.
-function moveToast(amount, name) {
+/* ---------- the pill at the top of the screen ----------
+   One element, #points-toast, and four things that write to it: points landing,
+   a redemption, a visit being collected, points moved out of the community
+   wallet — and now a spot being unlocked. Each used to hold its own copy of the
+   same eight lines, which is how they came to disagree about how long a pill
+   stays up (2200ms vs 2600ms) for no reason anyone recorded.
+
+   THEY QUEUE, which the copies could not do. Two of these genuinely land in the
+   same tick — a first-ever visit is, by definition, a visit that came with
+   points or a punch — and each copy wrote straight into the element and reset
+   the shared timer, so the second silently erased the first before it had been
+   on screen for a frame. The one the student never saw was whichever happened
+   to be called first, which is not a good way to choose.
+
+   Nothing here is a notification: it is a pill that appears for two seconds on
+   a page they are already looking at. If the app is backgrounded the queue
+   drains unseen, same as before, and that is correct — the durable record of
+   all of this is the History tab. */
+const TOAST_MS = 2200;          // how long a pill stays up
+const TOAST_FADE_MS = 300;      // must match the transition in styles.css
+// Two is the realistic burst (points + unlock). The cap is a backstop against a
+// reconnect storm queueing a minute of pills, not a considered depth.
+const TOAST_QUEUE_MAX = 3;
+
+const toastQueue = [];
+let toastShowing = false;
+
+/**
+ * Show a pill. `kind` picks the colour (see .points-toast in styles.css):
+ * 'gain' for something arriving, 'lose' for something spent, 'unlock' for a
+ * spot the student has just opened up.
+ */
+function showToast(text, kind = 'gain', ms = TOAST_MS) {
+  if (toastQueue.length >= TOAST_QUEUE_MAX) return;
+  toastQueue.push({ text, kind, ms });
+  if (!toastShowing) runToastQueue();
+}
+
+function runToastQueue() {
+  const next = toastQueue.shift();
+  if (!next) { toastShowing = false; return; }
+  toastShowing = true;
   const toast = $('points-toast');
-  toast.className = 'points-toast gain';
-  toast.textContent = `🫂  Moved ${amount} pts to ${name}`;
+  toast.className = `points-toast ${next.kind}`;
+  toast.textContent = next.text;
   toast.hidden = false;
-  void toast.offsetWidth;
+  void toast.offsetWidth;                 // restart the transition from the top
   toast.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toast.classList.remove('show');
-    setTimeout(() => { toast.hidden = true; }, 300);
-  }, 2200);
+    // Hidden only after the fade, then straight on to whatever is waiting.
+    setTimeout(() => { toast.hidden = true; runToastQueue(); }, TOAST_FADE_MS);
+  }, next.ms);
+}
+
+// Same pill the earn/redeem pushes use, so a move reads as the same kind of event.
+function moveToast(amount, name) {
+  showToast(`🫂  Moved ${amount} pts to ${name}`, 'gain');
 }
 
 /* ---------- home: vendor carousel ---------- */
@@ -3156,6 +3209,10 @@ async function loadVendors() {
     const res = await authFetch('/api/me/balances');
     if (!res.ok) throw new Error();
     allVendors = await res.json();
+    // Same on every row, so the first one answers for the payload. `=== true`
+    // rather than a truthiness test: an older server sends no such field, and
+    // undefined has to mean "assume not" (see visitedAllTime).
+    visitedAllTime = allVendors[0]?.visitedKnown === true;
     renderVendors();
     // A spot they just earned at is no longer somewhere they have never been.
     // Without this its dwell timer survives the refresh and fires the moment
@@ -3192,19 +3249,26 @@ async function loadVendors() {
  * inside it by definition) and `visited` is "do I know this place at all",
  * which is a one-way door.
  *
- * Returns whether anything actually changed, and callers repaint only when it
- * did. A regular's second coffee of the week flips nothing, and that is the
- * common case: a rebuild of the row on every push would be pure waste.
+ * Returns null when nothing changed, and callers repaint only when it did. A
+ * regular's second coffee of the week flips nothing, and that is the common
+ * case: a rebuild of the row on every push would be pure waste.
+ *
+ * When something DID change it returns { vendor, firstEver }. `firstEver` is
+ * the narrower of the two: `visited` was false, so as far as the server knows
+ * this student had never been here at all. That is a different event from "back
+ * again after a quiet fortnight", and only one of them is worth saying out loud.
  *
  * The caller decides WHICH vendor — never a pool sibling. See emitBalance in
  * src/lib/realtime.js: a shared purse is one balance, a visit is one door.
  */
 function markVendorVisited(vendorId) {
   const v = allVendors.find((x) => x.vendorId === vendorId);
-  if (!v || (v.recent && v.visited)) return false;
+  if (!v) return null;
+  const firstEver = !v.visited;
+  if (!firstEver && v.recent) return null;
   v.recent = true;
   v.visited = true;
-  return true;
+  return { vendor: v, firstEver };
 }
 
 /**
@@ -3218,9 +3282,52 @@ function markVendorVisited(vendorId) {
  * running would fire the moment the server's own visited check refused it.
  */
 function applyVisitLocally(vendorId) {
-  if (!markVendorVisited(vendorId)) return;
+  // Read BEFORE the mark: the chain test below asks whether the student knew
+  // this business already, and once this vendor is flagged visited its own pool
+  // is in the known set and the answer is always yes.
+  const knewChain = chainAlreadyKnown(vendorId);
+  const hit = markVendorVisited(vendorId);
+  if (!hit) return;
   renderVendors();
   pruneNearbyDwell();
+  if (hit.firstEver && !knewChain) unlockToast(hit.vendor);
+}
+
+/**
+ * Has this student already been to another branch of this spot's chain?
+ *
+ * Pools (migration-044) are what make two rows one business, and `visited` is
+ * answered per VENDOR ROW — so the second branch of somewhere they go every
+ * week comes back unvisited. Calling that an unlock would be the same mistake
+ * the nearby watcher already refuses to make (see nearbyCandidates): "a spot
+ * you have never been to" is simply false about it.
+ *
+ * An unpooled spot — which is every spot today — has no chain, so this is false
+ * and the toast turns on the `visited` flag alone.
+ */
+function chainAlreadyKnown(vendorId) {
+  const v = allVendors.find((x) => x.vendorId === vendorId);
+  if (!v?.poolId) return false;
+  return allVendors.some((x) => x.poolId === v.poolId && x.vendorId !== vendorId && x.visited);
+}
+
+/**
+ * "New spot unlocked" — the pill for the first time a student ever earns,
+ * redeems or collects a visit somewhere.
+ *
+ * GATED ON visitedAllTime, and this is the whole reason that flag exists. The
+ * claim is about the student's entire history, and the server can only make it
+ * where migration-048 is applied; without the RPC it falls back to punch cards
+ * plus a 7-day window, which does not know about a coffee bought last month at
+ * a spot that has visits switched off. Every other reader of `visited` degrades
+ * quietly under that fallback — the Recommended row just suggests somewhere
+ * they have been. This one would tell a regular their local was somewhere new,
+ * out loud, in a pill they cannot dismiss. Silence is the honest failure, and
+ * the toast starts working on its own the day the migration lands.
+ */
+function unlockToast(v) {
+  if (!visitedAllTime) return;
+  showToast(`🔓  New spot unlocked · ${v.name}`, 'unlock', 2600);
 }
 
 // Whether each vendor card carries the map thumbnail at its bottom. To restore
@@ -6288,17 +6395,10 @@ function tickTo(el, from, to) {
 function notifyPoints(delta) {
   const gain = delta > 0;
 
-  const toast = $('points-toast');
-  toast.className = `points-toast ${gain ? 'gain' : 'lose'}`;
-  toast.textContent = gain ? `✨  +${delta} pts` : `🎉  Redeemed · ${Math.abs(delta)} pts`;
-  toast.hidden = false;
-  void toast.offsetWidth;
-  toast.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.classList.remove('show');
-    setTimeout(() => { toast.hidden = true; }, 300);
-  }, 2200);
+  showToast(
+    gain ? `✨  +${delta} pts` : `🎉  Redeemed · ${Math.abs(delta)} pts`,
+    gain ? 'gain' : 'lose'
+  );
 
   const pts = document.querySelector('.pb-points');
   pts.classList.remove('is-bump');
@@ -6971,16 +7071,19 @@ async function claimPendingPunch() {
 function onPunchClaimed(data) {
   const v = allVendors.find((x) => x.vendorId === data.vendorId);
   if (v?.punch) v.punch.visits = data.visits ?? v.punch.visits;
-  // Standing in the shop with the QR still on screen: the Recent row should
-  // already say so by the time the toast lands. The socket push carries the
-  // same fact for their other devices, and repeating it here is free — the
-  // second call finds both flags set and repaints nothing.
-  applyVisitLocally(data.vendorId);
   if (vendor && vendor.vendorId === data.vendorId) {
     renderPunchUi();
     document.querySelectorAll('.item-card').forEach(decorateCard);
   }
   punchToast(`🎟️ Visit added at ${data.vendorName} · ${data.visits} total`);
+  // AFTER the visit pill, so a first-ever punch reads as "here is what you
+  // just did" and then "…and it was somewhere new", which is the order the
+  // balance push lands them in too. Standing in the shop with the QR still on
+  // screen, the Recent row should also already say so by the time either lands.
+  // The socket push carries the same fact for their other devices, and
+  // repeating it here is free — the second call finds both flags set, repaints
+  // nothing, and pops nothing.
+  applyVisitLocally(data.vendorId);
   loadVendors();
 }
 
@@ -8818,16 +8921,8 @@ async function submitPunch(token) {
 
 /* ---------- shared punch toast (reuses the points pill) ---------- */
 
+// 2600ms rather than the standard 2200: these carry a spot name and a running
+// count, so there is more to read than "+50 pts".
 function punchToast(msg, gain = true) {
-  const toast = $('points-toast');
-  toast.className = `points-toast ${gain ? 'gain' : 'lose'}`;
-  toast.textContent = msg;
-  toast.hidden = false;
-  void toast.offsetWidth;
-  toast.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.classList.remove('show');
-    setTimeout(() => { toast.hidden = true; }, 300);
-  }, 2600);
+  showToast(msg, gain ? 'gain' : 'lose', 2600);
 }

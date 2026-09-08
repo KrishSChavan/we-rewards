@@ -420,6 +420,24 @@ router.get('/balances', requireConsent, async (req, res, next) => {
         ...(recentTxns ?? []).map((t) => t.vendor_id),
       ]
     );
+    // Is `visited` below an ANSWER or a guess? True only when the RPC replied;
+    // false means the fallback above is standing in for it, which knows about a
+    // punch card or a purchase in the last week and nothing older.
+    //
+    // It exists because the two callers want opposite things from a doubt. The
+    // Recommended row can live with the guess — the worst it does is suggest
+    // somewhere they went two months ago. The app's "new spot unlocked" toast
+    // cannot: it makes a CLAIM about a student's whole history out loud, and on
+    // the fallback it would make that claim about the regular haunt of anyone
+    // whose spot has visits switched off. So the toast reads this and stays
+    // quiet rather than saying something false, and lights up on its own the
+    // day migration-048 is applied (see the runbook in mds/).
+    //
+    // Per row because this payload is a bare array with nowhere to hang a
+    // top-level field, and adding an envelope would break every reader. It is
+    // the same value on every row; the client reads it once. gzip charges
+    // almost nothing for the repetition.
+    const visitedKnown = visited != null;
     res.json(
       (vendors ?? []).map((v) => {
         return {
@@ -490,6 +508,9 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           // "where should I go next" rather than a list of the student's own
           // habits handed back to them.
           visited: visitedSet.has(v.id),
+          // Whether the line above is all-time truth or the 7-day-plus-punches
+          // stand-in. Same on every row — see visitedKnown.
+          visitedKnown,
           // Joined in the last NEW_VENDOR_WINDOW_DAYS — drives the NEW strip at
           // the top of the Spots tab. `createdAt` rides along so the client can
           // order those newest-first without re-deriving the window: the server

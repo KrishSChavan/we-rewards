@@ -18,6 +18,11 @@
   --muted: #5a6678;
   --danger: #d63b2f;
   --danger-press: #a52a20;
+  /* The "new spot unlocked" pill. A third colour and not a reuse of --success:
+     that pill and the points pill can queue back to back on the same first
+     visit, and two identical green lozenges in a row read as one message that
+     flickered rather than as two things happening. */
+  --unlock: #5b3fa8;
 
   /* semantic roles that diverge from --ink/--navy in dark mode:
      --edge  = the chunky borders + hard offset shadows
@@ -58,6 +63,10 @@
   --muted: #94a3ba;
   --danger: #ec5a4e;
   --danger-press: #b23a30;
+  /* Lifted for the dark page, but not as far as the other two roles go: the
+     pill carries white text, so this is the darkest violet that still reads as
+     violet rather than as the navy card behind it. */
+  --unlock: #7b5ce0;
   --edge: #35496a;
   --brand: #8fbdf0;
   --hairline: #2a3a56;
@@ -1826,6 +1835,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .points-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .points-toast.gain { background: var(--success); }
 .points-toast.lose { background: var(--warn); }
+/* A spot opened up for the first time. Same pill, same place, same two seconds
+   — the colour is the only thing that says it is a different kind of news. */
+.points-toast.unlock { background: var(--unlock); }
 
 /* flex-grow so a short spot (one reward, no punch card) still fills the pane and
    leaves .vendor-map-cta on the bottom edge rather than floating it halfway up

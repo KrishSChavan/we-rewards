@@ -57,15 +57,22 @@ const lensLine = block('const hasRecentSpots = ', '\n');
  * file is about WHICH list the row shows and when it changes, not about how
  * that list is ordered or how recommendations are chosen. Those have their own
  * homes (test/address-format.test.js, the ranking comments in app.js).
+ *
+ * `allTime` seeds visitedAllTime — the server's word for whether `visited` is
+ * a real all-time answer (migration-048) or its narrower stand-in. It defaults
+ * to true here so the unlock cases can be about the unlock rules; the one case
+ * that turns it off is the one about the fallback.
  */
-function sandbox(vendors = []) {
-  const calls = { renders: 0, prunes: 0 };
+function sandbox(vendors = [], { allTime = true } = {}) {
+  const calls = { renders: 0, prunes: 0, toasts: [] };
   // eslint-disable-next-line no-new-func
-  return new Function('calls', 'seed', `
+  const api = new Function('calls', 'seed', 'allTime', `
     let allVendors = seed;
     let homeLens = null;
+    let visitedAllTime = allTime;
     function renderVendors() { calls.renders++; }
     function pruneNearbyDwell() { calls.prunes++; }
+    function showToast(text, kind) { calls.toasts.push({ text, kind }); }
     const searchFold = (s) => String(s ?? '').toLowerCase();
     function spotsOrder(a, b) {
       return searchFold(a.name).localeCompare(searchFold(b.name), undefined, { numeric: true });
@@ -79,7 +86,9 @@ function sandbox(vendors = []) {
       vendors: () => allVendors,
       setLens: (l) => { homeLens = l; },
     };
-  `)(calls, vendors);
+  `)(calls, vendors, allTime);
+  api.calls = calls;
+  return api;
 }
 
 const spot = (over = {}) => ({
@@ -88,6 +97,7 @@ const spot = (over = {}) => ({
   recent: over.recent ?? false,
   visited: over.visited ?? false,
   favorite: over.favorite ?? false,
+  poolId: over.poolId ?? null,
   recommendedRank: over.recommendedRank ?? null,
   createdAt: over.createdAt ?? '2026-01-01T00:00:00Z',
 });
@@ -95,7 +105,7 @@ const spot = (over = {}) => ({
 describe('markVendorVisited', () => {
   test('a visit sets BOTH flags, because it answers both questions', () => {
     const api = sandbox([spot()]);
-    assert.equal(api.markVendorVisited('v1'), true);
+    assert.equal(api.markVendorVisited('v1').firstEver, true);
     const v = api.vendors()[0];
     // `recent` is "have I been here lately" — its window is 7 days, so a visit
     // today is inside it by definition. `visited` is "do I know this place at
@@ -107,17 +117,18 @@ describe('markVendorVisited', () => {
 
   test('a repeat visit changes nothing and says so', () => {
     const api = sandbox([spot({ recent: true, visited: true })]);
-    // The common case — a regular's second coffee of the week. Returning false
+    // The common case — a regular's second coffee of the week. Returning null
     // is what stops every balance push rebuilding the whole row for nothing.
-    assert.equal(api.markVendorVisited('v1'), false);
+    assert.equal(api.markVendorVisited('v1'), null);
   });
 
-  test('a spot known but not visited lately is still a change', () => {
+  test('a spot known but not visited lately is a change, but not a first', () => {
     // Somewhere they went last month: `visited` is already true, `recent` is
     // not. A short-circuit on `visited` alone would miss the case the Recent
-    // row exists for.
+    // row exists for — and calling it a first would be plainly wrong.
     const api = sandbox([spot({ recent: false, visited: true })]);
-    assert.equal(api.markVendorVisited('v1'), true);
+    const hit = api.markVendorVisited('v1');
+    assert.equal(hit.firstEver, false);
     assert.equal(api.vendors()[0].recent, true);
   });
 
@@ -126,8 +137,69 @@ describe('markVendorVisited', () => {
     // deactivated since the last /balances, or an event landing mid-boot before
     // the first fetch resolves.
     const api = sandbox([spot()]);
-    assert.equal(api.markVendorVisited('nope'), false);
-    assert.equal(api.markVendorVisited(undefined), false);
+    assert.equal(api.markVendorVisited('nope'), null);
+    assert.equal(api.markVendorVisited(undefined), null);
+  });
+});
+
+/* ---------- "New spot unlocked" ----------
+   The one thing in this file that says something out loud, which is what makes
+   its false positives expensive: every other reader of `visited` degrades into
+   a slightly worse recommendation, this one into telling a regular their local
+   is somewhere new. */
+describe('the unlock pill', () => {
+  test('a first-ever visit pops it, once', () => {
+    const api = sandbox([spot({ name: 'Cafe One' })]);
+    api.applyVisitLocally('v1');
+    assert.equal(api.calls.toasts.length, 1);
+    assert.match(api.calls.toasts[0].text, /New spot unlocked · Cafe One/);
+    // Its own colour, so it does not read as a second copy of the points pill
+    // it queues behind on the very visit that triggers it.
+    assert.equal(api.calls.toasts[0].kind, 'unlock');
+    api.applyVisitLocally('v1');
+    assert.equal(api.calls.toasts.length, 1, 'the same spot cannot be unlocked twice');
+  });
+
+  test('coming back after a quiet fortnight is not an unlock', () => {
+    // `recent` flips, so the Recent row still repaints — but the student has
+    // been here before and knows it.
+    const api = sandbox([spot({ recent: false, visited: true })]);
+    api.applyVisitLocally('v1');
+    assert.equal(api.calls.renders, 1, 'the row still updates');
+    assert.deepEqual(api.calls.toasts, [], 'and says nothing');
+  });
+
+  test('a second branch of a chain they already use is not an unlock', () => {
+    // Pools make two rows one business, and `visited` is answered per row, so
+    // the branch across campus comes back unvisited. Same judgement the nearby
+    // watcher makes: "a spot you have never been to" is false about it.
+    const api = sandbox([
+      spot({ vendorId: 'v1', name: 'Cafe One (Campus)', visited: true, poolId: 'p1' }),
+      spot({ vendorId: 'v2', name: 'Cafe One (Downtown)', visited: false, poolId: 'p1' }),
+    ]);
+    api.applyVisitLocally('v2');
+    assert.equal(api.vendors()[1].visited, true, 'still marked visited');
+    assert.deepEqual(api.calls.toasts, [], 'but not announced as new');
+  });
+
+  test('the FIRST branch of a chain they have never used still unlocks', () => {
+    const api = sandbox([
+      spot({ vendorId: 'v1', name: 'Cafe One (Campus)', visited: false, poolId: 'p1' }),
+      spot({ vendorId: 'v2', name: 'Cafe One (Downtown)', visited: false, poolId: 'p1' }),
+    ]);
+    api.applyVisitLocally('v2');
+    assert.equal(api.calls.toasts.length, 1);
+  });
+
+  test('it stays SILENT when the server could not answer all-time', () => {
+    // migration-048 not applied: `visited` is then punch cards plus a 7-day
+    // window, which knows nothing about a coffee bought last month somewhere
+    // with visits switched off. The row must still update — only the claim is
+    // withheld.
+    const api = sandbox([spot({ name: 'Cafe One' })], { allTime: false });
+    api.applyVisitLocally('v1');
+    assert.equal(api.calls.renders, 1, 'the Recent row still updates');
+    assert.deepEqual(api.calls.toasts, [], 'no claim about a history we cannot see');
   });
 });
 
@@ -136,13 +208,15 @@ describe('markVendorVisited', () => {
 // everything it needs, is left out entirely.
 describe('applyVisitLocally', () => {
   function counted(vendors) {
-    const calls = { renders: 0, prunes: 0 };
+    const calls = { renders: 0, prunes: 0, toasts: [] };
     // eslint-disable-next-line no-new-func
     const api = new Function('calls', 'seed', `
       let allVendors = seed;
       let homeLens = null;
+      let visitedAllTime = true;
       function renderVendors() { calls.renders++; }
       function pruneNearbyDwell() { calls.prunes++; }
+      function showToast(text, kind) { calls.toasts.push({ text, kind }); }
       ${visitBlock}
       return { applyVisitLocally, vendors: () => allVendors };
     `)(calls, vendors);
@@ -167,6 +241,90 @@ describe('applyVisitLocally', () => {
     api.applyVisitLocally('ghost');
     assert.equal(calls.renders, 0);
     assert.equal(calls.prunes, 0);
+  });
+});
+
+/* ---------- the pill they share ----------
+   The unlock toast never arrives alone: a first-ever visit is by definition a
+   visit that came with points or a punch, so two writers hit #points-toast in
+   the same tick. Each used to write straight into the element and reset the
+   shared timer, which meant the second erased the first before it had been on
+   screen for a frame — and the one nobody ever saw was whichever happened to be
+   called first. The queue is what makes the new pill possible at all, so it is
+   tested rather than assumed. */
+describe('the toast queue', () => {
+  const toastBlock = block('const TOAST_MS =', '// Same pill the earn/redeem pushes use');
+
+  function toastSandbox() {
+    const shown = [];
+    const el = {
+      set className(v) { this._class = v; if (v.startsWith('points-toast')) shown.push({ cls: v }); },
+      get className() { return this._class; },
+      _class: '', textContent: '', hidden: true, offsetWidth: 0,
+      classList: { s: new Set(), add(c) { this.s.add(c); }, remove(c) { this.s.delete(c); } },
+    };
+    // Timers a test can fire by hand: the drain is setTimeout inside setTimeout,
+    // and waiting 2.2 real seconds per pill is not a test suite.
+    let seq = 0;
+    const timers = new Map();
+    const api = new Function('deps', `
+      const { el, setTimeout, clearTimeout } = deps;
+      let toastTimer = null;
+      const $ = () => el;
+      ${toastBlock}
+      return { showToast, queued: () => toastQueue.length };
+    `)({
+      el,
+      setTimeout: (fn) => { const id = ++seq; timers.set(id, fn); return id; },
+      clearTimeout: (id) => timers.delete(id),
+    });
+    // Fire everything pending, in the order it was scheduled, until quiet.
+    api.flush = () => {
+      for (let i = 0; i < 40 && timers.size; i += 1) {
+        const [id, fn] = timers.entries().next().value;
+        timers.delete(id);
+        fn();
+      }
+    };
+    api.el = el;
+    api.texts = () => shown.map((s) => s.cls);
+    return api;
+  }
+
+  test('the second pill waits its turn instead of erasing the first', () => {
+    const t = toastSandbox();
+    t.showToast('✨  +50 pts', 'gain');
+    t.showToast('🔓  New spot unlocked · Cafe One', 'unlock');
+    // The points pill is up; the unlock one is behind it, not on top of it.
+    assert.equal(t.el.textContent, '✨  +50 pts');
+    assert.equal(t.el.className, 'points-toast gain');
+    assert.equal(t.queued(), 1);
+
+    t.flush();
+    assert.equal(t.el.textContent, '🔓  New spot unlocked · Cafe One');
+    assert.equal(t.el.className, 'points-toast unlock');
+    assert.equal(t.queued(), 0);
+  });
+
+  test('the queue drains to empty and stops', () => {
+    const t = toastSandbox();
+    t.showToast('one');
+    t.showToast('two');
+    t.flush();
+    assert.equal(t.queued(), 0);
+    // Nothing left waiting, so the element ends up hidden rather than parked on
+    // the last message.
+    assert.equal(t.el.hidden, true);
+    // ...and a later pill still works, i.e. `toastShowing` was released.
+    t.showToast('three');
+    assert.equal(t.el.textContent, 'three');
+  });
+
+  test('a burst is capped rather than queued forever', () => {
+    // A reconnect storm must not buy the student a minute of pills.
+    const t = toastSandbox();
+    for (let i = 0; i < 12; i += 1) t.showToast(`pill ${i}`);
+    assert.equal(t.queued(), 3, 'one showing, three waiting, the rest dropped');
   });
 });
 
