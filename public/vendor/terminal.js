@@ -2303,7 +2303,19 @@ async function refreshRewards() {
 
 function enterManage() {
   show('screen-manage');
+  // A failed toggle's message belongs to the visit it happened in. Cleared on
+  // the way in rather than in renderRewardList, which is what puts the row back
+  // after that same failure and would wipe the explanation with it.
+  $('reward-error').hidden = true;
   renderRewardList();
+  // Then catch up on anything changed elsewhere — a second terminal on the same
+  // login, or an admin editing this vendor. This used to happen as a side
+  // effect of every toggle, which is a strange place for it: a vendor who never
+  // touches a switch never saw the update, and one who does paid a second round
+  // trip for it while the button sat there saying nothing. Entering the screen
+  // is when the question is actually being asked. Un-awaited, and the render
+  // above already ran, so the list is on screen immediately either way.
+  refreshRewards().then(renderRewardList);
 }
 
 // What a customer has to spend here, at this spot’s rate, to earn `pts`.
@@ -2350,25 +2362,97 @@ function renderRewardList() {
     const toggle = document.createElement('button');
     toggle.className = `reward-toggle${r.active ? ' is-on' : ''}`;
     toggle.textContent = r.active ? 'ON' : 'OFF';
-    toggle.addEventListener('click', () => toggleReward(r));
+    toggle.addEventListener('click', () => toggleReward(r, toggle));
+    // Still saving. The busy state is re-applied from the id, not carried on
+    // the node, because this function rebuilds every row from scratch — a flag
+    // living on the button would be thrown away by the first re-render and
+    // leave a second item looking idle with its PATCH still in the air.
+    if (rewardBusy.has(r.id)) markRewardToggleBusy(toggle);
 
     row.append(info, toggle);
     list.appendChild(row);
   });
 }
 
-async function toggleReward(reward) {
-  const res = await authFetch(`/api/vendor/rewards/${reward.id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ active: !reward.active }),
-  });
-  if (res.ok) {
-    await refreshRewards();
+/* ---------- turning an item on and off ----------
+   One tap, one round trip, and until now no sign that anything was happening:
+   the button kept saying OFF while the PATCH was out, so on a slow counter
+   connection the only feedback was the label eventually changing — or not.
+   Staff read that as a dead button and tapped again, which is the one thing
+   that genuinely goes wrong here: two PATCHes racing leave the item wherever
+   the later response lands, which is not necessarily where they left it.
+
+   So the label is replaced by a spinner until the server confirms, and the
+   button is disabled while it is up. */
+
+// Item ids whose ON/OFF is mid-flight. A Set rather than one flag because the
+// vendor can tap a second item while the first is still saving, and each row
+// has to answer for itself.
+const rewardBusy = new Set();
+
+/** Put the spinner up in place of this button's ON/OFF label. */
+function markRewardToggleBusy(toggle) {
+  toggle.disabled = true;
+  toggle.setAttribute('aria-busy', 'true');
+  // Named, because the label it replaced was the only thing announcing this
+  // control — without it a screen reader lands on an empty button.
+  toggle.setAttribute('aria-label', 'Saving');
+  // In PLACE of the label, inside the same button: .reward-toggle keeps its
+  // min-width, so nothing under the finger moves while the request is out.
+  toggle.textContent = '';
+  const spin = document.createElement('span');
+  spin.className = 'reward-spin';
+  spin.setAttribute('aria-hidden', 'true');
+  toggle.appendChild(spin);
+}
+
+async function toggleReward(reward, toggle) {
+  if (rewardBusy.has(reward.id)) return;   // already saving — a second tap is the same tap
+  rewardBusy.add(reward.id);
+  markRewardToggleBusy(toggle);
+  $('reward-error').hidden = true;
+  try {
+    const res = await authFetch(`/api/vendor/rewards/${reward.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ active: !reward.active }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      // The response IS the confirmation — the updated row, straight from the
+      // update's own RETURNING — so the spinner comes down on it rather than on
+      // a second round trip for a fact already in hand. enterManage does the
+      // catching-up this used to do.
+      //
+      // Found by id, not written through the captured `reward`: enterManage's
+      // refresh REPLACES the `rewards` array, so a toggle that was in the air
+      // while it landed holds an object no longer in the list, and merging into
+      // that would repaint from a row nothing renders.
+      const row = rewards.find((r) => r.id === reward.id);
+      if (row) Object.assign(row, data);
+      return;
+    }
+    // An expired PIN puts the pad up (and comes back through enterManage,
+    // which re-renders this list) — say nothing on top of that.
+    if (handlePinRequired(res, data)) return;
+    showRewardError(data.message || 'Couldn’t save that. Try again.');
+  } catch {
+    // Nothing was sent, so nothing changed — the row goes back to what it says
+    // on the server, which is what the finally below repaints it as.
+    showRewardError('No connection. The item hasn’t changed.');
+  } finally {
+    rewardBusy.delete(reward.id);
+    // Repaint from `rewards`, whichever way it went: the spinner comes down and
+    // the label is whatever is now true — the new state on success, the old one
+    // on a failure. Other rows still saving keep their spinners (see the
+    // rewardBusy check above).
     renderRewardList();
-    return;
   }
-  const data = await res.json().catch(() => ({}));
-  handlePinRequired(res, data); // expired PIN session → back to the PIN screen
+}
+
+function showRewardError(msg) {
+  const el = $('reward-error');
+  el.textContent = msg;
+  el.hidden = false;
 }
 
 function openRewardForm(reward) {

@@ -12,10 +12,29 @@ export function setIo(instance) {
  *
  * THE PAYLOAD CONTRACT, since point pools (migration-044):
  *
- *   { vendorId, poolVendorIds?, balance, community? }
+ *   { vendorId, poolVendorIds?, balance, community?, visit? }
  *
  * `vendorId` is where the money MOVED — the counter that rang it up, and the
  * only one whose toast, tier refresh and history reload should fire.
+ *
+ * `visit` says this event IS the student turning up at that counter — the same
+ * thing GET /api/me/balances calls `recent` and `visited`, so the app can put
+ * the spot into its Recent row on this event instead of a refresh later. Send
+ * it only where the balances read would agree:
+ *
+ *   yes — an award, a redemption, a claimed receipt (all write an 'earn' or
+ *         'redeem' transaction, which is exactly what that query counts)
+ *   no  — a community-points move, which fires this same event with a vendorId
+ *         and is deliberately EXCLUDED there: moving points into a spot happens
+ *         inside the app, not at its counter
+ *   no  — an undo, which takes a transaction away rather than adding one
+ *
+ * The middle case is the whole reason this is a flag and not something the
+ * client infers from the shape of the event. The tab that submitted a move
+ * knows what it did; the student's other phone sees an identical payload.
+ *
+ * Only ever true of `vendorId`, never of the `poolVendorIds` siblings: a shared
+ * purse is one balance, but a visit is one door.
  *
  * `poolVendorIds` is which CARDS now show a different number. For an unpooled
  * vendor it is `[vendorId]`; for a pooled one it is every active sibling that
@@ -39,7 +58,13 @@ export function emitBalance(userId, payload) {
   if (io && userId) io.to(`user:${userId}`).emit('balance', payload);
 }
 
-/** Push a punch-card update (a punch landed / a full card was redeemed). */
+/**
+ * Push a punch-card update (a punch landed / a full card was redeemed).
+ *
+ * Carries the same optional `visit` flag as emitBalance, and for the same
+ * reason: a scanned visit writes a `punches` row, which the balances read
+ * counts as recent activity, while an undo restoring forfeited visits does not.
+ */
 export function emitPunch(userId, payload) {
   if (io && userId) io.to(`user:${userId}`).emit('punch', payload);
 }

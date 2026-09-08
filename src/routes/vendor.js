@@ -391,6 +391,9 @@ router.post('/award', async (req, res, next) => {
       poolVendorIds: await poolVendorIds(req.vendor),
       balance: newBalance,
       community: newCommunity,
+      // They are standing at this counter right now, so the app's Recent row
+      // says so on this event rather than a refresh later (see emitBalance).
+      visit: true,
     }); // live push
     // Snapshot the score for analytics — off the critical path, non-fatal.
     persistTierSnapshot(userId, tierProfile).catch(() => {});
@@ -479,6 +482,9 @@ router.post('/redeem', requirePin, async (req, res, next) => {
       vendorId: req.vendor.id,
       poolVendorIds: await poolVendorIds(req.vendor),
       balance: newBalance,
+      // A redemption is a visit too: it happens at the counter and writes a
+      // 'redeem' transaction, which is half of what /balances counts as recent.
+      visit: true,
     }); // live push
 
     // A visits redemption doesn't move the points balance, so the balance push
@@ -552,6 +558,11 @@ router.post('/reverse', requirePin, async (req, res, next) => {
     // An undo moves the same purse a sale did, so it repaints the same set of
     // cards. The punch push below deliberately stays per-vendor: visits are NOT
     // shared, and a sibling's card must not show this location's visit count.
+    //
+    // No `visit` flag, and that is not an oversight: reversing a sale takes the
+    // transaction that made this spot "recent" away. Claiming a visit here
+    // would pin a spot into the Recent row by undoing the only reason it was
+    // ever in it. The next /balances read is what settles whether it belongs.
     emitBalance(userId, {
       vendorId: req.vendor.id,
       poolVendorIds: await poolVendorIds(req.vendor),

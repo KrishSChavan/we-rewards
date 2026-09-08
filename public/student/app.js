@@ -2964,7 +2964,12 @@ async function submitReceipt() {
       return;
     }
     // The card/meter/tier/history repaint arrives over the socket push, same
-    // as a counter award — this view just says what landed.
+    // as a counter award — this view just says what landed. The Recent row is
+    // the exception: the push carries `visit` for it, but the response is in
+    // hand either way, so claim it here too rather than leave the row wrong on
+    // a phone whose socket happens to be reconnecting. Idempotent — whichever
+    // arrives second finds the flags already set and repaints nothing.
+    applyVisitLocally(data.vendorId);
     $('receipt-success-line').textContent =
       `+${data.awarded} pts at ${data.vendorName} on your $${Number(data.total).toFixed(2)} receipt 🎉`;
     $('receipt-pick-view').hidden = true;
@@ -3169,6 +3174,53 @@ async function loadVendors() {
     $('vendors-empty').textContent = 'Couldn’t load your spots. Check your connection and try again.';
     $('vendors-empty').hidden = false;
   }
+}
+
+/**
+ * Record a visit that just happened, LOCALLY — what the next loadVendors()
+ * would tell us, without waiting for it.
+ *
+ * `recent` and `visited` arrive from the server and used to change only when a
+ * fresh /balances landed. A balance push carries a number, so an earn repainted
+ * the card's points and left the spot out of the RECENT SPOTS row until
+ * something unrelated happened to refetch — backing out of the spot screen, a
+ * punch, a reconnect. Standing at a counter watching your points go up while
+ * the row above still calls the place a stranger is the bug this closes.
+ *
+ * Both flags, because one visit answers both questions the server asks:
+ * `recent` is "have I been here lately" (its 7-day window, so a visit today is
+ * inside it by definition) and `visited` is "do I know this place at all",
+ * which is a one-way door.
+ *
+ * Returns whether anything actually changed, and callers repaint only when it
+ * did. A regular's second coffee of the week flips nothing, and that is the
+ * common case: a rebuild of the row on every push would be pure waste.
+ *
+ * The caller decides WHICH vendor — never a pool sibling. See emitBalance in
+ * src/lib/realtime.js: a shared purse is one balance, a visit is one door.
+ */
+function markVendorVisited(vendorId) {
+  const v = allVendors.find((x) => x.vendorId === vendorId);
+  if (!v || (v.recent && v.visited)) return false;
+  v.recent = true;
+  v.visited = true;
+  return true;
+}
+
+/**
+ * Repaint after markVendorVisited() said something moved. The row's CONTENTS
+ * changed, not just a number on a card, so this is a full renderVendors() —
+ * the carousel may have gained a card, swapped its heading from RECOMMENDED to
+ * RECENT SPOTS, or gained the lens menu that goes with having a choice.
+ *
+ * pruneNearbyDwell() for the same reason loadVendors() calls it: somewhere they
+ * have now been is no longer somewhere to be told about, and a dwell timer left
+ * running would fire the moment the server's own visited check refused it.
+ */
+function applyVisitLocally(vendorId) {
+  if (!markVendorVisited(vendorId)) return;
+  renderVendors();
+  pruneNearbyDwell();
 }
 
 // Whether each vendor card carries the map thumbnail at its bottom. To restore
@@ -6118,6 +6170,12 @@ function connectSocket() {
         if (vendor && vendor.vendorId === id) hitOpen = true;
       });
       if (hitOpen) applyBalance(next);                               // and the open meter
+      // ...and the Recent row, when this event was the student turning up
+      // somewhere. `visit` is the server's own word for that (see emitBalance
+      // in src/lib/realtime.js) — a community-points move fires this same event
+      // and is deliberately NOT one, so the flag is what tells them apart on a
+      // device that did not make the move. Origin only, never the siblings.
+      if (payload.visit) applyVisitLocally(payload.vendorId);
       // A gain here is a scan landing → install triggers 2 (near a reward
       // threshold) and 4 (first points earned). `v` carries the vendor's rewards
       // so the hook can decide "within 1 visit". Redemptions (a drop) are handled
@@ -6140,6 +6198,11 @@ function connectSocket() {
       if (!payload?.vendorId) return;
       const v = allVendors.find((x) => x.vendorId === payload.vendorId);
       if (v?.punch && payload.visits != null) v.punch.visits = payload.visits;
+      // A scanned visit is activity here, the same as a sale — so the Recent
+      // row takes the spot now rather than a loadVendors() round trip later.
+      // Flagged rather than assumed: this event also fires for an undo putting
+      // forfeited visits back, which is not somewhere the student just was.
+      if (payload.visit) applyVisitLocally(payload.vendorId);
       if (vendor && vendor.vendorId === payload.vendorId) {
         renderPunchUi();
         // Visits changed, so every reward's lock state may have too.
@@ -6908,6 +6971,11 @@ async function claimPendingPunch() {
 function onPunchClaimed(data) {
   const v = allVendors.find((x) => x.vendorId === data.vendorId);
   if (v?.punch) v.punch.visits = data.visits ?? v.punch.visits;
+  // Standing in the shop with the QR still on screen: the Recent row should
+  // already say so by the time the toast lands. The socket push carries the
+  // same fact for their other devices, and repeating it here is free — the
+  // second call finds both flags set and repaints nothing.
+  applyVisitLocally(data.vendorId);
   if (vendor && vendor.vendorId === data.vendorId) {
     renderPunchUi();
     document.querySelectorAll('.item-card').forEach(decorateCard);

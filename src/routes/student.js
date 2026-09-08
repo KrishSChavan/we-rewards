@@ -630,7 +630,10 @@ router.post('/punch', requireConsent, async (req, res, next) => {
     // The hold is spent; the cookie has nothing left to authorize.
     if (args.p_hold_id) res.clearCookie(PUNCH_BINDING_COOKIE, { path: '/' });
 
-    const payload = { vendorId, visits: row.new_punches };
+    // `visit: true` because that is literally what a punch is — punch_in wrote
+    // a `punches` row, which is the second half of what GET /balances counts as
+    // recent activity, so the Recent row can take this spot on the event.
+    const payload = { vendorId, visits: row.new_punches, visit: true };
     // Other devices this student has open re-sync their visit counter. No
     // `redeemed` flag: that one is the vendor's redemption push, which toasts.
     emitPunch(req.user.id, payload);
@@ -794,6 +797,9 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
       // would leave the customer's other cards showing the pre-claim number
       // until their next poll.
       poolVendorIds: await poolVendorIds(hit.vendor),
+      // claim_receipt() ends in award_points(), so this writes the same 'earn'
+      // row a terminal award does and counts as a visit for the same reason.
+      visit: true,
     });
     persistTierSnapshot(req.user.id, tierProfile).catch(() => {});
 
@@ -982,6 +988,12 @@ router.post('/community-transfer', requireConsent, async (req, res, next) => {
     // so the push has to name every sibling: the tab that submitted the move
     // patches its own cards locally, but another open tab or a second device
     // only ever sees this event.
+    //
+    // No `visit` flag (see emitBalance): a move happens on the student's phone,
+    // not at the spot's counter, which is why 'community_transfer' is left out
+    // of the recent-activity query in GET /balances above. Sending one here
+    // would put a spot the student has never walked into at the top of their
+    // Recent row, and take it back out again on their next refresh.
     emitBalance(req.user.id, {
       vendorId,
       balance: newBalance,

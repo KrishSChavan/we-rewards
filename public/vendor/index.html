@@ -423,6 +423,12 @@
         </div>
         <p class="manage-note">Items that are ON show in the student app, so customers can pick one and bring you a redeem code.</p>
         <div id="reward-list" class="reward-list"></div>
+        <!-- Why an ON/OFF didn't stick. Outside #reward-list because that
+             element is emptied and rebuilt every time a toggle settles, which
+             is the same moment this has something to say. Polite rather than
+             assertive: the vendor is looking at the row that just snapped
+             back, so this explains it rather than interrupting. -->
+        <p id="reward-error" class="reward-error" role="status" aria-live="polite" hidden></p>
       </section>
 
       <!-- ===== DEALS: send an offer to your own regulars =====

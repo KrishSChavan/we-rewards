@@ -824,6 +824,35 @@ body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea,
   border: 3px solid var(--ink); background: var(--card); color: var(--muted);
 }
 .reward-toggle.is-on { background: var(--success); border-color: var(--success); color: #fff; }
+/* Saving. The button keeps its colours and its min-width — it is still the ON
+   or OFF it was until the server says otherwise, and the row must not reflow
+   under the finger that just tapped it. The one thing that changes is what is
+   inside: the label swaps for the ring below. `opacity: 1` because Safari dims
+   a disabled button on its own, and a spinner faded to grey reads as broken
+   rather than as busy. */
+.reward-toggle[disabled] { opacity: 1; }
+.reward-spin {
+  display: inline-block; width: 1.15rem; height: 1.15rem; vertical-align: middle;
+  /* currentColor, so the ring is white on an ON button and muted on an OFF one
+     without either state needing a rule of its own. */
+  border: 3px solid currentColor; border-top-color: transparent; border-radius: 50%;
+  animation: reward-spin 0.7s linear infinite;
+}
+@keyframes reward-spin { to { transform: rotate(360deg); } }
+/* Closing the gap turns the ring into a plain circle: still visibly not a
+   label, still saying "wait", with nothing moving. A frozen part-ring would
+   read as a hang, which is the opposite of what it is for. */
+@media (prefers-reduced-motion: reduce) {
+  .reward-spin { animation: none; border-top-color: currentColor; opacity: 0.55; }
+}
+
+/* Why a toggle didn't stick (no connection, a rejected save). Sits under the
+   list, in the same red and weight as a form's .field-error, and clears on the
+   next visit to this screen. Width matched to .reward-list so it lines up with
+   the rows it is about rather than centring under them. */
+.reward-error {
+  width: min(50rem, 100%); color: var(--error); font-weight: 700; font-size: 1.05rem;
+}
 
 .reward-list-empty { color: var(--muted); font-weight: 700; font-size: 1.2rem; padding: 2rem 0; text-align: center; }
 
