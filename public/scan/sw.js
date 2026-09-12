@@ -28,7 +28,10 @@
 // precached file with it: /scan/qrcode.js, the QR generator. All four of the
 // others changed too, so an installed iPad keeps serving the old shell until
 // this constant moves.
-const CACHE = 'werewards-scan-v6';
+// v7: crash reports from this screen name the vendor (and its id), the same as
+// the full terminal's do — scan.js only. /scan had been the one POS screen whose
+// errors arrived in the log with no idea which counter they came from.
+const CACHE = 'werewards-scan-v7';
 const SHELL = [
   '/scan/', '/scan/boot-guard.js', '/scan/scan.css', '/scan/scan.js',
   '/scan/jsQR.js', '/scan/qrcode.js', '/scan/no-zoom.js', '/scan/manifest.json',

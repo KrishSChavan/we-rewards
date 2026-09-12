@@ -121,6 +121,12 @@ function crashContext(extra) {
   const ctx = { ...extra };
   try {
     ctx.tab = TAB_NAMES[activeTab] ?? String(activeTab);
+    // The spot screen the student is standing in, if any. A crash on a vendor
+    // screen is about that vendor — their rewards, their logo, their card — and
+    // without this the operator gets "Student app · spot" and has to guess which
+    // of 16 spots it was. null on home, which is the honest answer there.
+    if (vendor?.name) ctx.vendor = vendor.name;
+    if (vendor?.id) ctx.vendorId = vendor.id;
     ctx.installed = window.matchMedia?.('(display-mode: standalone)')?.matches === true
       || window.navigator.standalone === true;
     ctx.online = navigator.onLine;
@@ -2040,7 +2046,28 @@ function startMyCode() {
 function stopMyCode() {
   clearInterval(myCodeTimer);
   myCodeTimer = null;
+  clearTimeout(myCodeRetry);
+  myCodeRetry = null;
 }
+
+/* THE FIRST CALL IS THE ONLY ONE A STUDENT CAN SEE FAIL.
+   A failed REFRESH is invisible and harmless: the code on screen stays put and
+   is still live, because the server mints them for 300s and this loop runs every
+   120s, so one miss is covered twice over. A failed FIRST call is different —
+   nothing has ever been painted, so the sheet opens on the ••••••  placeholder
+   from index.html with no QR and no explanation, and the next attempt is two
+   minutes away.
+
+   Two short retries close that window. Deliberately only while no code has been
+   shown yet, and deliberately not a general-purpose backoff: the server already
+   retries its own gateway blips (src/lib/supabase.js), so what is left here is
+   the phone's own connection dropping for a second on campus wifi — which is far
+   more common than anything upstream and was costing the student the full 120s.
+   Idempotent on the server (one live code per student, migration-056), so an
+   extra attempt cannot mint a second code. */
+const MY_CODE_RETRY_MS = [1500, 4000];
+let myCodeRetry = null;
+let myCodeAttempt = 0;
 
 async function refreshMyCode() {
   try {
@@ -2056,8 +2083,20 @@ async function refreshMyCode() {
     const room = Math.min(window.innerWidth - 90, window.innerHeight - 300);
     drawQr($('my-code-qr'), `WRW:E:${code}`, Math.max(180, Math.min(300, room)));
     $('my-code-qr-card').hidden = false;     // stays hidden until the first successful render
+    myCodeAttempt = 0;                       // a later blip gets its own two tries
   } catch {
-    // keep the last code + QR visible on a transient failure rather than blanking them
+    // Keep the last code + QR visible on a transient failure rather than blanking
+    // them — and if there has never BEEN one, try again shortly (see above).
+    const painted = $('my-code-qr-card') && !$('my-code-qr-card').hidden;
+    const delay = MY_CODE_RETRY_MS[myCodeAttempt];
+    if (!painted && delay != null) {
+      myCodeAttempt += 1;
+      clearTimeout(myCodeRetry);
+      // One timer, replaced rather than stacked: a token refresh re-entering
+      // render() calls startMyCode() again, and two loops racing here is how a
+      // student ends up watching the digits change.
+      myCodeRetry = setTimeout(refreshMyCode, delay);
+    }
   }
 }
 

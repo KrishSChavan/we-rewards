@@ -6,6 +6,7 @@ import { geocode } from '../lib/geocode.js';
 import { getVapidPublicKey, notifyAdminEndpoint } from '../lib/push.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
+import { rollupRoi } from '../lib/roi.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
 import { sendEmail, emailUrl, emailEnabled } from '../lib/email.js';
 import { applicationAccepted, vendorResetCode } from '../lib/email-templates.js';
@@ -281,6 +282,115 @@ router.get('/overview', async (req, res, next) => {
       errors: { last24h: errors24h.count ?? 0, total: errorsTotal.count ?? 0 },
       truncated,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/roi?days=30
+ *
+ * The screen the operator reads down the phone to a vendor. Per location:
+ * how many people came, how many came BACK, what the repeat visits were worth,
+ * what the vendor gave away to get them, and the net — plus the platform median
+ * so "you're above average downtown" is a checkable statement rather than a
+ * sales line. The billing state rides along from vendor_billing_overview, so
+ * the operator can see who is in trouble on the same screen as what they are
+ * getting for their money.
+ *
+ * Deliberately admin-only for now. The vendor-facing version is the same
+ * rollup behind requirePin, and shipping it here first means the numbers can be
+ * sanity-checked against a real till before any vendor sees them.
+ *
+ * THREE READS, none of them cheap-looking and all of them small at this scale:
+ * the window, the roster, and the "who had already been here" set that turns a
+ * customer into a NEW customer. The third is the only non-obvious one — it
+ * cannot be derived from a 30-day window, because the whole question is what
+ * happened before the window opened.
+ */
+router.get('/roi', async (req, res, next) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 90);
+
+    const startToday = new Date();
+    startToday.setHours(0, 0, 0, 0);
+    const t0 = startToday.getTime();
+    const since = new Date(t0 - (days - 1) * DAY).toISOString();
+
+    // Same cap and the same truncation confession as /overview and
+    // /api/vendor/analytics. Past this the rollup undercounts silently, which
+    // is the one failure mode an ROI screen must never have — a vendor shown a
+    // number lower than their own till receipts stops trusting all of them.
+    const TX_LIMIT = 20_000;
+    const PRIOR_LIMIT = 20_000;
+
+    const [txRes, vendorRes, priorRes, billingRes] = await Promise.all([
+      supabaseAdmin
+        .from('transactions')
+        .select('type, points, dollar_amount, created_at, user_id, vendor_id')
+        .gte('created_at', since)
+        .limit(TX_LIMIT),
+      supabaseAdmin
+        .from('vendors')
+        .select('id, name, active, plan, grandfathered, points_per_dollar')
+        .order('name', { ascending: true }),
+      // Every (vendor, student) pair that existed BEFORE the window. Anyone in
+      // the window and not in here is new to that vendor. Only positive earns
+      // count, matching the award-day rule in the rollup — a reversed award is
+      // not a prior visit.
+      supabaseAdmin
+        .from('transactions')
+        .select('user_id, vendor_id')
+        .eq('type', 'earn')
+        .gt('points', 0)
+        .lt('created_at', since)
+        .limit(PRIOR_LIMIT),
+      supabaseAdmin
+        .from('vendor_billing_overview')
+        .select('id, plan, grandfathered, subscription_status, days_past_due, billing_state, current_period_end'),
+    ]);
+
+    for (const r of [txRes, vendorRes, priorRes, billingRes]) {
+      if (r.error) throw r.error;
+    }
+
+    const truncated =
+      (txRes.data?.length ?? 0) >= TX_LIMIT || (priorRes.data?.length ?? 0) >= PRIOR_LIMIT;
+    if (truncated) {
+      console.warn(`[roi] hit a ${TX_LIMIT}-row cap — figures may undercount; aggregate in SQL.`);
+    }
+
+    const priorPairs = new Set(
+      (priorRes.data ?? [])
+        .filter((r) => r.vendor_id && r.user_id)
+        .map((r) => `${r.vendor_id}:${r.user_id}`),
+    );
+
+    const roll = rollupRoi({
+      txns: txRes.data ?? [],
+      priorPairs,
+      vendors: vendorRes.data ?? [],
+      t0,
+      days,
+    });
+
+    // Fold the billing facts onto each card so the dashboard renders one row
+    // per vendor instead of joining two lists in the browser.
+    const billing = new Map((billingRes.data ?? []).map((b) => [b.id, b]));
+    const vendors = roll.vendors.map((c) => {
+      const b = billing.get(c.id);
+      return {
+        ...c,
+        billing: {
+          state: b?.billing_state ?? 'ok',
+          status: b?.subscription_status ?? null,
+          daysPastDue: b?.days_past_due ?? null,
+          currentPeriodEnd: b?.current_period_end ?? null,
+        },
+      };
+    });
+
+    res.json({ ...roll, vendors, truncated });
   } catch (err) {
     next(err);
   }

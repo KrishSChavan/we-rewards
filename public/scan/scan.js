@@ -163,7 +163,19 @@ async function signOutAuth() {
 /* ---------- client crash reporting ---------- */
 
 function installErrorReporter() {
+  /* Which till this is. ES5 and no optional chaining on purpose - this file runs
+     on iOS 12 (see the header). `config` is null until /api/vendor/config lands,
+     so an early crash reports no vendor rather than throwing inside the
+     reporter, which would lose the crash entirely. */
+  function withVendor(context) {
+    var ctx = context || {};
+    if (config && config.name) ctx.vendor = config.name;
+    if (config && config.vendorId) ctx.vendorId = config.vendorId;
+    return ctx;
+  }
+
   function send(message, stack, context) {
+    context = withVendor(context);
     getAccessToken().then(function (token) {
       var headers = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = 'Bearer ' + token;

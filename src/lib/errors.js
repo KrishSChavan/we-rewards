@@ -4,6 +4,7 @@
 // error handler — every failure here is swallowed.
 
 import { supabaseAdmin } from './supabase.js';
+import { lookupVendor } from './cache.js';
 import { notifyError } from './alerts.js';
 
 // Cap field lengths so a giant stack/context can't bloat a row (or the table).
@@ -44,15 +45,118 @@ function redactFields(obj) {
   return out;
 }
 
+/* ---------- which vendor ----------
+   "Which spot was this?" is the first question the operator asks about almost
+   every failure, and for most routes the answer was sitting in the request
+   unread. requestContext only ever recorded req.vendor, which requireVendor sets
+   — so the vendor-side terminal was named and nothing else was. A student
+   redeeming at a counter, an operator editing a spot, a public /spots page, a
+   logo that won't load: all of those carry a vendor, and all of them logged it as
+   an anonymous uuid inside the body blob at best.
+
+   WHERE THE ID CAN BE. Three places, in descending order of trust:
+
+     1. req.vendor — the full row, already resolved. Authoritative, includes
+        inactive vendors, and the only source that needs no lookup.
+     2. A body or query field named for a vendor. Explicit enough to trust even
+        when the name can't be resolved.
+     3. THE URL. Not req.params: Express RESTORES req.params as each router
+        unwinds, so by the time an error reaches the central handler it is `{}`
+        (measured — /api/vendor/:vendorId/thing arrives with no params at all).
+        req.originalUrl survives intact, so the path is scanned instead.
+
+   A segment in VENDOR_SEGMENTS means the NEXT segment is a vendor, which is what
+   makes /spots/:slug and /api/vendor-logo/:id readable. Any other uuid in the
+   path is only believed if the catalogue confirms it is a vendor — a reward id, a
+   transaction id and a user id all look identical otherwise, and a mislabelled
+   vendor is worse than an unlabelled one. */
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Body/query keys that mean "this is a vendor". Matched case-insensitively. */
+const VENDOR_FIELDS = new Set(['vendorid', 'vendor_id', 'vendorslug', 'vendor_slug', 'spotid', 'spot_id']);
+
+/** Path segments after which the next segment names a vendor. */
+const VENDOR_SEGMENTS = new Set(['spots', 'vendor-logo', 'vendors']);
+
+/** Is this value worth even trying to resolve? */
+const plausible = (v) => typeof v === 'string' && v.length > 0 && v.length <= 100;
+
+/**
+ * Candidate vendor ids/slugs from one request, best first, each flagged with
+ * whether the request SAID it was a vendor (`named`) or we are guessing from a
+ * bare uuid in the path (which only counts if the catalogue agrees).
+ */
+function vendorCandidates(req) {
+  const out = [];
+  for (const source of [req.body, req.query]) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+    for (const [k, v] of Object.entries(source)) {
+      if (VENDOR_FIELDS.has(k.toLowerCase()) && plausible(v)) out.push({ value: v, named: true });
+    }
+  }
+
+  const path = String(req.originalUrl ?? req.url ?? '').split('?')[0];
+  const segments = path.split('/').filter(Boolean);
+  segments.forEach((seg, i) => {
+    const decoded = (() => {
+      try { return decodeURIComponent(seg); } catch { return seg; }   // a mangled %-escape is not a vendor
+    })();
+    if (!plausible(decoded)) return;
+    if (VENDOR_SEGMENTS.has(segments[i - 1]?.toLowerCase())) out.push({ value: decoded, named: true });
+    else if (UUID.test(decoded)) out.push({ value: decoded, named: false });
+  });
+  return out;
+}
+
+/**
+ * The vendor this request was about: `{ name, id, slug }`, any of which may be
+ * null. Returns null when the request mentions no vendor at all.
+ *
+ * @param {object} req
+ * @param {(idOrSlug: string) => ({id: string, name: string|null}|null)} [lookup]
+ *        injected for tests — defaults to the in-memory catalogue index.
+ */
+export function vendorFromRequest(req, lookup = lookupVendor) {
+  if (!req) return null;
+
+  // 1. Already resolved by requireVendor. Covers every /api/vendor/* route and,
+  //    unlike the catalogue, covers a deactivated vendor too.
+  if (req.vendor?.id || req.vendor?.name) {
+    return { name: req.vendor.name ?? null, id: req.vendor.id ?? null, slug: null };
+  }
+
+  const candidates = vendorCandidates(req);
+  // 2. Anything the catalogue can put a NAME to wins, wherever it came from.
+  for (const c of candidates) {
+    const hit = lookup(c.value);
+    if (hit) return { name: hit.name, id: hit.id, slug: UUID.test(c.value) ? null : c.value };
+  }
+  // 3. Otherwise report what the request said, unresolved — an id the operator
+  //    can paste into /admin beats no vendor at all. Guesses are dropped here.
+  for (const c of candidates) {
+    if (!c.named) continue;
+    return UUID.test(c.value)
+      ? { name: null, id: c.value, slug: null }
+      : { name: null, id: null, slug: c.value };
+  }
+  return null;
+}
+
 /**
  * What the failing request was FOR, as a small structured blob for the operator
  * dashboard: the query string and body fields that shaped it (redacted per
- * SECRET_KEY above), who was making it, and which page they were on. The
- * message + stack say what broke; this says what it was doing at the time.
+ * SECRET_KEY above), who was making it, WHICH VENDOR it was about, and which
+ * page they were on. The message + stack say what broke; this says what it was
+ * doing at the time.
  *
  * Returns null rather than an empty object so a bare GET doesn't write `{}`.
+ *
+ * @param {object} req
+ * @param {Function} [lookup] vendor id/slug -> row. A test seam; the default is
+ *        the in-memory catalogue index, which never touches the database.
  */
-export function requestContext(req) {
+export function requestContext(req, lookup = lookupVendor) {
   if (!req) return null;
   const ctx = {};
 
@@ -66,8 +170,16 @@ export function requestContext(req) {
 
   if (req.user?.email) ctx.actorEmail = cap(req.user.email, 254);
   if (req.user?.id) ctx.actorId = req.user.id;
-  if (req.vendor?.name) ctx.vendor = cap(req.vendor.name, 120);
-  if (req.vendor?.id) ctx.vendorId = req.vendor.id;
+
+  // Never lets a lookup break the log row: an unnamed vendor is a worse error
+  // report, a throw here is no error report at all.
+  let vendor = null;
+  try {
+    vendor = vendorFromRequest(req, lookup);
+  } catch { /* best-effort attribution */ }
+  if (vendor?.name) ctx.vendor = cap(vendor.name, 120);
+  if (vendor?.id) ctx.vendorId = vendor.id;
+  if (vendor?.slug) ctx.vendorSlug = cap(vendor.slug, 120);
 
   // The page the call came from — the difference between "the terminal's SCAN
   // tab did this" and "someone hit the API by hand".

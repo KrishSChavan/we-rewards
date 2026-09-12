@@ -18,7 +18,7 @@ import applyRoutes from './src/routes/apply.js';
 import unsubscribeRoutes from './src/routes/unsubscribe.js';
 import webhookRoutes from './src/routes/webhooks.js';
 import trackedQrRoutes from './src/routes/tracked-qr.js';
-import { supabaseAdmin } from './src/lib/supabase.js';
+import { supabaseAdmin, UPSTREAM_GATEWAY } from './src/lib/supabase.js';
 import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
 import { NEARBY_CONFIG } from './src/lib/nearby.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
@@ -1402,7 +1402,20 @@ app.use(async (err, req, res, _next) => {
     // codebase sets publicMessage, so every other error answers exactly as before.
     return res.status(status).json({ error: key, message: err.publicMessage || message });
   }
-  console.error(err);
+  // SOMEBODY ELSE'S OUTAGE IS NOT A 500. src/lib/supabase.js stamps this code
+  // on a gateway failure (502/503/504/52x/530) whose body was an HTML page or a
+  // line of text rather than a PostgREST error — i.e. the request never reached
+  // Postgres at all. Answered 503 for the same reason the two branches above are
+  // not 500s: the status is the honest one, and a client that sees 503 can say
+  // "try again in a moment" instead of "something went wrong".
+  //
+  // STILL LOGGED, and still alerted. An operator needs to see an upstream going
+  // down — and with the retry in place (one attempt, 200ms apart) a single blip
+  // on a retryable call never gets here, so a row that does reach this branch
+  // has already failed twice and is worth a push.
+  const upstream = err?.code === UPSTREAM_GATEWAY;
+  if (upstream) console.warn(`[upstream] ${err.message} — ${err.hint ?? ''}`);
+  else console.error(err);
   // Unexpected failure → record it so it shows up on the /admin dashboard...
   //
   // requestContext carries what the request was FOR (query + body fields,
@@ -1416,11 +1429,17 @@ app.use(async (err, req, res, _next) => {
     stack: err?.stack,
     path: req?.originalUrl,
     method: req?.method,
-    status: 500,
+    status: upstream ? 503 : 500,
     userId: req?.user?.id ?? null,
     userAgent: req?.headers?.['user-agent'],
     context: requestContext(req),
   });
+  if (upstream) {
+    return res.status(503).json({
+      error: 'UPSTREAM_UNAVAILABLE',
+      message: 'We briefly couldn’t reach the database. Try that again in a moment.',
+    });
+  }
   res.status(500).json({ error: 'SERVER_ERROR', message: 'Something went wrong.' });
 });
 

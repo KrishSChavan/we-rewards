@@ -86,6 +86,7 @@
 
     <nav class="tabs" aria-label="View">
       <button id="tab-dashboard" class="tab is-active" type="button">Dashboard</button>
+      <button id="tab-roi" class="tab" type="button">ROI<span id="roi-badge" class="tab-badge" hidden>0</span></button>
       <button id="tab-applications" class="tab" type="button">Applications<span id="apps-badge" class="tab-badge" hidden>0</span></button>
       <button id="tab-incentives" class="tab" type="button">Incentives</button>
       <button id="tab-poster" class="tab" type="button">QR poster</button>
@@ -511,6 +512,51 @@
          terminal cannot prove which locations belong to one owner, and one
          shop's four-digit staff PIN is not consent to move every sibling's
          customer balances. The owner asks, and this screen is the answer. -->
+    <div id="view-roi" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>What the network did for each spot</h3>
+          <div class="card-head-actions">
+            <label class="vendor-edit-label" for="roi-window">Window</label>
+            <select id="roi-window" class="nv-input roi-window">
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+          </div>
+        </div>
+        <p class="muted">Read this down the phone. <strong>Came back</strong> is customers with two or more separate visit days — two purchases in one afternoon is one visit, the same rule the tier bar uses. <strong>Repeat spend</strong> is the money taken on those return visits only; the trip that introduced them is never counted. <strong>Gave away</strong> is points redeemed priced at the spot's own rate, the same figure their ITEMS screen calls implied spend. <strong>Net</strong> is repeat spend minus giveaways — deliberately harsh, because it charges them for every reward while crediting only the returns.</p>
+        <p class="muted"><strong>None of this is attribution.</strong> WeRewards never touches the till, so nothing here proves a customer came back <em>because</em> of the app. It counts what happened, honestly, and that is the only claim it can survive.</p>
+        <p id="roi-error" class="field-error" role="alert" hidden></p>
+        <p id="roi-truncated" class="field-error" role="alert" hidden>Too many transactions in this window to total accurately — figures below undercount. Time to move the rollup into SQL.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Across the network</h3>
+          <span id="roi-window-label" class="chart-max"></span>
+        </div>
+        <ul class="stat-list">
+          <li><span>Students who bought something</span><strong id="roi-students">—</strong></li>
+          <li><span>Spots with any activity</span><strong id="roi-active-vendors">—</strong></li>
+          <li><span>Median came-back rate</span><strong id="roi-median-return">—</strong></li>
+          <li><span>Median average ticket</span><strong id="roi-median-ticket">—</strong></li>
+          <li><span>Total repeat spend</span><strong id="roi-total-repeat">—</strong></li>
+          <li><span>Total given away</span><strong id="roi-total-giveaway">—</strong></li>
+        </ul>
+        <p id="roi-thin" class="muted roi-thin" hidden></p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Per spot</h3>
+          <span id="roi-count" class="chart-max"></span>
+        </div>
+        <p id="roi-billing-warning" class="field-error" role="alert" hidden></p>
+        <div id="roi-list" class="roi-list"></div>
+      </div>
+    </div>
+
     <div id="view-pools" class="wrap" hidden>
       <div class="card">
         <div class="card-head">

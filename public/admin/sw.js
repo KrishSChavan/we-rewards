@@ -59,7 +59,8 @@
 // v26: new Ambassadors tab — add a person with a code they chose, copy it, show
 // its QR, edit them, turn their link off or delete them; scans and signups roll
 // up per person off the shared /r/ rail (index.html + admin.js + admin.css).
-const CACHE = 'werewards-admin-v27';   // v27: an ambassador now carries a community-points payout per signup, credited to their own student account, so the dialog takes a rate and refuses an email with no account behind it; the row shows the rate, what they have earned, and a red "No account" when there is nowhere to pay (index.html + admin.js + admin.css)
+const CACHE = 'werewards-admin-v29';   // v29: the error log names the spot each failure came from — a Vendor row in the detail, the name on the summary line, and a Vendor line in "Copy details" so a pasted report carries it too (admin.js only). Without this bump an operator with the dashboard installed reads rows that have the vendor in their context and no row showing it
+// v28: an ROI tab — per spot, who came back, what the repeat visits were worth, what was given away to get them, and the net, plus the downtown median to compare against; carries each vendor's plan, free-for-life flag and days-past-due from migration-055 (index.html + admin.js + admin.css)
 const SHELL = [
   '/admin/', '/admin/boot-guard.js', '/admin/admin.css', '/admin/admin.js', '/admin/supabase.js',
   '/admin/no-zoom.js', '/admin/manifest.json', '/admin/qrcode.js',

@@ -42,7 +42,7 @@ const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now"
 // evaluating — declared below the boot IIFE it would be in its temporal dead
 // zone at that moment, and the throw is swallowed, so the report would quietly
 // arrive missing the context it exists for.
-const VIEWS = ['dashboard', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'students'];
+const VIEWS = ['dashboard', 'roi', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'students'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -99,6 +99,11 @@ function bootFailed(message) {
   $('tab-poster').addEventListener('click', openPoster);
   $('qr-new-form').addEventListener('submit', createQr);
   $('qr-export').addEventListener('click', () => exportQrAll($('qr-export')));
+  $('tab-roi').addEventListener('click', openRoi);
+  // Changing the window is a reload, not a re-render: the rollup happens on the
+  // server, and 7/30/90 are different queries rather than different slices of
+  // one payload.
+  $('roi-window').addEventListener('change', () => loadRoi());
   $('tab-pools').addEventListener('click', openPools);
   $('tab-ambassadors').addEventListener('click', openAmbassadors);
   $('amb-add-btn').addEventListener('click', () => openAmbModal(null));
@@ -2276,6 +2281,217 @@ const poolSettlements = new Map();
 // Loaded on first open rather than at boot: three queries for a screen most
 // sessions never touch. Same trade the student roster makes, and loadAll()
 // keeps it fresh from then on.
+/* ---------- ROI ---------- */
+
+// The screen the operator reads down the phone. Every figure comes from
+// GET /api/admin/roi (src/lib/roi.js); nothing is re-derived here, so the
+// browser and the server can never disagree about what "came back" means.
+let roiLoaded = false;
+
+function openRoi() {
+  setView('roi');
+  if (!roiLoaded) loadRoi();
+}
+
+async function loadRoi() {
+  const err = $('roi-error');
+  err.hidden = true;
+  const days = Number($('roi-window').value) || 30;
+  try {
+    const res = await authFetch(`/api/admin/roi?days=${days}`);
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) throw new Error(`roi ${res.status}`);
+    renderRoi(await res.json());
+    roiLoaded = true;
+  } catch {
+    err.textContent = 'Couldn’t load the ROI figures. Check your connection and try again.';
+    err.hidden = false;
+  }
+}
+
+// A rate is a fraction 0-1 from the server, or null when nobody came at all.
+// null renders as an em dash, never 0% — "0% came back" is a claim about
+// churn, and "no data" is not.
+const pct = (v) => (v === null || v === undefined ? '—' : `${Math.round(v * 100)}%`);
+const orDash = (v, fmt) => (v === null || v === undefined ? '—' : fmt(v));
+
+function renderRoi(d) {
+  const p = d.platform ?? {};
+  const days = d.window?.days ?? 30;
+
+  $('roi-truncated').hidden = !d.truncated;
+  $('roi-window-label').textContent = `last ${days} days`;
+
+  $('roi-students').textContent = num(p.activeStudents);
+  $('roi-active-vendors').textContent = num(p.vendorsWithActivity);
+  $('roi-median-return').textContent = pct(p.medianReturnRate);
+  $('roi-median-ticket').textContent = orDash(p.medianAvgTicket, money);
+  $('roi-total-repeat').textContent = money(p.totalRepeatRevenue);
+  $('roi-total-giveaway').textContent = money(p.totalGiveawayValue);
+
+  // The honesty line. Below sixty students a "top 100 regulars" audience is a
+  // handful of people and every figure on this page is a small sample — saying
+  // so here is cheaper than the operator discovering it in front of a vendor.
+  // (Sixty is the threshold in the condition below; keep the two in step.)
+  const thin = $('roi-thin');
+  const students = Number(p.activeStudents) || 0;
+  if (students < 60) {
+    thin.textContent = students === 0
+      ? 'No students bought anything in this window, so there is nothing here to show a vendor yet.'
+      : `Only ${students} student${students === 1 ? '' : 's'} bought anything in this window. `
+        + 'These are small-sample numbers — real enough to check against a till, too thin to sell on. '
+        + 'Growing the student side moves every figure on this page.';
+    thin.hidden = false;
+  } else {
+    thin.hidden = true;
+  }
+
+  const vendors = Array.isArray(d.vendors) ? d.vendors : [];
+  $('roi-count').textContent = vendors.length
+    ? `${num(vendors.length)} spot${vendors.length === 1 ? '' : 's'}`
+    : '';
+
+  // Anybody the billing ladder says is in trouble, surfaced once at the top so
+  // it cannot be missed by scrolling. `warn` is deliberately included: the
+  // point of the day counter is to catch a failing card on day three, not on
+  // day thirty-one.
+  const trouble = vendors.filter((v) => v.billing?.state && v.billing.state !== 'ok');
+  const warn = $('roi-billing-warning');
+  if (trouble.length) {
+    warn.textContent = trouble
+      .map((v) => `${v.name}: payment ${v.billing.daysPastDue ?? 0} day${v.billing.daysPastDue === 1 ? '' : 's'} late`
+        + (v.billing.state === 'suspend' ? ' — past the 45-day line, suspend'
+          : v.billing.state === 'degrade' ? ' — past 30 days, deals and stats are off' : ''))
+      .join(' · ');
+    warn.hidden = false;
+  } else {
+    warn.hidden = true;
+  }
+
+  const wrap = $('roi-list');
+  wrap.innerHTML = '';
+  if (!vendors.length) {
+    const none = document.createElement('p');
+    none.className = 'muted';
+    none.textContent = 'No vendors yet.';
+    wrap.appendChild(none);
+    return;
+  }
+  vendors.forEach((v) => wrap.appendChild(buildRoiRow(v, p)));
+}
+
+// Vendor names are typed by people, so the row is built with DOM APIs and
+// textContent throughout — same rule, same reason, as buildPoolRow.
+function buildRoiRow(v, platform) {
+  const row = document.createElement('div');
+  row.className = 'roi-row';
+  if (!v.active) row.classList.add('is-off');
+
+  const head = document.createElement('div');
+  head.className = 'roi-row-head';
+
+  const name = document.createElement('strong');
+  name.className = 'roi-name';
+  name.textContent = v.name;
+  head.appendChild(name);
+
+  const tags = document.createElement('div');
+  tags.className = 'roi-tags';
+
+  const plan = document.createElement('span');
+  plan.className = `roi-tag roi-plan-${v.plan}`;
+  plan.textContent = { freshman: 'Freshman', discovery: 'Discovery', goto: 'Go-to' }[v.plan] ?? v.plan;
+  tags.appendChild(plan);
+
+  if (v.grandfathered) {
+    const gf = document.createElement('span');
+    gf.className = 'roi-tag roi-tag-gf';
+    gf.textContent = 'Free for life';
+    gf.title = 'Predates the price. No Stripe customer, never billed.';
+    tags.appendChild(gf);
+  }
+  if (!v.active) {
+    const off = document.createElement('span');
+    off.className = 'roi-tag roi-tag-off';
+    off.textContent = 'Switched off';
+    tags.appendChild(off);
+  }
+  const state = v.billing?.state;
+  if (state && state !== 'ok') {
+    const late = document.createElement('span');
+    late.className = `roi-tag roi-tag-${state}`;
+    const dpd = v.billing.daysPastDue ?? 0;
+    late.textContent = `${dpd} day${dpd === 1 ? '' : 's'} late`;
+    tags.appendChild(late);
+  }
+  head.appendChild(tags);
+  row.appendChild(head);
+
+  // The headline. Net first because it is the only number that is an argument;
+  // everything after it is the working that produced it.
+  const netWrap = document.createElement('div');
+  netWrap.className = 'roi-net';
+  const netVal = document.createElement('span');
+  netVal.className = `roi-net-value ${v.net >= 0 ? 'is-up' : 'is-down'}`;
+  netVal.textContent = money(v.net);
+  const netLbl = document.createElement('span');
+  netLbl.className = 'roi-net-label';
+  netLbl.textContent = 'repeat spend after giveaways';
+  netWrap.append(netVal, netLbl);
+  row.appendChild(netWrap);
+
+  const stats = document.createElement('div');
+  stats.className = 'roi-stats';
+
+  const cell = (label, value, hint) => {
+    const c = document.createElement('div');
+    c.className = 'roi-cell';
+    const val = document.createElement('span');
+    val.className = 'roi-cell-value';
+    val.textContent = value;
+    const lab = document.createElement('span');
+    lab.className = 'roi-cell-label';
+    lab.textContent = label;
+    if (hint) c.title = hint;
+    c.append(val, lab);
+    return c;
+  };
+
+  stats.append(
+    cell('customers', num(v.customers)),
+    cell('new to them', num(v.newCustomers), 'Never earned here before this window opened.'),
+    cell('came back', `${num(v.returningCustomers)} (${pct(v.returnRate)})`, 'Two or more separate visit days.'),
+    cell('visits', num(v.visits), 'One per customer per day, however many purchases.'),
+    cell('repeat spend', money(v.repeatRevenue), 'Money taken on return visits only.'),
+    cell('gave away', money(v.giveawayValue), 'Points redeemed, priced at their own rate.'),
+    cell('avg ticket', orDash(v.avgTicket, money)),
+    cell('total spend', money(v.revenue)),
+  );
+  row.appendChild(stats);
+
+  // The one thing only a network can say. Skipped when there is no median to
+  // compare against, and when this vendor had nobody through the door.
+  const med = platform?.medianReturnRate;
+  if (v.returnRate !== null && med !== null && med !== undefined && platform.vendorsWithActivity > 2) {
+    const bench = document.createElement('p');
+    bench.className = 'roi-bench';
+    const diff = v.returnRate - med;
+    // POINTS, not percent. A 40% rate against a 30% median is ten percentage
+    // POINTS above it, not "10% above" — which reads as 33% better and is the
+    // kind of quiet inflation the honesty rule at the top of src/lib/roi.js
+    // exists to prevent. The operator says this sentence out loud to a vendor.
+    const points = Math.round(Math.abs(diff) * 100);
+    bench.textContent = Math.abs(diff) < 0.005
+      ? `Came-back rate is right on the downtown median (${pct(med)}).`
+      : `Came-back rate is ${points} point${points === 1 ? '' : 's'} `
+        + `${diff > 0 ? 'above' : 'below'} the downtown median (${pct(med)}).`;
+    bench.classList.add(diff >= 0 ? 'is-up' : 'is-down');
+    row.appendChild(bench);
+  }
+
+  return row;
+}
+
 function openPools() {
   setView('pools');
   if (!poolsLoaded) loadPools();
@@ -4198,6 +4414,20 @@ function describeActor(actor) {
 }
 
 /** One <dt>/<dd> pair, skipped entirely when there's nothing to say. */
+/**
+ * Which spot an error belongs to: { name, ref, label }, any of which may be null.
+ *
+ * Shared by the row renderer and "Copy details" ON PURPOSE. A pasted report is
+ * the version that ends up in a message to somebody, so the two must never drift
+ * — the whole point of the Vendor line is that the paste carries it too.
+ */
+function vendorOfError(e) {
+  const c = e?.context && typeof e.context === 'object' ? e.context : null;
+  const name = c?.vendor || null;
+  const ref = c?.vendorId || c?.vendorSlug || null;
+  return { name, ref, label: [name, ref].filter(Boolean).join(' · ') || null };
+}
+
 function fact(label, value, cls) {
   if (!value) return '';
   return `<div class="err-fact${cls ? ` ${cls}` : ''}"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
@@ -4234,11 +4464,20 @@ function paintErrorRows(items) {
     const where = [e.method, e.path].filter(Boolean).join(' ');
     const count = repeats.get(`${e.source}|${e.message}`) ?? 1;
     const ctx = e.context && typeof e.context === 'object' ? { ...e.context } : null;
-    // Two context fields graduate to their own labelled rows — they answer
-    // "where in the app" and "which page" better than a JSON blob does.
+    // Some context fields graduate to their own labelled rows — they answer
+    // "where in the app", "which page" and "which spot" better than a JSON blob.
     const screen = ctx?.screen || ctx?.tab || ctx?.view || null;
     const referer = ctx?.referer || null;
-    if (ctx) { delete ctx.referer; delete ctx.actorEmail; delete ctx.actorId; }
+    // WHICH SPOT. The name is what a person recognises, so it's the half that
+    // goes on the summary line; the id rides along in the detail because it is
+    // the half you can paste into the Spots tab. Either may be missing on its
+    // own: a deactivated vendor isn't in the catalogue the server names them
+    // from, and a client crash reports a name with no id.
+    const { name: vendorName, label: vendorLabel } = vendorOfError(e);
+    if (ctx) {
+      delete ctx.referer; delete ctx.actorEmail; delete ctx.actorId;
+      delete ctx.vendor; delete ctx.vendorId; delete ctx.vendorSlug;
+    }
 
     const row = document.createElement('details');
     row.className = 'err-row';
@@ -4248,6 +4487,8 @@ function paintErrorRows(items) {
         <span class="err-lines">
           <span class="err-msg">${escapeHtml(e.message)}</span>
           <span class="err-sub">${escapeHtml(action || where || 'unknown request')}${
+            vendorName ? ` · ${escapeHtml(vendorName)}` : ''
+          }${
             e.status ? ` · ${escapeHtml(String(e.status))}` : ''
           }${e.actor?.email ? ` · ${escapeHtml(e.actor.email)}` : ''}</span>
         </span>
@@ -4261,6 +4502,7 @@ function paintErrorRows(items) {
           ${fact('What it was for', action)}
           ${fact('Request', `${where || 'unknown'}${e.status ? ` → ${e.status}` : ''}`)}
           ${fact('Who', describeActor(e.actor))}
+          ${fact('Vendor', vendorLabel)}
           ${fact('Where in the app', screen)}
           ${fact('Page', referer)}
           ${fact('When', `${fullWhen} · ${relTime(e.created_at)}`)}
@@ -4292,6 +4534,7 @@ async function copyErrorDetail(e, ev) {
     `What it was for: ${describeAction(e) || 'unknown'}`,
     `Request: ${[e.method, e.path].filter(Boolean).join(' ') || 'unknown'}${e.status ? ` → ${e.status}` : ''}`,
     `Who: ${describeActor(e.actor)}`,
+    vendorOfError(e).label ? `Vendor: ${vendorOfError(e).label}` : '',
     `When: ${new Date(e.created_at).toISOString()}`,
     `Device: ${describeDevice(e.user_agent) || 'unknown'} — ${e.user_agent || 'no user agent'}`,
     e.context ? `Context: ${JSON.stringify(e.context, null, 2)}` : '',

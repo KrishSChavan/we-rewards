@@ -23,11 +23,31 @@ export const dayKey = (ms) => {
  * @param {number} t0  start of today (ms, server-local)
  * @returns {{today,last7,last30,daily,topRewards}}
  */
+/**
+ * How many customers finished two or more separate days with points actually
+ * awarded. Reads the netted customer-day map, so a day whose award was later
+ * undone is not a visit and cannot make a one-time customer look like a
+ * regular. src/lib/roi.js derives its own visit counts from the same rule.
+ */
+function countReturning(custDayNet) {
+  const perUser = new Map();   // user_id -> surviving award-day count
+  for (const [key, points] of custDayNet) {
+    if (points <= 0) continue;
+    const user = key.slice(0, key.lastIndexOf('|'));
+    perUser.set(user, (perUser.get(user) ?? 0) + 1);
+  }
+  let n = 0;
+  for (const days of perUser.values()) if (days >= 2) n += 1;
+  return n;
+}
+
 export function rollupVendorAnalytics(txns, t0) {
   const t7 = t0 - 6 * DAY;
   const blank = () => ({ earnPoints: 0, redeemPoints: 0, awards: 0, redemptions: 0, revenue: 0, movedIn: 0, movedInPoints: 0, customers: new Set() });
   const today = blank(), last7 = blank(), last30 = blank();
-  const custDays = new Map();     // user_id -> Set(dayKey) (returning-customer calc)
+  // `${user_id}|${dayKey}` -> signed points on that customer-day. Resolved into
+  // award-days after the loop so an undo cancels the award it reverses.
+  const custDayNet = new Map();
   const dayAgg = new Map();       // dayKey  -> { revenue, awards, earnPoints }
   const rewardCounts = new Map(); // reward title -> redemption count
 
@@ -58,11 +78,16 @@ export function rollupVendorAnalytics(txns, t0) {
     if (transfer) continue;   // not a purchase-day, not a reward — nothing below applies
 
     const k = dayKey(ms);
-    // Returning-customer calc counts real award-days only (a voided award
-    // shouldn't register as a visit).
-    if (earn && tx.user_id && pts > 0) {
-      if (!custDays.has(tx.user_id)) custDays.set(tx.user_id, new Set());
-      custDays.get(tx.user_id).add(k);
+    // Returning-customer calc counts real award-days only: a voided award
+    // shouldn't register as a visit. Summed SIGNED per customer-day and
+    // resolved after the loop, because an undo is a SECOND `earn` row carrying
+    // the negation of the first (migration-045's reverse_transaction) — so
+    // testing `pts > 0` row by row let the original put the day in the set and
+    // the reversal do nothing, counting a cancelled sale as a customer who
+    // came back. src/lib/roi.js nets the same way off the same rule.
+    if (earn && tx.user_id) {
+      const ck = `${tx.user_id}|${k}`;
+      custDayNet.set(ck, (custDayNet.get(ck) ?? 0) + pts);
     }
     if (earn) {
       const da = dayAgg.get(k) ?? { revenue: 0, awards: 0, earnPoints: 0 };
@@ -101,7 +126,7 @@ export function rollupVendorAnalytics(txns, t0) {
   return {
     today: finish(today),
     last7: finish(last7),
-    last30: { ...finish(last30), returningCustomers: [...custDays.values()].filter((s) => s.size >= 2).length },
+    last30: { ...finish(last30), returningCustomers: countReturning(custDayNet) },
     daily,
     topRewards,
   };

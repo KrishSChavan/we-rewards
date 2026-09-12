@@ -2,6 +2,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { resolveUserFromToken } from '../lib/jwt.js';
 import { TERMS_VERSION } from '../lib/terms.js';
 import { isTerminalAdmin, chooseAdminVendorId } from '../lib/terminal-admin.js';
+import { planRejection, PLANS } from '../lib/plans.js';
 
 /**
  * Reads `Authorization: Bearer <jwt>` and resolves it to a user, attaching
@@ -415,4 +416,42 @@ export async function requirePin(req, res, next) {
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * Gates a route behind a minimum plan. Mount AFTER requireVendor — it reads
+ * `req.vendor`, which requireVendor has already loaded in full (`vendors(*)`),
+ * so this costs no extra query. The whole decision is in src/lib/plans.js.
+ *
+ *   router.post('/campaigns', requirePin, requirePlan('discovery'), handler)
+ *
+ * THE OPERATOR IS NEVER GATED, for the same reason requirePin does not gate
+ * them: a spot they cannot open is a spot they cannot diagnose. `terminalAdmin`
+ * is set only inside requireVendor's impersonation branch.
+ *
+ * 402 Payment Required rather than 403, and that distinction is load-bearing in
+ * the terminal: 403 means "you are not allowed here" and 402 means "this costs
+ * money and yours is not current", which is a screen with an Upgrade button on
+ * it rather than an apology.
+ *
+ * A TYPO'D PLAN NAME REFUSES TO BOOT. Routes are declared at module scope, so
+ * this check runs at import: `requirePlan('Discovery')` takes the server down
+ * on startup — and is caught by any test that loads a route — rather than
+ * mounting a gate that is not a gate. planAllows denies an unknown requirement
+ * too; this is the fence that makes sure nobody ever reaches that state in
+ * production, because a paywall that is quietly absent is the one failure here
+ * that nobody reports.
+ */
+export function requirePlan(minimum) {
+  if (!PLANS.includes(minimum)) {
+    throw new Error(
+      `requirePlan: unknown plan "${minimum}" — expected one of ${PLANS.join(', ')}`,
+    );
+  }
+  return function planGate(req, res, next) {
+    if (req.terminalAdmin) return next();
+    const rejection = planRejection(req.vendor, minimum);
+    if (rejection) return res.status(rejection.status).json(rejection.body);
+    next();
+  };
 }

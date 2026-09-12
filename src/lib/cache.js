@@ -179,6 +179,21 @@ export function createCache({ name, ttlMs, staleMs = 0, maxEntries = 0, sizeOf =
       return inflight;
     },
 
+    /**
+     * Whatever this key holds RIGHT NOW, without loading, refreshing, waiting or
+     * throwing. undefined means "not here", which is NOT the same as "no value" —
+     * a cached null is a real answer and comes back as null.
+     *
+     * Expiry is deliberately ignored. The one caller is the error logger
+     * (src/lib/errors.js), which wants a vendor's name to label a failure that
+     * has ALREADY happened: a name that is 30 seconds stale is perfect for that,
+     * and a cache miss must not turn one logged error into a database read —
+     * least of all when the thing that just failed was the database.
+     */
+    peek(key) {
+      return entries.get(key)?.value;
+    },
+
     /** Forget one key, or every key when called with no argument. */
     invalidate(key) {
       if (key === undefined) {
@@ -399,6 +414,48 @@ export function loadVendorCatalogue() {
     if (error) throw error;
     return data ?? [];
   });
+}
+
+/**
+ * id/slug -> { id, name } for the catalogue ARRAY IDENTITY it was built from, so
+ * the index is rebuilt exactly when the catalogue is re-read and never per call.
+ * Weak, so a superseded catalogue's index is collectable with it.
+ */
+const vendorIndexes = new WeakMap();
+
+/**
+ * Name a vendor from an id or a slug, using only what is already in memory.
+ *
+ * FOR LABELLING A FAILURE, NOT FOR SERVING ONE. Returns null rather than reading
+ * the database, because the caller is the error logger: it runs on a request
+ * that has already failed, often BECAUSE Supabase is unreachable, and a lookup
+ * there would either fail with it or add a round trip to every 500. A vendor it
+ * cannot name is logged by id instead, which is still enough to paste into
+ * /admin.
+ *
+ * Only ACTIVE vendors are in the catalogue, so a deactivated spot answers null.
+ * That is the honest answer from this function — req.vendor (the full row, set by
+ * requireVendor) is what covers the vendor-side routes where that matters.
+ */
+export function lookupVendor(idOrSlug) {
+  const key = String(idOrSlug ?? '').trim().toLowerCase();
+  if (!key) return null;
+
+  const catalogue = vendorCatalogueCache.peek('all');
+  if (!Array.isArray(catalogue)) return null;
+
+  let index = vendorIndexes.get(catalogue);
+  if (!index) {
+    index = new Map();
+    for (const v of catalogue) {
+      if (!v?.id) continue;
+      const entry = { id: v.id, name: v.name ?? null };
+      index.set(String(v.id).toLowerCase(), entry);
+      if (v.slug) index.set(String(v.slug).toLowerCase(), entry);
+    }
+    vendorIndexes.set(catalogue, index);
+  }
+  return index.get(key) ?? null;
 }
 
 /**

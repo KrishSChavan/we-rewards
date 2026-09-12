@@ -274,12 +274,17 @@ router.post('/decline', async (req, res, next) => {
  * Warns at most hourly, THROTTLED RATHER THAN LATCHED. This runs on the hottest
  * read in the app — every home open, every socket push — so an unthrottled warn
  * would fill the log with the same line thousands of times an hour and bury
- * everything else. But a once-per-process latch is worse than it looks: this is
- * a POST, and src/lib/supabase.js only retries GET/HEAD, so a single gateway
- * blip is enough to burn the one warning the process will ever emit. Every real
- * failure after that — the function dropped, the grant lost — would then be
+ * everything else. But a once-per-process latch is worse than it looks: a single
+ * gateway blip would burn the one warning the process will ever emit, and every
+ * real failure after that — the function dropped, the grant lost — would be
  * completely silent. An hourly window gives up almost all of the noise and none
  * of the signal.
+ *
+ * (That blip is now also less likely to get this far: this RPC is declared
+ * `stable`, so it is in READ_ONLY_RPCS and src/lib/supabase.js retries it once
+ * despite PostgREST mounting it as a POST. The throttle stands on its own
+ * reasoning regardless — the failures worth hearing about are the permanent
+ * ones, which no retry fixes.)
  */
 const VISITED_WARN_INTERVAL_MS = 60 * 60_000;
 let visitedRpcWarnedAt = 0;
@@ -846,6 +851,22 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
  * The 6-digit identity code the student shows to earn points. The RPC
  * reuses the student's live code (stable across the app's periodic refresh) and
  * guarantees it's unique across all live codes. Client refreshes every ~2 min.
+ *
+ * THE HIGHEST-FREQUENCY WRITE IN THE APP, and it is worth knowing why before
+ * changing anything here. startMyCode() in public/student/app.js calls this at
+ * sign-in and then on a 120s interval for the life of the tab — it is the only
+ * periodic network call the student app makes — so every signed-in student is
+ * ~30 of these an hour whether or not they are anywhere near a counter. That
+ * volume is why this endpoint is the first thing to catch any Supabase blip, and
+ * on 2026-09-12 at 20:07:06Z it caught one: a gateway 504, surfaced as an
+ * unparseable error body, logged as a 500 against code that was working.
+ *
+ * It is now retried at the transport (IDEMPOTENT_WRITE_RPCS in
+ * src/lib/supabase.js), which is only safe because create_earn_code serialises
+ * per student and returns the live code rather than minting a second one — see
+ * migration-056, and test/sql/behavior-056.sql for the assertions that keep it
+ * true. Anything added to this route that is NOT idempotent breaks that, so it
+ * stays a single RPC call and nothing else.
  */
 router.post('/earn-code', requireConsent, async (req, res, next) => {
   try {

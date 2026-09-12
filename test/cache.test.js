@@ -10,7 +10,13 @@
 // that is precisely the load this module exists to remove.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createCache, _setClock } from '../src/lib/cache.js';
+import {
+  createCache,
+  _setClock,
+  lookupVendor,
+  vendorCatalogueCache,
+  resetAllCaches,
+} from '../src/lib/cache.js';
 
 afterEach(() => _setClock());
 
@@ -261,4 +267,93 @@ test('rejects a nonsensical configuration at construction rather than at runtime
   assert.throws(() => createCache({ ttlMs: 1 }), /name is required/);
   assert.throws(() => createCache({ name: 'x', ttlMs: 0 }), /ttlMs must be > 0/);
   assert.throws(() => createCache({ name: 'x', ttlMs: 1, maxBytes: 10 }), /requires sizeOf/);
+});
+
+/* ============================================================
+ * peek() and lookupVendor(): naming a vendor from memory alone.
+ *
+ * These exist for the error logger, which runs on a request that has ALREADY
+ * failed — often because Supabase is unreachable. So the one behaviour that
+ * matters as much as resolving a name is never doing any work to get it: no
+ * loader, no await, no throw, no database.
+ * ============================================================ */
+
+test('peek returns what is cached without running the loader', async () => {
+  fakeClock();
+  const cache = createCache({ name: 'test', ttlMs: 60_000 });
+  const load = counted('v');
+
+  assert.equal(cache.peek('k'), undefined, 'nothing cached yet');
+  assert.equal(load.calls, 0, 'peek must never load');
+
+  await cache.get('k', load);
+  assert.equal(cache.peek('k'), 'v');
+  assert.equal(load.calls, 1, 'peek did not cause a second load');
+});
+
+test('peek still answers past the TTL — a stale name is fine for labelling', () => {
+  const clock = fakeClock();
+  const cache = createCache({ name: 'test', ttlMs: 1000 });
+  return cache.get('k', counted('v')).then(() => {
+    clock.advance(60 * 60_000);
+    assert.equal(cache.peek('k'), 'v', 'an hour-old vendor name is still that vendor');
+  });
+});
+
+test('peek distinguishes a cached null from a missing key', async () => {
+  fakeClock();
+  const cache = createCache({ name: 'test', ttlMs: 60_000 });
+  await cache.get('no-logo', counted(null));
+  assert.equal(cache.peek('no-logo'), null, 'a cached null is an answer');
+  assert.equal(cache.peek('never-asked'), undefined, 'a missing key is not');
+});
+
+test('lookupVendor names a vendor by id and by slug', async () => {
+  resetAllCaches();
+  await vendorCatalogueCache.get('all', async () => ([
+    { id: '11111111-1111-1111-1111-111111111111', name: 'Yallah Taco', slug: 'yallah-taco' },
+    { id: '22222222-2222-2222-2222-222222222222', name: 'Fava Kitchen', slug: 'fava-kitchen' },
+  ]));
+
+  assert.equal(lookupVendor('11111111-1111-1111-1111-111111111111').name, 'Yallah Taco');
+  assert.equal(lookupVendor('fava-kitchen').name, 'Fava Kitchen');
+  assert.equal(lookupVendor('fava-kitchen').id, '22222222-2222-2222-2222-222222222222');
+  assert.equal(lookupVendor('YALLAH-TACO').name, 'Yallah Taco', 'matched case-insensitively');
+  resetAllCaches();
+});
+
+test('lookupVendor answers null on a cold cache instead of reading the database', () => {
+  resetAllCaches();
+  // The state a freshly booted dyno is in when its FIRST request is the one that
+  // fails. A database read here would be a second failure inside the logger.
+  assert.equal(lookupVendor('11111111-1111-1111-1111-111111111111'), null);
+  assert.equal(lookupVendor(''), null);
+  assert.equal(lookupVendor(null), null);
+  assert.equal(lookupVendor(undefined), null);
+});
+
+test('lookupVendor re-indexes when the catalogue is re-read', async () => {
+  resetAllCaches();
+  const clock = fakeClock();
+  await vendorCatalogueCache.get('all', async () => ([
+    { id: 'v-1', name: 'Old Name', slug: 'a-spot' },
+  ]));
+  assert.equal(lookupVendor('a-spot').name, 'Old Name');
+
+  clock.advance(10 * 60_000);   // past the 30s TTL
+  await vendorCatalogueCache.get('all', async () => ([
+    { id: 'v-1', name: 'Renamed Spot', slug: 'a-spot' },
+  ]));
+  assert.equal(lookupVendor('a-spot').name, 'Renamed Spot', 'the index followed the rename');
+  resetAllCaches();
+});
+
+test('a catalogue row with no id cannot poison the index', async () => {
+  resetAllCaches();
+  await vendorCatalogueCache.get('all', async () => ([
+    null, { name: 'No Id At All' }, { id: 'v-2', name: 'Fine', slug: 'fine' },
+  ]));
+  assert.doesNotThrow(() => lookupVendor('fine'));
+  assert.equal(lookupVendor('fine').name, 'Fine');
+  resetAllCaches();
 });

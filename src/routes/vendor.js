@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
-import { requireUser, requireVendor, requirePin } from '../middleware/auth.js';
+import { requireUser, requireVendor, requirePin, requirePlan } from '../middleware/auth.js';
+import { effectivePlan, itemCap, daysPastDue, PLAN_LABELS } from '../lib/plans.js';
 import { isTerminalAdmin } from '../lib/terminal-admin.js';
 import { emitBalance, emitPunch, emitDeal } from '../lib/realtime.js';
 import { CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS } from '../lib/campaigns.js';
@@ -258,6 +259,27 @@ router.get('/config', async (req, res, next) => {
       // requireVendor answers VENDOR_DISABLED to everyone else — so this is
       // false exactly nowhere else, and the banner uses it to say so.
       active: req.vendor.active !== false,
+      // ---- plan (migration-055) ----
+      //
+      // `plan` is the EFFECTIVE plan, so a vendor 30 days past due reads as
+      // freshman here and the terminal hides the same tabs it would for a real
+      // free-tier vendor. `nominalPlan` is what they are actually subscribed
+      // to, which is what the Settings screen has to say ("Discovery — payment
+      // overdue"), and the two differing is exactly how the terminal knows to
+      // show the past-due banner rather than an upgrade prompt.
+      //
+      // This is presentation only. Every one of these features is enforced
+      // server-side by requirePlan, because terminal.js is a client and a
+      // client cannot be a gate.
+      plan: effectivePlan(v),
+      nominalPlan: v.plan ?? 'freshman',
+      planLabel: PLAN_LABELS[effectivePlan(v)] ?? 'Freshman',
+      // Never billed, no Stripe customer, no upgrade prompt anywhere. The
+      // sixteen founding vendors, and the flag is the whole reason the terminal
+      // can tell them apart from somebody on the same plan who pays for it.
+      grandfathered: Boolean(v.grandfathered),
+      pastDueDays: daysPastDue(v),
+      itemCap: itemCap(v),
     });
   } catch (err) {
     next(err);
@@ -271,7 +293,7 @@ router.get('/config', async (req, res, next) => {
  * out. Not PIN-gated: displaying the code IS the feature (it can only give
  * students punches), same trust level as the un-gated scan screen.
  */
-router.get('/punch-token', (req, res) => {
+router.get('/punch-token', requirePlan('discovery'), (req, res) => {
   const v = req.vendor;
   if (!v.punch_enabled) {
     return res.status(403).json({ error: 'PUNCH_DISABLED', message: 'Turn on visits in Settings first.' });
@@ -608,6 +630,30 @@ router.post('/rewards', requirePin, async (req, res, next) => {
     const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
 
+    // The free tier's catalogue cap. Counted on CREATE only, and counting
+    // ACTIVE items rather than all of them — so a vendor who drops to freshman
+    // (or falls 30 days past due) keeps the menu they already built and can
+    // still deactivate one to make room. Deleting somebody's rewards to enforce
+    // a plan change would be destroying their work to sell them something.
+    const cap = itemCap(req.vendor);
+    if (cap !== null) {
+      const { count, error: countErr } = await supabaseAdmin
+        .from('rewards')
+        .select('id', { count: 'exact', head: true })
+        .eq('vendor_id', req.vendor.id)
+        .eq('active', true);
+      if (countErr) throw countErr;
+      if ((count ?? 0) >= cap) {
+        return res.status(402).json({
+          error: 'ITEM_CAP_REACHED',
+          message: `The ${PLAN_LABELS[effectivePlan(req.vendor)]} plan keeps ${cap} rewards active at a time. `
+            + 'Turn one off to add another, or upgrade in Settings.',
+          cap,
+          plan: effectivePlan(req.vendor),
+        });
+      }
+    }
+
     const { data, error } = await supabaseAdmin
       .from('rewards')
       .insert({
@@ -669,6 +715,33 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
     if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
     if (!Object.keys(updates).length) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update.' });
+    }
+
+    // Switching an item back ON is the other door into the active-items cap,
+    // and without this check it is a free one: turn a fourth item off, turn it
+    // on again, and the POST-side cap never sees it. Only counted when this
+    // PATCH is actually turning something on, and the row itself is excluded
+    // from the count so re-saving an already-active item is never blocked.
+    if (updates.active === true) {
+      const cap = itemCap(req.vendor);
+      if (cap !== null) {
+        const { count, error: countErr } = await supabaseAdmin
+          .from('rewards')
+          .select('id', { count: 'exact', head: true })
+          .eq('vendor_id', req.vendor.id)
+          .eq('active', true)
+          .neq('id', req.params.id);
+        if (countErr) throw countErr;
+        if ((count ?? 0) >= cap) {
+          return res.status(402).json({
+            error: 'ITEM_CAP_REACHED',
+            message: `The ${PLAN_LABELS[effectivePlan(req.vendor)]} plan keeps ${cap} rewards active at a time. `
+              + 'Turn one off first, or upgrade in Settings.',
+            cap,
+            plan: effectivePlan(req.vendor),
+          });
+        }
+      }
     }
 
     const { data, error } = await supabaseAdmin
@@ -887,7 +960,32 @@ router.get('/analytics', requirePin, async (req, res, next) => {
       console.warn(`[analytics] vendor ${req.vendor.id} hit the ${TX_LIMIT}-row cap — 30-day totals may undercount.`);
     }
 
-    res.json({ ...rollupVendorAnalytics(txns ?? [], t0), truncated });
+    const roll = rollupVendorAnalytics(txns ?? [], t0);
+    const plan = effectivePlan(req.vendor);
+
+    // TRIMMED, not refused. A free-tier vendor still gets today and the last
+    // seven days — enough to check the till is working, which is the thing
+    // every vendor needs and nobody should have to pay for. What the paid plan
+    // buys is the 30-day window, the two-week chart and the reward ranking: the
+    // figures you look at to decide something, rather than to reassure yourself.
+    //
+    // Returning a 402 here instead would black out the whole STATS tab, and the
+    // tab is where the upgrade prompt has to live — you cannot sell somebody a
+    // better version of a screen they cannot open.
+    if (plan === 'freshman') {
+      const { last30, daily, topRewards, ...free } = roll;
+      return res.json({
+        ...free,
+        truncated,
+        plan,
+        limited: true,
+        // What they would get, named the way the terminal labels it, so the
+        // prompt does not have to hardcode a feature list that drifts.
+        lockedSections: ['last30', 'daily', 'topRewards'],
+      });
+    }
+
+    res.json({ ...roll, truncated, plan, limited: false });
   } catch (err) {
     next(err);
   }
@@ -990,7 +1088,7 @@ router.get('/campaigns', requirePin, async (req, res, next) => {
  * a vendor never learns who is on the list, only how big it is. (Privacy Policy
  * §"Marketing communications".)
  */
-router.get('/campaigns/reach', requirePin, async (req, res, next) => {
+router.get('/campaigns/reach', requirePin, requirePlan('discovery'), async (req, res, next) => {
   try {
     const audience = String(req.query.audience ?? 'top');
     if (!CAMPAIGN_AUDIENCES.has(audience)) {
@@ -1020,7 +1118,12 @@ router.get('/campaigns/reach', requirePin, async (req, res, next) => {
  * `requestId` is the same idempotency contract as /award: a retry after a
  * network drop returns the original campaign instead of fanning out twice.
  */
-router.post('/campaigns', requirePin, async (req, res, next) => {
+// Sending is the paid product, so it carries the plan gate. LISTING (GET
+// /campaigns above) deliberately does not: a freshman vendor still sees their
+// own history and the composer, which is where the upgrade prompt lives. Gating
+// the read as well would show them an error page instead of the thing they
+// might pay for.
+router.post('/campaigns', requirePin, requirePlan('discovery'), async (req, res, next) => {
   try {
     const b = req.body ?? {};
     const title = String(b.title ?? '').trim();
@@ -1141,7 +1244,7 @@ function refreshRecipients(campaignId) {
  * Audience is immutable: recipient rows are materialised at creation, so
  * changing it would mean fanning out to new students, which is a new campaign.
  */
-router.patch('/campaigns/:id', requirePin, async (req, res, next) => {
+router.patch('/campaigns/:id', requirePin, requirePlan('discovery'), async (req, res, next) => {
   try {
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'That deal no longer exists.' });
@@ -1235,6 +1338,11 @@ router.patch('/campaigns/:id', requirePin, async (req, res, next) => {
  * would corrupt the batch it is about to settle, and the notification has in
  * any case already left.
  */
+// Deliberately NOT plan-gated, unlike create and edit. A vendor whose card
+// failed while a deal was live must still be able to take it down — the offer
+// is a promise to students they are legally on the hook for (§8.1 content
+// responsibility), and locking them out of retracting it would make a billing
+// problem into somebody honouring a deal they cannot afford.
 router.delete('/campaigns/:id', requirePin, async (req, res, next) => {
   try {
     if (!isUuid(req.params.id)) {

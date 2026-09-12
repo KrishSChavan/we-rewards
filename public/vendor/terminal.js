@@ -90,6 +90,9 @@ function crashContext(extra) {
     const open = screens.find((s) => $(s) && !$(s).hidden);
     if (open) ctx.screen = open.replace('screen-', '');
     if (config?.name) ctx.vendor = config.name;
+    // The id as well as the name: a chain's locations share a name, so the name
+    // alone cannot say WHICH till crashed (see chooseStore / the store picker).
+    if (config?.vendorId || vendorId) ctx.vendorId = config?.vendorId ?? vendorId;
     ctx.installed = window.matchMedia?.('(display-mode: standalone)')?.matches === true
       || window.navigator.standalone === true;
     ctx.online = navigator.onLine;

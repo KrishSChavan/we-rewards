@@ -1160,3 +1160,62 @@ h1, h3 { margin: 0; }
   font-size: 0.72rem; color: var(--muted); margin: 0.7rem 0 0; overflow-wrap: anywhere;
 }
 .amb-qr-card #amb-qr-error { margin-top: 0.6rem; }
+
+/* ---------- ROI ---------- */
+/* The screen the operator reads down the phone to a vendor who is deciding
+   whether to keep paying. Net leads because it is the only figure on the row
+   that is an argument; everything under it is the working. */
+
+.roi-window { width: auto; min-width: 9rem; }
+.roi-thin {
+  margin-top: 0.9rem; padding: 0.6rem 0.75rem;
+  border-left: 3px solid var(--warn); background: rgba(245, 158, 11, 0.08);
+  border-radius: 0 8px 8px 0; color: var(--ink);
+}
+
+.roi-list { display: grid; gap: 0.75rem; margin-top: 0.9rem; }
+
+.roi-row {
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel-2); padding: 0.85rem 0.95rem;
+  display: grid; gap: 0.7rem;
+}
+/* A switched-off vendor still earned what it earned, so its figures stay
+   readable rather than being greyed into illegibility — the tag says off. */
+.roi-row.is-off { opacity: 0.72; }
+
+.roi-row-head { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
+.roi-name { font-size: 1rem; }
+.roi-tags { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+
+.roi-tag {
+  font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 0.14rem 0.42rem; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.roi-plan-goto      { border-color: var(--accent); color: var(--accent); }
+.roi-plan-discovery { border-color: var(--good); color: var(--good); }
+.roi-tag-gf      { border-color: var(--good); color: var(--good); }
+.roi-tag-off     { border-color: var(--muted); }
+.roi-tag-warn    { border-color: var(--warn); color: var(--warn); }
+.roi-tag-degrade { border-color: var(--warn); color: var(--warn); background: rgba(245, 158, 11, 0.12); }
+.roi-tag-suspend { border-color: var(--bad);  color: var(--bad);  background: rgba(248, 113, 113, 0.12); }
+
+.roi-net { display: flex; align-items: baseline; gap: 0.55rem; flex-wrap: wrap; }
+.roi-net-value { font-size: 1.7rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.roi-net-value.is-up { color: var(--good); }
+.roi-net-value.is-down { color: var(--bad); }
+.roi-net-label { font-size: 0.8rem; color: var(--muted); }
+
+.roi-stats {
+  display: grid; gap: 0.5rem 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  border-top: 1px dashed var(--line); padding-top: 0.65rem;
+}
+.roi-cell { display: grid; gap: 0.1rem; }
+.roi-cell-value { font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.roi-cell-label { font-size: 0.72rem; color: var(--muted); }
+
+.roi-bench { margin: 0; font-size: 0.82rem; }
+.roi-bench.is-up { color: var(--good); }
+.roi-bench.is-down { color: var(--muted); }
