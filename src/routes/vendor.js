@@ -16,6 +16,13 @@ import { validReward, validRatio } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 import { validLogo } from '../lib/logo.js';
+// Billing (migration-055). Only the two redirect-makers and the price read are
+// used here — every WRITE of a plan happens in routes/stripe-webhook.js.
+import {
+  stripeEnabled, lookupKeyFor, INTERVALS, getPriceByLookupKey,
+  createCustomer, createCheckoutSession, createBillingPortalSession, publishedPrices,
+  getSubscription, readSubscription,
+} from '../lib/stripe.js';
 // Point sharing (migration-044). The purse rule lives in ONE place; nothing in
 // this file may re-derive "pooled or not" from a pool_id inline. Every vendor
 // row that reaches these helpers is req.vendor, which requireVendor selects as
@@ -1611,6 +1618,258 @@ router.get('/qr-poster/file', async (req, res, next) => {
     res.set('Content-Disposition', `attachment; filename="${poster.name}"`);
     res.set('Content-Length', String(poster.bytes.length));
     res.send(poster.bytes);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Billing — the SETTINGS card-link area (migration-055, mds/payment.md)
+// ---------------------------------------------------------------------------
+//
+// Three routes, and between them they hold NO payment state. Stripe hosts the
+// card form (Checkout) and every screen for changing it (the Customer Portal);
+// the only thing that writes a plan onto a vendors row is the webhook in
+// routes/stripe-webhook.js. So these are two redirect-makers and a read.
+//
+// WHY NOTHING HERE WRITES `plan`. A completed Checkout Session is not a
+// subscription — the card can still fail on the first charge, and ACH takes
+// days to settle. Granting the plan when the browser comes back from Stripe
+// would hand out the paid product on the strength of a redirect anyone can
+// forge by typing the success URL. The webhook is the only thing that has
+// heard from Stripe directly.
+//
+// GRANDFATHERED VENDORS ARE REFUSED, not quietly allowed to pay. Sixteen
+// vendors were promised free access for as long as the relationship runs, and
+// letting one of them reach Checkout means a founding vendor's card gets
+// charged $29 for something they already have.
+
+/**
+ * Where Stripe should send the vendor back to.
+ *
+ * REQUEST-ORIGIN FIRST, unlike emailUrl() in lib/email.js, which prefers
+ * APP_ORIGIN. The difference is deliberate: mail is sent by a background worker
+ * with no request and has to know the canonical host, whereas this is a
+ * round-trip for someone standing at a till — they must land back on the box
+ * they left from, which on staging is not the box APP_ORIGIN names.
+ */
+const terminalReturnUrl = (req, query = '') => {
+  const base = (`${req.protocol}://${req.get('host')}` || process.env.APP_ORIGIN || '')
+    .replace(/\/+$/, '');
+  return `${base}/terminal${query}`;
+};
+
+/** The shared refusal for a vendor who must never be billed. */
+const GRANDFATHERED_BODY = Object.freeze({
+  error: 'GRANDFATHERED',
+  message: 'Your spot is on the house. There is nothing to pay and no card to add.',
+});
+
+/**
+ * GET /api/vendor/billing
+ * Everything the SETTINGS billing card renders: what they are on, what it
+ * costs, when it renews, and which buttons to show.
+ *
+ * PIN-gated like the rest of Settings. Safe to call with Stripe unconfigured —
+ * `prices` comes back null and the card falls back to "contact us", which is
+ * the state this repo ships in until the operator creates the Price objects.
+ */
+router.get('/billing', requirePin, async (req, res, next) => {
+  try {
+    const v = req.vendor;
+    const grandfathered = Boolean(v.grandfathered);
+    const useStripe = stripeEnabled && !grandfathered;
+
+    // Both round trips at once, each survivable on its own. Neither is fatal:
+    // the card renders without amounts, or without the cancellation note,
+    // rather than 500ing the whole Settings tab because Stripe had a bad
+    // minute. Skipped entirely for the sixteen — there is no upgrade to price
+    // and no subscription to read on a vendor who was promised free access.
+    const [prices, liveSub] = await Promise.all([
+      (async () => {
+        if (!useStripe) return null;
+        try {
+          return await publishedPrices('discovery');
+        } catch (err) {
+          console.warn(`[stripe] price lookup failed: ${err?.message ?? err}`);
+          return null;
+        }
+      })(),
+
+      // ---- the ONE thing the vendors row cannot hold ----
+      //
+      // A vendor who cancels keeps `status: active` until the period actually
+      // ends — that is what "cancel at period end" means, and it is correct:
+      // they paid for the month and keep their deals for it. But migration-055
+      // has no column for `cancel_at_period_end`, so without this call the card
+      // would tell someone who cancelled ten minutes ago that their next
+      // payment is on the 12th. Reading it live is deliberately cheaper than a
+      // migration on 055, which is the one migration gating this whole deploy
+      // and must not move while it is being applied by hand.
+      //
+      // DELIBERATELY NOT CACHED. The moment this matters most is the second a
+      // vendor comes back from the portal having just cancelled, and a cache
+      // would show them the pre-cancellation answer exactly then.
+      //
+      // NOTHING ELSE is taken from this response — not the status, not the
+      // period end. Those come from the vendors row, which the webhook is the
+      // single writer of; letting a read path disagree with the row would give
+      // plan state two sources of truth for the sake of one boolean.
+      (async () => {
+        if (!useStripe || !v.stripe_subscription_id) return null;
+        try {
+          return readSubscription(await getSubscription(v.stripe_subscription_id));
+        } catch (err) {
+          console.warn(`[stripe] subscription lookup failed for ${v.id}: ${err?.message ?? err}`);
+          return null;
+        }
+      })(),
+    ]);
+
+    res.json({
+      plan: effectivePlan(v),
+      nominalPlan: v.plan ?? 'freshman',
+      planLabel: PLAN_LABELS[effectivePlan(v)] ?? 'Freshman',
+      grandfathered,
+      pastDueDays: daysPastDue(v),
+      subscriptionStatus: v.subscription_status ?? null,
+      currentPeriodEnd: v.current_period_end ?? null,
+      // TRUE = already cancelled, running out the paid period. NULL = we could
+      // not ask Stripe, which the terminal must read as "not cancelling".
+      // Getting that default backwards is the worse of the two errors: telling
+      // a paying vendor their plan ends next week because of a transient blip
+      // costs a phone call, where the reverse only shows a stale date.
+      cancelAtPeriodEnd: liveSub ? liveSub.cancelAtPeriodEnd : null,
+      // Drives which button the card shows: a vendor Stripe has never met gets
+      // "Upgrade", one it has gets "Manage billing". The id itself is not sent
+      // — the terminal has no use for it and it is an account identifier.
+      hasBilling: Boolean(v.stripe_customer_id),
+      prices,
+      // So the card can explain itself instead of showing a dead button.
+      billingAvailable: stripeEnabled,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/vendor/checkout  { interval: 'monthly' | 'annual' }
+ * → { url } — a Stripe-hosted Checkout Session. The terminal redirects to it.
+ *
+ * Only Discovery is sold self-serve. Go-to is quoted by hand (the decision
+ * sheet), so asking for it here is a 400 rather than a price nobody agreed.
+ */
+router.post('/checkout', requirePin, async (req, res, next) => {
+  try {
+    const v = req.vendor;
+    if (v.grandfathered) return res.status(409).json(GRANDFATHERED_BODY);
+    if (!stripeEnabled) {
+      return res.status(503).json({
+        error: 'BILLING_UNAVAILABLE',
+        message: 'Card payments are not switched on yet. Contact the WeRewards team.',
+      });
+    }
+
+    // An existing subscription is changed in the portal, not by buying a second
+    // one. Without this a vendor who pressed Upgrade twice would hold two
+    // subscriptions and be billed $58 a month, and migration-055 stores exactly
+    // one subscription id — so the second would be invisible in this app while
+    // charging every month in Stripe.
+    if (v.stripe_subscription_id) {
+      return res.status(409).json({
+        error: 'ALREADY_SUBSCRIBED',
+        message: 'You already have a plan. Use Manage billing to change it.',
+      });
+    }
+
+    const interval = String(req.body?.interval ?? 'monthly');
+    const lookupKey = lookupKeyFor('discovery', interval);
+    if (!lookupKey) {
+      return res.status(400).json({
+        error: 'BAD_INTERVAL',
+        message: `Choose ${INTERVALS.join(' or ')}.`,
+      });
+    }
+
+    const price = await getPriceByLookupKey(lookupKey);
+    if (!price) {
+      // The operator has not created this Price, or archived it without moving
+      // the lookup key. A 503 and a loud log, because it is our misconfiguration
+      // and not something the vendor can do anything about.
+      console.error(`[stripe] no active price for lookup key "${lookupKey}" — create it in the dashboard`);
+      return res.status(503).json({
+        error: 'PRICE_UNAVAILABLE',
+        message: 'That plan is not available right now. Contact the WeRewards team.',
+      });
+    }
+
+    // One Customer per vendor, reused forever — including by a vendor who
+    // cancelled and came back, so their invoice history stays in one place.
+    // createCustomer is idempotent on the vendor id, which is what keeps a
+    // double-tap from making two.
+    let customerId = v.stripe_customer_id;
+    if (!customerId) {
+      const customer = await createCustomer({
+        vendorId: v.id,
+        email: req.user?.email ?? null,
+        name: v.location_label ? `${v.name} (${v.location_label})` : v.name,
+      });
+      customerId = customer.id;
+      const { error } = await supabaseAdmin
+        .from('vendors').update({ stripe_customer_id: customerId }).eq('id', v.id);
+      // Not fatal to the checkout — the webhook writes the same id on
+      // checkout.session.completed, so a failure here self-heals rather than
+      // stranding a Customer nobody can find.
+      if (error) console.warn(`[stripe] could not store customer id for ${v.id}: ${error.message}`);
+    }
+
+    const session = await createCheckoutSession({
+      customerId,
+      priceId: price.id,
+      vendorId: v.id,
+      // `billing=success` is a hint for the terminal to re-read /config, NOT a
+      // grant. Nothing server-side reads it, and it cannot be: a vendor could
+      // type this URL themselves.
+      successUrl: terminalReturnUrl(req, '?billing=success'),
+      cancelUrl: terminalReturnUrl(req, '?billing=cancelled'),
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/vendor/billing-portal → { url }
+ * Stripe's own screens for changing a card, downloading invoices and
+ * cancelling. Everything a failing-card vendor needs lives behind this.
+ */
+router.post('/billing-portal', requirePin, async (req, res, next) => {
+  try {
+    const v = req.vendor;
+    if (v.grandfathered) return res.status(409).json(GRANDFATHERED_BODY);
+    if (!stripeEnabled) {
+      return res.status(503).json({
+        error: 'BILLING_UNAVAILABLE',
+        message: 'Card payments are not switched on yet. Contact the WeRewards team.',
+      });
+    }
+    if (!v.stripe_customer_id) {
+      // Nothing to manage. Distinct from BILLING_UNAVAILABLE because the fix is
+      // the vendor's (start a plan) rather than the operator's.
+      return res.status(409).json({
+        error: 'NO_BILLING_ACCOUNT',
+        message: 'There is no billing to manage yet. Start a plan first.',
+      });
+    }
+
+    const session = await createBillingPortalSession({
+      customerId: v.stripe_customer_id,
+      returnUrl: terminalReturnUrl(req, '?billing=portal'),
+    });
+    res.json({ url: session.url });
   } catch (err) {
     next(err);
   }

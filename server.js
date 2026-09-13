@@ -17,6 +17,7 @@ import adminRoutes from './src/routes/admin.js';
 import applyRoutes from './src/routes/apply.js';
 import unsubscribeRoutes from './src/routes/unsubscribe.js';
 import webhookRoutes from './src/routes/webhooks.js';
+import stripeWebhookRoutes from './src/routes/stripe-webhook.js';
 import trackedQrRoutes from './src/routes/tracked-qr.js';
 import { supabaseAdmin, UPSTREAM_GATEWAY } from './src/lib/supabase.js';
 import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
@@ -38,6 +39,7 @@ import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
 import { geminiConfigured, geminiModel } from './src/lib/gemini-receipt.js';
 import { emailEnabled, emailFrom } from './src/lib/email.js';
+import { stripeEnabled, stripeWebhookConfigured, stripeMode } from './src/lib/stripe.js';
 import { ensureTerminalAdmin } from './src/lib/terminal-admin.js';
 import { buildClientAssets, buildRoot, ensureFresh } from './scripts/build-client.js';
 import { TERMS_DOCUMENTS } from './src/lib/terms.js';
@@ -218,6 +220,14 @@ app.use('/api/admin/qr-poster', express.json({ limit: '14mb' }));
 // parsers above — the global express.json() below skips a body already parsed.
 app.use('/api/webhooks/resend', express.raw({ type: 'application/json', limit: '256kb' }));
 
+// Stripe billing events, for the identical reason and with one extra wrinkle:
+// Stripe HMACs the whole `whsec_...` secret verbatim and hex-encodes the
+// digest, where Svix strips that same-looking prefix and works in base64. Two
+// different schemes, one shared mount-order constraint — this MUST stay above
+// the global express.json() below, or the signature can never verify again.
+// See src/lib/stripe.js for the full write-up.
+app.use('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '256kb' }));
+
 // Bodies are tiny everywhere except a vendor saving a logo, which arrives as a
 // base64 data-URL (resized client-side to ~128px, so tens of KB). 600kb gives
 // that headroom; still small enough that the requireJson gate + rate limits keep
@@ -238,6 +248,19 @@ const generalLimiter = rateLimit({
   max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
+  // Stripe is exempt. It retries a failed delivery on its own schedule and
+  // backs off for days, and every one of its events arrives from a small pool
+  // of Stripe IPs — so a busy billing day plus a period-end renewal run can
+  // trip a per-IP cap that was sized for students on campus wifi. A 429 is a
+  // non-2xx: Stripe retries it, gets another 429, and eventually DISABLES the
+  // endpoint, which loses the payment-failure events the dunning ladder is
+  // built on. The signature check is the real gate on that path and it is a
+  // far tighter one than any IP cap.
+  //
+  // originalUrl, not path: express strips the '/api' mount prefix off req.url
+  // before this runs, so req.path here reads '/webhooks/stripe'. Matching on
+  // originalUrl is the version that keeps working if the mount ever moves.
+  skip: (req) => req.originalUrl.split('?')[0] === '/api/webhooks/stripe',
   message: { error: 'RATE_LIMITED', message: 'Too many requests, try again shortly.' },
 });
 // The staff PIN is a 4-digit secret (10k combos) → the real brute-force target.
@@ -982,6 +1005,7 @@ app.use('/api/vendor', vendorRoutes);   // vendor-authenticated endpoints
 app.use('/api/admin', adminRoutes);     // operator-only (ADMIN_EMAILS) analytics + errors
 app.use('/api/apply', applyRoutes);     // public vendor applications (rate-limited above)
 app.use('/api/webhooks', webhookRoutes); // public, Svix-signed (Resend bounces/complaints)
+app.use('/api/webhooks', stripeWebhookRoutes); // public, Stripe-signed (plans + dunning)
 // A printed banner's QR. Top-level and NOT under /api because this URL goes on
 // vinyl — see src/routes/tracked-qr.js. Mounted here rather than beside
 // /unsubscribe at the top of the file because the limiter above has to be in
@@ -1511,6 +1535,21 @@ if (isMain) {
   console.log(emailEnabled
     ? `Email: Resend as ${emailFrom()}${process.env.RESEND_WEBHOOK_SECRET ? ' (bounce webhook on)' : ' — no RESEND_WEBHOOK_SECRET, bounces are not being pruned'}`
     : 'Email: off — set RESEND_API_KEY and EMAIL_FROM to enable vendor mail and deal emails');
+
+  // Billing, and the two halves fail in different directions. With no secret
+  // key the Upgrade button answers 503 — visible, and a vendor complains. With
+  // a key but NO WEBHOOK SECRET a vendor can pay and nothing ever writes their
+  // plan: they are charged $29 and stay on Freshman, silently, and the only
+  // symptom is a support call weeks later. That half gets its own warning.
+  //
+  // The mode is printed because the failure it catches is a staging box
+  // carrying live keys, which looks completely normal and charges real cards.
+  console.log(stripeEnabled
+    ? `Billing: Stripe ${stripeMode()} mode${stripeWebhookConfigured ? '' : ' — ⚠ no STRIPE_WEBHOOK_SECRET, paid vendors will NOT get their plan'}`
+    : 'Billing: off — set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET to sell plans');
+  if (stripeMode() === 'live' && process.env.NODE_ENV !== 'production') {
+    console.warn('Billing: ⚠ LIVE Stripe keys outside production — real cards will be charged.');
+  }
 
   // Same reason as the line above: PostHog forwarding fails quietly by design,
   // so boot is the one place its state is visible. client_events is unaffected

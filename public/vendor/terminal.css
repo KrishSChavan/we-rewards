@@ -1079,6 +1079,26 @@ body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea,
    the card would show, empty, on every unpooled spot - i.e. on all of them. */
 .pool-card { border-color: var(--navy); }
 .pool-card[hidden] { display: none; }
+
+/* ---- plan & billing (migration-055) ----
+   The whole region is hidden for a grandfathered spot, so it needs the same
+   [hidden] companion .settings-region's `display: flex` would otherwise beat -
+   the exact bug .pool-card[hidden] above exists to fix, and the reason a
+   free-for-life vendor would otherwise be shown an Upgrade button. */
+.settings-region[hidden] { display: none; }
+/* Bordered and headed in the error colour, because this card is the only thing
+   on the screen a vendor has to act on TODAY. Scoped to the class rather than
+   #billing-overdue h3 so it cannot leak into the other cards' headings. */
+.billing-overdue { border-color: var(--error); }
+.billing-overdue h3 { color: var(--error); }
+/* Bigger than a .manage-note and smaller than a card heading: this one line is
+   the answer to "what am I on?", which is what the vendor came to read. */
+.billing-plan-line { font-size: 1.3rem; font-weight: 900; }
+/* .pad-actions is display:flex, so both of these need saying explicitly (see
+   .stats-card[hidden]). Wrapping matters on a phone-width terminal, where two
+   price buttons plus their labels do not fit on one row. */
+.billing-actions { flex-wrap: wrap; }
+.billing-actions[hidden] { display: none; }
 /* A divider heading, deliberately lighter than the cards it groups: the cards
    keep .stats-card h3 (1.15rem/900), so the region reads as a label above them
    rather than competing with them. Scoped class, not a bare h3, because

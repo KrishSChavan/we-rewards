@@ -553,7 +553,7 @@
       </section>
 
       <!-- ===== SETTINGS: self-service economics ===== -->
-      <!-- Three regions, one per save model. This screen used to be ten cards in
+      <!-- Four regions, one per save model. This screen used to be ten cards in
            a single column under one "Save settings" button at the very bottom:
            seven batched behind it, one saving itself, and two that were not
            settings at all. Grouping by how each card commits is what makes the
@@ -582,7 +582,45 @@
             <p class="manage-note">Items, visits and your staff PIN are still your own. Only the points are common.</p>
           </div>
 
-          <!-- REGION 1: the batched PATCH. Every card here carries a data-card
+          <!-- REGION 1: plan and billing (migration-055).
+               FIRST on the screen, and that is the point: the single reason a
+               vendor opens Settings in a hurry is a card that stopped working,
+               and putting this under the economics form makes them scroll past
+               everything they did not come for to find it.
+
+               Nothing here is a gate. Every paid feature is enforced server-side
+               by requirePlan - this card only explains and links out. Stripe
+               hosts the card form and every screen for changing one, so both
+               buttons are redirects rather than forms, and no card number ever
+               reaches this page. Hidden entirely for a grandfathered spot: the
+               sixteen founding vendors have nothing to pay and no card to add,
+               and offering them an Upgrade button would be a bill they were
+               promised they would never get. -->
+          <section id="settings-billing" class="settings-region" aria-labelledby="region-billing-h" hidden>
+            <h3 class="region-head" id="region-billing-h">Plan &amp; billing</h3>
+
+            <!-- Shown only when the server reports days overdue, and it names
+                 the count: "your payment failed" with no date is not something
+                 anyone can act on, and the 30-day mark is when features stop. -->
+            <div id="billing-overdue" class="stats-card billing-overdue" hidden>
+              <h3>Payment overdue</h3>
+              <p id="billing-overdue-text" class="manage-note"></p>
+            </div>
+
+            <div class="stats-card">
+              <h3>Your plan</h3>
+              <p id="billing-plan-line" class="billing-plan-line">&hellip;</p>
+              <p id="billing-blurb" class="manage-note"></p>
+              <p id="billing-msg" class="field-error" hidden></p>
+              <div id="billing-actions" class="pad-actions billing-actions" hidden>
+                <button id="billing-buy-monthly" class="btn-primary btn-compact" type="button" hidden></button>
+                <button id="billing-buy-annual" class="btn-ghost btn-compact" type="button" hidden></button>
+                <button id="billing-manage" class="btn-primary btn-compact" type="button" hidden>Manage billing</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- REGION 2: the batched PATCH. Every card here carries a data-card
                key matching settingsSnapshot(), and Save settings sits directly
                under them rather than under the whole screen. -->
           <section class="settings-region" aria-labelledby="region-spot-h">
@@ -667,7 +705,7 @@
             </div>
           </section>
 
-          <!-- REGION 2: who can work this terminal. Every card here commits on
+          <!-- REGION 3: who can work this terminal. Every card here commits on
                its own button, so none of them carry a data-card key and none of
                them are touched by Save settings above. -->
           <section class="settings-region" aria-labelledby="region-access-h">
@@ -724,7 +762,7 @@
             </div>
           </section>
 
-          <!-- REGION 3: not a setting at all. The poster file is published by
+          <!-- REGION 4: not a setting at all. The poster file is published by
                WeRewards in the operator dashboard and served from
                GET /api/vendor/qr-poster/file, so every terminal downloads the
                same current artwork without an app update. -->

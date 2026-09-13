@@ -76,6 +76,25 @@ const UNDO_WINDOW_MS = 60_000;
 
 const $ = (id) => document.getElementById(id);
 
+/* ---------- returning from Stripe (migration-055) ----------
+   Checkout and the Customer Portal both send the vendor back to
+   /terminal?billing=<what>. Read it and STRIP IT IMMEDIATELY, before anything
+   can reload the page: left in the address bar, a pull-to-refresh on a counter
+   iPad would re-announce a payment that happened ten minutes ago, every time.
+
+   This is a HINT, never a grant. The plan is written by the Stripe webhook and
+   by nothing else — a vendor could type ?billing=success themselves, and all it
+   would do is open Settings and re-read a config that still says Freshman. */
+const billingReturn = (() => {
+  try {
+    const value = new URL(window.location.href).searchParams.get('billing');
+    if (value) window.history.replaceState(null, '', window.location.pathname);
+    return value;
+  } catch {
+    return null;   // no URL/history support: the card still works, it just won't self-open
+  }
+})();
+
 /* ---------- client crash reporting ---------- */
 // Uncaught errors + rejections post to /api/client-error → the operator /admin
 // error log. Best-effort, non-blocking.
@@ -259,6 +278,9 @@ function bootFailed(message) {
   $('set-logo-input').addEventListener('change', onLogoPick);
   $('set-logo-remove').addEventListener('click', removeLogo);
   $('poster-download').addEventListener('click', downloadPoster);
+  $('billing-buy-monthly').addEventListener('click', (e) => openStripePage('/api/vendor/checkout', { interval: 'monthly' }, e.currentTarget));
+  $('billing-buy-annual').addEventListener('click', (e) => openStripePage('/api/vendor/checkout', { interval: 'annual' }, e.currentTarget));
+  $('billing-manage').addEventListener('click', (e) => openStripePage('/api/vendor/billing-portal', null, e.currentTarget));
   $('signout-btn').addEventListener('click', openSignOutConfirm);
   $('signout-cancel').addEventListener('click', closeSignOutConfirm);
   $('signout-go').addEventListener('click', signOut);
@@ -534,7 +556,12 @@ async function enterApp() {
   syncPunchTab();
   refreshRewards();
   refreshLastActivity();
-  enterScan();
+  // Back from Stripe: open SETTINGS rather than SCAN, because the vendor was
+  // mid-task and the answer to "did that work?" is on the billing card. Goes
+  // through switchMode, so a PIN-protected terminal still asks for the PIN —
+  // landing straight on Settings would be a way past the gate.
+  if (billingReturn) switchMode('settings');
+  else enterScan();
 }
 
 /* ---------- operator terminal (src/lib/terminal-admin.js) ----------
@@ -3334,6 +3361,195 @@ function enterSettings() {
   paintSettingsPool();
   loadSettings();
   loadPoster();
+  loadBilling();
+}
+
+/* ---------- plan & billing (migration-055) ----------
+
+   THIS CARD IS NOT A GATE. Every paid feature is enforced by requirePlan on the
+   server; what is drawn here only explains which plan is in force and links out
+   to Stripe. That split is why the card can be wrong (a stale config, an
+   offline terminal) without anything being unlocked by it.
+
+   Nor does it ever WRITE a plan. Pressing Upgrade opens a Stripe-hosted page;
+   the plan lands on the vendors row when Stripe calls the webhook back. So
+   coming back from Checkout re-reads config rather than assuming anything, and
+   a payment that has not settled yet (ACH takes days) correctly still reads as
+   the old plan instead of showing a vendor a tier they have not got. */
+
+let billingLoadSeq = 0;
+let billingState = null;
+
+/** '$29' / '$319' / '$29.50'. Stripe amounts are in CENTS. */
+function priceText(price) {
+  if (!price || price.amountCents == null) return null;
+  const dollars = price.amountCents / 100;
+  return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
+}
+
+/**
+ * 'October 12, 2026' — order and wording follow the device's locale, so this is
+ * not a fixed format and nothing may parse it back.
+ *
+ * RENDERED IN THE DEVICE'S TIMEZONE, deliberately. `current_period_end` is an
+ * instant, not a calendar day: a renewal at 00:30 UTC on the 12th happens at
+ * 8:30pm on the 11th at a State College counter, and the 11th is the honest
+ * answer to "when am I next charged?". Do not "fix" this by slicing the ISO
+ * string — that shows a UTC date to somebody living five hours behind it, and
+ * the day it is wrong by is the day their card is charged.
+ */
+function billingDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+async function loadBilling() {
+  const seq = ++billingLoadSeq;
+  try {
+    const res = await authFetch('/api/vendor/billing');
+    const data = await res.json().catch(() => ({}));
+    if (seq !== billingLoadSeq) return;
+    if (handlePinRequired(res, data)) return;
+    if (res.ok) { billingState = data; renderBilling(data); }
+  } catch { /* keep whatever's on screen — the card is informational */ }
+}
+
+function renderBilling(b) {
+  if (!b) return;
+  const region = $('settings-billing');
+
+  // The sixteen. No plan to buy, no card to add, no renewal date — so the whole
+  // region goes rather than showing them a card with nothing actionable on it.
+  if (b.grandfathered) { region.hidden = true; return; }
+  region.hidden = false;
+
+  // ---- the past-due banner ----
+  // `pastDueDays` is null for a healthy vendor, never 0 — so this cannot render
+  // "0 days late" at someone who is paid up.
+  const late = b.pastDueDays;
+  const overdue = $('billing-overdue');
+  overdue.hidden = late == null;
+  if (late != null) {
+    const days = `${late} day${late === 1 ? '' : 's'}`;
+    // 30 is DEGRADE_DAYS in src/lib/plans.js. Said in the copy because the
+    // difference between "fix this soon" and "this is already switched off" is
+    // the only thing the vendor actually needs to know.
+    $('billing-overdue-text').textContent = late >= 30
+      ? `A payment has been outstanding for ${days}, so deals and the full stats are paused. Update your card to turn them back on.`
+      : `A payment has been outstanding for ${days}. Update your card to keep deals and the full stats (they pause at 30 days).`;
+  }
+
+  // ---- the plan line ----
+  // The EFFECTIVE plan, matching what the server will actually allow. When a
+  // failing card has dropped them below what they pay for, say both, because
+  // "Freshman" alone would read as a downgrade nobody asked for.
+  const degraded = b.plan !== b.nominalPlan;
+  $('billing-plan-line').textContent = degraded
+    ? `${b.planLabel} (your ${b.nominalPlan === 'goto' ? 'Go-to' : 'Discovery'} plan is paused)`
+    : b.planLabel;
+
+  // ---- the blurb and the buttons ----
+  const monthly = priceText(b.prices?.monthly);
+  const annual = priceText(b.prices?.annual);
+  const renews = billingDate(b.currentPeriodEnd);
+  const buyMonthly = $('billing-buy-monthly');
+  const buyAnnual = $('billing-buy-annual');
+  const manage = $('billing-manage');
+  const actions = $('billing-actions');
+  $('billing-msg').hidden = true;
+
+  // Someone Stripe already knows: they have a card on file, so everything they
+  // might want (change it, get an invoice, cancel) is behind the one portal
+  // button. Offering "Upgrade" as well would start a SECOND subscription, which
+  // is what the server's ALREADY_SUBSCRIBED refuses.
+  if (b.hasBilling) {
+    // THREE states, not two, and the middle one is the easy one to miss. A
+    // vendor who cancels keeps an `active` subscription until the period runs
+    // out, so `cancelAtPeriodEnd` is the only thing separating "you will be
+    // charged again on the 12th" from "you will not, and this stops on the
+    // 12th". Telling somebody who cancelled ten minutes ago that a payment is
+    // coming is how you get a second, angrier cancellation.
+    //
+    // `cancelAtPeriodEnd` is null when the server could not reach Stripe, and
+    // null falls through to the renewal wording on purpose: a transient blip
+    // must never announce the end of a plan nobody cancelled.
+    $('billing-blurb').textContent = renews
+      ? (b.subscriptionStatus === 'canceled'
+        ? 'Your plan has ended. You can start a new one from the billing page.'
+        : b.cancelAtPeriodEnd === true
+          ? `Cancelled. Your plan runs until ${renews}, then stops. You can restart it on the billing page.`
+          : `Next payment ${renews}.`)
+      : 'Change your card, get invoices, or cancel on the billing page.';
+    buyMonthly.hidden = true;
+    buyAnnual.hidden = true;
+    manage.hidden = false;
+    actions.hidden = false;
+    return;
+  }
+
+  manage.hidden = true;
+
+  // Stripe is not configured, or the operator has not created the Prices yet.
+  // Say so plainly instead of showing a button that answers 503 — this is the
+  // state the product ships in until the Stripe account exists.
+  if (!b.billingAvailable || (!monthly && !annual)) {
+    $('billing-blurb').textContent =
+      'You are on the free plan. Contact the WeRewards team to add deals, visits and the full stats.';
+    actions.hidden = true;
+    return;
+  }
+
+  $('billing-blurb').textContent =
+    'Discovery adds deals, the 30-day stats and unlimited reward items. Cancel any time.';
+  buyMonthly.hidden = !monthly;
+  buyAnnual.hidden = !annual;
+  if (monthly) buyMonthly.textContent = `Upgrade ${monthly}/month`;
+  if (annual) {
+    // Name the saving rather than making a vendor do the arithmetic at a till.
+    const saved = monthly && annual
+      ? (b.prices.monthly.amountCents * 12 - b.prices.annual.amountCents) / 100
+      : 0;
+    buyAnnual.textContent = saved > 0 ? `${annual}/year (save $${saved})` : `${annual}/year`;
+  }
+  actions.hidden = false;
+}
+
+/**
+ * Hand the vendor off to a Stripe-hosted page.
+ *
+ * The button is disabled for the whole round trip and NEVER re-enabled on
+ * success: the page is navigating away, and a button that springs back to life
+ * for the half-second before it does is an invitation to press it twice — which
+ * on Checkout is two Customer objects and on the portal is a wasted session.
+ */
+async function openStripePage(path, body, btn) {
+  const msg = $('billing-msg');
+  const label = btn.textContent;
+  msg.hidden = true;
+  btn.disabled = true;
+  btn.textContent = 'Opening...';
+  try {
+    const res = await authFetch(path, { method: 'POST', body: JSON.stringify(body ?? {}) });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data, () => openStripePage(path, body, btn))) return;
+    if (!res.ok || !data.url) {
+      // The server's message is written for this screen (see the bodies in
+      // src/routes/vendor.js), so show it verbatim rather than inventing one.
+      msg.textContent = data.message || 'Could not open the billing page. Try again in a moment.';
+      msg.hidden = false;
+      btn.textContent = label;
+      btn.disabled = false;
+      return;
+    }
+    window.location.href = data.url;
+  } catch {
+    msg.textContent = 'Could not reach the billing page. Check the internet and try again.';
+    msg.hidden = false;
+    btn.textContent = label;
+    btn.disabled = false;
+  }
 }
 
 /* ---- scan-here QR poster ----
