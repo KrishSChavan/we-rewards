@@ -203,16 +203,6 @@ export async function accountIdForEmail(email) {
   return data ?? null;
 }
 
-/** Is that account a vendor login? Merging one would delete a terminal's sign-in. */
-export async function isVendorAccount(userId) {
-  const { count, error } = await supabaseAdmin
-    .from('vendor_staff')
-    .select('vendor_id', { count: 'exact', head: true })
-    .eq('user_id', userId);
-  if (error) throw error;
-  return Boolean(count);
-}
-
 /**
  * Who currently holds this address, and whether it has ever been paid for.
  * Two different questions off one row — see the table's comment in

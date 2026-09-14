@@ -33,6 +33,7 @@ declare
   w   uuid := '00000000-0000-0000-0000-000000000571';   -- winner (personal)
   l   uuid := '00000000-0000-0000-0000-000000000572';   -- loser  (psu.edu)
   vs  uuid := '00000000-0000-0000-0000-000000000573';   -- vendor staff
+  w2  uuid := '00000000-0000-0000-0000-000000000575';   -- its own winner, kept apart
   p   uuid := '00000000-0000-0000-0000-000000000574';   -- untouched control
   v1  uuid := '00000000-0000-0000-0000-0000000005a1';
   v2  uuid := '00000000-0000-0000-0000-0000000005a2';
@@ -94,24 +95,41 @@ begin
     end if;
   end;
 
-  -- The one that protects a counter: VS signs the terminal in.
-  begin
-    perform public.merge_student_accounts(w, vs);
-    raise notice 'FAIL absorbing a vendor-staff account was allowed (that deletes a terminal login)';
-  exception when others then
-    if sqlerrm like '%MERGE_LOSER_IS_VENDOR%' then
-      raise notice 'PASS a vendor-staff account cannot be absorbed';
-    else
-      raise notice 'FAIL vendor-staff merge raised % instead of MERGE_LOSER_IS_VENDOR', sqlerrm;
-    end if;
-  end;
+  -- ---- the DUAL-ROLE account ----
+  -- A vendor owner who also uses the student app is an ordinary case, and an
+  -- early cut of this file refused it outright — which made the feature useless
+  -- for exactly the people most likely to try it first. It must merge. What it
+  -- must NOT do is cost them their terminal login: vendor_staff references
+  -- auth.users, not profiles, so deleting the profile takes the student side
+  -- and leaves the sign-in. Same split POST /api/me/delete has always made.
+  res := public.merge_student_accounts(w2, vs, 'staffer@psu.edu');
 
-  -- The refusal must be a refusal, not a partial merge. VS still has their
-  -- profile and their staff link.
-  select count(*) into n  from public.profiles     where user_id = vs;
-  select count(*) into n2 from public.vendor_staff where user_id = vs;
-  if n = 1 and n2 = 1 then raise notice 'PASS the refused merge left the vendor account intact';
-  else raise notice 'FAIL refused merge damaged the vendor account (profile %, staff %)', n, n2; end if;
+  if (res ->> 'loserIsVendor')::boolean then
+    raise notice 'PASS the merge tells the caller to KEEP the auth user';
+  else
+    raise notice 'FAIL loserIsVendor = %, so the route would delete a terminal login', res ->> 'loserIsVendor';
+  end if;
+
+  select count(*) into n from public.profiles where user_id = vs;
+  if n = 0 then raise notice 'PASS the vendor''s STUDENT side was merged away';
+  else raise notice 'FAIL the vendor profile survived the merge'; end if;
+
+  select balance into bal from public.point_balances where user_id = w2 and vendor_id = v2;
+  if bal = 15 then raise notice 'PASS the vendor''s student points landed in their personal account (15)';
+  else raise notice 'FAIL w2 holds % at V2, expected 15', bal; end if;
+
+  select count(*) into n from public.vendor_staff where user_id = vs;
+  if n = 1 then raise notice 'PASS the vendor_staff link is untouched — the counter still signs in';
+  else raise notice 'FAIL the vendor_staff link is gone; that terminal can no longer sign in'; end if;
+
+  select count(*) into n from auth.users where id = vs;
+  if n = 1 then raise notice 'PASS the vendor auth user still exists for the terminal to use';
+  else raise notice 'FAIL the vendor auth user was destroyed'; end if;
+
+  select notes::text into txt from public.account_merges where loser_id = vs;
+  if txt like '%loser_is_vendor_auth_user_kept%' then
+    raise notice 'PASS the dual-role decision is on the audit row';
+  else raise notice 'FAIL the audit does not record that the auth user was kept: %', txt; end if;
 
   -- ============================================================
   -- 3. THE MERGE ITSELF.

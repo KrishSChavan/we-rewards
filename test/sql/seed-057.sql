@@ -8,8 +8,10 @@
 --
 -- and two bystanders:
 --
---   VS a .psu.edu account that is ALSO vendor staff — merging it must be
---      refused outright, because deleting it takes a terminal login with it.
+--   VS a .psu.edu account that is ALSO vendor staff. It MERGES like any other
+--      (a vendor owner using the student app is ordinary), but its auth user
+--      must survive or their terminal can no longer sign in. Seeded with a
+--      balance so the merge has something real to move.
 --   P  an untouched control, to prove a merge does not reach past its two ids.
 --
 -- THE OVERLAPS, which is where the bugs live:
@@ -44,13 +46,17 @@ insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-000000000571', 'casey.personal@gmail.com'),
   ('00000000-0000-0000-0000-000000000572', 'cxj5571@psu.edu'),
   ('00000000-0000-0000-0000-000000000573', 'staffer@psu.edu'),
-  ('00000000-0000-0000-0000-000000000574', 'bystander@gmail.com');
+  ('00000000-0000-0000-0000-000000000574', 'bystander@gmail.com'),
+  ('00000000-0000-0000-0000-000000000575', 'owner.personal@gmail.com');
 
 insert into public.profiles (user_id, email, name, terms_accepted_at, terms_version, revisits) values
   ('00000000-0000-0000-0000-000000000571', 'casey.personal@gmail.com', 'Casey Personal', now(), 'v1', 4),
   ('00000000-0000-0000-0000-000000000572', 'cxj5571@psu.edu',          'Casey Student',  now(), 'v1', 3),
   ('00000000-0000-0000-0000-000000000573', 'staffer@psu.edu',          'Sam Staff',      now(), 'v1', 0),
-  ('00000000-0000-0000-0000-000000000574', 'bystander@gmail.com',      'Bystander',      now(), 'v1', 9);
+  ('00000000-0000-0000-0000-000000000574', 'bystander@gmail.com',      'Bystander',      now(), 'v1', 9),
+  -- The personal account the dual-role vendor merges INTO. Its own winner, so
+  -- that merge cannot perturb the W/L arithmetic every other assertion checks.
+  ('00000000-0000-0000-0000-000000000575', 'owner.personal@gmail.com', 'Owner Personal', now(), 'v1', 0);
 
 -- ---------- spots ----------
 insert into public.point_pools (id, label) values
@@ -73,6 +79,9 @@ insert into public.point_balances (user_id, vendor_id, balance) values
   ('00000000-0000-0000-0000-000000000571', '00000000-0000-0000-0000-0000000005a2',  50),
   ('00000000-0000-0000-0000-000000000572', '00000000-0000-0000-0000-0000000005a1',  30),
   ('00000000-0000-0000-0000-000000000572', '00000000-0000-0000-0000-0000000005a3',  70),
+  -- The dual-role account's student side. Small but non-zero, so "the vendor
+  -- merged and kept their login" is provable rather than vacuous.
+  ('00000000-0000-0000-0000-000000000573', '00000000-0000-0000-0000-0000000005a2',  15),
   -- The control's balance. Nothing in a merge of W and L may touch it.
   ('00000000-0000-0000-0000-000000000574', '00000000-0000-0000-0000-0000000005a1', 999);
 

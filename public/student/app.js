@@ -699,7 +699,23 @@ async function signInWithGoogle() {
   $('auth-error').hidden = true;
   const { error } = await sb.auth.signInWithOAuth({
     provider: 'google',
-    options: { redirectTo: window.location.origin },
+    options: {
+      redirectTo: window.location.origin,
+      // ALWAYS show Google's account chooser. Signing out of WeRewards ends OUR
+      // session; it does nothing to Google's, so without this Google sees one
+      // active account and silently re-authenticates into it — the Sign in
+      // button appears to do nothing except put you back where you were, with
+      // no way to reach a second account on the same device.
+      //
+      // That is worst for exactly the people this app now asks to hold two
+      // accounts: a student with a personal address and a university one, and a
+      // vendor whose terminal login is a third. Same reasoning and same line as
+      // /admin (public/admin/admin.js), which has always done this.
+      //
+      // The cost is one extra tap for someone with a single Google account, on
+      // an action they perform about twice a term.
+      queryParams: { prompt: 'select_account' },
+    },
   });
   if (error) {
     $('auth-error').textContent = 'Couldn’t start sign-in. Try again in a moment.';

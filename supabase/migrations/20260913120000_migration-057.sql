@@ -511,10 +511,9 @@ $$;
 --     keyed on the losing profile go with it, rather than being enumerated here
 --     and drifting out of date the next time a table is added.
 --
--- WHAT IT REFUSES, rather than doing something clever:
---   • a losing account that is vendor staff — deleting it takes a terminal
---     login with it (the same reason POST /api/me/delete keeps the auth user).
---   • either id missing a profile.
+-- WHAT IT REFUSES: only a merge that cannot mean anything — the same account
+-- twice, or an id with no profile. A vendor-staff account is NOT refused; see
+-- the dual-role note in the body for why, and what the caller must do about it.
 
 create or replace function public.merge_student_accounts(
   p_winner      uuid,
@@ -534,6 +533,7 @@ declare
   v_spots_gained  integer := 0;
   v_txns          integer := 0;
   v_life          integer := 0;
+  v_loser_vendor  boolean := false;
   v_ref           record;
   v_grant         record;
   v_take          integer;
@@ -561,10 +561,26 @@ begin
     raise exception 'MERGE_LOSER_UNKNOWN';
   end if;
 
-  -- A vendor login is not ours to delete. Same rule POST /api/me/delete already
-  -- follows, and the same reason: the terminal at the counter signs in with it.
-  if exists (select 1 from vendor_staff where user_id = p_loser) then
-    raise exception 'MERGE_LOSER_IS_VENDOR';
+  -- ---- the dual-role account ----
+  -- A vendor owner who ALSO uses the student app with a second address is a
+  -- real and ordinary case — and an early cut of this file refused it outright,
+  -- which made the feature useless for exactly the people most likely to try it
+  -- first.
+  --
+  -- The refusal was solving the wrong problem. Deleting the vendor's AUTH USER
+  -- would take their terminal login with it; deleting their PROFILE does not.
+  -- vendor_staff references auth.users, not profiles (schema.sql), so the
+  -- student side can be merged away and the counter still signs in tomorrow.
+  -- That is precisely the split POST /api/me/delete has always made for a
+  -- dual-role account (migration-035), and this now matches it.
+  --
+  -- So: merge, and TELL THE CALLER, which skips its auth.admin.deleteUser step.
+  -- The flag is returned rather than re-queried so the route cannot disagree
+  -- with the transaction that actually moved the data.
+  v_loser_vendor := exists (select 1 from vendor_staff where user_id = p_loser);
+  if v_loser_vendor then
+    v_notes := v_notes || jsonb_build_object(
+      'note', 'loser_is_vendor_auth_user_kept', 'loser_id', p_loser);
   end if;
 
   -- What they gain, measured BEFORE anything moves. Reported back to the app so
@@ -927,6 +943,11 @@ begin
     'duplicateNights', v_dupe_nights,
     'spotsGained',  v_spots_gained,
     'transactions', v_txns,
+    -- The route reads this to decide whether to delete the losing AUTH user.
+    -- true = a vendor login: the profile is gone, the sign-in must stay, or the
+    -- counter cannot sign in tomorrow. Returned from the transaction that did
+    -- the work rather than re-queried, so the two cannot disagree.
+    'loserIsVendor', v_loser_vendor,
     'notes',        v_notes
   );
 end;

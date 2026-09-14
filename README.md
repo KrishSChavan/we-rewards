@@ -1054,9 +1054,22 @@ profiles in uuid order. Three details are load-bearing:
   are left paid and noted in `account_merges.notes` instead — clawing back from
   a third party who did nothing wrong is worse than an inflated count.
 
-A vendor-linked account is refused outright (deleting it takes a terminal login
-with it), with the same message an account that never finished signing up gets —
-neither fact is the student's business.
+**A dual-role account merges like any other, and keeps its terminal login.** A
+vendor owner who also uses the student app with a personal address is the
+likeliest first user of this feature, and an early cut refused them outright.
+The refusal was solving the wrong problem: deleting the losing *auth user* costs
+them the terminal, but `merge_student_accounts()` only ever deletes the losing
+*profile*, and `vendor_staff` references `auth.users` rather than `profiles`. So
+the student side merges away and the counter still signs in tomorrow — exactly
+the split `POST /api/me/delete` has always made for a dual-role account
+(migration-035). The function returns `loserIsVendor` and the route skips the
+auth-user delete on it.
+
+An address whose auth user has **no profile** (a vendor-only login, or someone
+who closed the consent modal) is likewise not refused — there is nothing to
+merge, so it finishes as a plain link and that account is left untouched. The
+one surviving refusal is an address already linked to a *different* student's
+account.
 
 `student_email_claims` holds one row per address **forever**, and is the fence
 that makes unlink safe: `bonus_points` on it survives the unlink, so relinking

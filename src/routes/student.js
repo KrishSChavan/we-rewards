@@ -1138,25 +1138,36 @@ async function linkProfile(userId) {
 }
 
 /**
- * Can this account be absorbed? Both answers are refusals with the SAME message
- * on purpose: "it's a vendor login" and "it never finished signing up" are
- * different facts about somebody else's account, and neither is the student's
- * business.
+ * What the account behind a proved address actually is, which decides what
+ * happens to it. Three shapes, and NONE of them is a refusal:
+ *
+ *   no profile   — an auth user that never finished signing up in the student
+ *                  app (a vendor-only login, or someone who closed the consent
+ *                  modal). There is nothing to merge, so this finishes as a
+ *                  plain LINK and the auth user is left completely alone.
+ *   vendor staff — a dual-role account. Merge the student side, but KEEP the
+ *                  auth user: vendor_staff references auth.users, not profiles
+ *                  (schema.sql), so deleting the profile takes the student side
+ *                  and leaves the terminal login signing in tomorrow. Exactly
+ *                  the split POST /api/me/delete has always made.
+ *   plain        — merge, and delete the auth user.
+ *
+ * ⚠ AN EARLIER CUT REFUSED THE FIRST TWO with one opaque "that email is already
+ * in use". That was wrong in the most expensive way available: a vendor owner
+ * linking their own university address — the single most likely first user of
+ * this feature — was told their own email could not be merged. Mailbox control
+ * is the authority here, and it has already been proved by the time anything
+ * calls this.
  */
-async function absorbable(userId) {
+async function otherAccount(userId) {
   const [{ count: staff, error: sErr }, { data: prof, error: pErr }] = await Promise.all([
     supabaseAdmin.from('vendor_staff').select('vendor_id', { count: 'exact', head: true }).eq('user_id', userId),
     supabaseAdmin.from('profiles').select('user_id').eq('user_id', userId).maybeSingle(),
   ]);
   if (sErr) throw sErr;
   if (pErr) throw pErr;
-  return Boolean(prof) && !staff;
+  return { hasProfile: Boolean(prof), isVendor: Boolean(staff) };
 }
-
-const IN_USE = {
-  error: 'ADDRESS_IN_USE',
-  message: 'That email is already used by another WeRewards account that can’t be merged. Get in touch and we’ll sort it out.',
-};
 
 router.get('/student-email', requireConsent, async (req, res, next) => {
   try {
@@ -1214,12 +1225,17 @@ router.post('/student-email/start', requireConsent, async (req, res, next) => {
       });
     }
 
-    // Held by a LIVE claim on another account. Safe to disclose: the address is
-    // spoken for by someone who proved they hold it, and the alternative is
-    // mailing a code that can never be redeemed.
+    // Held by a LIVE claim on another account — the ONE case that is still a
+    // refusal, and the only one that ever should have been. Someone else has
+    // already proved they hold this mailbox and attached it to their account;
+    // mailing a code here would mint a credential that cannot be redeemed.
+    // Safe to disclose, because the address is genuinely spoken for.
     const claim = await claimFor(norm);
     if (claim && !claim.released_at && claim.user_id && claim.user_id !== req.user.id) {
-      return res.status(409).json(IN_USE);
+      return res.status(409).json({
+        error: 'ADDRESS_IN_USE',
+        message: 'That email is already linked to a different WeRewards account. Get in touch and we’ll sort it out.',
+      });
     }
 
     // The one thing the email itself is allowed to say, because the only reader
@@ -1269,9 +1285,15 @@ router.post('/student-email/verify', requireConsent, async (req, res, next) => {
 
     const { id: codeId, email, norm } = check;
     const otherId = await accountIdForEmail(email);
+    const other = otherId && otherId !== req.user.id ? await otherAccount(otherId) : null;
 
-    // ---- the simple half: nobody else holds it ----
-    if (!otherId || otherId === req.user.id) {
+    // ---- the simple half: there is no student account to merge ----
+    // Either no auth user at all, their own, or an auth user that never
+    // finished signing up in the student app. The last one is the case that
+    // used to be refused: a vendor-only login holds the address but has no
+    // student side, so there is nothing to move and nothing to close. Link it
+    // and leave that auth user completely alone.
+    if (!other || !other.hasProfile) {
       await supabaseAdmin.rpc('student_email_code_consume', { p_id: codeId });
 
       const bonus = await payLinkBonus({ userId: req.user.id, email, norm });
@@ -1285,14 +1307,9 @@ router.post('/student-email/verify', requireConsent, async (req, res, next) => {
       return res.json({ ok: true, linked: { email }, bonus });
     }
 
-    // ---- the other half: it has its own account ----
-    if (!(await absorbable(otherId))) {
-      // Burn the code rather than leave it live: this address is not going to
-      // become linkable by retrying, and a live code is a live credential.
-      await supabaseAdmin.rpc('student_email_code_consume', { p_id: codeId });
-      return res.status(409).json(IN_USE);
-    }
-
+    // ---- the other half: it has a real student account ----
+    // Including a vendor's. Merging that is fine and is what a dual-role owner
+    // wants; only the auth-user delete is skipped later. See otherAccount().
     await supabaseAdmin.rpc('student_email_code_verify', { p_id: codeId });
 
     const { data: preview, error } = await supabaseAdmin.rpc('preview_student_merge', {
@@ -1335,20 +1352,16 @@ router.post('/student-email/merge', requireConsent, async (req, res, next) => {
     const email = pending.code_email;
     const norm = pending.code_email_norm;
     const otherId = await accountIdForEmail(email);
+    const other = otherId && otherId !== req.user.id ? await otherAccount(otherId) : null;
 
-    // The other account disappeared between the proof and the confirm (they
-    // deleted it, or support did). Nothing to merge — finish as a plain link
+    // Nothing to merge: the account disappeared between the proof and the
+    // confirm, or it never had a student side at all. Finish as a plain link
     // rather than failing a student who did everything right.
-    if (!otherId || otherId === req.user.id) {
+    if (!other || !other.hasProfile) {
       await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
       const bonus = await payLinkBonus({ userId: req.user.id, email, norm });
       await recordClaim({ userId: req.user.id, email, norm, bonusPoints: bonus });
       return res.json({ ok: true, linked: { email }, bonus, merged: null });
-    }
-
-    if (!(await absorbable(otherId))) {
-      await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
-      return res.status(409).json(IN_USE);
     }
 
     const { data: result, error: mErr } = await supabaseAdmin.rpc('merge_student_accounts', {
@@ -1356,26 +1369,32 @@ router.post('/student-email/merge', requireConsent, async (req, res, next) => {
       p_loser: otherId,
       p_loser_email: email,
     });
-    if (mErr) {
-      const msg = String(mErr.message ?? '');
-      if (msg.includes('MERGE_LOSER_IS_VENDOR')) {
-        await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
-        return res.status(409).json(IN_USE);
-      }
-      throw mErr;
-    }
+    if (mErr) throw mErr;
 
     // Spent. Done before the auth delete so a crash in there cannot leave a
     // live code that would run the whole merge a second time.
     await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
 
-    // Best effort, and loud when it fails. The data is already merged; what is
-    // left is an auth user with no profile, which signs in to a blank account
-    // rather than to someone else's.
-    const { error: dErr } = await supabaseAdmin.auth.admin.deleteUser(otherId);
-    if (dErr) {
-      console.error(`[student-email] merged ${otherId} into ${req.user.id} but could not delete `
-        + `the auth user: ${dErr.message}`);
+    // ⚠ THE DUAL-ROLE SPLIT. The SQL function has already deleted the losing
+    // PROFILE, which is the whole student side. Deleting its AUTH USER as well
+    // would take a vendor's terminal login with it — so for a vendor-staff
+    // account we stop here, exactly as POST /api/me/delete does. The leftover
+    // auth user is not a loose end: it has no profile, and a later sign-in with
+    // it is recognised by the claim row and sent to the surviving account.
+    //
+    // The flag comes back from the transaction that did the work rather than
+    // from a fresh query, so the two cannot disagree about what was just done.
+    const loserIsVendor = result?.loserIsVendor ?? other.isVendor;
+    if (!loserIsVendor) {
+      // Best effort, and loud when it fails. The data is already merged.
+      const { error: dErr } = await supabaseAdmin.auth.admin.deleteUser(otherId);
+      if (dErr) {
+        console.error(`[student-email] merged ${otherId} into ${req.user.id} but could not delete `
+          + `the auth user: ${dErr.message}`);
+      }
+    } else {
+      console.warn(`[student-email] merged vendor-linked ${otherId} into ${req.user.id}; `
+        + 'auth user KEPT so the terminal login survives');
     }
 
     const bonus = await payLinkBonus({ userId: req.user.id, email, norm });
