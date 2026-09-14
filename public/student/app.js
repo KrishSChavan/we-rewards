@@ -348,6 +348,28 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   });
   // account → your data: export + delete
   $('account-export').addEventListener('click', exportMyData);
+  // account → link a student email (migration-057)
+  $('link-email-btn').addEventListener('click', openLinkSheet);
+  $('link-email-close').addEventListener('click', closeLinkSheet);
+  $('link-email-send').addEventListener('click', sendLinkCode);
+  $('link-email-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendLinkCode(); });
+  $('link-code-submit').addEventListener('click', submitLinkCode);
+  $('link-code-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLinkCode(); });
+  // Back to the ADDRESS view rather than straight to a new send: the usual
+  // reason a code never arrives is a typo in the address, and this is the only
+  // screen where they can see it.
+  $('link-code-resend').addEventListener('click', () => {
+    $('link-email-heading').textContent = 'Add your student email';
+    $('link-email-input').value = linkAddress;
+    setLinkStatus('link-email-status', '');
+    showLinkView('link-email-start');
+    $('link-email-input').focus({ preventScroll: true });
+  });
+  $('link-merge-confirm').addEventListener('click', confirmMerge);
+  $('link-merge-back').addEventListener('click', closeLinkSheet);
+  $('link-done').addEventListener('click', closeLinkSheet);
+  $('link-manage-done').addEventListener('click', closeLinkSheet);
+  $('link-unlink').addEventListener('click', unlinkStudentEmail);
   $('account-delete').addEventListener('click', openDeleteModal);
   $('delete-cancel').addEventListener('click', closeDeleteModal);
   $('delete-close').addEventListener('click', closeDeleteModal);
@@ -754,6 +776,8 @@ function render(session) {
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
     dropAmbassadorSheet();      // same — and it names the previous student's code
+    dropLinkSheet();            // same — and it holds the previous student's address
+    resetStudentEmail();        // …and put its Account button away, same reason as the line below
     resetAmbassador();          // …and put the Account button away: loadAmbassador() hides it
                                 //    for a non-ambassador, but not for one that never ran (offline)
     dropHub();                  // same
@@ -831,6 +855,11 @@ function render(session) {
   // awaited and not on the critical path: the button appearing a beat after the
   // shell does is invisible, because Account is never the tab a sign-in lands on.
   void loadAmbassador();
+  // Same shape and the same reasoning: one small request that reveals an
+  // Account section for the students it applies to. Not awaited — Account is
+  // never the tab a sign-in lands on, so the button appearing a beat late is
+  // invisible.
+  void loadStudentEmail();
 
   // A notification tap that had to go through sign-in first opens its sheet
   // once the list has actually loaded, so it never flashes the empty state on
@@ -998,6 +1027,24 @@ async function ensureConsent(session) {
     // are — silently signing out someone mid-use to re-accept would be worse.
     if (info.isRevision) {
       openConsentModal(info);
+      return;
+    }
+
+    // ⚠ AN ADDRESS THAT IS ALREADY PART OF AN ACCOUNT (migration-057). They
+    // linked this university address to their personal account at some point,
+    // and have now tapped it at the Google picker out of habit. Google hands us
+    // a brand-new identity for it quite happily, and without this they would
+    // agree to the terms, land in an EMPTY account, and conclude their points
+    // were gone. Sign them back out with the one sentence that explains it.
+    if (info.linkedElsewhere) {
+      const who = info.linkedElsewhere.signInWith;
+      await sb.auth.signOut();
+      render(null);
+      $('auth-error').textContent = who
+        ? `That email is already part of your WeRewards account. Sign in with ${who} instead — your points and visits are all there.`
+        : 'That email is already part of another WeRewards account. Sign in with that one instead.';
+      $('auth-error').hidden = false;
+      Splash.hide();
       return;
     }
 
@@ -2882,6 +2929,341 @@ function dropMoveSheet() {
   ov.classList.remove('is-open');
   ov.hidden = true;
   $('community-card').setAttribute('aria-expanded', 'false');
+}
+
+/* ---------- account → link a student email (migration-057) ----------
+
+   The hole this fills is documented in src/lib/signup-bonus.js: sign in with a
+   personal Gmail and the signup bonus is gone for good, because Penn State
+   federates with Google and the address you tap at the account picker is not
+   necessarily the one that qualifies.
+
+   FIVE VIEWS, ONE CARD (see #link-email-modal). address → code → (merge
+   confirm) → done, plus a fifth for someone already linked. The merge confirm
+   only appears when the address turns out to have its own account, and it is
+   the only irreversible step in the app besides Move and Delete — so it shows
+   the real numbers and says so, exactly as #move-final does.
+
+   NOTHING HERE DECIDES ANYTHING. Eligibility, which domains count, whether a
+   link can be undone, and what a merge would move are all answered by the
+   server. A second copy of those rules living in the client is a copy free to
+   disagree with the SQL that actually moves the points. */
+
+let studentEmail = null;        // last GET /api/me/student-email
+let linkBusy = false;
+let linkPreview = null;         // what the merge confirm is currently showing
+let linkAddress = '';           // the address a code was sent to
+
+async function loadStudentEmail() {
+  try {
+    const res = await authFetch('/api/me/student-email');
+    if (!res.ok) return;                 // leave the button as it is
+    studentEmail = await res.json();
+  } catch {
+    return;                              // offline — same
+  }
+  renderStudentEmailButton();
+}
+
+// Put the section away and forget whose address it was. Called on sign-out,
+// where loadStudentEmail() cannot be relied on to do it: it returns early on a
+// network failure and leaves the button exactly as it found it, which would
+// show the previous student's address to the next one on a phone with no
+// signal. Same reasoning as resetAmbassador().
+function resetStudentEmail() {
+  studentEmail = null;
+  linkPreview = null;
+  linkAddress = '';
+  const btn = $('link-email-btn');
+  const title = $('link-email-title');
+  if (btn) btn.hidden = true;
+  if (title) title.hidden = true;
+}
+
+function renderStudentEmailButton() {
+  const btn = $('link-email-btn');
+  const title = $('link-email-title');
+  if (!btn || !title) return;
+
+  const s = studentEmail;
+  // Not eligible AND nothing linked = there is nothing to say. Someone who now
+  // signs in with a university address but linked one earlier still sees it,
+  // so the screen never shows a fact with no way to explain it.
+  if (!s || (!s.eligible && !s.linked)) {
+    title.hidden = true;
+    btn.hidden = true;
+    dropLinkSheet();
+    return;
+  }
+
+  if (s.linked) {
+    $('link-email-name').textContent = 'Student email';
+    $('link-email-desc').textContent = s.linked.merged
+      ? `${s.linked.email} · accounts merged`
+      : `${s.linked.email} · linked`;
+  } else {
+    $('link-email-name').textContent = 'Add your student email';
+    // The bonus is only mentioned when a program is actually live and paying.
+    // A button promising points nobody will be paid is worse than a plain one
+    // — the same rule loadReferral() follows for the invite button.
+    $('link-email-desc').textContent = s.bonus?.points
+      ? `Get ${s.bonus.points} community points, and bring your spots together`
+      : 'Bring your spots and points together in one account';
+  }
+  title.hidden = false;
+  btn.hidden = false;
+}
+
+function showLinkView(id) {
+  for (const v of ['link-email-start', 'link-email-code-view', 'link-merge-view', 'link-done-view', 'link-manage-view']) {
+    const el = $(v);
+    if (el) el.hidden = v !== id;
+  }
+}
+
+function setLinkStatus(id, text, kind = '') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = kind ? `detail-status ${kind}` : 'detail-status';
+}
+
+function openLinkSheet() {
+  const ov = $('link-email-modal');
+  // Guard on is-open, not on hidden: hidden stays false through the close
+  // animation, and reopening inside that window has to catch the sheet on its
+  // way down rather than being swallowed. Same note as openEarnSheet.
+  if (ov.classList.contains('is-open')) return;
+
+  linkPreview = null;
+  linkAddress = '';
+  $('link-email-input').value = '';
+  $('link-code-input').value = '';
+  setLinkStatus('link-email-status', '');
+  setLinkStatus('link-code-status', '');
+  setLinkStatus('link-merge-status', '');
+  setLinkStatus('link-manage-status', '');
+
+  if (studentEmail?.linked) {
+    $('link-email-heading').textContent = 'Student email';
+    const when = studentEmail.linked.at
+      ? new Date(studentEmail.linked.at).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+      : null;
+    $('link-manage-line').innerHTML = studentEmail.linked.merged
+      ? `<strong>${escapeHtml(studentEmail.linked.email)}</strong> is part of this account${when ? `, merged in ${escapeHtml(when)}` : ''}. Everything from it — points, visits and history — is already here.`
+      : `<strong>${escapeHtml(studentEmail.linked.email)}</strong> is linked to this account${when ? ` since ${escapeHtml(when)}` : ''}.`;
+    // The server decides what is reversible. A merge is not.
+    $('link-unlink').hidden = !studentEmail.linked.canUnlink;
+    showLinkView('link-manage-view');
+  } else {
+    $('link-email-heading').textContent = 'Add your student email';
+    const domains = studentEmail?.domains ?? [];
+    if (domains.length) $('link-email-input').placeholder = `abc1234@${domains[0]}`;
+    $('link-email-intro').textContent = studentEmail?.bonus?.points
+      ? `Signed in with a personal email? Add your student one for ${studentEmail.bonus.points} community points — and if it already has its own account, the two become one.`
+      : 'Signed in with a personal email? Add your student one and everything lands in a single account.';
+    showLinkView('link-email-start');
+  }
+
+  ov.hidden = false;
+  void ov.offsetWidth;                      // reflow so the slide-up runs
+  ov.classList.add('is-open');
+  $('link-email-btn').setAttribute('aria-expanded', 'true');
+}
+
+function closeLinkSheet() {
+  const ov = $('link-email-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  $('link-email-btn').setAttribute('aria-expanded', 'false');
+  setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
+}
+
+// Hard reset, no animation — for sign-out, same reason as dropEarnSheet().
+function dropLinkSheet() {
+  const ov = $('link-email-modal');
+  if (!ov) return;
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  const btn = $('link-email-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+async function sendLinkCode() {
+  if (linkBusy) return;
+  const email = $('link-email-input').value.trim();
+  if (!email) { setLinkStatus('link-email-status', 'Enter your student email.'); return; }
+
+  linkBusy = true;
+  $('link-email-send').disabled = true;
+  setLinkStatus('link-email-status', 'Sending…');
+  try {
+    const res = await authFetch('/api/me/student-email/start', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setLinkStatus('link-email-status', data.message ?? 'That didn’t work. Try again.');
+      return;
+    }
+
+    linkAddress = data.email ?? email;
+    $('link-email-heading').textContent = 'Check your email';
+    $('link-code-sent').innerHTML =
+      `We sent a 6-digit code to <strong>${escapeHtml(linkAddress)}</strong>. `
+      + `It lasts ${escapeHtml(String(data.expiresInMinutes ?? 15))} minutes.`;
+    $('link-code-input').value = '';
+    setLinkStatus('link-code-status', '');
+    showLinkView('link-email-code-view');
+    $('link-code-input').focus({ preventScroll: true });
+  } catch {
+    setLinkStatus('link-email-status', 'No connection. Try again.');
+  } finally {
+    linkBusy = false;
+    $('link-email-send').disabled = false;
+  }
+}
+
+/** Render "what you get" as one fact per line. Zeroes are left out entirely. */
+function renderGains(listId, p) {
+  const el = $(listId);
+  if (!el) return;
+  const rows = [];
+  if (p?.points > 0) rows.push(`<b>${p.points}</b> points at your spots`);
+  if (p?.community > 0) rows.push(`<b>${p.community}</b> community points`);
+  if (p?.punches > 0) rows.push(`<b>${p.punches}</b> visits towards rewards`);
+  if (p?.spotsGained > 0) {
+    // Naming them is the difference between a number and a memory. Capped at
+    // three so the list stays a list on a 360px phone.
+    const names = (p.spotNames ?? []).slice(0, 3).map((n) => escapeHtml(n)).join(', ');
+    const more = (p.spotsGained ?? 0) - Math.min(3, (p.spotNames ?? []).length);
+    rows.push(`<b>${p.spotsGained}</b> new spot${p.spotsGained === 1 ? '' : 's'}`
+      + (names ? ` <span>${names}${more > 0 ? ` and ${more} more` : ''}</span>` : ''));
+  }
+  if (p?.transactions > 0) rows.push(`<b>${p.transactions}</b> past visit${p.transactions === 1 ? '' : 's'} in your history`);
+  el.innerHTML = rows.map((r) => `<li>${r}</li>`).join('');
+  el.hidden = rows.length === 0;
+}
+
+async function submitLinkCode() {
+  if (linkBusy) return;
+  const code = $('link-code-input').value.trim();
+  if (!code) { setLinkStatus('link-code-status', 'Type the code from the email.'); return; }
+
+  linkBusy = true;
+  $('link-code-submit').disabled = true;
+  setLinkStatus('link-code-status', 'Checking…');
+  try {
+    const res = await authFetch('/api/me/student-email/verify', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setLinkStatus('link-code-status', data.message ?? 'That didn’t work. Try again.');
+      return;
+    }
+
+    // The address has its own account: nothing has happened yet, and the next
+    // tap is the one that cannot be undone.
+    if (data.needsMerge) {
+      linkPreview = data.preview ?? null;
+      $('link-email-heading').textContent = 'Join your accounts';
+      $('link-merge-lead').innerHTML =
+        `<strong>${escapeHtml(data.email ?? linkAddress)}</strong> already has its own WeRewards account. `
+        + `Joining them moves everything it holds into this one:`;
+      renderGains('link-merge-gains', linkPreview);
+      setLinkStatus('link-merge-status', '');
+      showLinkView('link-merge-view');
+      return;
+    }
+
+    finishLink({ email: data.linked?.email ?? linkAddress, bonus: data.bonus ?? 0, merged: null });
+  } catch {
+    setLinkStatus('link-code-status', 'No connection. Try again.');
+  } finally {
+    linkBusy = false;
+    $('link-code-submit').disabled = false;
+  }
+}
+
+async function confirmMerge() {
+  if (linkBusy) return;
+  linkBusy = true;
+  $('link-merge-confirm').disabled = true;
+  setLinkStatus('link-merge-status', 'Joining your accounts…');
+  try {
+    const res = await authFetch('/api/me/student-email/merge', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setLinkStatus('link-merge-status', data.message ?? 'That didn’t work. Try again.');
+      return;
+    }
+    finishLink({
+      email: data.linked?.email ?? linkAddress,
+      bonus: data.bonus ?? 0,
+      merged: data.merged ?? null,
+    });
+  } catch {
+    setLinkStatus('link-merge-status', 'No connection. Try again.');
+  } finally {
+    linkBusy = false;
+    $('link-merge-confirm').disabled = false;
+  }
+}
+
+/**
+ * The success view, and the refresh behind it. Everything on Home can have
+ * changed — balances, community points, the spots list, the tier chip — so the
+ * loads that paint them are re-run rather than trusted to a socket push: a
+ * merge moves rows the socket never hears about.
+ */
+function finishLink({ email, bonus, merged }) {
+  $('link-email-heading').textContent = merged ? 'All joined up' : 'Linked';
+  const paid = bonus > 0 ? ` You earned <strong>${bonus} community points</strong>.` : '';
+  $('link-done-line').innerHTML = merged
+    ? `<strong>${escapeHtml(email)}</strong> is part of this account now.${paid}`
+    : `<strong>${escapeHtml(email)}</strong> is linked to your account.${paid}`;
+
+  renderGains('link-done-gains', merged ? {
+    points: merged.points,
+    community: merged.community,
+    punches: merged.punches,
+    spotsGained: merged.spotsGained,
+    spotNames: [],
+    transactions: merged.transactions,
+  } : null);
+
+  showLinkView('link-done-view');
+  if (bonus > 0) showToast(`+${bonus} community points`, 'gain');
+
+  void loadStudentEmail();
+  void loadVendors();
+  loadCommunity();
+  loadTier();
+}
+
+async function unlinkStudentEmail() {
+  if (linkBusy) return;
+  linkBusy = true;
+  $('link-unlink').disabled = true;
+  setLinkStatus('link-manage-status', 'Unlinking…');
+  try {
+    const res = await authFetch('/api/me/student-email', { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setLinkStatus('link-manage-status', data.message ?? 'That didn’t work. Try again.');
+      return;
+    }
+    await loadStudentEmail();
+    closeLinkSheet();
+  } catch {
+    setLinkStatus('link-manage-status', 'No connection. Try again.');
+  } finally {
+    linkBusy = false;
+    $('link-unlink').disabled = false;
+  }
 }
 
 /* ---------- home → the scan-a-receipt sheet (migration-038) ---------- */

@@ -3420,9 +3420,30 @@ function renderBilling(b) {
   if (!b) return;
   const region = $('settings-billing');
 
-  // The sixteen. No plan to buy, no card to add, no renewal date — so the whole
-  // region goes rather than showing them a card with nothing actionable on it.
+  // ---- when this card has nothing to say, it is not there at all ----
+  //
+  // Two cases, and both hide the WHOLE region rather than render a card with no
+  // action on it.
+  //
+  // 1. The sixteen. No plan to buy, no card to add, no renewal date.
+  //
+  // 2. Stripe is not configured on this deployment, AND this vendor has no
+  //    billing relationship, AND owes nothing. That is exactly the state
+  //    production ships in before the Stripe keys are set, and it is not a
+  //    temporary one: the LLC is pending and there is no signed vendor
+  //    agreement. Without this the card would advertise an upgrade that cannot
+  //    be bought, to a vendor nobody is ready to sell to.
+  //
+  //    ALL THREE CONDITIONS ARE LOAD-BEARING. If billing is switched off while
+  //    a vendor still has a customer id or an outstanding payment, the card
+  //    STAYS: a past-due banner is the single thing on this screen they most
+  //    need to see, and hiding a debt because a config var went missing is the
+  //    one way this could do real harm.
   if (b.grandfathered) { region.hidden = true; return; }
+  if (!b.billingAvailable && !b.hasBilling && b.pastDueDays == null) {
+    region.hidden = true;
+    return;
+  }
   region.hidden = false;
 
   // ---- the past-due banner ----

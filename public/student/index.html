@@ -1073,6 +1073,38 @@
                    turning emails off stops the mail. Deals still appear in the
                    app either way, because "don't interrupt me" is not "don't
                    tell me". -->
+              <!-- ---------- student email (migration-057) ----------
+                   Hidden for everyone, and unhidden by loadStudentEmail() only
+                   when the server says this account can use it — which means:
+                   they DON'T already sign in with a university address, and
+                   this deployment can actually send the verification email.
+                   Same rule #deal-emails-row follows below, for the same
+                   reason: a flow whose first step is "check your email" must
+                   not be offered where no email will arrive.
+
+                   The server decides eligibility, not the client. The domain
+                   that counts is read off the live signup program (an operator
+                   can add alumni.psu.edu in /admin), so hard-coding "psu.edu"
+                   here would be a second copy of that rule, free to disagree.
+
+                   WHY IT SITS HERE, under the profile card and above
+                   Notifications: it is a fact about WHO THE ACCOUNT IS, which
+                   is what the two rows above it are, and the line under the
+                   button is the student's own address once it is linked. -->
+              <h2 id="link-email-title" class="account-section-title" hidden>Student email</h2>
+              <button id="link-email-btn" class="data-btn" type="button" hidden
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="link-email-modal">
+                <span class="data-btn-label">
+                  <span class="data-btn-name" id="link-email-name">Add your student email</span>
+                  <!-- Live state, written by loadStudentEmail() BEFORE the
+                       button is unhidden, so it is never reachable without a
+                       line under it. The markup's copy is the no-program case,
+                       which is a real sentence rather than a placeholder. -->
+                  <span class="data-btn-desc" id="link-email-desc" data-ph-mask>Bring your spots and points together in one account</span>
+                </span>
+                <span class="data-btn-chevron" aria-hidden="true">→</span>
+              </button>
+
               <h2 class="account-section-title">Notifications</h2>
               <div class="setting-row">
                 <span class="setting-label">
@@ -1604,6 +1636,83 @@
         <p id="move-confirm-status" class="detail-status"></p>
         <button id="move-confirm" class="btn-redeem">Move my points</button>
         <button id="move-back" class="detail-textbtn" type="button">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- Link a student email (migration-057) ----------
+       One card, five views, and the order is the flow: type the address →
+       type the code that was mailed to it → (only when that address turns out
+       to have its own account) read what a merge would move and confirm → the
+       result. The fifth is what an already-linked student sees instead.
+
+       THE CONFIRM VIEW IS NOT DECORATION. A merge sums two balances and closes
+       an account, and nothing undoes it. It exists so the student sees the
+       actual numbers — "340 points across 5 spots" — before the tap, rather
+       than discovering them afterwards. #merge-final says the part that
+       matters, in the same place and the same words #move-final does. -->
+  <div id="link-email-modal" class="overlay sheet" hidden>
+    <div class="detail-card">
+      <button id="link-email-close" class="detail-close" aria-label="Close">✕</button>
+      <p class="detail-emoji">🎓</p>
+      <h2 class="detail-title" id="link-email-heading">Student email</h2>
+
+      <!-- view 1: the address -->
+      <div id="link-email-start" class="link-view">
+        <p class="detail-desc" id="link-email-intro">
+          Signed in with a personal email? Add your student one and everything lands in a single account.
+        </p>
+        <label class="link-label" for="link-email-input">Your student email</label>
+        <!-- inputmode=email and autocapitalize=off: an address typed on a phone
+             keyboard that capitalises is a wrong address the student cannot
+             see. type=email alone does not turn either off on every browser. -->
+        <input id="link-email-input" class="link-input" type="email" inputmode="email"
+               autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false"
+               maxlength="254" placeholder="abc1234@psu.edu" data-ph-mask />
+        <p id="link-email-status" class="detail-status"></p>
+        <button id="link-email-send" class="btn-redeem" type="button">Send me a code</button>
+      </div>
+
+      <!-- view 2: the code -->
+      <div id="link-email-code-view" class="link-view" hidden>
+        <p class="detail-desc" id="link-code-sent"></p>
+        <label class="link-label" for="link-code-input">The 6-digit code</label>
+        <!-- one-time-code lets iOS and Android offer the code straight from the
+             notification, which is the difference between typing six digits and
+             switching apps to read them. -->
+        <input id="link-code-input" class="link-input link-input-code" type="text"
+               inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"
+               maxlength="7" placeholder="000000" />
+        <p id="link-code-status" class="detail-status"></p>
+        <button id="link-code-submit" class="btn-redeem" type="button">Link my email</button>
+        <button id="link-code-resend" class="detail-textbtn" type="button">Send a new code</button>
+      </div>
+
+      <!-- view 3: the merge confirm -->
+      <div id="link-merge-view" class="link-view" hidden>
+        <p class="detail-desc" id="link-merge-lead"></p>
+        <ul class="link-gains" id="link-merge-gains"></ul>
+        <p class="move-final" id="merge-final">⚠️ This can't be undone. The other account is closed, and the two sets of points become one.</p>
+        <p id="link-merge-status" class="detail-status"></p>
+        <button id="link-merge-confirm" class="btn-redeem" type="button">Merge my accounts</button>
+        <button id="link-merge-back" class="detail-textbtn" type="button">Not now</button>
+      </div>
+
+      <!-- view 4: done -->
+      <div id="link-done-view" class="link-view" hidden>
+        <p class="detail-desc" id="link-done-line"></p>
+        <ul class="link-gains" id="link-done-gains"></ul>
+        <button id="link-done" class="btn-redeem" type="button">Done</button>
+      </div>
+
+      <!-- view 5: already linked. Unlink is shown ONLY when the server says
+           this link can be undone — a merged one cannot, and a button that
+           silently refuses is worse than no button. -->
+      <div id="link-manage-view" class="link-view" hidden>
+        <p class="detail-desc" id="link-manage-line" data-ph-mask></p>
+        <p id="link-manage-status" class="detail-status"></p>
+        <button id="link-manage-done" class="btn-redeem" type="button">Done</button>
+        <button id="link-unlink" class="detail-textbtn link-unlink" type="button" hidden>Unlink this email</button>
       </div>
     </div>
   </div>

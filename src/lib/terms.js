@@ -75,7 +75,30 @@
 // now promises that Do Not Track switches it off, which public/shared/
 // analytics.js honours with respect_dnt; that promise is part of what is being
 // consented to here.
-export const TERMS_VERSION = '2026-09-06';
+// 2026-09-13: linking a student email, and joining two accounts (ToS §3 and
+// §4.7, Policy new §2.15). Material on the plainest of the tests above — the
+// prior ToS did not merely fail to mention this, it said the OPPOSITE in so
+// many words: a signup promotion "does not apply, and it cannot be applied
+// afterwards". That sentence is exactly what migration-057 exists to make
+// false, and a student operating under the old text would have no reason to
+// look for the feature at all.
+//
+// Two further things would each be enough on their own. First, we now store a
+// SECOND email address, and a record of every address ever linked that outlives
+// both the link and the account it belonged to — kept deliberately, because it
+// is the only thing stopping one mailbox collecting a one-time bonus forever.
+// That is a new, permanent category of data about a person and §2 has to say
+// so. Second, joining two accounts is irreversible and destroys one of them;
+// consenting to a service that can do that on your instruction is not the same
+// as consenting to one that cannot.
+//
+// ⚠ THE PAYOUT-SURFACE WARNING ABOVE STILL APPLIES, and this bump adds one more
+// thing that runs for every existing student at re-accept: the
+// EMAIL_LINKED_ELSEWHERE check. It is guarded on the profile NOT existing, so an
+// existing student re-accepting can never trip it — which is the whole reason
+// that guard is there rather than the check being unconditional. Removing it
+// would lock out every student who had linked their own second address.
+export const TERMS_VERSION = '2026-09-13';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

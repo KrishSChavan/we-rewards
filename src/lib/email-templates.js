@@ -460,6 +460,69 @@ export function vendorResetCode({ businessName, code, ttlMinutes = 30, terminalU
   };
 }
 
+/**
+ * The code that proves a student holds a university address.
+ *
+ * Same shape as vendorResetCode above and for the same reason — a code typed
+ * from one device into another beats a magic link, which would move the whole
+ * security boundary into the mailbox. The differences are what the code is FOR:
+ *
+ *   • It is six digits, not the dictated XXXX-XXXX alphabet. Nobody reads this
+ *     one down a phone; they read it off a screen and type it into the app,
+ *     which is the same job the earn code already does with six digits.
+ *   • It names the account it will be linked TO. This mail lands in an inbox
+ *     that may never have heard of WeRewards, and "someone is attaching this
+ *     address to casey.p@gmail.com" is the one sentence that lets the reader
+ *     tell a thing they started from a thing they should refuse.
+ *   • It says what happens next, including the part that cannot be undone.
+ *     Where the address already has its own account, accepting this merges two
+ *     accounts into one permanently, and the person deciding that deserves to
+ *     read it here as well as in the app.
+ */
+export function studentEmailCode({ code, signedInAs, ttlMinutes = 15, willMerge = false } = {}) {
+  const who = esc(signedInAs || 'your WeRewards account');
+
+  const body = [
+    p(`Someone asked to add <strong>this email address</strong> to the WeRewards account signed in as <strong>${who}</strong>.`),
+    codeBlock(code),
+    p(`Type this code in the app to finish linking.`),
+    willMerge
+      ? p(`<strong>This address already has its own WeRewards account.</strong> Linking it will move that account’s points, punch cards and history into ${who}, and close it. That can’t be undone.`, 'font-size:14px;')
+      : p(`Linking lets your points, punch cards and visits all live in one account.`, `color:${MUTED};font-size:14px;`),
+    p(`The code works once and expires in ${ttlMinutes} minutes. Five wrong tries and it stops working.`, `color:${MUTED};font-size:14px;`),
+    p(`If this wasn’t you, ignore this email. Nothing is linked until the code is typed, and nobody can use it without reading it here.`, `color:${MUTED};font-size:14px;`),
+  ].join('\n');
+
+  const text = [
+    `Someone asked to add this email address to the WeRewards account signed in as ${signedInAs || 'your WeRewards account'}.`,
+    '',
+    `    ${code}`,
+    '',
+    'Type this code in the app to finish linking.',
+    '',
+    willMerge
+      ? `This address already has its own WeRewards account. Linking it will move that account's points, punch cards and history into ${signedInAs}, and close it. That can't be undone.`
+      : 'Linking lets your points, punch cards and visits all live in one account.',
+    '',
+    `The code works once and expires in ${ttlMinutes} minutes. Five wrong tries and it stops working.`,
+    '',
+    "If this wasn't you, ignore this email. Nothing is linked until the code is typed.",
+    '',
+    'WeRewards',
+  ].join('\n');
+
+  return {
+    subject: `Your WeRewards link code: ${code}`,
+    html: layout({
+      title: 'Link your student email',
+      preheader: `${code} — expires in ${ttlMinutes} minutes.`,
+      body,
+      footer: footerLines('Sent because someone asked to link this address to a WeRewards account.'),
+    }),
+    text,
+  };
+}
+
 /* ==================== student deals ==================== */
 
 /** English list, no em dashes. Same helper as src/lib/campaigns.js, same rules. */

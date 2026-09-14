@@ -1006,6 +1006,67 @@ addresses are vendor logins. The per-login cooldown is not mainly an
 anti-mailbomb measure: minting supersedes any outstanding code, so without it
 anyone who knows a vendor's address could invalidate their live code on repeat.
 
+## Linking a student email (migration-057)
+
+Penn State federates with Google, so the address a student taps at the account
+picker is often their personal Gmail rather than the `psu.edu` one that
+qualifies for the signup bonus. Before this, that was unfixable — `signup-bonus.js`
+said so in its own header: *"there is no way for them to fix it after the fact
+short of deleting the account."* **Account → Student email** is the fix, and it
+has two very different outcomes:
+
+- **Link** — the address has no account of its own. We record the claim and pay
+  the signup bonus their sign-in missed. Reversible (unlink), though the bonus
+  is not re-payable.
+- **Merge** — the address already has its own account. Everything it holds moves
+  into the account they are signed into, and it is closed. **Permanent.**
+
+Ownership is proved by a six-digit code mailed to the address (15 minutes, five
+guesses, single use, `student_email_codes` — the same shape as the vendor reset
+codes above). Not a second Google sign-in: in a PWA the OAuth redirect swaps the
+session to the account we were about to absorb, and it proves nothing for a
+`psu.edu` address that is not Google-federated.
+
+**`POST /start` answers identically whether or not the address has an account.**
+Any signed-in student can type any address, so a response that differed would be
+an enumeration oracle for the whole university. The fact that a merge is coming
+is disclosed in the *email* (only the inbox holder reads it) and in the answer to
+`/verify` (only a correct code reaches it). A merge is then a two-phase confirm:
+`/verify` marks the code proved and returns `preview_student_merge()` — a
+read-only dry run of what would move — and `/merge` spends it. The proved address
+lives in the code row, never in the request body, so "merge any account into
+mine" is not a parameter.
+
+`merge_student_accounts()` does the whole move in one transaction, locking both
+profiles in uuid order. Three details are load-bearing:
+
+- **Transactions are re-pointed before the profile is deleted.** The FK is
+  `ON DELETE SET NULL` (migration-011), so the other order would silently
+  anonymize exactly the history being merged.
+- **Visit counters are summed net of shared nights.** `punch_cards` has been a
+  per-spot counter since migration-029 and migration-045 made it spendable;
+  where both accounts were punched at the same spot on the same night that is
+  one visit recorded twice, discounted before the sum.
+- **A self-referral is unwound.** Two accounts owned by one person, one
+  "referring" the other, is the loophole `idx_referrals_one_per_friend` cannot
+  see. The referral is voided and the referrer's payout clawed back off the
+  combined balance; the friend's leg stands. Ambassador and tracked-QR credits
+  are left paid and noted in `account_merges.notes` instead — clawing back from
+  a third party who did nothing wrong is worse than an inflated count.
+
+A vendor-linked account is refused outright (deleting it takes a terminal login
+with it), with the same message an account that never finished signing up gets —
+neither fact is the student's business.
+
+`student_email_claims` holds one row per address **forever**, and is the fence
+that makes unlink safe: `bonus_points` on it survives the unlink, so relinking
+pays nothing. It is keyed on the address with any `+tag` folded out, because
+`abc123+a@` and `abc123+b@` are one mailbox. It is also how a later sign-in with
+a merged-away address is recognised — `GET /api/me/consent` returns
+`linkedElsewhere` and `accept-terms` refuses, so the student is told to sign in
+with their other account instead of landing in a blank one and concluding their
+points are gone.
+
 ## Search discoverability (SEO)
 
 Five apps share this origin and only three are meant to be found: the landing

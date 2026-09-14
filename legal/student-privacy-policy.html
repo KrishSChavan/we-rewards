@@ -58,12 +58,12 @@
   <div class="doc-header">
     <p class="doc-label">Legal Document — Student &amp; Vendor-Facing</p>
     <h1>WeRewards<br>Privacy Policy</h1>
-    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: September 6, 2026</p>
+    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: September 13, 2026</p>
   </div>
 
   <div class="notice">
     <strong>Summary</strong>
-    WeRewards collects your Google account info, point transaction history, and engagement data to run the loyalty program. If you use or share an invite code, we also record the link between the two accounts (Section 2.12). We do not sell your data. You can export or delete your data at any time through the app.
+    WeRewards collects your Google account info, point transaction history, and engagement data to run the loyalty program. If you use or share an invite code, we also record the link between the two accounts (Section 2.12). If you add a second email address, or ask us to join two accounts together, Section 2.15 describes exactly what we keep and what joining does. We do not sell your data. You can export or delete your data at any time through the app.
   </div>
 
   <!-- ══════════════════════════════════════════════════════════ -->
@@ -214,6 +214,22 @@
   <p>You can switch this off for yourself in two ways that we cannot override: turn on <em>Do Not Track</em> or your browser's tracking protection, or block <code>posthog.com</code> in a content blocker. Doing either leaves every other part of WeRewards working normally. If you would rather we deleted recordings already associated with your account, ask us at the address in Section 12 and we will.</p>
 
   <!-- ══════════════════════════════════════════════════════════ -->
+  <h3>2.15 Linking a Second Email Address, and Joining Two Accounts</h3>
+  <p>If you signed in with a personal email address, the Account screen lets you add a university one so that a promotion limited to that domain (Section 2.11) can still apply to you. Adding it is entirely optional, and nothing else about the Service depends on it.</p>
+  <ul>
+    <li><strong>We send a code to that address and store it hashed</strong>, together with the address itself, until the code is used or expires. This is how we confirm the mailbox is yours; we do not check your enrollment or student status, and this is not a verification of it (see Section 11).</li>
+    <li><strong>We keep a permanent record of every address that has been added</strong>, and of whether a bonus has ever been paid for it. We keep this record even if you later remove the address, and even if the account it belonged to is deleted, because it is the only thing that stops one mailbox collecting the same one-time bonus over and over. The record is the address and the amount; it is not linked to a deleted account.</li>
+    <li><strong>The address does not replace the one you sign in with.</strong> It is stored alongside it, and we keep sending anything we send you to your sign-in address unless you change your settings.</li>
+  </ul>
+  <p><strong>If the address you add already has its own WeRewards account</strong>, adding it offers to join the two together. You are shown exactly what would move before you agree. If you agree:</p>
+  <ul>
+    <li><strong>Everything the other account holds becomes part of this one</strong> — its points, its community points, its visit counts, its saved spots and its full transaction history. From that moment we hold that data about you under the account you kept.</li>
+    <li><strong>The other account is closed and its login is deleted.</strong></li>
+    <li><strong>This cannot be undone.</strong> The two sets of points are added together and there is no record of which came from where, beyond a single administrative entry noting that the accounts were joined, when, the address involved, and the totals that moved.</li>
+    <li><strong>Where a bonus was paid because one of the two accounts invited the other</strong>, that bonus is reversed when they are joined, since they turn out to be the same person. Bonuses paid to anyone else — a campus ambassador, for example — are not reversed.</li>
+  </ul>
+  <p>We will only ever join two accounts when someone proves they hold the mailbox and then confirms it. We never do it automatically.</p>
+
   <h2>3. How We Use Your Information</h2>
   <table>
     <thead>
@@ -351,6 +367,9 @@
       <tr><td>Your invite code</td><td>Until you delete your account</td></tr>
       <tr><td>Referral records (which account invited which)</td><td>Until either account is deleted, whichever comes first</td></tr>
       <tr><td>Bonus-point records (what we credited and why)</td><td>Retained indefinitely with your identity severed after account deletion (see Section 6)</td></tr>
+      <tr><td>A linked second email address, and the codes sent to confirm it</td><td>The address is kept while it is linked to your account. A confirmation code is deleted once it is used or expires, and in any case within about 30 days</td></tr>
+      <tr><td>The record that an address has been linked and whether a bonus was paid for it</td><td>Kept indefinitely, <em>including after you unlink it and after the account is deleted</em>, for the same reason as email suppressions above: it is the only thing that stops one mailbox collecting the same one-time bonus again and again. It holds the address and the amount only, and after account deletion it is attached to nobody &mdash; see Section 2.15</td></tr>
+      <tr><td>The record that two accounts were joined</td><td>Kept indefinitely. It holds the date, the address involved and the totals that moved &mdash; it is how a later question about your balance can be answered at all, since the join cannot be undone</td></tr>
     </tbody>
   </table>
 
@@ -366,13 +385,14 @@
     <li>Your <strong>transaction history records are retained but permanently anonymized</strong> — the link between those records and your identity is severed. This is necessary to preserve the accuracy of vendors' business records (e.g., total revenue statistics) which we are contractually obligated to maintain.</li>
     <li>Your <strong>bonus-point records are retained but permanently anonymized</strong> in the same way: the amount, the reason, and the date remain so that a promotion's spending still adds up, and the link to you is severed. What is left is an amount and a reason attached to nobody.</li>
   </ul>
-  <p><strong>One exception.</strong> If the app recorded a diagnostic error log for your account before you deleted it (see Section 2.5), that log keeps your user identifier until it is purged on its normal <strong>90-day</strong> schedule. These logs contain no name, email, or transaction data — only the identifier and technical debugging fields. After 90 days, no identifier associated with your account remains anywhere in our systems.</p>
+  <p><strong>Two exceptions beyond the anonymized records above.</strong> The first is the record that an email address was linked to a WeRewards account and whether a bonus was paid for it, described in Section 2.15 and in the retention table above. It survives deletion deliberately, it holds the address and an amount, and after deletion it names no account. If you deleted your account and signed up again with the same address, a one-time bonus already paid for it would not be paid a second time.</p>
+  <p>The second: if the app recorded a diagnostic error log for your account before you deleted it (see Section 2.5), that log keeps your user identifier until it is purged on its normal <strong>90-day</strong> schedule. These logs contain no name, email, or transaction data — only the identifier and technical debugging fields. After 90 days, no identifier associated with your account remains anywhere in our systems.</p>
   <p>Deletion is irreversible. Once deleted, your account and points cannot be recovered.</p>
 
   <!-- ══════════════════════════════════════════════════════════ -->
   <h2>7. Your Rights and Choices</h2>
   <h3>7.1 Data Export</h3>
-  <p>You can download a full copy of your WeRewards data at any time through <strong>Account tab → Download my data</strong>. The file is provided as a JSON file and includes your profile, your balances and community points balance, your full transaction history, your engagement scores, your deal-notification records, every bonus we have credited you and what it was for, your invite code, and your referral records.</p>
+  <p>You can download a full copy of your WeRewards data at any time through <strong>Account tab → Download my data</strong>. The file is provided as a JSON file and includes your profile, your balances and community points balance, your full transaction history, your engagement scores, your deal-notification records, every bonus we have credited you and what it was for, your invite code, your referral records, any second email address you have linked, and a record of any account that has been joined into yours.</p>
   <p>Your referral records are limited to <strong>your</strong> side of each invitation, in line with Section 2.12: an invitation you sent appears as its date, status, and what you were paid, without any identifier for the person you invited.</p>
   <h3>7.2 Account Deletion</h3>
   <p>As described in Section 6, you may delete your account at any time through the app.</p>

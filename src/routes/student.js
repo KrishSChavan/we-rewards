@@ -13,6 +13,21 @@ import { claimNearby } from '../lib/nearby.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
+import { emailEnabled } from '../lib/email.js';
+import {
+  normalizeStudentEmail,
+  linkDomains,
+  isStudentAddress,
+  studentEmailState,
+  accountIdForEmail,
+  claimFor,
+  issueLinkCode,
+  checkLinkCode,
+  payLinkBonus,
+  recordClaim,
+  claimHeldByOther,
+  CODE_TTL_MINUTES,
+} from '../lib/student-email.js';
 import { maybeAwardTrackedQr, readVisitorCookie, TRACKED_QR_COOKIE } from '../lib/tracked-qr.js';
 import {
   attributeSignup as attributeAmbassadorSignup,
@@ -80,8 +95,17 @@ router.get('/consent', async (req, res, next) => {
     if (error) throw error;
 
     const accepted = Boolean(profile?.terms_accepted_at) && profile.terms_version === TERMS_VERSION;
+
+    // Someone signing in with an address that is already PART of an account
+    // (migration-057) — almost always their own, months after they linked it.
+    // Surfaced here so the app can explain instead of showing a consent modal
+    // that accept-terms is about to refuse. Only asked for an account that does
+    // not exist yet; an existing student is never in this case.
+    const linkedElsewhere = profile ? null : await claimHeldByOther(req.user.email, req.user.id);
+
     res.json({
       accepted,
+      linkedElsewhere,
       // True when they previously agreed to an older version — the modal says
       // "our terms have changed" rather than greeting them as a new user.
       isRevision: Boolean(profile?.terms_accepted_at) && !accepted,
@@ -120,6 +144,33 @@ router.post('/accept-terms', async (req, res, next) => {
     // must not be able to name someone else's account or spoof a display name.
     const { id: userId, email } = req.user;
     const name = req.user.name ?? (email ? email.split('@')[0] : null);
+
+    // ⚠ THE RETURNING MERGED-AWAY ADDRESS (migration-057). This address may
+    // already be PART of somebody's account — theirs, most likely, from the day
+    // they linked it — and Google will happily mint a brand-new auth user for
+    // it anyway. Letting the upsert below run would build an empty profile on
+    // top of a merged identity, and the student would read that as their points
+    // having vanished.
+    //
+    // Only blocks a genuinely NEW account. Someone who already has a profile is
+    // re-accepting a revised TERMS_VERSION and must never be stopped: that path
+    // is how an existing student keeps using the app at all.
+    const { data: existing, error: exErr } = await supabaseAdmin
+      .from('profiles').select('user_id').eq('user_id', userId).maybeSingle();
+    if (exErr) throw exErr;
+
+    if (!existing) {
+      const held = await claimHeldByOther(email, userId);
+      if (held) {
+        return res.status(409).json({
+          error: 'EMAIL_LINKED_ELSEWHERE',
+          message: held.signInWith
+            ? `This email is already part of your WeRewards account. Sign in with ${held.signInWith} instead — your points and visits are all there.`
+            : 'This email is already part of another WeRewards account. Sign in with that one instead.',
+          signInWith: held.signInWith,
+        });
+      }
+    }
 
     // Upsert, not insert: re-accepting after a terms revision hits an existing
     // row, and a double-submit (double-tap, retry) must not 500.
@@ -1054,6 +1105,347 @@ router.post('/community-transfer', requireConsent, async (req, res, next) => {
  * `program` is null when no referral program is running, which the card uses to
  * hide itself rather than advertise a bonus nobody will be paid.
  */
+// ============================================================
+// Linking a student email (migration-057).
+//
+// Five endpoints, and the split between them is a security boundary rather
+// than a UI convenience:
+//
+//   GET    /student-email          what the Account screen should show
+//   POST   /student-email/start    mail a code. Answers IDENTICALLY whether or
+//                                  not the address has an account — otherwise
+//                                  it is an enumeration oracle for a whole
+//                                  university's address space.
+//   POST   /student-email/verify   spend a guess. Only a CORRECT code learns
+//                                  that a merge is coming, and only the inbox
+//                                  holder can produce one.
+//   POST   /student-email/merge    the confirm. Reads which address was proved
+//                                  from the server-side code row, never from
+//                                  the client — see student_email_code_pending.
+//   DELETE /student-email          unlink. Refused after a merge, because there
+//                                  is nothing to unlink back to.
+// ============================================================
+
+/** The linked-address columns requireConsent does not select. */
+async function linkProfile(userId) {
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('linked_email, linked_email_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+/**
+ * Can this account be absorbed? Both answers are refusals with the SAME message
+ * on purpose: "it's a vendor login" and "it never finished signing up" are
+ * different facts about somebody else's account, and neither is the student's
+ * business.
+ */
+async function absorbable(userId) {
+  const [{ count: staff, error: sErr }, { data: prof, error: pErr }] = await Promise.all([
+    supabaseAdmin.from('vendor_staff').select('vendor_id', { count: 'exact', head: true }).eq('user_id', userId),
+    supabaseAdmin.from('profiles').select('user_id').eq('user_id', userId).maybeSingle(),
+  ]);
+  if (sErr) throw sErr;
+  if (pErr) throw pErr;
+  return Boolean(prof) && !staff;
+}
+
+const IN_USE = {
+  error: 'ADDRESS_IN_USE',
+  message: 'That email is already used by another WeRewards account that can’t be merged. Get in touch and we’ll sort it out.',
+};
+
+router.get('/student-email', requireConsent, async (req, res, next) => {
+  try {
+    res.json(await studentEmailState(req.user, await linkProfile(req.user.id)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/student-email/start — mail a one-time code.
+ *
+ * ⚠ THE UNIFORM ANSWER. Everything below either rejects on a fact the CALLER
+ * already knows (their own address, the wrong domain, an address this account
+ * has already linked) or succeeds. It must never branch on whether the address
+ * has an account of its own, and it must never report that the per-account
+ * cooldown swallowed the send — both would answer a question the caller has no
+ * right to ask, about a mailbox they may not hold.
+ */
+router.post('/student-email/start', requireConsent, async (req, res, next) => {
+  try {
+    const parsed = normalizeStudentEmail(req.body?.email);
+    if (parsed.error) return res.status(400).json({ error: 'BAD_EMAIL', message: parsed.error });
+    const { email, norm } = parsed;
+
+    if (!emailEnabled) {
+      return res.status(503).json({
+        error: 'EMAIL_OFF',
+        message: 'We can’t send email right now, so this can’t be verified. Try again later.',
+      });
+    }
+
+    const domains = await linkDomains();
+    if (!isStudentAddress(email, domains)) {
+      return res.status(400).json({
+        error: 'NOT_STUDENT_EMAIL',
+        message: `That needs to be a ${domains.map((d) => `@${d}`).join(' or ')} address.`,
+      });
+    }
+
+    // Their own sign-in address. Nothing to link, and the merge would be an
+    // account absorbing itself.
+    if (email === String(req.user.email ?? '').trim().toLowerCase()) {
+      return res.status(400).json({
+        error: 'SAME_EMAIL',
+        message: 'That’s the email you already sign in with.',
+      });
+    }
+
+    const profile = await linkProfile(req.user.id);
+    if (profile?.linked_email && profile.linked_email !== email) {
+      return res.status(409).json({
+        error: 'ALREADY_LINKED',
+        message: `You’ve already linked ${profile.linked_email}. Unlink it first to use a different one.`,
+      });
+    }
+
+    // Held by a LIVE claim on another account. Safe to disclose: the address is
+    // spoken for by someone who proved they hold it, and the alternative is
+    // mailing a code that can never be redeemed.
+    const claim = await claimFor(norm);
+    if (claim && !claim.released_at && claim.user_id && claim.user_id !== req.user.id) {
+      return res.status(409).json(IN_USE);
+    }
+
+    // The one thing the email itself is allowed to say, because the only reader
+    // is whoever holds the inbox. Deliberately NOT in the response.
+    const otherId = await accountIdForEmail(email);
+    const willMerge = Boolean(otherId) && otherId !== req.user.id;
+
+    const sent = await issueLinkCode({
+      userId: req.user.id,
+      email,
+      norm,
+      signedInAs: req.user.email,
+      willMerge,
+    });
+
+    res.json({
+      ok: true,
+      sentTo: sent.sentTo,
+      expiresInMinutes: CODE_TTL_MINUTES,
+      // Echoed so the next screen can title itself without re-reading state.
+      email,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/student-email/verify — spend one guess.
+ *
+ * Two outcomes on success. Where the address has no account of its own the job
+ * is finished here: the claim is recorded and the bonus paid. Where it does,
+ * NOTHING is done — the code is marked proved and stays live while the student
+ * reads what a merge would move and decides. See the verified_at column.
+ */
+router.post('/student-email/verify', requireConsent, async (req, res, next) => {
+  try {
+    const check = await checkLinkCode({ userId: req.user.id, code: req.body?.code });
+    if (!check.ok) {
+      return res.status(400).json({
+        error: check.burned ? 'CODE_BURNED' : 'BAD_CODE',
+        message: check.burned
+          ? 'That code has had too many wrong tries. Send a new one.'
+          : 'That code isn’t right. Check the email and try again.',
+      });
+    }
+
+    const { id: codeId, email, norm } = check;
+    const otherId = await accountIdForEmail(email);
+
+    // ---- the simple half: nobody else holds it ----
+    if (!otherId || otherId === req.user.id) {
+      await supabaseAdmin.rpc('student_email_code_consume', { p_id: codeId });
+
+      const bonus = await payLinkBonus({ userId: req.user.id, email, norm });
+      await recordClaim({ userId: req.user.id, email, norm, bonusPoints: bonus });
+
+      if (bonus > 0) {
+        const { data } = await supabaseAdmin
+          .from('community_balances').select('balance').eq('user_id', req.user.id).maybeSingle();
+        emitBalance(req.user.id, { community: data?.balance ?? 0 });
+      }
+      return res.json({ ok: true, linked: { email }, bonus });
+    }
+
+    // ---- the other half: it has its own account ----
+    if (!(await absorbable(otherId))) {
+      // Burn the code rather than leave it live: this address is not going to
+      // become linkable by retrying, and a live code is a live credential.
+      await supabaseAdmin.rpc('student_email_code_consume', { p_id: codeId });
+      return res.status(409).json(IN_USE);
+    }
+
+    await supabaseAdmin.rpc('student_email_code_verify', { p_id: codeId });
+
+    const { data: preview, error } = await supabaseAdmin.rpc('preview_student_merge', {
+      p_winner: req.user.id,
+      p_loser: otherId,
+    });
+    if (error) throw error;
+
+    res.json({ ok: true, needsMerge: true, email, preview });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/student-email/merge — the confirm, and the irreversible bit.
+ *
+ * ORDER MATTERS. The SQL function moves everything and deletes the losing
+ * PROFILE in one transaction; the auth user goes afterwards, in a separate API
+ * call that can fail. That direction is the safe one: a husk auth user with no
+ * profile signs in to a blank account, which the claim row then recognises. The
+ * reverse — delete the auth user first — would cascade the profile away and
+ * ANONYMISE the transactions being merged (migration-011), silently, before
+ * anything had moved.
+ */
+router.post('/student-email/merge', requireConsent, async (req, res, next) => {
+  try {
+    const { data: pendingRows, error: pErr } = await supabaseAdmin
+      .rpc('student_email_code_pending', { p_user_id: req.user.id });
+    if (pErr) throw pErr;
+
+    const pending = pendingRows?.[0];
+    if (!pending) {
+      return res.status(400).json({
+        error: 'NO_PROOF',
+        message: 'That took too long. Send yourself a new code and try again.',
+      });
+    }
+
+    const email = pending.code_email;
+    const norm = pending.code_email_norm;
+    const otherId = await accountIdForEmail(email);
+
+    // The other account disappeared between the proof and the confirm (they
+    // deleted it, or support did). Nothing to merge — finish as a plain link
+    // rather than failing a student who did everything right.
+    if (!otherId || otherId === req.user.id) {
+      await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
+      const bonus = await payLinkBonus({ userId: req.user.id, email, norm });
+      await recordClaim({ userId: req.user.id, email, norm, bonusPoints: bonus });
+      return res.json({ ok: true, linked: { email }, bonus, merged: null });
+    }
+
+    if (!(await absorbable(otherId))) {
+      await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
+      return res.status(409).json(IN_USE);
+    }
+
+    const { data: result, error: mErr } = await supabaseAdmin.rpc('merge_student_accounts', {
+      p_winner: req.user.id,
+      p_loser: otherId,
+      p_loser_email: email,
+    });
+    if (mErr) {
+      const msg = String(mErr.message ?? '');
+      if (msg.includes('MERGE_LOSER_IS_VENDOR')) {
+        await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
+        return res.status(409).json(IN_USE);
+      }
+      throw mErr;
+    }
+
+    // Spent. Done before the auth delete so a crash in there cannot leave a
+    // live code that would run the whole merge a second time.
+    await supabaseAdmin.rpc('student_email_code_consume', { p_id: pending.code_id });
+
+    // Best effort, and loud when it fails. The data is already merged; what is
+    // left is an auth user with no profile, which signs in to a blank account
+    // rather than to someone else's.
+    const { error: dErr } = await supabaseAdmin.auth.admin.deleteUser(otherId);
+    if (dErr) {
+      console.error(`[student-email] merged ${otherId} into ${req.user.id} but could not delete `
+        + `the auth user: ${dErr.message}`);
+    }
+
+    const bonus = await payLinkBonus({ userId: req.user.id, email, norm });
+    await recordClaim({ userId: req.user.id, email, norm, bonusPoints: bonus, mergedFrom: otherId });
+
+    // The snapshot the merge deleted. Recomputed here rather than left to the
+    // next award, because tier drives the multiplier the student is shown the
+    // moment this screen closes. Never fatal — persistTierSnapshot logs and
+    // returns on its own failures.
+    try {
+      await persistTierSnapshot(req.user.id, await computeTierProfile(req.user.id));
+    } catch (err) {
+      console.warn(`[student-email] tier recompute failed for ${req.user.id}: ${err?.message ?? err}`);
+    }
+
+    const { data: community } = await supabaseAdmin
+      .from('community_balances').select('balance').eq('user_id', req.user.id).maybeSingle();
+    emitBalance(req.user.id, { community: community?.balance ?? 0, refresh: true });
+
+    res.json({ ok: true, linked: { email }, merged: result, bonus });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/me/student-email — unlink.
+ *
+ * Only ever reaches a plain link. A merge has no undo: the two balances were
+ * summed and the other account is gone, so "unlink" would be a button that
+ * quietly does nothing to the thing the student means by it.
+ *
+ * The claims row is RELEASED, never deleted. bonus_points on it is the fence
+ * that stops the address being linked to a second account for a second payout.
+ */
+router.delete('/student-email', requireConsent, async (req, res, next) => {
+  try {
+    const profile = await linkProfile(req.user.id);
+    if (!profile?.linked_email) return res.json({ ok: true });
+
+    const parsed = normalizeStudentEmail(profile.linked_email);
+    const claim = parsed.norm ? await claimFor(parsed.norm) : null;
+
+    if (claim?.merged_from) {
+      return res.status(409).json({
+        error: 'CANNOT_UNLINK_MERGED',
+        message: 'That email was merged in with its own account, so it can’t be unlinked.',
+      });
+    }
+
+    if (claim) {
+      const { error } = await supabaseAdmin
+        .from('student_email_claims')
+        .update({ user_id: null, released_at: new Date().toISOString() })
+        .eq('email_norm', claim.email_norm);
+      if (error) throw error;
+    }
+
+    const { error: pErr } = await supabaseAdmin
+      .from('profiles')
+      .update({ linked_email: null, linked_email_at: null })
+      .eq('user_id', req.user.id);
+    if (pErr) throw pErr;
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/referral', requireConsent, async (req, res, next) => {
   try {
     const [{ data: profile, error: pErr }, program] = await Promise.all([
@@ -1674,8 +2066,8 @@ router.post('/nearby/claim', requireConsent, async (req, res, next) => {
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby] = await Promise.all([
-      supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at, referral_code').eq('user_id', uid).maybeSingle(),
+    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby, linkedEmail, merges] = await Promise.all([
+      supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at, referral_code, linked_email, linked_email_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
       // The shared purses (migration-044). Points a student holds in a pool are
       // still their points, and they are NOT in point_balances above: an export
@@ -1740,9 +2132,36 @@ router.get('/export', async (req, res, next) => {
         .select('vendor_id, notified_at, vendors(name)')
         .eq('user_id', uid)
         .order('notified_at', { ascending: false }),
+      // A linked student email and any account we folded into this one
+      // (migration-057). Both are things we hold ABOUT them that nothing else
+      // in this file would reveal — and the merge row in particular is the only
+      // remaining trace of an account that no longer exists, which makes it
+      // exactly the kind of record an export exists to surface. The merge row
+      // is deliberately selected without loser_id: that is an identifier for a
+      // deleted account, and the same rule that keeps friend_id out of the
+      // referral block above applies to it.
+      supabaseAdmin
+        .from('student_email_claims')
+        .select('email, verified_at, bonus_points, merged_from, released_at')
+        .eq('user_id', uid)
+        .maybeSingle(),
+      supabaseAdmin
+        .from('account_merges')
+        .select('loser_email, points_moved, community_moved, punches_moved, duplicate_nights, spots_gained, transactions_moved, created_at')
+        .eq('winner_id', uid)
+        .order('created_at', { ascending: false }),
     ]);
     for (const r of [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby]) {
       if (r.error) throw r.error;
+    }
+    // The two migration-057 reads are DELIBERATELY not in that list. This route
+    // worked before those tables existed, and export is a right the Privacy
+    // Policy promises "at any time" — failing the whole download because one
+    // optional section is missing would be a worse answer than omitting it.
+    // The realistic case is a deploy that reached the dyno before the migration
+    // reached the database, which this repo has seen more than once.
+    for (const r of [linkedEmail, merges]) {
+      if (r.error) console.warn(`[export] student-email section unavailable: ${r.error.message} (migration-057 applied?)`);
     }
 
     res.setHeader('Content-Disposition', 'attachment; filename="werewards-data.json"');
@@ -1778,6 +2197,21 @@ router.get('/export', async (req, res, next) => {
       // Bonus points from an incentive or an operator, and the referral links
       // we hold about this student.
       bonusPoints: grants.data ?? [],
+      // The student email linked to this account, and every account folded into
+      // it (migration-057). Both are null/empty for almost everyone. The merge
+      // rows carry no loser_id on purpose — that identifies a deleted account,
+      // and the same rule that keeps friend_id out of the referral block below
+      // applies to it.
+      studentEmail: linkedEmail.data && !linkedEmail.error
+        ? {
+            email: linkedEmail.data.email,
+            linkedAt: linkedEmail.data.verified_at,
+            bonusPaid: linkedEmail.data.bonus_points,
+            wasMerge: Boolean(linkedEmail.data.merged_from),
+            unlinkedAt: linkedEmail.data.released_at,
+          }
+        : null,
+      accountsMerged: merges.error ? [] : (merges.data ?? []),
       referrals: {
         code: profile.data?.referral_code ?? null,
         invitesSent: invitesSent.data ?? [],

@@ -436,6 +436,36 @@ app.use([
   '/api/me/redeem-code',
 ], redeemLimiter);
 app.use('/api/vendor/campaigns', campaignLimiter);
+// Linking a student email (migration-057). Two stacked caps, for the two
+// different things that can be abused on this prefix — the same split
+// /api/vendor/recover already makes, and for the same reason.
+//
+// The outer one bounds GUESSES. A six-digit code is enumerable, and the
+// per-code five-attempt burn is not by itself enough: without an IP cap, an
+// attacker just asks for code after code. Sized well above a student who
+// mistypes a few times.
+app.use('/api/me/student-email', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many attempts, wait a few minutes.' },
+}));
+// The inner one bounds MAIL. /start is the half that sends, and on campus wifi
+// this is one NAT'd IP for everybody — which is exactly why the real fence is
+// the per-account cooldown inside student_email_code_issue (it survives IP
+// rotation, and a shared IP cannot spend someone else's budget). This bounds
+// how much mail one network can be made to generate, nothing more.
+//
+// Same uniform answer shape as the route: a caller must not be able to tell a
+// rate limit from a successful send.
+app.use('/api/me/student-email/start', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: true, message: 'If that address can be linked, a code is on its way. It lasts 15 minutes.' },
+}));
 app.use('/api/me/community-transfer', transferLimiter);
 app.use('/api/me/referral', referralLimiter);
 app.use('/api/me/punch', punchLimiter);
