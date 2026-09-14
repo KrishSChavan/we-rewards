@@ -1361,6 +1361,15 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
      .move-max uses, and for the same reason. */
   color: var(--navy);
 }
+/* Fine print inside the sheet. Same treatment as .install-guide-hint, which is
+   the other place a sheet has to say something quietly without it reading as a
+   warning. Negative top margin pulls it under the line it qualifies, since
+   .link-view's gap would otherwise float it as its own paragraph. */
+.link-fine {
+  margin-top: -0.35rem;
+  font-size: 0.8rem; font-weight: 700; color: var(--muted);
+  text-align: center; line-height: 1.35;
+}
 .link-gains li b { font-variant-numeric: tabular-nums; }
 /* Not --muted: that is also light in dark mode. A softened navy keeps the
    secondary weight without leaving the readable pairing above. */

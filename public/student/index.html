@@ -1676,6 +1676,14 @@
       <!-- view 2: the code -->
       <div id="link-email-code-view" class="link-view" hidden>
         <p class="detail-desc" id="link-code-sent"></p>
+        <!-- Fine print, and it earns its place: this mail goes to a university
+             address that has never heard from us, from a domain the recipient's
+             filter has no history with, and it is a one-time code — which is
+             the exact shape of message spam filters are most suspicious of.
+             "It never arrived" is therefore the single likeliest way this flow
+             fails, and it fails silently. Said HERE rather than next to the
+             resend button because this is where someone sits waiting. -->
+        <p class="link-fine">Can’t find it? Check your spam or junk folder — it may have landed there.</p>
         <label class="link-label" for="link-code-input">The 6-digit code</label>
         <!-- one-time-code lets iOS and Android offer the code straight from the
              notification, which is the difference between typing six digits and
