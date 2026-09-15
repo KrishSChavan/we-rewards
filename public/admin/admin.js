@@ -3188,7 +3188,7 @@ function renderReferralPanel() {
   const note = $('inc-note');
   if (p) {
     const r = p.referrals ?? {};
-    note.textContent = `${budgetLine(p)}. ${num(r.paid ?? 0)} referrals paid, ${num(r.pending ?? 0)} waiting on a first purchase.`;
+    note.textContent = `${budgetLine(p)}. ${num(r.paid ?? 0)} referrals paid, ${num(r.pending ?? 0)} refused so far.`;
     note.hidden = false;
   } else {
     note.hidden = true;
@@ -3345,8 +3345,9 @@ async function patchIncentive(id, patch, prefix = 'inc') {
 }
 
 // Turning a program off stops NEW attributions. Referrals already recorded keep
-// their snapshotted payout and still settle when the friend buys something —
-// which is the honest behavior, and worth saying out loud in the confirm.
+// their snapshotted payout and are still owed — which is the honest behavior,
+// and worth saying out loud in the confirm. Since migration-058 the only ones
+// left in that state are payouts a budget refused.
 function toggleIncentive() {
   const p = currentIncentive('referral');
   if (!p) return;
@@ -3356,7 +3357,7 @@ function toggleIncentive() {
   }
   const waiting = p.referrals?.pending ?? 0;
   const tail = waiting
-    ? `\n\n${waiting} referral${waiting === 1 ? '' : 's'} already recorded will still be paid when those students make their first purchase.`
+    ? `\n\n${waiting} referral${waiting === 1 ? '' : 's'} already recorded are still owed and will be paid as soon as there is budget for them.`
     : '';
   if (!confirm(`Turn off “${p.name}”?\n\nNo new invite codes will be accepted.${tail}`)) return;
   patchIncentive(p.id, { active: false });

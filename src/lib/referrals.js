@@ -1,19 +1,24 @@
 // Referrals (migration-039) — the first incentive kind.
 //
 // A student shares a link carrying their own six-character code. A friend who
-// opens it, signs up and then actually EARNS points somewhere pays the referrer
-// a community-point bonus. The friend's own bonus lands at attribution, because
-// that is the moment they are looking at the screen.
+// opens it and signs up pays BOTH of them a community-point bonus, and both
+// land at attribution — the moment the friend is looking at the screen.
 //
 // Two rules shape everything here:
 //
-//   1. The referrer is paid for a PURCHASE, not a signup. A Google account is
-//      free and takes thirty seconds; a purchase at a real counter cannot be
-//      manufactured. Every other anti-fraud control in this file is a backstop
-//      to that one.
-//   2. Payouts never run on a request a cashier is waiting on. Qualification is
-//      a sweep (settle_referrals), so a bug, a lock or an exhausted budget in
-//      here can delay a bonus but can never fail an award. See the WHY A
+//   1. BOTH BONUSES ARE PAID AT SIGNUP (migration-058). The referrer's half used
+//      to wait for the friend's first purchase, on the reasoning that a Google
+//      account is free and takes thirty seconds while a purchase at a real
+//      counter cannot be manufactured. That gate is gone, so it is no longer
+//      backstopping anything: the controls that remain are the per-referrer cap
+//      (REFERRAL_DEFAULTS.maxPerReferrer), the one-attribution-per-account
+//      index, the signup window, and the program's budget. ⚠ THE CAP AND THE
+//      BUDGET ARE NOW THE ONLY THINGS STANDING BETWEEN THIS PROGRAM AND SOMEONE
+//      WITH A SPARE AFTERNOON AND A LIST OF GOOGLE ACCOUNTS. Set both.
+//   2. Payouts never run on a request a cashier is waiting on. Nothing in here
+//      is reached from the award path, and every payout is best-effort with a
+//      sweep behind it (settle_referrals), so a bug, a lock or an exhausted
+//      budget can delay a bonus but can never fail an award. See the WHY A
 //      SWEEPER note at the top of migration-039.sql.
 //
 // The attribution rules themselves (self-referral, one-per-friend, account age,
@@ -33,8 +38,8 @@ const CODE_RE = new RegExp(`^[${CODE_ALPHABET}]{6}$`);
  * pre-filled with — a running program keeps what it was created with.
  */
 export const REFERRAL_DEFAULTS = {
-  referrerPoints: 10,      // paid when the friend first earns points anywhere
-  friendPoints: 10,        // paid to the friend at signup
+  referrerPoints: 10,      // paid to the referrer at attribution (migration-058)
+  friendPoints: 10,        // paid to the friend at attribution
   maxPerReferrer: 10,      // null = unlimited
   signupWindowDays: 14,    // how long after signup a code can still be claimed
 };
@@ -121,14 +126,15 @@ export async function activeReferralProgram() {
 }
 
 /**
- * Record that `userId` was referred with `rawCode`, and pay the friend's own
- * bonus. Throws an Error whose message is one of the REFERRAL_* codes in
- * server.js's error map.
+ * Record that `userId` was referred with `rawCode`, and pay BOTH bonuses.
+ * Throws an Error whose message is one of the REFERRAL_* codes in server.js's
+ * error map.
  *
- * Order matters: the referrals row is written FIRST and the friend's bonus
- * second. The row is the durable thing — it is what pays the referrer later —
- * so a failed bonus must not cost the referrer their referral. An unpaid bonus
- * is picked up by the next sweep instead.
+ * Order matters: the referrals row is written FIRST and the two bonuses after
+ * it. The row is the durable thing — it is what the sweep retries from — so a
+ * refused bonus must not cost either side their referral. An unpaid bonus is
+ * picked up by the next sweep instead, which is why neither payout is allowed
+ * to throw from here.
  */
 export async function attributeReferral(userId, rawCode) {
   const code = normalizeCode(rawCode);
@@ -219,7 +225,26 @@ export async function attributeReferral(userId, rawCode) {
     friendPaid = await payFriendBonus(row.id, userId, cfg.friendPoints, program.id);
   }
 
-  return { referralId: row.id, friendPoints: friendPaid, referrerPoints: cfg.referrerPoints };
+  // The referrer's bonus, on exactly the same terms (migration-058). This used
+  // to be settle_referrals' job, gated on the friend's first purchase; it is now
+  // paid here, at signup. Still best-effort, and still after the row: an
+  // exhausted budget leaves the referral pending and the sweep pays it the
+  // moment an operator raises the budget.
+  let referrerPaid = 0;
+  if (cfg.referrerPoints > 0) {
+    referrerPaid = await payReferrerBonus(row.id, referrer.user_id, cfg.referrerPoints, program.id);
+  }
+
+  return {
+    referralId: row.id,
+    friendPoints: friendPaid,
+    // Who to push a live balance to — the referrer is very often sitting in the
+    // app when this lands, and their counter should move without a reload.
+    referrerId: referrer.user_id,
+    // NOTE: what was actually PAID, not what was promised. Before migration-058
+    // this returned cfg.referrerPoints, which nothing could have paid yet.
+    referrerPoints: referrerPaid,
+  };
 }
 
 /**
@@ -246,9 +271,56 @@ async function payFriendBonus(referralId, userId, points, incentiveId) {
 }
 
 /**
- * One sweep: pay every referrer whose friend has now earned, then retry any
+ * Credit the REFERRER's bonus and mark the referral paid (migration-058).
+ * Returns the points actually paid, 0 if the grant was refused.
+ *
+ * Two writes, and they can come apart: grant_community_points moves the money,
+ * the update records that it moved. If the second one fails the row stays
+ * pending with the grant already written — which would have stalled forever
+ * under the old sweeper, because its retry would hit GRANT_ALREADY_PAID and
+ * treat it as a failure. migration-058 teaches settle_referrals to read that
+ * error as "already done, mark it" instead, so this pair is allowed to tear.
+ * The money is never at risk either way: the grant's UNIQUE (ref_id, kind)
+ * index means a retry can only ever pay once.
+ */
+async function payReferrerBonus(referralId, referrerId, points, incentiveId) {
+  const { error } = await supabaseAdmin.rpc('grant_community_points', {
+    p_user_id: referrerId,
+    p_points: points,
+    p_kind: 'referral_referrer',
+    p_reason: 'Referral bonus',
+    p_incentive_id: incentiveId,
+    p_ref_id: referralId,
+    p_granted_by: 'system',
+  });
+  // ALREADY_PAID is a concurrent sweep having got there first. The referrer has
+  // the points, so it falls through to the update with the success path.
+  if (error && !String(error.message ?? '').includes('GRANT_ALREADY_PAID')) {
+    console.warn(`[referrals] referrer bonus unpaid for ${referralId}: ${error.message}`);
+    return 0;
+  }
+
+  const now = new Date().toISOString();
+  const { error: uErr } = await supabaseAdmin
+    .from('referrals')
+    .update({ status: 'paid', qualified_at: now, paid_at: now })
+    .eq('id', referralId)
+    // Guarded so this can never walk back a 'void' — an account join reverses a
+    // referral by voiding it (Policy §2.15), and that decision outranks this one.
+    .eq('status', 'pending');
+  if (uErr) console.warn(`[referrals] ${referralId} paid but not marked: ${uErr.message}`);
+  return points;
+}
+
+/**
+ * One sweep: pay every referral still owed a referrer bonus, then retry any
  * friend bonus that never landed. Returns counts for the log and for the
  * admin tab's "Settle now" button.
+ *
+ * Since migration-058 both halves are paid inline at attribution, so a healthy
+ * program leaves this with nothing to do. It is now purely the retry for a
+ * payout that was refused — an exhausted budget, in practice — plus the healer
+ * for a referral whose grant landed and whose status update did not.
  */
 export async function runReferralSweep(limit = 50) {
   const { data, error } = await supabaseAdmin.rpc('settle_referrals', { p_limit: limit });

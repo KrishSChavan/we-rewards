@@ -247,7 +247,7 @@
           <h3>Refer a friend</h3>
           <span id="inc-state" class="inc-state"></span>
         </div>
-        <p class="muted">Every student has a share code. A friend who opens their link, signs up, and then <strong>actually buys something</strong> at any spot pays the referrer a community-point bonus. The friend's own bonus lands the moment they sign up. Paying on a purchase rather than a signup is deliberate: a Google account is free and takes thirty seconds, a purchase at a real counter can't be faked.</p>
+        <p class="muted">Every student has a share code. A friend who opens their link and signs up pays <strong>both of them</strong> a community-point bonus, and both land the moment the code is used — nobody waits for a purchase. <strong>That makes the two caps below the only thing limiting this program.</strong> A Google account is free and takes thirty seconds, so an uncapped referrer bonus with no budget is an open tap: set <em>Referrals per student</em> and <em>Total budget</em> before you turn this on.</p>
 
         <form id="inc-form" class="inc-form" novalidate>
           <div class="inc-field inc-field-wide">
@@ -259,7 +259,7 @@
           <div class="inc-field">
             <label class="vendor-edit-label" for="inc-referrer-points">Referrer gets</label>
             <input id="inc-referrer-points" class="nv-input" type="number" inputmode="numeric" min="0" max="5000" step="1" />
-            <span class="vendor-edit-hint">Paid when their friend first earns points anywhere.</span>
+            <span class="vendor-edit-hint">Paid at signup, the moment their friend uses the code.</span>
           </div>
 
           <div class="inc-field">
@@ -271,7 +271,7 @@
           <div class="inc-field">
             <label class="vendor-edit-label" for="inc-max-per">Referrals per student</label>
             <input id="inc-max-per" class="nv-input" type="number" inputmode="numeric" min="1" max="1000" step="1" placeholder="Unlimited" />
-            <span class="vendor-edit-hint">Blank for unlimited. A cap is your cheapest defence against one person farming it.</span>
+            <span class="vendor-edit-hint">Blank for unlimited — which, now that a signup alone pays out, means genuinely unlimited. This is your cheapest defence against one person farming it.</span>
           </div>
 
           <div class="inc-field">
@@ -376,7 +376,7 @@
             <button id="ref-settle-btn" class="btn-ghost btn-compact" type="button">Settle now</button>
           </div>
         </div>
-        <p class="muted"><strong>Waiting</strong> means the friend signed up but hasn't bought anything yet, so the referrer hasn't been paid. Settlement runs by itself every 45 seconds; <strong>Settle now</strong> just doesn't make you wait for it.</p>
+        <p class="muted">Both bonuses are paid the moment a code is used, so rows here should read <strong>Paid</strong> almost immediately. <strong>Waiting</strong> now means a payout was refused — nearly always an exhausted budget. Raise it and they settle by themselves within 45 seconds; <strong>Settle now</strong> just doesn't make you wait.</p>
         <div class="list-tools">
           <input id="ref-q" class="list-q" type="search" placeholder="Search by email, code or status" autocomplete="off" spellcheck="false" aria-label="Search referrals" />
           <button id="ref-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>

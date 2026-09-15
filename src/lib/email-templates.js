@@ -52,6 +52,17 @@ export function esc(value) {
  * @param {string} o.preheader   inbox preview text; never optional (see header)
  * @param {string} o.body        already-escaped HTML for the card's middle
  * @param {string} [o.footer]    small print under the card, already escaped
+ *
+ * The preheader div is hidden deliberately, and its contents must stay CLEAN.
+ * Until Sept 2026 it was padded with '&#847;&zwnj;&nbsp;'.repeat(60) to stop
+ * clients pulling body copy into the inbox preview. That put 180 zero-width
+ * characters inside a display:none block on every email the app sent, which is
+ * the signature of keyword obfuscation: Outlook scored it, told the reader
+ * "invisible characters found in email", and filed the message as junk. Do not
+ * reintroduce a padding run. Write a preheader that reads as a full sentence.
+ *
+ * Nothing in this shell emits an HTML comment either. Comments ship to the
+ * recipient and are read by content filters; notes for us belong here instead.
  */
 function layout({ title, preheader, body, footer = '' }) {
   return `<!doctype html>
@@ -64,11 +75,8 @@ function layout({ title, preheader, body, footer = '' }) {
 <title>${esc(title)}</title>
 </head>
 <body style="margin:0;padding:0;background:${PAGE};">
-<!-- Preheader: shown next to the subject in the inbox list, hidden in the body.
-     The trailing whitespace run stops clients from pulling the first line of
-     real copy in after it. -->
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;height:0;width:0;">
-${esc(preheader)}${'&#847;&zwnj;&nbsp;'.repeat(60)}
+${esc(preheader)}
 </div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${PAGE};">
 <tr><td align="center" style="padding:24px 12px;">

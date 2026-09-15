@@ -1920,7 +1920,11 @@ function dropHistory() {
 /** How a community-point grant reads in History, by the ledger's `kind`. */
 const GRANT_TITLES = {
   referral_friend: 'Invite bonus',
-  referral_referrer: 'A friend you invited started earning',
+  // Reads the moment the friend signs up, not when they first buy something
+  // (migration-058). Old rows carry the same `kind` and get this title too,
+  // which is fine — "joined" was true of them then as well, it just wasn't the
+  // part being paid for.
+  referral_referrer: 'A friend joined with your invite',
   signup_domain: 'Signup bonus',
 };
 
@@ -7331,11 +7335,13 @@ async function loadReferral() {
   if (!joined) {
     sub = program.friendPoints > 0
       ? `They get ${program.friendPoints}, you get ${program.referrerPoints}`
-      : `Get ${program.referrerPoints} points when they buy something`;
+      : `Get ${program.referrerPoints} points when a friend joins`;
   } else if (waiting) {
-    // Naming the condition is the point: "waiting" with no reason reads as a
-    // bug, and the student can actually do something about this one.
-    sub = `${joined} joined · ${waiting} yet to buy anything`;
+    // Since migration-058 this is no longer "they haven't bought anything yet",
+    // and the student can no longer do anything about it — the bonus was earned
+    // and refused, which in practice means the program is out of budget. So the
+    // line stops naming a condition they could chase and just says it is owed.
+    sub = `${joined} joined · ${waiting} bonus still to land`;
   } else {
     sub = `${joined} joined · ${earned} points earned`;
   }

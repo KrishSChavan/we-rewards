@@ -1465,6 +1465,30 @@ router.delete('/student-email', requireConsent, async (req, res, next) => {
   }
 });
 
+/**
+ * Push one student's community balance down their socket, if they have one.
+ * Read-then-emit, because the grant happened inside a SQL function and this
+ * side never saw the resulting number.
+ *
+ * Its own function because a referral now pays TWO people in one request
+ * (migration-058) and the second of them is not req.user — which is the one
+ * detail that makes copying the three-line version wrong rather than verbose.
+ * A failed read is swallowed: a stale counter is a refresh away, and it must
+ * never turn a successful payout into a 500.
+ */
+async function pushCommunityBalance(userId) {
+  try {
+    const { data } = await supabaseAdmin
+      .from('community_balances')
+      .select('balance')
+      .eq('user_id', userId)
+      .maybeSingle();
+    emitBalance(userId, { community: data?.balance ?? 0 });
+  } catch (err) {
+    console.warn(`[referrals] balance push failed for ${userId}: ${err?.message ?? err}`);
+  }
+}
+
 router.get('/referral', requireConsent, async (req, res, next) => {
   try {
     const [{ data: profile, error: pErr }, program] = await Promise.all([
@@ -1492,8 +1516,11 @@ router.get('/referral', requireConsent, async (req, res, next) => {
       code,
       shareUrl: code ? `${origin}/?ref=${code}` : null,
       joined: rows.length,
-      // "Waiting" is the honest word: the friend signed up but hasn't bought
-      // anything yet, and the card says exactly that.
+      // Since migration-058 both bonuses are paid at signup, so this is no
+      // longer "the friend hasn't bought anything yet" — it is a payout that was
+      // REFUSED, which in practice means the program ran out of budget. Rare,
+      // and an operator can fix it, but it is still the honest word for a
+      // student who has been promised points that are not in their balance.
       waiting: rows.filter((r) => r.status === 'pending').length,
       earned: rows.filter((r) => r.status === 'paid').reduce((n, r) => n + r.referrer_points, 0),
       program: program
@@ -1522,12 +1549,14 @@ router.post('/referral', requireConsent, async (req, res, next) => {
     // The friend's signup bonus lands immediately, so push it the same way an
     // award does and their counter moves while they're still on the screen.
     if (result.friendPoints > 0) {
-      const { data } = await supabaseAdmin
-        .from('community_balances')
-        .select('balance')
-        .eq('user_id', req.user.id)
-        .maybeSingle();
-      emitBalance(req.user.id, { community: data?.balance ?? 0 });
+      await pushCommunityBalance(req.user.id);
+    }
+    // And since migration-058 so does the REFERRER's, to someone who is very
+    // often holding their phone at that exact moment — they just sent the link.
+    // Their socket may not be connected, which is fine: emitBalance is a no-op
+    // then, and the next /api/me/community read gets the same number.
+    if (result.referrerPoints > 0 && result.referrerId) {
+      await pushCommunityBalance(result.referrerId);
     }
     res.status(201).json(result);
   } catch (err) {

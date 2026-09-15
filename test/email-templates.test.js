@@ -14,6 +14,7 @@ import {
   applicationReceived,
   applicationAccepted,
   vendorResetCode,
+  studentEmailCode,
   dealDigest,
 } from '../src/lib/email-templates.js';
 
@@ -30,6 +31,26 @@ function assertWellFormed(msg, label) {
   // No remote assets. They are blocked by default, so anything load-bearing
   // that lives in one is invisible on first open.
   assert.equal(/<img[\s>]|url\(http/i.test(msg.html), false, `${label}: references a remote asset`);
+  // Zero-width and non-spacing characters inside a hidden element are the
+  // signature of keyword obfuscation. A padding run of them in the preheader
+  // is what made Outlook report "invisible characters found in email" and file
+  // the whole message as junk. The guard is on what a CLIENT decodes, not on
+  // the source, because the entity forms are what a template would reach for.
+  const decoded = msg.html
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&zwnj;/g, '\u200c')
+    .replace(/&zwj;/g, '\u200d')
+    .replace(/&nbsp;/g, '\u00a0')
+    .replace(/&shy;/g, '\u00ad');
+  const invisible = decoded.match(/[\u00a0\u00ad\u034f\u200b-\u200f\u2060-\u2064\ufeff]/g) ?? [];
+  assert.equal(invisible.length, 0, `${label}: ships ${invisible.length} invisible characters`);
+  // Comments ship to the recipient and are read by content filters. Notes to
+  // ourselves belong in the source, not in the message.
+  assert.equal(/<!--/.test(msg.html.replace(/^<!doctype html>/i, '')), false, `${label}: emits an HTML comment`);
+  // RFC 5322 caps a line at 998 octets. Past it the message is re-encoded in
+  // transit, which is both a spam signal and a way to mangle a printed code.
+  const longest = Math.max(...msg.html.split('\n').map((l) => l.length));
+  assert.ok(longest <= 998, `${label}: has a ${longest}-character line`);
 }
 
 test('esc neutralises every character that could break out of the markup', () => {
@@ -48,6 +69,11 @@ test('every template returns a well-formed pair of parts', () => {
   assertWellFormed(applicationReceived({ businessName: 'Blue Bird Cafe', contactName: 'Sam' }), 'received');
   assertWellFormed(applicationAccepted({ businessName: 'Blue Bird Cafe', contactName: 'Sam', email: 'sam@x.com' }), 'accepted');
   assertWellFormed(vendorResetCode({ businessName: 'Blue Bird Cafe', code: 'K7M2-NP94' }), 'reset');
+  // The link-code email is the one Outlook was junking, and it had no coverage
+  // at all until that happened. Both branches: the merge copy is a different
+  // body and a longer preheader, so it is a different message to get wrong.
+  assertWellFormed(studentEmailCode({ code: '482913', signedInAs: 'casey.p@gmail.com' }), 'student link');
+  assertWellFormed(studentEmailCode({ code: '482913', signedInAs: 'casey.p@gmail.com', willMerge: true }), 'student link/merge');
   assertWellFormed(dealDigest({ name: 'Alex', items: [{ campaignId: 'c1', vendor: 'Taco Stand', title: 'Half price', body: 'Today only.' }] }), 'digest');
 });
 

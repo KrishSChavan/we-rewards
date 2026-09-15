@@ -98,7 +98,46 @@
 // existing student re-accepting can never trip it — which is the whole reason
 // that guard is there rather than the check being unconditional. Removing it
 // would lock out every student who had linked their own second address.
-export const TERMS_VERSION = '2026-09-13';
+// 2026-09-14: the invite bonus pays BOTH sides at signup (ToS §4.7, Policy
+// §2.12 and the §4 purposes table). Material on the plainest of the tests
+// above — the prior text did not fail to mention this, it said the OPPOSITE in
+// bold: "Your own bonus is credited only after the person you invited earns
+// points at a participating vendor", and the Policy told the invited student
+// "Your purchase triggers their payment". migration-058 makes both false, and a
+// student operating under the old text would believe they still controlled
+// whether their friend got paid — which, read the other way, is the disclosure
+// that actually matters here: signing up is now itself the act that pays
+// somebody else. That is a different thing to consent to than a purchase they
+// were going to make anyway.
+//
+// The Policy's §4 purposes table also listed "whether the invited account has
+// earned points at any vendor" as data used to decide a payout. We no longer
+// look at it for that, and a table that over-states what we read is as wrong as
+// one that under-states it.
+//
+// ⚠ THE PAYOUT-SURFACE WARNING ABOVE APPLIES WITH TEETH THIS TIME. Re-accepting
+// runs POST /api/me/accept-terms for every existing student, and a referral is
+// now paid the moment it is attributed rather than at some later purchase. The
+// referral path is NOT reached from accept-terms — attribution is its own route,
+// POST /api/me/referral, called once per stashed code — so the bump itself pays
+// nobody directly. What it does is put every existing student back through the
+// consent modal, and render() claims a stashed code on the way out of it.
+//
+// That backlog is small, and it is worth knowing WHY rather than assuming it:
+// attributeReferral still refuses an account older than config.signupWindowDays
+// (14 by default) and still refuses one that has ever earned. A code can be
+// stashed for 30 days (PENDING_REF_TTL_MS), so the students who can actually
+// claim on the way back in are the narrow band who signed up inside the window
+// and have never earned anything — the same people who could have claimed
+// yesterday. The difference is only that each claim now pays a referrer at once
+// instead of waiting. Not a spike; just no longer deferred.
+//
+// The real backlog is in the DATABASE, not here: every referral sitting at
+// status='pending' was pending because the purchase never came, and
+// migration-058 makes all of them payable on the next 45-second sweep. That
+// number is knowable before you ship — see the header of migration-058, which
+// is where the warning belongs since it is the paste that spends the money.
+export const TERMS_VERSION = '2026-09-14';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

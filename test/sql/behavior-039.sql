@@ -178,6 +178,12 @@ begin
 end $$;
 
 -- ---- block 5: referrals + settle_referrals ----
+-- ⚠ THIS BLOCK PINS THE 039-ERA RULE, WHICH NO LONGER HOLDS. migration-058
+-- removed the purchase gate, so "no purchase, no payout" and "the un-purchased
+-- referral is still pending" below describe what settle_referrals did then, not
+-- what it does now. They still pass because the harness applies only the
+-- migrations BEFORE the one under test — run with -Migration migration-039.sql
+-- this function is the original. For today's behaviour see behavior-058.sql.
 do $$
 declare
   r   uuid := '00000000-0000-0000-0000-000000000391';
