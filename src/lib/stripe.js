@@ -3,7 +3,7 @@
 // WHY NO SDK. src/routes/webhooks.js already hand-rolls Svix HMAC verification
 // rather than pulling in the svix package, and gemini-receipt.js / lib/jwt.js
 // talk to Google and GoTrue the same way. The whole Stripe surface this app
-// needs is five calls and one signature check, all of them documented and
+// needs is six calls and one signature check, all of them documented and
 // stable, against an SDK that would be the largest dependency in package.json.
 //
 // WHAT THIS MODULE IS AND IS NOT. It is the NETWORK layer plus the pure
@@ -148,7 +148,9 @@ export function formEncode(params, prefix = '') {
 /**
  * One request to the Stripe API.
  *
- * @param {string} method  'GET' or 'POST' — this integration never DELETEs
+ * @param {string} method  'GET', 'POST', or the one 'DELETE' — cancelSubscription.
+ *   Stripe's DELETE verbs take no parameters, so the empty body a DELETE sends
+ *   here is deliberate rather than an oversight.
  * @param {string} path    e.g. '/checkout/sessions'
  * @param {object} params  form parameters (query string for GET)
  * @param {string} [idempotencyKey]  makes a retried POST return the FIRST
@@ -194,7 +196,8 @@ async function stripeRequest(method, path, params = {}, { idempotencyKey } = {})
     payload = await res.json();
   } catch {
     // A non-JSON body from Stripe means a proxy or an outage, never a real API
-    // answer. Fall through to the status check with a null payload.
+    // answer. Fall through to the status check with a null payload — and, for a
+    // 2xx, to the throw below.
   }
 
   if (!res.ok) {
@@ -204,6 +207,42 @@ async function stripeRequest(method, path, params = {}, { idempotencyKey } = {})
       code: e.code ?? null,
       type: e.type ?? null,
       param: e.param ?? null,
+      requestId,
+    });
+  }
+
+  // ⚠ A 2xx WHOSE BODY WE COULD NOT READ IS A FAILURE, NOT AN EMPTY ANSWER, AND
+  // EVERY CALLER HERE IS WRONG IF IT IS HANDED null. Three real shapes reach this
+  // line: AbortSignal.timeout above fires while the body is still streaming (the
+  // headers arrived inside TIMEOUT_MS, the body did not), the connection is reset
+  // mid-body, or an egress proxy / captive gateway answers 200 with an HTML page.
+  // In all three `res.ok` is true and the catch above has already swallowed the
+  // parse error, so without this the function returns null and each caller invents
+  // its own wrong meaning for it: getPriceByLookupKey reads it as "the operator
+  // never created this Price" (a 503 and a log telling them to create a Price that
+  // exists), createCustomer / createCheckoutSession / createBillingPortalSession
+  // blow up on `.id` / `.url` with a TypeError, and — the reason this throw is here
+  // rather than in each caller — getSubscription's null reached subscriptionPatch
+  // in routes/stripe-webhook.js, which read it as a subscription with no status and
+  // churned a PAYING vendor to freshman with every billing column nulled, answered
+  // 200, and kept the replay marker.
+  //
+  // code 'network_error' is deliberate and is the load-bearing half: that is what
+  // isRetryableStripeError (routes/stripe-webhook.js) classifies as TRANSIENT, so
+  // the webhook rethrows, drops the replay marker and lets Stripe's redelivery
+  // settle it — which is the right answer for a truncated or proxied body, none of
+  // which says anything about the subscription itself. It is the same code the
+  // fetch-rejection catch above uses, for the same reason: the request did not
+  // complete.
+  //
+  // `=== null`, not a falsy test: `res.json()` can legitimately yield `false`, `0`
+  // or `''` in general, and Stripe answers every one of these calls with a JSON
+  // object (DELETE included — see cancelSubscription: it returns the cancelled
+  // subscription, not a 204), so null here only ever means "parse failed".
+  if (payload === null) {
+    throw new StripeError(`Stripe answered ${res.status} with a body that could not be read as JSON`, {
+      status: res.status,
+      code: 'network_error',
       requestId,
     });
   }
@@ -261,6 +300,33 @@ export function planFromLookupKey(lookupKey) {
  *
  * `unpaid` is not: Stripe only moves a subscription there after its own retry
  * schedule is exhausted, which is weeks later.
+ *
+ * ⚠ KNOWN GAP, NOT YET A DECISION: A PAUSED SUBSCRIPTION READS AS PAYING. Stripe
+ * has two different ways to stop collecting money that are NOT the `paused`
+ * status:
+ *
+ *   * `pause_collection` set on an otherwise live subscription — the status stays
+ *     `active` (or `past_due`) and Stripe collects nothing. The Customer Portal
+ *     offers this as "pause payments" when the operator enables it in the portal
+ *     configuration, which is a dashboard toggle no deploy here controls — the
+ *     same class of setting createCheckoutSession's docstring relies on for ACH.
+ *   * a discount or credit balance covering the whole invoice, which is billed as
+ *     $0 and is genuinely fine.
+ *
+ * readSubscription below does not read pause_collection and nothing in src/ or
+ * public/ mentions it, so a vendor who pauses collection in the portal keeps
+ * `active`, keeps statusIsPaying, and keeps their full Discovery entitlement —
+ * deals, the 30-day stats, the raised reward-item cap — indefinitely, while Stripe
+ * bills them nothing and no alert fires. This is PRE-EXISTING behaviour, not a
+ * consequence of the subscription-lifecycle work in stripe-webhook.js, and it is
+ * left alone deliberately: the two possible answers ("pausing is a courtesy we
+ * grant" vs "a paused vendor drops to freshman until they resume") are a product
+ * decision about what the operator has promised people, not a bug with one correct
+ * repair. Whoever takes that decision: reading it is one line here
+ * (`pauseCollection: sub?.pause_collection?.behavior ?? null` in readSubscription)
+ * plus a test of it in subscriptionPatch (src/routes/stripe-webhook.js), and
+ * checking whether "pause payments" is actually enabled in the portal
+ * configuration tells you whether any vendor can reach the state at all today.
  */
 const PAYING_STATUSES = Object.freeze(['active', 'trialing', 'past_due']);
 
@@ -273,6 +339,9 @@ export const statusIsPaying = (status) => PAYING_STATUSES.includes(String(status
  * Pure, and the only place the two API-version shapes are reconciled. Returns
  * `plan: null` when the price's lookup key is unrecognised — see
  * planFromLookupKey for why that is not the same as 'freshman'.
+ *
+ * `pause_collection` is NOT among the fields it reads, and that is a KNOWN GAP
+ * rather than a settled decision — see the note on PAYING_STATUSES above.
  *
  * @returns {{id, customer, status, plan, lookupKey, currentPeriodEnd, cancelAtPeriodEnd}}
  */
@@ -378,12 +447,19 @@ export function verifyStripeSignature(raw, header, secret = WEBHOOK_SECRET, now 
 }
 
 // ---------------------------------------------------------------------------
-// The five API calls
+// The six API calls
 // ---------------------------------------------------------------------------
 
 /**
  * The active Price carrying this lookup key, or null if the operator has not
  * created it yet.
+ *
+ * NULL MEANS ABSENT, NEVER "THE READ FAILED". Stripe answers a search that matches
+ * nothing with 200 and `data: []`, which is what produces the null here — while a
+ * read that did not complete now THROWS out of stripeRequest (see the unreadable-2xx
+ * throw there), instead of arriving as the same null. That distinction is what
+ * routes/vendor.js's POST /checkout depends on: its 503 PRICE_UNAVAILABLE and its
+ * "create it in the dashboard" log are only true for a Price that really is missing.
  *
  * `active: true` is part of the query, so archiving the old $29 Price and
  * moving its lookup key to a new one is a two-click operation in the dashboard
@@ -422,6 +498,37 @@ export async function createCustomer({ vendorId, email, name }) {
 }
 
 /**
+ * The `expires_at` a new Checkout Session gets: 31 minutes out, rounded UP.
+ *
+ * ⚠ THIS MUST NOT SIT ON STRIPE'S 30-MINUTE FLOOR. Stripe refuses an expires_at
+ * less than 30 minutes ahead with a 400 "Invalid expires_at", and it compares
+ * against the instant the API RECEIVES the request, not the instant we computed
+ * the number — so form-encoding, the TLS handshake, the round trip and any clock
+ * skew between this dyno and Stripe all come out of the budget.
+ *
+ * The version this replaces was `Math.floor(Date.now() / 1000) + 1800`, which
+ * had NEGATIVE margin: the floor throws away up to 999ms before the request even
+ * leaves, so the moment the fraction of the current second plus the latency
+ * crossed 1.0, Stripe stamped its own `created` a second later and saw a 1799s
+ * window. That is a 400 → StripeError (stripeRequest above) → next(err) in
+ * routes/vendor.js's checkout handler, which has no fallback → a 500 on POST
+ * /api/vendor/checkout, the ONLY self-serve upgrade path in the app, on roughly
+ * the fraction of attempts equal to the latency in seconds.
+ *
+ * Math.ceil never lands behind `now`, so ceil(now / 1000) + 1860 guarantees at
+ * least 1860s of real window: ~60s of slack over the floor, far more than any
+ * plausible latency plus skew, and nowhere near the 24-hour ceiling.
+ *
+ * Exported and pure so test/stripe.test.js can assert that margin without a
+ * network call. Nothing else should need to call it — it sits here, in the API
+ * section rather than with the pure helpers above, because its only caller is the
+ * next function and the two must be read together.
+ */
+export function checkoutExpiresAt(now = Date.now()) {
+  return Math.ceil(now / 1000) + 1860;
+}
+
+/**
  * A Checkout Session for one vendor buying one plan.
  *
  * NO `payment_method_types`. Omitting it hands the choice to the account's
@@ -434,6 +541,26 @@ export async function createCustomer({ vendorId, email, name }) {
  * subscription metadata carries it onto every later subscription and invoice
  * event — the webhook needs an answer to "which vendor?" for events that
  * arrive months after this session is gone.
+ *
+ * ⚠ THE SESSION EXPIRES IN HALF AN HOUR, AND THAT IS A CORRECTNESS FIX, NOT
+ * TIDINESS. Stripe's default is 24 hours, and nothing here reserves the right
+ * to buy: POST /api/vendor/checkout refuses a SECOND session only while
+ * vendors.stripe_subscription_id is set, which stays null until a session is
+ * actually completed. So a vendor who opened Checkout, wandered off, and tapped
+ * Upgrade again tomorrow could hold two live sessions, and completing both
+ * creates two real subscriptions. migration-055 stores exactly ONE subscription
+ * id, so the second completion overwrites the first (subscriptionPatch) and the
+ * older subscription then exists nowhere in this app while billing $29 a month
+ * forever — and the webhook's superseded guard correctly ignores its eventual
+ * cancellation, because as far as the row is concerned it was never ours.
+ * THIRTY-ONE MINUTES, NOT THIRTY. Stripe requires expires_at between 30 minutes
+ * and 24 hours from now, and it measures that against the instant IT receives
+ * the request — so a value sitting exactly on the 30-minute floor has already
+ * lost the race by the time it is form-encoded. checkoutExpiresAt() above owns
+ * that arithmetic and explains it. Thirty-one minutes is still far more than a
+ * card entry needs, and still shrinks the window rather than closing it — which
+ * is why stripe-webhook.js ALSO refuses to overwrite a still-paying subscription
+ * with a different one and cancels the duplicate instead.
  */
 export async function createCheckoutSession({
   customerId, priceId, vendorId, successUrl, cancelUrl, trialDays = null,
@@ -445,6 +572,10 @@ export async function createCheckoutSession({
     success_url: successUrl,
     cancel_url: cancelUrl,
     client_reference_id: vendorId,
+    // Seconds since the epoch, Stripe's unit for every timestamp. See the note
+    // above for why this is not left at the 24-hour default, and
+    // checkoutExpiresAt for why it is 31 minutes rather than exactly 30.
+    expires_at: checkoutExpiresAt(),
     // Vendors are sold by hand over the phone; a founding-rate or first-month
     // code is the obvious next ask and costs nothing to allow now.
     allow_promotion_codes: true,
@@ -513,6 +644,54 @@ export async function getSubscription(subscriptionId) {
   return stripeRequest('GET', `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
     expand: ['items.data.price'],
   });
+}
+
+/**
+ * End a subscription NOW, and return the updated subscription object.
+ *
+ * ⚠ DELETE ON A SUBSCRIPTION MEANS "CANCEL IMMEDIATELY" in Stripe's API — the
+ * object is not removed, it comes back with status 'canceled'. The other way to
+ * cancel is POST with `cancel_at_period_end: true`, which keeps the vendor
+ * entitled until the date they have already paid through. Both callers here want
+ * the immediate form and neither wants the polite one:
+ *
+ *   * the duplicate-subscription cleanup in routes/stripe-webhook.js — the
+ *     vendor never meant to buy a second plan, so leaving it running to the end
+ *     of a period they never agreed to bills them twice for a month; and
+ *   * deleting a vendor from /admin, where the shop is gone and nobody will be
+ *     around to notice a charge that keeps landing.
+ *
+ * Cancelling is itself idempotent-ish: a second DELETE for an already-cancelled
+ * subscription answers 404, which arrives here as a StripeError with status 404
+ * and code 'resource_missing'.
+ *
+ * ⚠ BUT THAT 404 IS AMBIGUOUS, AND A CALLER MUST NOT READ IT AS SUCCESS ON ITS
+ * OWN. Stripe answers the identical 404 `resource_missing` for a subscription that
+ * exists but not under the key this process holds — another account after a
+ * STRIPE_SECRET_KEY rotation, or the other livemode (an sk_test_ key on a box whose
+ * vendors were signed up live, the failure stripeMode() is printed at boot to
+ * catch). In that state the card IS still being charged. The only way to tell the
+ * two apart is a follow-up getSubscription: cancelling does not REMOVE the object,
+ * so a genuinely cancelled subscription still reads back 200 with a terminal status
+ * ('canceled' / 'incomplete_expired'), while one outside this key's reach 404s
+ * again. Both callers do exactly that — cancel404Verdict in
+ * routes/stripe-webhook.js, and the pre-delete probe in routes/admin.js — and each
+ * escalates to the operator when the read cannot prove the thing is finished.
+ *
+ * ⚠ AND A 2xx WHOSE BODY IS UNREADABLE NOW THROWS — carrying the HTTP status it
+ * actually saw (a 200, normally) with code `network_error`, NOT status 0; the code is
+ * the load-bearing half, because that is what isRetryableStripeError reads (see
+ * stripeRequest) — even though it means the cancel very likely WORKED. Neither caller
+ * uses the returned object, so the only effect is that both treat it as "the cancel
+ * failed": refuseDuplicateSubscription in routes/stripe-webhook.js pages the operator
+ * about a duplicate that is probably already dead, and routes/admin.js refuses the
+ * vendor delete with VENDOR_BILLING_CANCEL_FAILED. That is the safe direction of the
+ * mistake — one extra push, and a delete the operator can simply retry (the second
+ * DELETE 404s, and the probe then proves it) — and it is not worth a per-caller
+ * exception to the rule that an unread response is not an answer.
+ */
+export async function cancelSubscription(subscriptionId) {
+  return stripeRequest('DELETE', `/subscriptions/${encodeURIComponent(subscriptionId)}`);
 }
 
 /** Exported for tests that need to drive an arbitrary call through the same plumbing. */

@@ -6,6 +6,11 @@ import { emitBalance, emitPunch } from '../lib/realtime.js';
 import { ocrBusy, recognizeReceipt } from '../lib/ocr.js';
 import { geminiReady, readReceiptWithGemini } from '../lib/gemini-receipt.js';
 import { matchVendor, extractTotal, extractDateTime, parseIsoDateTime } from '../lib/receipt.js';
+// The one definition of floor(dollars * points_per_dollar) — imported, never
+// re-derived here. A second copy of that sum in floats would pay a different
+// number of points for a receipt than the terminal pays for the same spend; see
+// the doc comment on pointsFor() for the amounts where it actually bites.
+import { pointsFor } from '../lib/rewards.js';
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
 import { getVapidPublicKey } from '../lib/push.js';
@@ -28,10 +33,18 @@ import {
   claimHeldByOther,
   CODE_TTL_MINUTES,
 } from '../lib/student-email.js';
-import { maybeAwardTrackedQr, readVisitorCookie, TRACKED_QR_COOKIE } from '../lib/tracked-qr.js';
+import {
+  maybeAwardTrackedQr,
+  readVisitorCookie,
+  findByCode as findTrackedQrByCode,
+  normalizeCode as normalizeTrackedQrCode,
+  TRACKED_QR_COOKIE,
+} from '../lib/tracked-qr.js';
 import {
   attributeSignup as attributeAmbassadorSignup,
   findByUserId as findAmbassadorByUserId,
+  findByCode as findAmbassadorByCode,
+  normalizeCode as normalizeAmbassadorCode,
   readAmbassadorCookie,
   AMBASSADOR_COOKIE,
 } from '../lib/ambassadors.js';
@@ -118,6 +131,94 @@ router.get('/consent', async (req, res, next) => {
     next(err);
   }
 });
+
+/**
+ * Decide which stashed code belongs to ONE of the two attribution features that
+ * run at accept-terms, given what the client posted and what that feature's own
+ * cookie holds.
+ *
+ * ⚠ WHY THIS IS NOT `req.body?.trackedQr ?? cookieCode`. It was, for both
+ * features, and `??` only falls through on null/undefined — so ANY non-null
+ * string the client posted suppressed the cookie for BOTH of them. That is not a
+ * theoretical shape problem: the client keeps exactly ONE stash (wr-pending-qr,
+ * overwritten on every /?qr= landing) and GET /r/:code hands the same ?qr=
+ * parameter to banner codes AND ambassador codes, so whenever the last scan
+ * belonged to the OTHER feature the body arrives carrying a code this one cannot
+ * resolve. maybeAwardTrackedQr would reject a 6-character ambassador code in
+ * normalizeCode (banner codes are exactly 8) and return null without ever
+ * reading wrw_qr — losing the banner's award and its tracked_qr_signups row; in
+ * the other order a banner code uppercases into a perfectly valid ambassador
+ * shape, findByCode misses, and an ambassador loses the recruit and the payout.
+ * Both cookies were sitting there naming the right code.
+ *
+ * So each feature picks for itself. The body still wins where it can (it is the
+ * stash that survives a cleared cookie, and the cookie the one that survives a
+ * cleared localStorage or a private tab), but only while it actually names one of
+ * THIS feature's codes:
+ *   - wrong shape for this feature → the cookie, which used to go unread.
+ *   - right shape but unknown here, while the cookie names something else → the
+ *     cookie. Shape alone cannot separate the two features, because a banner code
+ *     is 8 characters of a lowercase alphabet and uppercases straight into the
+ *     ambassador 3-10 [A-Z0-9] shape, so the only honest test left is whether
+ *     this feature can resolve it. That costs ONE extra select, and only on the
+ *     mixed-stash path where the two codes actually disagree.
+ *
+ * A failed lookup keeps the body code: the evaluator is about to run the same
+ * query and is best-effort about it either way, and moving credit from one code
+ * to another on the strength of a dropped connection is the one outcome here
+ * that would be worse than the bug this replaces.
+ *
+ * @param normalize the feature's own normalizeCode. Handed strings ONLY — see
+ *   codeOf below, and why that is this frame's job rather than the normalizer's.
+ * @param resolve the feature's own findByCode — it THROWS on a query failure,
+ *   which is why the call is wrapped.
+ */
+async function attributionCodeFor({ bodyCode, cookieCode, normalize, resolve, label }) {
+  /* ⚠ THE TYPE GATE LIVES HERE TOO, not only inside the normalizers, and that
+     redundancy is the point. bodyCode is raw JSON off the request body, and this
+     function is called as an ARGUMENT EXPRESSION in accept-terms below — that is,
+     outside maybeAwardTrackedQr / attributeSignup, whose own try/catch used to
+     swallow everything a junk code could do. A normalizer that COERCES instead of
+     gating (`String(raw ?? '')`, which is what src/lib/tracked-qr.js had) does not
+     return null for `{ "trackedQr": { "toString": 1 } }` — String() on an object
+     with no usable toString throws TypeError. That escaped to server.js's global
+     handler, which has no branch for it: an error_logs row plus a web push to
+     EVERY subscribed operator, and a 500 for a student whose profile upsert had
+     already committed. tracked-qr's normalizeCode now gates the type itself, the
+     way src/lib/ambassadors.js and src/lib/referrals.js always did, so all three
+     features finally agree — but this line is why the route no longer DEPENDS on
+     that, and a fourth feature wired in here cannot reopen the hole.
+
+     Totality only. Nothing about which code wins changes: a non-string was never
+     a code under any of the three normalizers. */
+  const codeOf = (raw) => (typeof raw === 'string' ? normalize(raw) : null);
+
+  const body = codeOf(bodyCode);
+  // Not one of this feature's codes at all — wrong shape for it, or not a string
+  // at all. Whatever the cookie holds is the only candidate left, and passing it
+  // on is the whole fix. This is also the branch that keeps a non-string out of
+  // the evaluators entirely: every other return below hands back bodyCode, and
+  // none of them is reachable until `body` has proved bodyCode was a string.
+  if (!body) return cookieCode;
+
+  const cookie = codeOf(cookieCode);
+  // Nothing usable in the cookie for this feature, or it names the very same
+  // code: no question to answer, and no lookup worth paying for. The cookie is
+  // normally written by GET /r/:code only after that code resolved, but a request
+  // can carry any cookie value it likes, so "usable" is checked rather than
+  // assumed.
+  if (!cookie || cookie === body) return bodyCode;
+
+  // Two different codes, both plausible here. Only a lookup can say whether the
+  // posted one is ours.
+  try {
+    if (await resolve(bodyCode)) return bodyCode;
+  } catch (err) {
+    console.warn(`[${label}] code lookup failed while choosing an attribution code: ${err?.message ?? err}`);
+    return bodyCode;
+  }
+  return cookieCode;
+}
 
 /**
  * POST /api/me/accept-terms  { agreedToTerms }
@@ -214,14 +315,22 @@ router.post('/accept-terms', async (req, res, next) => {
     // TWO SOURCES, because either one alone loses real students. The body is
     // what app.js stashed out of ?qr= at boot, which survives a cleared cookie;
     // the httpOnly cookie was set by GET /r/<code> itself, which survives a
-    // cleared localStorage and a private-mode tab. Neither is trusted for
-    // anything but naming a banner — the money is decided server-side, and
-    // migration-039's UNIQUE (ref_id, kind) index caps it at once per account
-    // however many codes a client sends.
+    // cleared localStorage and a private-mode tab. attributionCodeFor() is what
+    // picks between them, and its note explains why a plain `??` here quietly
+    // threw one of the two away. Neither source is trusted for anything but
+    // naming a banner — the money is decided server-side, and migration-039's
+    // UNIQUE (ref_id, kind) index caps it at once per account however many codes
+    // a client sends.
     const qrFromCookie = readVisitorCookie(req)?.code ?? null;
     const qrBonus = await maybeAwardTrackedQr({
       userId,
-      rawCode: req.body?.trackedQr ?? qrFromCookie,
+      rawCode: await attributionCodeFor({
+        bodyCode: req.body?.trackedQr,
+        cookieCode: qrFromCookie,
+        normalize: normalizeTrackedQrCode,
+        resolve: findTrackedQrByCode,
+        label: 'tracked-qr',
+      }),
       profileCreatedAt: profile?.created_at,
     });
     // Consumed. Clearing is belt and braces over the ten-minute new-account
@@ -235,16 +344,26 @@ router.post('/accept-terms', async (req, res, next) => {
     // and a key in this response that the student app renders nothing for is a
     // key somebody later mistakes for one.
     //
-    // ⚠ BOTH EVALUATORS RUN, and that is correct rather than an oversight. The
-    // shared `?qr=` handoff means one code arrives here for whichever feature
-    // owns it; each ignores what isn't its shape. A student who genuinely
-    // scanned a banner AND an ambassador's code is credited to both, which is
-    // what two separate programs should do — there is no double spend to
-    // prevent, because this half spends nothing.
+    // ⚠ BOTH EVALUATORS RUN, and that is correct rather than an oversight. A
+    // student who genuinely scanned a banner AND an ambassador's code is credited
+    // to both, which is what two separate programs should do — there is no double
+    // spend to prevent, because this half spends nothing.
+    //
+    // But they must be handed a code EACH, not the same string twice. The `?qr=`
+    // handoff is shared between the two features while the client's stash is not,
+    // so one of the two codes in play arrives in the body and the other only in
+    // its cookie; attributionCodeFor() decides which belongs to this half, and
+    // the note on it spells out what the old shared `??` expression lost.
     const ambFromCookie = readAmbassadorCookie(req)?.code ?? null;
     const ambassador = await attributeAmbassadorSignup({
       userId,
-      rawCode: req.body?.trackedQr ?? ambFromCookie,
+      rawCode: await attributionCodeFor({
+        bodyCode: req.body?.trackedQr,
+        cookieCode: ambFromCookie,
+        normalize: normalizeAmbassadorCode,
+        resolve: findAmbassadorByCode,
+        label: 'ambassadors',
+      }),
       profileCreatedAt: profile?.created_at,
     });
     if (ambassador) res.clearCookie(AMBASSADOR_COOKIE, { path: '/' });
@@ -733,10 +852,24 @@ router.post('/punch', requireConsent, async (req, res, next) => {
 //   1. lib/gemini-receipt.js (Google Gemini) when GEMINI_API_KEY is set. It
 //      both judges whether the photo is a genuine printed receipt and returns
 //      the fields directly. This is the ONLY forgery check in the system.
-//   2. lib/ocr.js (tesseract, in-process) when that call couldn't be made at
-//      all. Text only, no authenticity judgement.
+//   2. lib/ocr.js (tesseract, in-process) when that call couldn't be made or
+//      couldn't complete for reasons NOTHING ABOUT THIS IMAGE CHOSE — no key,
+//      quota gone, the breaker open, a socket error, a non-2xx, a timeout. Text
+//      only, no authenticity judgement.
 // A fraud verdict from (1) is final and never retried through (2) — tesseract
-// would happily read a photographed screen and pay out on it.
+// would happily read a photographed screen and pay out on it. Neither is a LOST
+// verdict from (1) (`{ unreadable: true }`: truncated output, a safety block, no
+// verdict in otherwise valid JSON): the image itself can provoke all three, so
+// sending it on to a reader with no authenticity check would let a forger pick
+// the reader that cannot catch them. That answers RECEIPT_UNREADABLE — retake
+// the photo.
+//
+// A TIMEOUT counts as an outage, not a lost verdict, even though a slow image
+// can provoke one. The 9s ceiling is tight and a hanging Gemini is a real
+// outage; classing it as unreadable would mean it never opened the breaker, so
+// the tesseract fallback would stay switched off for the whole incident and
+// every student would be told to retake a photo that was fine. Availability of
+// the feature wins over one bypass the breaker was built to absorb.
 //
 // PRIVACY: with a key set, the image is POSTed to Google for the life of this
 // request (Privacy Policy §4). It is still never persisted by us, and the
@@ -777,9 +910,32 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
     if (!m) throw new Error('RECEIPT_IMAGE_INVALID');
     const [, mimeType, base64] = m;
 
-    // Reader 1. Resolves null on any infrastructure failure — no key, quota
-    // gone, timeout, outage — which is the cue to fall through to tesseract.
+    // Reader 1. Three outcomes, kept apart here exactly as the contract at the
+    // head of src/lib/gemini-receipt.js states them:
+    //   null                  the call could not be made or completed for reasons
+    //                         nothing about this image chose (no key, breaker
+    //                         open, quota gone, socket error, non-2xx, timeout)
+    //                         → reader 2.
+    //   { unreadable: true }  the reader WAS reached and its verdict was lost.
+    //   anything else         a verdict, genuine or not.
     const ai = await readReceiptWithGemini(base64, mimeType);
+
+    // A LOST VERDICT IS NOT AN OUTAGE, and this line is the reason the
+    // distinction exists. Output truncated at the token ceiling, an interaction
+    // that came back not-'completed' (a safety block), and valid JSON carrying
+    // no verdict at all: all three are steerable by the uploaded bytes, so
+    // treating them like a Gemini outage would let someone with a crafted image
+    // CHOOSE tesseract — the reader that has no authenticity check at all — and
+    // then be paid on whatever text it finds. Worse, three of them in a row used
+    // to open the 60s breaker, which skipped the forgery gate for every other
+    // student scanning at the time (fixed in gemini-receipt.js: these no longer
+    // count toward the streak).
+    //
+    // So the claim stops and asks for another photo. For the innocent case that
+    // dominates this path — a folded, dim, half-framed receipt whose
+    // transcription blew the output budget — a retake is also simply the right
+    // answer. RECEIPT_UNREADABLE is already the 400 that says so (server.js).
+    if (ai?.unreadable) throw new Error('RECEIPT_UNREADABLE');
 
     // A confident forgery verdict ends the claim here. Note what is NOT done:
     // no retry through tesseract, which cannot see a screen bezel or a cloned
@@ -788,8 +944,9 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
       throw new Error('RECEIPT_NOT_GENUINE');
     }
 
-    // Reader 2, only if reader 1 never got an answer. It gets whatever is left
-    // of the request budget, since the AI attempt already spent some of it.
+    // Reader 2, only if reader 1 was never reachable at all (the null above — a
+    // lost verdict already threw). It gets whatever is left of the request
+    // budget, since the AI attempt already spent some of it.
     let text = ai?.rawText ?? '';
     if (!ai) {
       const buf = Buffer.from(base64, 'base64');
@@ -843,9 +1000,22 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
 
     // Same formula as POST /api/vendor/award: ratio → floor, then the tier
     // multiplier (computed BEFORE this award lands) → floor.
-    const basePoints = Math.floor(total * Number(hit.vendor.points_per_dollar));
+    //
+    // And the same pointsFor() helper, NEVER `Math.floor(total * ratio)`. Both
+    // inputs are decimal money and doubles are binary, so the naive product lands
+    // a hair below the whole number for many ordinary amounts and the floor then
+    // eats a whole point (1.16 * 25 === 28.999999999999996). Rounding `total` to
+    // cents on the line above does not help — it is the multiply that loses it.
+    // Sharing the helper is what stops a $18.45 receipt and a $18.45 counter
+    // award paying different amounts, which is the version of this bug a student
+    // would actually notice and report.
+    const basePoints = pointsFor(total, hit.vendor.points_per_dollar);
     if (basePoints < 1) throw new Error('RECEIPT_TOTAL_MISSING');
     const tierProfile = await computeTierProfile(req.user.id);
+    // Still a plain float multiply, exactly as routes/vendor.js does it, and that
+    // is safe rather than an oversight: basePoints is already a whole number and
+    // every multiplier in src/lib/tiers.js is 1, 1.5 or 2 — all exact in binary,
+    // so there is no dust for the floor to eat.
     const points = Math.floor(basePoints * tierProfile.multiplier);
 
     const pad = (n) => String(n).padStart(2, '0');
@@ -1250,6 +1420,37 @@ router.post('/student-email/start', requireConsent, async (req, res, next) => {
       signedInAs: req.user.email,
       willMerge,
     });
+
+    // THE ONE FAILURE THE UNIFORM ANSWER ABOVE DOES NOT COVER.
+    //
+    // The code row is already stored by this point, and until now a send that
+    // never left the building still answered 200 "we sent a code": Resend down,
+    // the request timing out, the key revoked. The student then waits for an
+    // email that does not exist, and after the 60s cooldown gets the same 200
+    // again, so the flow is a dead end with no symptom — the only trace is a
+    // console.warn in the dyno log.
+    //
+    // A 503 here is safe ONLY because issueLinkCode has already separated the
+    // two kinds of failure for us (see classifySendFailure() in
+    // src/lib/student-email.js). 'transport' is provider-side only — a 5xx, a
+    // timeout, a dead network, a missing key — so it answers a question about OUR
+    // mail plumbing, not about this mailbox. Note a 4xx from Resend is NOT
+    // transport: it can be about the recipient (a 422 naming the `to` field, or a
+    // test-mode key refusing every address but its owner's), so it is classed
+    // 'address' and keeps the uniform 200.
+    // A 'address' class — suppressed, or invalid — keeps the uniform 200,
+    // because reporting it would say "we have mailed this address before", which
+    // is the enumeration oracle the ⚠ note on this route forbids. The cooldown
+    // path sets no class at all and so also stays 200, deliberately.
+    //
+    // Same body as the !emailEnabled branch above, so the client needs no new
+    // case: it already handles EMAIL_OFF.
+    if (sent.sent === false && sent.sendFailureClass === 'transport') {
+      return res.status(503).json({
+        error: 'EMAIL_OFF',
+        message: 'We can’t send email right now, so this can’t be verified. Try again later.',
+      });
+    }
 
     res.json({
       ok: true,

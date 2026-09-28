@@ -31,7 +31,21 @@
 // v7: crash reports from this screen name the vendor (and its id), the same as
 // the full terminal's do — scan.js only. /scan had been the one POS screen whose
 // errors arrived in the log with no idea which counter they came from.
-const CACHE = 'werewards-scan-v7';
+// v8: scan.js only — renderPad() and renderQuickAwards() compute the award
+// preview with the integer-cent expression pointsFor() uses in
+// src/lib/rewards.js instead of Math.floor(amt * config.pointsPerDollar), which
+// at some allowed rates floors a hair short (1.16 × 25 is 28.999999999999996,
+// so the pad promised 28 where /api/vendor/award grants 29). This mount is the
+// phone/iPad till, so that number is read out loud to the customer. The
+// constant has to move or an installed device that loses connectivity after the
+// deploy keeps previewing off the PRE-DEPLOY scan.js: the fallback below
+// matches with ignoreSearch and Cache.match returns the first-INSERTED entry,
+// i.e. the bare '/scan/scan.js' precached under v7. Production serves this
+// worker off disk verbatim — the build-id suffix serveTestSw stamps on in
+// server.js is behind IS_TEST_ENV — so this line is the only deploy signal an
+// installed till gets. Online tills are unaffected: the fetch is network-first
+// and versionAssets re-stamps ?v=<hash> from the new bytes.
+const CACHE = 'werewards-scan-v8';
 const SHELL = [
   '/scan/', '/scan/boot-guard.js', '/scan/scan.css', '/scan/scan.js',
   '/scan/jsQR.js', '/scan/qrcode.js', '/scan/no-zoom.js', '/scan/manifest.json',

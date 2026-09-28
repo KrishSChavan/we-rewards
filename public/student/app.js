@@ -6693,11 +6693,79 @@ function backToHomeSlide() {
 // The server pushes a { vendorId, balance } event the instant a vendor awards
 // or redeems, so the meter updates live with no polling. The socket.io client
 // is served by our own server at /socket.io/socket.io.js.
+//
+// Not every 'balance' push names a vendor, though: community points are not
+// tied to a spot, so the paths that only move THAT pool emit { community: N }
+// with no vendorId — pushCommunityBalance and the email-link bonus in
+// src/routes/student.js, the operator's Give in src/routes/admin.js, and the
+// account merge, which adds refresh: true. The listener handles that shape
+// first — see the note on the guard below.
 function connectSocket() {
   if (!socket) {
     socket = io({ autoConnect: false, auth: (cb) => cb({ token: currentToken }) });
     socket.on('balance', (payload) => {
-      if (!payload?.vendorId) return;
+      // A push with no vendorId is NOT malformed — it is the community pool
+      // moving on its own, which is the only kind of earn that belongs to no
+      // spot. FOUR server paths send it, and they do not all send the same
+      // fields. Each is cited BY SYMBOL — function or route — and not by line,
+      // because student.js and admin.js both grew by hundreds of lines in this
+      // change set, which walked the line numbers that used to be here onto
+      // unrelated statements. Same reason src/lib/student-email.js cites
+      // sendEmail's RECIPIENT_FIELD_RE branch by name:
+      //   • pushCommunityBalance() in src/routes/student.js — { community: N }.
+      //     A referral now pays the referrer as well as the new student
+      //     (migration-058) and the referrer is not the one who made the
+      //     request, which is why it exists as its own function.
+      //   • the email-link bonus — { community: N }. Emitted by
+      //     POST /api/me/student-email/verify (src/routes/student.js), in the
+      //     "no student account to merge" half, after payLinkBonus pays.
+      //   • an operator pressing Give — { community: N }. Emitted by
+      //     POST /api/admin/grants (src/routes/admin.js), after
+      //     grant_community_points returns the new balance.
+      //   • the ACCOUNT MERGE, POST /api/me/student-email/merge
+      //     (src/routes/student.js) — { community: N, refresh: true }. The odd
+      //     one out, handled below.
+      //
+      // This has to run BEFORE the vendorId guard, and until it did, every one
+      // of those pushes was dropped on the floor: the points were in the
+      // database, but the counter on Home sat at its old number until the next
+      // reconnect or home load, so a student who told a friend to use their
+      // code watched nothing happen.
+      //
+      // Repaint the same way the vendor-scoped path below does — straight into
+      // setCommunityPoints, which tickers the Home card and needs no
+      // screen check (see its own note: that card is the one place this number
+      // appears, and it is on-screen whenever points land). A push that somehow
+      // arrives without the number still means "your pool changed", so fall
+      // back to a re-read rather than ignoring it.
+      //
+      // An event carrying no payload at all is the one shape that still leaves
+      // without doing anything: there is nothing to paint and nothing to
+      // re-read, and it must not cost a fetch.
+      //
+      // refresh: true means "a number is not enough". Only the merge sends it,
+      // and a merge moved far more than the community pool: per-spot balances
+      // were SUMMED, punches and transactions were reparented and the tier
+      // snapshot recomputed — all of it in POST /api/me/student-email/merge
+      // (src/routes/student.js), named rather than numbered for the reason
+      // above. The tab that pressed Confirm repaints itself in finishLink();
+      // this flag is for the student's OTHER open sessions, which emitBalance
+      // reaches by user id and which would otherwise keep showing pre-merge
+      // per-spot numbers until a reload. So do what finishLink does, plus the
+      // history reload the vendor-scoped path below does for the same reason —
+      // a merge is a pile of new activity rows.
+      if (!payload) return;
+      if (!payload.vendorId) {
+        if (payload.community != null) setCommunityPoints(payload.community);
+        else loadCommunity();
+        if (payload.refresh) {
+          void loadStudentEmail();              // the address is linked now
+          void loadVendors();                   // summed balances + any spots gained
+          loadTier();                           // the snapshot the merge recomputed
+          if (historyLoaded) loadHistory();     // the transactions it reparented
+        }
+        return;
+      }
       const next = payload.balance ?? 0;
       // One shared purse changing is ONE event that has to repaint every spot
       // spending from it, not one event per spot: the server sends the sibling

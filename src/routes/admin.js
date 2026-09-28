@@ -3,7 +3,11 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { requireAdmin, isAdminEmail } from '../middleware/auth.js';
 import { geocode } from '../lib/geocode.js';
-import { getVapidPublicKey, notifyAdminEndpoint } from '../lib/push.js';
+// notifyAdmins rides along for ONE case: a vendor delete that could not confirm
+// a subscription stopped billing (see DELETE /vendors/:id). A console line alone
+// is not enough there — nobody tails a dyno log — and the id in that push is the
+// only remaining handle on a card that may still be charged every month.
+import { getVapidPublicKey, notifyAdminEndpoint, notifyAdmins } from '../lib/push.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
 import { rollupRoi } from '../lib/roi.js';
@@ -44,12 +48,48 @@ import { balanceFrom } from '../lib/pools.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 import { normalizeCuisine, normalizePriceLevel } from '../lib/cuisines.js';
 import { validLogo } from '../lib/logo.js';
+// The operator panel does not sell anything, so this is the only reason it talks
+// to Stripe at all: DELETE /vendors/:id has to stop a subscription before it
+// destroys the row that records it (migration-055 keeps the customer and
+// subscription ids on vendors). `stripeEnabled` rides along because this
+// deployment may have no keys set yet, and "we could not even try to cancel" is
+// a different answer to the operator than "Stripe refused".
+//
+// getSubscription is imported for one job only: reading a subscription BACK
+// after a cancel answered 404, which is the only way to tell "already cancelled"
+// from "not in this Stripe account or mode" — the two things Stripe answers that
+// 404 for. stripeMode() names which mode this process is actually keyed for, so
+// the refusal it produces points the operator at the right dashboard.
+import { cancelSubscription, getSubscription, stripeEnabled, stripeMode } from '../lib/stripe.js';
 
 const router = Router();
 router.use(requireAdmin);
 
 const DAY = 86_400_000;
 const ADDRESS_MAX = 300;   // keep a pasted essay out of the column and the geocoder
+
+// The Stripe subscription statuses that mean "this object can never bill a card
+// again": 'canceled' is what a cancel leaves behind (the object is NOT removed —
+// see cancelSubscription in src/lib/stripe.js), and 'incomplete_expired' is a
+// subscription whose first payment never completed inside Stripe's window. Used
+// by DELETE /vendors/:id ONLY, to decide whether a 404 from a cancel really did
+// mean "already cancelled". Deliberately NOT the inverse of statusIsPaying:
+// 'paused', 'unpaid' and 'incomplete' are neither paying nor finished, and a
+// subscription in one of those can still start charging again, so they must not
+// license destroying the row that holds the id.
+//
+// ⚠ DUPLICATED, deliberately and for now, as TERMINAL_STATUSES in
+// src/routes/stripe-webhook.js — which carries the full note, and is read there
+// by cancel404Verdict and refuseDuplicateSubscription. Both copies answer the
+// same question, "did a GET prove this subscription is finished?", both are read
+// straight after a DELETE answered 404, and THEY MUST STAY IN STEP: a status
+// added to one and not the other makes one path treat a subscription as dead
+// that the other still pages the operator about. Change both or neither. The
+// follow-up that removes the obligation is the one that file names — hoist a
+// single export into src/lib/stripe.js beside PAYING_STATUSES — which needs a
+// change willing to touch both files; this note exists because until then the
+// only thing holding the pair together was a warning on the other side.
+const TERMINAL_SUBSCRIPTION_STATUSES = ['canceled', 'incomplete_expired'];
 
 // Keep in sync with src/routes/apply.js — the operator's "Add vendor" form is
 // the same onboarding as an accepted /join application, so what one accepts the
@@ -159,6 +199,49 @@ export function validNewVendor(body) {
 }
 
 /**
+ * A query parameter as the scalar the reader meant to read, or `undefined`.
+ *
+ * ⚠ NOTHING IN THIS FILE MAY COERCE A req.query VALUE WITHOUT GOING THROUGH
+ * HERE. express 4's query parser is qs.parse(str, { allowPrototypes: true })
+ * (node_modules/express/lib/utils.js), so a caller can put an arbitrary object
+ * where a scalar was expected: `?days[toString]=1` arrives as
+ * { toString: '1' } — an OWN, NON-CALLABLE property shadowing
+ * Object.prototype.toString — and both Number() and String() on that THROW
+ * "Cannot convert object to primitive value" instead of answering NaN or
+ * "[object Object]". None of the coercions below sit inside their own
+ * try/catch, so that TypeError reaches the handler in server.js, which has no
+ * branch for it: an error_logs INSERT, a web-push alert to every subscribed
+ * operator, and a 500 — off a typed URL. authorize() in
+ * src/routes/unsubscribe.js carries the long version of this note, including
+ * why `?u[__proto__]=x` is NOT one of the dangerous shapes on the qs this repo
+ * installs; this is the same gate for the parameters that are read as numbers.
+ *
+ * A REPEATED KEY STILL COERCES AS IT ALWAYS HAS. `?limit=1&limit=2` arrives as
+ * ['1','2'] and pageParams's tested contract (test/admin-lists.test.js, "a
+ * repeated query key cannot produce NaN") is that Number() decides — 5 for
+ * ['5'], NaN for two values, which then lands on the default. So arrays pass
+ * through, but only while every member is itself a primitive: one poisoned
+ * member, which `?q[][toString]=x` produces, would throw from inside
+ * Array#toString for exactly the same reason.
+ *
+ * ⚠ SCOPE: req.query ONLY, deliberately. A JSON BODY can carry the identical
+ * shape — `{"email":{"toString":"x"}}` throws in exactly the same way at
+ * `String(req.body?.email ?? '')` in POST /grants, and at the three other body
+ * coercions in this file (the label on POST /pools, and points/reason in /grants) —
+ * but that surface is not this parser's, it is the same in every route file
+ * (src/routes/vendor.js's `String(req.body?.interval ?? 'monthly')` is the twin),
+ * and closing it in one file only would leave the half-swept state this note
+ * exists to prevent. It wants one shared gate, sized to touch all five doors at
+ * once, and is recorded here so the next reader knows it was seen rather than
+ * missed.
+ */
+function queryScalar(raw) {
+  if (typeof raw !== 'object' || raw === null) return raw;
+  if (Array.isArray(raw) && raw.every((v) => typeof v !== 'object' || v === null)) return raw;
+  return undefined;
+}
+
+/**
  * `?limit=&offset=` for one page of a list, clamped to something a server can
  * answer. Shared by every paged operator list (students, errors, referrals,
  * grants) so "Show more" means the same thing on all of them, and so no route
@@ -170,8 +253,8 @@ export function validNewVendor(body) {
  */
 export function pageParams(query, { def, max }) {
   const q = query ?? {};
-  const limit = Math.min(max, Math.max(1, Math.floor(Number(q.limit) || def)));
-  const offset = Math.max(0, Math.floor(Number(q.offset) || 0));
+  const limit = Math.min(max, Math.max(1, Math.floor(Number(queryScalar(q.limit)) || def)));
+  const offset = Math.max(0, Math.floor(Number(queryScalar(q.offset)) || 0));
   return { limit, offset };
 }
 
@@ -310,7 +393,11 @@ router.get('/overview', async (req, res, next) => {
  */
 router.get('/roi', async (req, res, next) => {
   try {
-    const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 90);
+    // queryScalar, not a bare Number(): `?days[toString]=1` throws on coercion,
+    // and a 500 with an error_logs row and a push behind it is a poor answer to a
+    // mistyped window. Junk widens or narrows nothing — it falls back to 30 days,
+    // the same posture historyWindowDays takes in src/routes/student.js.
+    const days = Math.min(Math.max(Number(queryScalar(req.query.days)) || 30, 7), 90);
 
     const startToday = new Date();
     startToday.setHours(0, 0, 0, 0);
@@ -567,7 +654,10 @@ async function createVendorRow(loc, config, slugStart) {
         price_level: normalizePriceLevel(loc.priceLevel),
         // Who the operator calls about this storefront (migration-049). Carried
         // here rather than left on the application because the application row
-        // is DELETED at the end of an accept — before 049 that is precisely
+        // is DELETED at the START of an accept — the delete is that handler's
+        // claim lock, so by the time we run it is already gone, and anything the
+        // accept did not read off the row before deleting it is lost the moment
+        // the vendor becomes real. Before 049 that is precisely
         // where the phone number went, and the vendor who most needs phoning
         // (locked out, no mailbox) was the one with no number on file.
         contact_name: loc.contactName ?? null,
@@ -722,9 +812,15 @@ async function onboardVendor({
     invalidateVendorCaches();
   } catch (err) {
     // Unwind EVERY row this call made, not only the one that failed. A
-    // half-onboarded chain is worse than none: the application is still queued
-    // (it is deleted last, by the caller), so a retry would create the earlier
-    // locations a second time, and the vendor would sign in to duplicates.
+    // half-onboarded chain is worse than none, because this throw is not the end
+    // of the story: POST /applications/:id/accept claims the application by
+    // DELETING it before it calls us (the delete is its lock), and its catch
+    // calls restoreApplication() to put the row straight back in the queue when
+    // we throw. So the operator is looking at a pressable Accept again, and a
+    // retry would create the earlier locations a second time — the vendor would
+    // sign in to duplicates. Leaving these rows behind is what would turn that
+    // restore, which exists to make a failed accept retryable, into the
+    // duplicate-vendor bug it was written to prevent.
     for (const row of created) {
       await supabaseAdmin.from('vendors').delete().eq('id', row.id).then(() => {}, () => {});
       // The rollback is also a write — if the insert above got far enough to
@@ -1361,6 +1457,10 @@ router.patch('/vendors/:id/rewards/:rewardId', async (req, res, next) => {
  * the vendor is already gone, so a failed auth cleanup just leaves an inert
  * login rather than 500-ing the whole request. Unlike the toggle, none of this
  * can be undone.
+ *
+ * A PAID SUBSCRIPTION IS CANCELLED FIRST, and this route refuses to delete if
+ * that cancel does not land — see the block below for why nothing downstream can
+ * clean it up afterwards.
  */
 router.delete('/vendors/:id', async (req, res, next) => {
   try {
@@ -1368,6 +1468,14 @@ router.delete('/vendors/:id', async (req, res, next) => {
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
     }
+
+    // One read for both pre-delete guards below. Both columns live on the row
+    // this route is about to destroy, so anything either guard needs has to be
+    // taken off it now: after the delete, pool_id and the migration-055 billing
+    // ids are gone and there is nothing left to check them against.
+    const { data: existing, error: readErr } = await supabaseAdmin
+      .from('vendors').select('pool_id, stripe_subscription_id').eq('id', req.params.id).maybeSingle();
+    if (readErr) throw readErr;
 
     // A location that shares points cannot be deleted while it is in the pool.
     // vendors -> point_balances is ON DELETE CASCADE, and a pooled location's
@@ -1377,14 +1485,230 @@ router.delete('/vendors/:id', async (req, res, next) => {
     // recorded its contribution nulled out and the settlement history gone.
     // Taking it out of the pool first runs the contribution split, which hands
     // its customers their points back where they can actually spend them.
-    const { data: pooled, error: poolErr } = await supabaseAdmin
-      .from('vendors').select('pool_id').eq('id', req.params.id).maybeSingle();
-    if (poolErr) throw poolErr;
-    if (pooled?.pool_id) {
+    if (existing?.pool_id) {
       return res.status(409).json({
         error: 'VENDOR_IN_POOL',
         message: 'This location shares points with others. Take it out of the pool first, which gives its customers their points back.',
       });
+    }
+
+    // STOP THE MONEY BEFORE THE ROW GOES, because the row IS the billing link.
+    // migration-055 keeps stripe_customer_id / stripe_subscription_id on
+    // vendors, and nothing else in the system knows this subscription exists:
+    // once the row is deleted, resolveVendor in src/routes/stripe-webhook.js
+    // matches nothing and every further invoice event is answered 200 with
+    // "matched no vendor - ignoring". The vendor cannot reach Stripe's own
+    // cancel screen either — POST /api/vendor/billing-portal needs a login, and
+    // the orphan sweep at the end of this handler deletes it. So the card just
+    // keeps being charged every month until a human happens to notice the
+    // subscription in the Stripe dashboard, and there is no record here of whose
+    // it was.
+    //
+    // Deliberately NOT best-effort, unlike the auth cleanup below. That one
+    // fails safe (an inert login nobody can sign into); this one fails into
+    // "we destroyed the only record of who is being charged, and kept charging
+    // them", so a failure has to leave the vendor standing and say so. Same 409
+    // shape as VENDOR_IN_POOL: a precondition the operator can go and fix.
+    //
+    // Cancelling first costs one narrow window in the other direction: if the
+    // row delete a few lines down then fails, the subscription is already gone
+    // and the vendor is left standing on the free plan (which is the state the
+    // customer.subscription.deleted webhook writes anyway). That is recoverable
+    // by starting a plan again; the reverse is not recoverable by anybody.
+    if (existing?.stripe_subscription_id) {
+      if (!stripeEnabled) {
+        // No STRIPE_SECRET_KEY on this deployment. A subscription id on the row
+        // still means a real, billing subscription somewhere in Stripe (the
+        // webhook nulls the column when one ends), and we have no way to reach
+        // it from here — so this is the same refusal, not a silent delete.
+        return res.status(409).json({
+          error: 'VENDOR_HAS_BILLING',
+          message: 'This vendor has a paid subscription and Stripe isn’t configured on this server, so it can’t be cancelled from here. Cancel it in the Stripe dashboard first, then delete.',
+        });
+      }
+      try {
+        await cancelSubscription(existing.stripe_subscription_id);
+      } catch (err) {
+        // Anything that is not a 404 is Stripe refusing, or the network failing:
+        // the subscription may well still be live, so the vendor stays standing.
+        if (err?.status !== 404) {
+          console.error(
+            `[admin] vendor ${req.params.id} NOT deleted — could not cancel subscription ` +
+            `${existing.stripe_subscription_id}: ${err?.message ?? err}`,
+          );
+          return res.status(409).json({
+            error: 'VENDOR_BILLING_CANCEL_FAILED',
+            message: 'Stripe wouldn’t cancel this vendor’s subscription, so nothing has been deleted — deleting now would keep charging their card with no way to stop it. Cancel the subscription in the Stripe dashboard, then try again.',
+          });
+        }
+
+        // A 404 HERE HAS TWO MEANINGS AND ONLY ONE OF THEM IS SAFE, so it is not
+        // by itself a licence to delete the row.
+        //
+        //   * ALREADY CANCELLED. DELETE on a subscription Stripe no longer has to
+        //     cancel answers 404 `resource_missing` (see cancelSubscription in
+        //     src/lib/stripe.js). That is the state a missed
+        //     customer.subscription.deleted webhook leaves migration-055's column
+        //     in. Nothing is being charged, and refusing would wedge the vendor
+        //     undeletable — the operator cannot cancel what is already cancelled.
+        //
+        //   * NOT VISIBLE TO THIS KEY. Stripe answers the SAME 404
+        //     `resource_missing` for an id that exists but not under the key this
+        //     process holds: a subscription in another Stripe account (rotated
+        //     STRIPE_SECRET_KEY) or in the other livemode — sk_test_ keys on a box
+        //     whose vendors were signed up live, which is exactly the silent
+        //     misconfiguration stripeMode() is printed at boot to catch. Here the
+        //     card IS still being charged every month, and deleting the row throws
+        //     away the only copy of the id (nothing else in the system knows it —
+        //     see the block above), which is verbatim the disaster this whole
+        //     pre-cancel exists to prevent.
+        //
+        // err.status and err.code are identical in both (404 / resource_missing),
+        // so the error cannot tell them apart. A READ can: cancelling does not
+        // remove the object, so GET on a cancelled subscription still answers 200
+        // with status 'canceled', while GET on an id this key cannot see 404s
+        // again just like the DELETE did.
+        let status = null;
+        let probeErr = null;
+        try {
+          status = (await getSubscription(existing.stripe_subscription_id))?.status ?? null;
+        } catch (e) {
+          probeErr = e;
+        }
+
+        // REFUSE unless the read PROVED the thing is finished. Refusing is the
+        // recoverable half of this choice: the vendor and its ids stay on the
+        // table, and the operator's escape hatches are real (point the keys at the
+        // right account and retry, cancel it in the account that does own it, or
+        // — for an id no key on this server can reach at all — the explicit
+        // override below, which is why the id is in the log line and the push).
+        // Proceeding is the half nobody can undo: the id is gone, resolveVendor in
+        // src/routes/stripe-webhook.js matches nothing from then on, and the
+        // charges continue with no record of whose they are.
+        //
+        // UNREACHABLE IS NOT THE SAME REFUSAL AS UNCONFIRMED, and this is where
+        // the deploy state actually bites. A vendor onboarded while this server
+        // held sk_test_ keys carries a test-mode subscription id; under the live
+        // keys the operator has now set, the cancel 404s and the read-back 404s,
+        // so no retry and no dashboard visit can ever make this branch pass —
+        // the object simply is not in the account these keys address. Without a
+        // way out that vendor is undeletable except from a SQL console (there is
+        // still no /admin control for vendors.stripe_subscription_id), so:
+        //
+        //   `?unreachable_subscription=1` deletes anyway — and ONLY in the
+        //   double-404 case (`probeErr` is itself a 404). That restriction is the
+        //   whole safety argument. Where the read-back answered with a LIVE
+        //   status, the subscription IS reachable with these keys and IS billing a
+        //   card, so the override is refused there and the operator is sent to the
+        //   dashboard that can actually cancel it; same for a read that failed for
+        //   any other reason, which is "we don't know yet", not "we can't ever
+        //   know". It also cannot be pressed by accident: deleteVendor in
+        //   public/admin/admin.js sends no query string, so this needs a typed URL,
+        //   and it never skips the cancel — the cancel and the probe have both
+        //   already run and both already 404'd by the time it is consulted.
+        const proved = TERMINAL_SUBSCRIPTION_STATUSES.includes(String(status));
+        // 404 on the cancel AND 404 on the read-back: not in this key's account or
+        // livemode. Nothing here can cancel it, so nothing here can confirm it.
+        const unreachable = probeErr?.status === 404 || probeErr?.code === 'resource_missing';
+        const overrideAsked = req.query.unreachable_subscription === '1';
+
+        if (!proved && !(unreachable && overrideAsked)) {
+          // Never silent, whichever way the read went — an unconfirmed
+          // subscription is a live billing relationship until a human says
+          // otherwise, and the id is the only handle on it.
+          //
+          // THREE DIFFERENT THINGS HAPPENED HERE and the operator has to be told
+          // which: the read said the subscription is alive, or the read 404'd
+          // too (these keys cannot see it), or the read failed for some other
+          // reason. `why` has carried that distinction into the log line since
+          // this block was written, and the 409 below now carries it as well —
+          // the version that hard-coded "Stripe has no subscription X under this
+          // server's keys" told an operator whose subscription had just read back
+          // as 'active' the exact opposite of what had happened, and sent them
+          // hunting for an object that was sitting in the dashboard they were
+          // already looking at. The PUSH stays one generic sentence on purpose:
+          // it is a nudge to go and read this response, it names the id and the
+          // mode, and web-push bodies are truncated by the OS. (cancel404Verdict
+          // in src/routes/stripe-webhook.js is the same decision table; it stays
+          // duplicated here for the same reason TERMINAL_SUBSCRIPTION_STATUSES
+          // does — see that constant.)
+          const why = probeErr
+            ? (unreachable
+              ? 'and reading it back failed too (a second 404: it is not in this Stripe account or mode)'
+              : `and reading it back failed too (${probeErr?.message ?? probeErr})`)
+            : `and it reads back as '${status}', which is not a finished subscription`;
+          const line =
+            `[admin] vendor ${req.params.id} NOT deleted — Stripe answered 404 when cancelling ` +
+            `subscription ${existing.stripe_subscription_id} ${why}. It may still be billing a card. ` +
+            `These keys are ${stripeMode() ?? 'unset'} mode; look ${existing.stripe_subscription_id} up ` +
+            'in the dashboard of the account they belong to.';
+          console.error(line);
+          await notifyAdmins({
+            title: 'Vendor not deleted — subscription unconfirmed',
+            body:
+              `Could not confirm subscription ${existing.stripe_subscription_id} is cancelled, so the ` +
+              'vendor was left standing rather than losing the only record of it. It may still be ' +
+              `charging a card. Check it in Stripe (${stripeMode() ?? 'no keys'} mode).`,
+            url: '/admin',
+          });
+
+          const mode = stripeMode() ?? 'not set';
+          const message = unreachable
+            // Both calls 404'd. Saying "these keys cannot see it" is the true
+            // sentence; "Stripe has no such subscription" is not, and it is the
+            // one that makes an operator conclude the column is junk and reach
+            // for the database. This is also the only arm that offers the
+            // override, and it spells out the exact thing to check first.
+            ? `Neither cancelling nor reading subscription ${existing.stripe_subscription_id} worked — these keys (${mode} mode) can’t see it, which is what Stripe answers for a subscription in the other mode or in another account. Nothing has been deleted, because deleting would destroy the only record of that subscription. If it belongs to a Stripe account or mode you can reach, cancel it there and try again. If you have checked it is charging nobody (a leftover test-mode id, for instance), append ?unreachable_subscription=1 to this DELETE to remove the vendor anyway — the id is written to the error log and pushed to every operator first.`
+            : overrideAsked
+              // They asked for the override on a subscription that answered. The
+              // param must not read as "delete regardless", so the refusal says
+              // why it did not apply rather than ignoring it in silence.
+              ? (probeErr
+                ? `Stripe answered 404 when cancelling subscription ${existing.stripe_subscription_id}, and reading it back failed for a different reason (${probeErr?.message ?? probeErr}), so we can’t tell yet whether it is still charging. Nothing has been deleted, and unreachable_subscription does not apply — it only covers an id these keys cannot see at all. Try again in a moment.`
+                : `Stripe answered 404 when cancelling subscription ${existing.stripe_subscription_id}, but it still reads back as ‘${status}’, so these keys CAN see it and it is not finished. unreachable_subscription does not apply to a subscription that answers — cancel it in the Stripe dashboard (${mode} mode), then delete.`)
+              : probeErr
+                ? `Stripe answered 404 when cancelling subscription ${existing.stripe_subscription_id}, and reading it back failed too (${probeErr?.message ?? probeErr}), so we can’t confirm this vendor has stopped being charged — nothing has been deleted, because deleting would destroy the only record of that subscription. Try again in a moment; if it keeps failing, find ${existing.stripe_subscription_id} in the Stripe dashboard (${mode} mode) and cancel it there.`
+                : `Stripe answered 404 when cancelling subscription ${existing.stripe_subscription_id}, but it still reads back as ‘${status}’, which is not a finished subscription — so this vendor may still be being charged and nothing has been deleted. Find it in the Stripe dashboard (these keys are ${mode} mode) and cancel it there, then try again.`;
+
+          return res.status(409).json({ error: 'VENDOR_BILLING_CANCEL_FAILED', message });
+        }
+
+        if (!proved) {
+          // The override path. LOUDER than the refusal it replaced, because this
+          // is the one outcome where the row that held the id goes away without
+          // anything having proved the subscription is dead: the id has to be
+          // recoverable from the log afterwards, and an operator who used the
+          // param by mistake has to find out from a push rather than from a
+          // statement in three weeks.
+          const line =
+            `[admin] vendor ${req.params.id} DELETED with unreachable_subscription=1 — subscription ` +
+            `${existing.stripe_subscription_id} could be neither cancelled nor read with these ` +
+            `${stripeMode() ?? 'unset'}-mode keys (404 to both), and an operator (${req.user?.email ?? 'unknown'}) ` +
+            'overrode the refusal. If that id is live in some other Stripe account or mode, it is now ' +
+            'the only copy of it — cancel it there.';
+          console.error(line);
+          await notifyAdmins({
+            title: 'Vendor deleted with an unconfirmed subscription',
+            body:
+              `${req.user?.email ?? 'An operator'} deleted a vendor whose subscription ` +
+              `${existing.stripe_subscription_id} these ${stripeMode() ?? 'unset'}-mode keys cannot see. ` +
+              'If it exists in another account or mode, cancel it there — this was the last record of it.',
+            url: '/admin',
+          });
+        }
+
+        // Guarded on `proved` so the happy 404 ("already cancelled") is not also
+        // announced on the override path above, where the status is null or still
+        // alive and this sentence would be false.
+        if (proved) {
+          console.warn(
+            `[admin] subscription ${existing.stripe_subscription_id} for vendor ${req.params.id} was ` +
+            `already gone at Stripe (404) and reads back as '${status}' — nothing left to cancel or to ` +
+            'bill, continuing with the delete.',
+          );
+        }
+      }
     }
 
     // Read the linked login accounts BEFORE the delete — the vendors delete
@@ -1413,17 +1737,45 @@ router.delete('/vendors/:id', async (req, res, next) => {
     // and profile away with the vendor; instead they simply stop being vendor
     // staff (the cascade already removed the link, and the migration-035
     // trigger flipped profiles.is_vendor off).
+    //
+    // BOTH LOOKUPS MUST SUCCEED BEFORE ANYTHING IS DELETED, and that is the
+    // whole shape of this loop. postgrest-js reports a failed response by
+    // setting count = null / data = null and putting the reason in `error`, so a
+    // dropped connection or a PostgREST hiccup is byte-for-byte
+    // indistinguishable from the answers that mean "no links left" and "not a
+    // student" — and this is the one place in the file where believing those two
+    // answers destroys an account. A vendor login has no profiles row at all
+    // (migration-022 dropped the auto-create trigger), so one failed count
+    // query while deleting a single store of a multi-location owner would read
+    // as "orphaned, not a student" and delete their login — and auth.users ->
+    // vendor_staff is ON DELETE CASCADE, so the store they still run loses its
+    // access too. onboardVendor also LINKS a pre-existing account when
+    // createUser says email_exists, and deliberately refuses to delete a linked
+    // account when it rolls back; this sweep has no memory of that
+    // (`linkedExisting` is not recorded anywhere), so the account at risk can be
+    // an operator's own Google login or a student who never consented to being
+    // vendor staff. The safe default is therefore to leave a login alone on any
+    // unknown state: an inert extra auth user costs nothing and is deletable by
+    // hand, and the vendor itself is already gone either way.
     for (const { user_id: uid } of staff ?? []) {
-      const { count } = await supabaseAdmin
+      const { count, error: countErr } = await supabaseAdmin
         .from('vendor_staff')
         .select('vendor_id', { count: 'exact', head: true })
         .eq('user_id', uid);
+      if (countErr) {
+        console.error(`[admin] left login ${uid} in place — could not count its remaining vendor_staff links: ${countErr.message}`);
+        continue;
+      }
       if (!count) {
-        const { data: profile } = await supabaseAdmin
+        const { data: profile, error: profileErr } = await supabaseAdmin
           .from('profiles')
           .select('user_id')
           .eq('user_id', uid)
           .maybeSingle();
+        if (profileErr) {
+          console.error(`[admin] left login ${uid} in place — could not check whether it is also a student account: ${profileErr.message}`);
+          continue;
+        }
         if (!profile) await supabaseAdmin.auth.admin.deleteUser(uid).catch(() => {});
       }
     }
@@ -1618,15 +1970,15 @@ router.get('/applications', async (req, res, next) => {
 /**
  * POST /api/admin/applications/:id/accept
  * Onboard the applicant through the shared onboardVendor path (auth login →
- * vendors row → vendor_staff link), then delete the application. The login is
- * created from the stored bcrypt hash (password_hash), so the vendor signs in
- * with the password they chose when applying — unless the email already had an
- * account, which is linked instead and keeps its own password (`linkedExisting`
- * tells the dashboard to say so; see onboardVendor).
+ * vendors row → vendor_staff link). The login is created from the stored bcrypt
+ * hash (password_hash), so the vendor signs in with the password they chose when
+ * applying — unless the email already had an account, which is linked instead
+ * and keeps its own password (`linkedExisting` tells the dashboard to say so;
+ * see onboardVendor).
  *
- * The application row is only deleted at the very end, and onboardVendor unwinds
- * itself on failure — so any failed accept leaves a clean slate and the
- * application still in the queue to retry.
+ * THE DELETE OF THE APPLICATION ROW HAPPENS FIRST, BEFORE ANY ONBOARDING, and
+ * that ordering is the whole idempotency story for this route — read the comment
+ * on the delete below before changing it back.
  */
 router.post('/applications/:id/accept', async (req, res, next) => {
   try {
@@ -1635,68 +1987,206 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
     }
 
+    // CLAIM THE APPLICATION BY DELETING IT. The delete is the lock: `.select()
+    // .maybeSingle()` returns a row only to the request that actually removed
+    // it, so a double-click, a retry, or a second operator pressing Accept at
+    // the same moment gets no row and falls straight through to the 404 below,
+    // having created nothing.
+    //
+    // This used to run the other way round — onboard, then delete — and there is
+    // no lock anywhere in that order. onboardVendor COMMITS as it goes (an auth
+    // user, a vendors row per location, vendor_staff links, starter rewards),
+    // and a failure of the delete afterwards threw a 500 with the vendor already
+    // real; the admin client treats any non-404 as retryable and re-enables
+    // Accept with the row still in the queue. The retry re-enters onboardVendor,
+    // createUser reports email_exists so the existing login is LINKED, and
+    // createVendorRow's 23505 suffix loop cheerfully inserts "name-2" with its
+    // own staff link and a second copy of every starter reward. Nothing refuses
+    // it: many vendors per login is a deliberate feature (migration-043), so no
+    // constraint stands between a retry and a duplicate store.
+    //
+    // `message` and `created_at` are selected purely so a restore below can put
+    // the row back as it was — everything not read here is destroyed with the
+    // row, and a restored application that had lost the applicant's pitch or
+    // jumped to the front of the FIFO queue would be a quieter version of the
+    // same bug.
     const { data: app, error: appErr } = await supabaseAdmin
       .from('vendor_applications')
+      .delete()
+      .eq('id', req.params.id)
       // contact_name opens the acceptance email with a person's name rather
       // than the business's — and, since migration-049, is ALSO copied onto
       // every vendors row this accept creates, along with `phone`.
       //
-      // That copy is the whole point of 049. This handler deletes the
-      // application row a few lines below, so anything not carried across here
-      // is destroyed, permanently, at the moment the vendor becomes real. The
-      // phone number spent this entire project in that gap: asked for on a
-      // public form, shown to the operator once in the review queue, gone. It is
-      // also the one field that matters most AFTER acceptance rather than
-      // before, because dictating a reset code down the phone (migration-031) is
-      // the only recovery left for a vendor who has lost their mailbox too.
-      .select('id, business_name, contact_name, phone, email, password_hash, address, location_label, locations, logo, cuisine, price_level, rewards')
-      .eq('id', req.params.id)
+      // That copy is the whole point of 049. This handler has just deleted the
+      // application row, so anything not carried across here is destroyed,
+      // permanently, at the moment the vendor becomes real. The phone number
+      // spent this entire project in that gap: asked for on a public form, shown
+      // to the operator once in the review queue, gone. It is also the one field
+      // that matters most AFTER acceptance rather than before, because dictating
+      // a reset code down the phone (migration-031) is the only recovery left
+      // for a vendor who has lost their mailbox too.
+      .select('id, business_name, contact_name, phone, email, password_hash, address, location_label, locations, logo, message, cuisine, price_level, rewards, created_at')
       .maybeSingle();
     if (appErr) throw appErr;
-    // Already accepted/rejected (double-click, or a second admin got there first).
+    // Already accepted/rejected (double-click, or a second admin got there
+    // first) — or, now, a concurrent accept that won the claim a moment ago.
     if (!app) return res.status(404).json({ error: 'NOT_FOUND', message: 'Application not found.' });
 
-    const { vendor, vendors, linkedExisting, conflict } = await onboardVendor({
-      name: app.business_name,
-      email: app.email,
-      passwordHash: app.password_hash,
-      address: app.address,
-      logo: app.logo,
-      // What they told us on /join, carried straight onto the vendors row so a
-      // newly accepted spot is filterable on the Spots tab immediately rather
-      // than sitting untagged until someone edits it (migration-042).
-      cuisine: app.cuisine,
-      priceLevel: app.price_level,
-      // One application, one login, one vendors row PER LOCATION
-      // (migration-043). `locations` is [] for the single-location application
-      // that is still the common case, which makes this the same onboarding it
-      // always was.
-      locationLabel: app.location_label,
-      locations: Array.isArray(app.locations) ? app.locations : [],
-      // The applicant's own contact details, onto every location this creates
-      // (migration-049). Read the comment on the select above for why this line
-      // is the one that stops the number being thrown away.
-      contactName: app.contact_name,
-      phone: app.phone,
-      // What this spot will actually GIVE students (migration-052). Created
-      // once per location, at each location’s own rate. [] for an application
-      // submitted before 052 shipped, which onboards exactly as it used to.
-      rewards: Array.isArray(app.rewards) ? app.rewards : [],
-    });
-    // The taken email's account vanished mid-accept. Nothing was created, so
-    // leave the application queued for a retry.
+    /**
+     * Put a claimed application back so the operator can press Accept again.
+     * Only reached when the onboarding that followed the claim produced no
+     * vendor, so re-inserting cannot resurrect a row for a business that now
+     * exists. The id and created_at go back as they were: the same row, in the
+     * same place in the queue, not a new application at the back of it.
+     *
+     * If the re-insert ALSO fails we have nothing left but the log, so the row
+     * goes into it as JSON and that line is what makes the application
+     * recoverable by hand — losing a real business's application silently is the
+     * one outcome worse than a duplicate vendor.
+     *
+     * TWO KINDS OF VALUE ARE DELIBERATELY NOT IN THAT LINE, and what is lost with
+     * each is the point of the paragraphs below.
+     *
+     * EVERY LOGO ON THE ROW — not just the `logo` column. One logo is up to
+     * LOGO_MAX_CHARS = 500_000 characters of base64 (src/lib/logo.js) on ONE
+     * console line. Heroku's Logplex truncates a log line at 10 KB, and PostgREST
+     * returns keys in select order, so shipping a blob would cut off everything
+     * after it — `message`, `cuisine`, `price_level`, `rewards`, `created_at`: the
+     * applicant's pitch and what they promised students. The line meant to make the
+     * row recoverable would be the one thing guaranteed not to survive the
+     * pipeline. Only the lengths are logged; the operator re-asks for the image, or
+     * sets it later on the Spots tab.
+     *
+     * AND THERE IS ONE LOGO PER LOCATION, which is why the redaction below walks
+     * the array instead of touching one column. `locations` (migration-043) holds
+     * locations two and up, and each element carries its own `logo` — worse,
+     * validLocation in src/routes/apply.js INHERITS location one's data URL when a
+     * branch sends no logo of its own, which /join always does (its own comment:
+     * "WHAT THE SHOP SELLS IS INHERITED … /join asks for all three exactly once").
+     * So a chain at MAX_LOCATIONS = 12 (apply.js) is up to TWELVE verbatim copies
+     * of the same 500 KB blob: redacting only the column left ~5.5 MB on this line
+     * and lost the whole tail regardless, i.e. exactly the failure the paragraph
+     * above says it prevents.
+     *
+     * NOTHING ELSE ON THE ROW IS A BLOB, so logos are the whole job here: `rewards`
+     * is at most MAX_STARTER_ITEMS = 6 items of a 60-character title plus a
+     * 16-character emoji (validStarterItem, src/lib/rewards.js), and `cuisine` — on
+     * the row and on every location — is at most MAX_CUISINES = 3 slugs from a fixed
+     * list (normalizeCuisine, src/lib/cuisines.js). With every remaining field at
+     * its /join cap and all 12 locations present, the line measures ~9 KB and fits.
+     * What is left is arithmetic rather than an unbounded value, and it is stated so
+     * nobody re-derives it: a 12-location row whose every free-text field is filled
+     * to its cap with multi-byte characters can still reach ~20 KB of UTF-8, and it
+     * is again the tail that would drop. Tightening the /join caps, not this line,
+     * is where that would be fixed.
+     *
+     * `password_hash` is a credential, and stdout is the one place this repo
+     * refuses to put one (src/lib/errors.js:13-19 redacts pass/token/key/logo for
+     * exactly this reason). The consequence is real and must be said out loud:
+     * WITHOUT THE HASH, THE APPLICANT'S CHOSEN PASSWORD IS GONE. Re-keying this
+     * application therefore means the operator adds the vendor with POST
+     * /api/admin/vendors and a password they type, then tells them — or issues a
+     * reset code (migration-031) — so the applicant picks a new one. An extra
+     * email beats a bcrypt hash sitting in a log aggregator forever.
+     */
+    const restoreApplication = async () => {
+      const { error: restoreErr } = await supabaseAdmin.from('vendor_applications').insert(app);
+      if (restoreErr) {
+        // Copied, not mutated: `app` is still the row this same function hands to
+        // insert() on a later retry, and onboardVendor reads its fields above. A
+        // JSON round-trip because that is all the row is — plain JSON out of
+        // PostgREST — and it leaves `locations` / `rewards` as their own arrays
+        // rather than aliases of the live row's.
+        const recoverable = JSON.parse(JSON.stringify(app));
+        recoverable.password_hash = app.password_hash ? '[redacted — applicant must choose a new password]' : null;
+        recoverable.logo = app.logo ? `[logo dropped — ${app.logo.length} chars of base64]` : null;
+        // The same redaction, once per branch (see the doc comment above). Lengths
+        // are read off the COPY, not off `app.locations[i]`, so this cannot drift
+        // out of alignment with the array it is rewriting. Guards, because this is
+        // jsonb and only /join's validLocation promises the element shape: a
+        // non-object (or an array, whose spread would silently become an object with
+        // numeric keys) is passed through untouched rather than mangled — a row a
+        // human hand-edited is still a row the operator has to be able to recover.
+        if (Array.isArray(recoverable.locations)) {
+          recoverable.locations = recoverable.locations.map((l) => (
+            l && typeof l === 'object' && !Array.isArray(l)
+              ? { ...l, logo: l.logo ? `[logo dropped — ${String(l.logo).length} chars of base64]` : null }
+              : l
+          ));
+        }
+        // WHY IT COULD NOT GO BACK CHANGES WHAT THE OPERATOR SHOULD DO, so the
+        // one failure that is not a broken database is named. 23505 here is the
+        // unique index on lower(email) (idx_vendor_applications_email,
+        // supabase/migrations/00000000000018_migration-018.sql): the claim delete
+        // above freed the address, and somebody re-submitted /join with it inside
+        // the window this onboard took — which /join answers as a clean duplicate
+        // only while the row is present. The applicant's own words are therefore
+        // back in the queue already, and re-keying them out of this log line
+        // would make a second copy of a live application. This is a known,
+        // accepted residual of claim-by-delete (the alternative, claiming with a
+        // status column, needs a migration): the row survives in the queue or in
+        // this line, never in neither.
+        const conflict = restoreErr.code === '23505'
+          ? ' A NEWER APPLICATION FOR THIS EMAIL ALREADY EXISTS — the applicant re-submitted /join while ' +
+            'this accept was running, so look for their new row in the queue and accept that one INSTEAD ' +
+            'of re-keying this copy.'
+          : '';
+        console.error(
+          `[admin] application ${app.id} was claimed, onboarding failed, and it could NOT be put back ` +
+          `(${restoreErr.message}).${conflict} Recover it from this row: ${JSON.stringify(recoverable)}`,
+        );
+      }
+    };
+
+    let onboarded;
+    try {
+      onboarded = await onboardVendor({
+        name: app.business_name,
+        email: app.email,
+        passwordHash: app.password_hash,
+        address: app.address,
+        logo: app.logo,
+        // What they told us on /join, carried straight onto the vendors row so a
+        // newly accepted spot is filterable on the Spots tab immediately rather
+        // than sitting untagged until someone edits it (migration-042).
+        cuisine: app.cuisine,
+        priceLevel: app.price_level,
+        // One application, one login, one vendors row PER LOCATION
+        // (migration-043). `locations` is [] for the single-location application
+        // that is still the common case, which makes this the same onboarding it
+        // always was.
+        locationLabel: app.location_label,
+        locations: Array.isArray(app.locations) ? app.locations : [],
+        // The applicant's own contact details, onto every location this creates
+        // (migration-049). Read the comment on the select above for why this line
+        // is the one that stops the number being thrown away.
+        contactName: app.contact_name,
+        phone: app.phone,
+        // What this spot will actually GIVE students (migration-052). Created
+        // once per location, at each location’s own rate. [] for an application
+        // submitted before 052 shipped, which onboards exactly as it used to.
+        rewards: Array.isArray(app.rewards) ? app.rewards : [],
+      });
+    } catch (err) {
+      // onboardVendor unwinds every row it made before it throws, so nothing
+      // half-built survives — but the application is already claimed, and
+      // without this the operator's queue would simply be one business short
+      // with a 500 to explain it. Put it back, then let the error surface.
+      await restoreApplication();
+      throw err;
+    }
+
+    const { vendor, vendors, linkedExisting, conflict } = onboarded;
+    // The taken email's account vanished mid-accept. Nothing was created, so put
+    // the application back in the queue for a retry.
     if (conflict) {
+      await restoreApplication();
       return res.status(409).json({
         error: 'EMAIL_EXISTS',
         message: 'This email’s account changed mid-accept. Reload and try again.',
       });
     }
-
-    const { error: delErr } = await supabaseAdmin
-      .from('vendor_applications')
-      .delete()
-      .eq('id', app.id);
-    if (delErr) throw delErr; // vendor IS onboarded; surfacing the 500 beats hiding a stuck row
 
     // The one email in this flow that has to actually work: it is how the vendor
     // learns they can sign in, and — when the address already had an account —
@@ -1842,11 +2332,31 @@ function validIncentive(body, { existingKind = null } = {}) {
   };
 }
 
+// The three values referrals.status can hold (the CHECK in migration-039), in
+// the order the tab draws them. Counted one at a time below, so this list is
+// also the shape of the `referrals` object in the response.
+const REFERRAL_STATUSES = ['pending', 'paid', 'void'];
+
 /**
  * GET /api/admin/incentives
- * Every incentive plus the counts the tab draws. Referral counts come from one
- * grouped read rather than a per-row query, so this stays a fixed number of
- * round-trips however many programs exist.
+ * Every incentive plus the counts the tab draws.
+ *
+ * THE COUNTS ARE `count: 'exact', head: true` QUERIES, NOT TALLIES OF A
+ * WHOLE-TABLE READ, and that is not a style preference. This route used to pull
+ * `referrals(incentive_id, status)` and `community_grants(incentive_id)` entire
+ * and count them in JS, with no range and no limit — and supabase/config.toml
+ * sets max_rows = 1000, so PostgREST simply stopped sending rows at a thousand.
+ * The dashboard's referral and payout numbers would have frozen there and stayed
+ * frozen, getting quietly more wrong with every new referral, with nothing on
+ * screen to say so. Unlike /overview, which pulls a windowed slab of
+ * transactions and at least confesses `truncated` when it hits its own cap,
+ * there was no cap to notice here.
+ *
+ * That makes it four counts per program instead of two reads flat — N+1, and
+ * accepted deliberately: the programs list is a handful of rows an operator
+ * created by hand, this panel is opened by one person, and a count PostgREST
+ * computes in the database cannot truncate. Promise.all keeps each program's
+ * four counts concurrent so the panel stays about as quick as it was.
  */
 router.get('/incentives', async (req, res, next) => {
   try {
@@ -1857,35 +2367,39 @@ router.get('/incentives', async (req, res, next) => {
       .order('created_at', { ascending: false });
     if (error) throw error;
 
-    const { data: refs, error: refErr } = await supabaseAdmin
-      .from('referrals')
-      .select('incentive_id, status');
-    if (refErr) throw refErr;
+    const incentives = rows ?? [];
+    const tallies = await Promise.all(incentives.map(async (row) => {
+      const results = await Promise.all([
+        ...REFERRAL_STATUSES.map((status) => supabaseAdmin
+          .from('referrals')
+          .select('id', { count: 'exact', head: true })
+          .eq('incentive_id', row.id)
+          .eq('status', status)),
+        // How many students a program has actually paid. For a referral program
+        // that is roughly its referral count; for a signup bonus it is the only
+        // count there is, since nothing else records one.
+        supabaseAdmin
+          .from('community_grants')
+          .select('id', { count: 'exact', head: true })
+          .eq('incentive_id', row.id),
+      ]);
+      // Any failure has to surface as a 500 rather than a zero: a count that
+      // silently reads 0 because the query failed is the same lie the row cap
+      // was telling, just faster.
+      for (const r of results) if (r.error) throw r.error;
 
-    const stats = new Map();
-    for (const r of refs ?? []) {
-      const s = stats.get(r.incentive_id) ?? { pending: 0, paid: 0, void: 0 };
-      if (s[r.status] !== undefined) s[r.status] += 1;
-      stats.set(r.incentive_id, s);
-    }
+      // The statuses came back in REFERRAL_STATUSES order; the grants count is
+      // the one after them.
+      const payouts = results[REFERRAL_STATUSES.length];
+      return {
+        referrals: Object.fromEntries(
+          REFERRAL_STATUSES.map((status, i) => [status, results[i].count ?? 0]),
+        ),
+        payouts: payouts.count ?? 0,
+      };
+    }));
 
-    // How many students a program has actually paid. For a referral program
-    // that is roughly its referral count; for a signup bonus it is the only
-    // count there is, since nothing else records one.
-    const { data: paid, error: pErr } = await supabaseAdmin
-      .from('community_grants')
-      .select('incentive_id');
-    if (pErr) throw pErr;
-    const payouts = new Map();
-    for (const g of paid ?? []) {
-      if (g.incentive_id) payouts.set(g.incentive_id, (payouts.get(g.incentive_id) ?? 0) + 1);
-    }
-
-    res.json((rows ?? []).map((row) => ({
-      ...row,
-      referrals: stats.get(row.id) ?? { pending: 0, paid: 0, void: 0 },
-      payouts: payouts.get(row.id) ?? 0,
-    })));
+    res.json(incentives.map((row, i) => ({ ...row, ...tallies[i] })));
   } catch (err) {
     next(err);
   }
@@ -2183,12 +2697,92 @@ router.post('/grants', async (req, res, next) => {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'Say what this grant is for.' });
     }
 
-    const { data: profile, error: pErr } = await supabaseAdmin
+    // EXACT MATCH, and .limit(1) rather than .maybeSingle() — the same shape as
+    // findAccountByEmail in src/lib/ambassadors.js, for the same two reasons.
+    // A SECOND LOOKUP RUNS ONLY ON A MISS, and it is a repair rather than a
+    // nicety: see the auth_user_id_by_email fallback below.
+    //
+    // This used to be .ilike('email', email), which is a LIKE pattern, not a
+    // case-insensitive equals: postgrest-js appends whatever was typed verbatim,
+    // there is no LIKE-escaping helper anywhere in this repo, and `_` and `%` are
+    // wildcards that the loose EMAIL_RE above happily admits. On a money path
+    // with no reversal (grant_community_points appends to the ledger; nothing
+    // takes points back) that is the worst possible matcher. A real address like
+    // j_smith@school.edu 500'd with PGRST116 whenever j.smith@school.edu also
+    // existed — and, far worse, an address that does NOT exist could match a
+    // student who is one character different and silently credit them instead.
+    // The address is already lower-cased above, and profiles.email is written
+    // from auth.users.email in both places anything writes it — handle_new_user
+    // (the on_auth_user_created trigger, migration 00000000000001_schema.sql) and
+    // the terms upsert in src/routes/student.js, whose `email` is req.user.email —
+    // and GoTrue stores that lower-cased. So .eq matches every row this app has
+    // written itself.
+    //
+    // ⚠ BUT .eq IS CASE-SENSITIVE AND profiles.email CARRIES NO LOWER-CASE
+    // CONSTRAINT. migration-053 says outright that profiles.email is neither
+    // unique nor not-null, and the `check (email = lower(email))` in that same
+    // migration is on ambassadors, not here. So "every row this app has written"
+    // is an argument about code, not a guarantee from the schema: one legacy,
+    // imported or hand-edited 'Jane.Smith@school.edu' and the operator gets
+    // "No student account with that email" for an account that plainly exists —
+    // which is what swapping .ilike for .eq cost, and is not a trade this route
+    // has to make. The fallback below buys the case-insensitivity back without
+    // buying the wildcards back with it.
+    //
+    // ⚠ profiles.email IS NOT UNIQUE (see findAccountByEmail): auth.users.email
+    // is what enforces one account per address, so in practice this matches at
+    // most one row. limit(1) is here because "in practice" is not a constraint,
+    // and a duplicate must not turn a hand-typed grant into a 500.
+    const { data: matches, error: pErr } = await supabaseAdmin
       .from('profiles')
       .select('user_id, email')
-      .ilike('email', email)
-      .maybeSingle();
+      .eq('email', email)
+      .limit(1);
     if (pErr) throw pErr;
+    let profile = matches?.[0] ?? null;
+
+    // CASE-INSENSITIVE SECOND ATTEMPT, VIA SQL, NEVER VIA A PATTERN.
+    // auth_user_id_by_email (migration-035 §5) is `select id from auth.users
+    // where lower(email) = lower(trim(p_email)) limit 1` in a security-definer
+    // function granted to service_role alone. That is an equality on a
+    // lower()'d column, so:
+    //
+    //   * it is case-insensitive in the one direction that matters — the stored
+    //     address — where lower-casing the INPUT (done above) cannot help; and
+    //   * `_`, `%` and `*` have NO meaning in it. The old .ilike('email', email)
+    //     appended the operator's typing as a LIKE pattern, and the loose
+    //     EMAIL_RE above admits both wildcards, so a typed j_smith@psu.edu could
+    //     match j.smith@psu.edu and silently credit a student one character away
+    //     from the intended one. On grant_community_points, which only ever
+    //     appends to the ledger, that is irreversible. Escaping the pattern
+    //     instead was the alternative and was rejected: this repo has no
+    //     LIKE-escaping helper, PostgREST's own `*`→`%` rewrite would have to be
+    //     escaped around as well, and the result is only ever testable against a
+    //     live PostgREST — whereas lower() = lower() is a documented equality
+    //     that already has three other callers in this app (src/lib/
+    //     student-email.js, src/lib/terminal-admin.js, onboardVendor above).
+    //
+    // auth.users is also the authoritative copy of the address, and it is unique
+    // there, so this cannot widen into "several students matched": it returns one
+    // id or null. The profiles row is then fetched BY user_id — the grant needs
+    // profiles to exist anyway (the response quotes profile.email back at the
+    // operator, and an account with no profiles row is not a student account),
+    // so an operator/vendor-only login still gets the same 404 it gets today.
+    if (!profile) {
+      const { data: authId, error: authErr } = await supabaseAdmin
+        .rpc('auth_user_id_by_email', { p_email: email });
+      if (authErr) throw authErr;
+      if (authId) {
+        const { data: byId, error: idErr } = await supabaseAdmin
+          .from('profiles')
+          .select('user_id, email')
+          .eq('user_id', authId)
+          .limit(1);
+        if (idErr) throw idErr;
+        profile = byId?.[0] ?? null;
+      }
+    }
+
     if (!profile) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'No student account with that email.' });
     }
@@ -2209,7 +2803,13 @@ router.post('/grants', async (req, res, next) => {
     const newBalance = data?.[0]?.new_balance ?? 0;
     emitBalance(profile.user_id, { community: newBalance });
 
-    res.status(201).json({ ok: true, student: profile.email, points, newBalance });
+    // `student` is the address the points landed on, echoed back so the operator
+    // can see WHICH row matched — it is the stored spelling, which after the
+    // case-insensitive fallback above may differ in case from what they typed.
+    // profiles.email is nullable (migration-053), and a row reached through that
+    // fallback can have none, so the typed address stands in rather than letting
+    // public/admin/admin.js print "gave 5 points to null".
+    res.status(201).json({ ok: true, student: profile.email ?? email, points, newBalance });
   } catch (err) {
     next(err);
   }
@@ -2363,9 +2963,14 @@ const STUDENT_REFERRALS = 50;    // friends listed on one student's card
  * ever be a literal substring. `_` is left alone: it is a single-character LIKE
  * wildcard, but it is also in real email addresses, and matching a superset is
  * not a hazard.
+ *
+ * queryScalar first, because String() is the other coercion that throws on the
+ * object `?q[toString]=x` parses to — see that function. An array still coerces
+ * ('a,b' for ?q=a&q=b, whose comma is then blanked like any other), which is the
+ * behaviour test/admin-students.test.js pins.
  */
 export function safeSearch(raw) {
-  return String(raw ?? '').replace(/[,()"'\\%*]/g, ' ').trim().slice(0, STUDENT_Q_MAX);
+  return String(queryScalar(raw) ?? '').replace(/[,()"'\\%*]/g, ' ').trim().slice(0, STUDENT_Q_MAX);
 }
 
 /**
@@ -3036,7 +3641,11 @@ router.delete('/tracked-qr/:id', async (req, res, next) => {
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
     }
-    const force = String(req.query.force ?? '') === '1';
+    // Strict compare, no String(): the coercion throws on the object
+    // ?force[toString]=1 parses to (see queryScalar), and a flag that only the
+    // exact string '1' can set is the same shape as ?resubscribe=1 in
+    // src/routes/unsubscribe.js. public/admin/admin.js sends literally '?force=1'.
+    const force = req.query.force === '1';
 
     const { data: row, error: readErr } = await supabaseAdmin
       .from('tracked_qr_overview').select('id, name, scans, signups').eq('id', req.params.id).maybeSingle();
@@ -3065,7 +3674,8 @@ router.get('/tracked-qr/:id/detail', async (req, res, next) => {
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'TRACKED_QR_NOT_FOUND', message: 'That QR code no longer exists.' });
     }
-    const days = Math.min(365, Math.max(1, Math.floor(Number(req.query.days) || 30)));
+    // Same gate as /roi's window: see queryScalar.
+    const days = Math.min(365, Math.max(1, Math.floor(Number(queryScalar(req.query.days)) || 30)));
     const { data, error } = await supabaseAdmin.rpc('tracked_qr_detail', {
       p_qr_id: req.params.id,
       p_days: days,
@@ -3539,7 +4149,11 @@ router.delete('/ambassadors/:id', async (req, res, next) => {
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'AMBASSADOR_NOT_FOUND', message: 'That ambassador no longer exists.' });
     }
-    const force = String(req.query.force ?? '') === '1';
+    // Strict compare, no String(): the coercion throws on the object
+    // ?force[toString]=1 parses to (see queryScalar), and a flag that only the
+    // exact string '1' can set is the same shape as ?resubscribe=1 in
+    // src/routes/unsubscribe.js. public/admin/admin.js sends literally '?force=1'.
+    const force = req.query.force === '1';
 
     const { data: row, error: readErr } = await supabaseAdmin
       .from('ambassador_overview').select('id, name, scans, signups').eq('id', req.params.id).maybeSingle();

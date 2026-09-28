@@ -21,6 +21,35 @@ export function validRatio(raw) {
   return { value: Math.round(r * 100) / 100 };
 }
 
+/**
+ * Points earned for a dollar amount at a points-per-dollar ratio.
+ *
+ * WHY THIS IS NOT `Math.floor(dollars * ratio)`. Both inputs are decimal money
+ * but doubles are binary, so the product lands a hair BELOW the integer for
+ * many ordinary amounts and the floor then drops a whole point:
+ *
+ *     1.16 * 25  === 28.999999999999996   ->  floor 28, not 29
+ *     8.20 * 15  === 122.99999999999999   ->  floor 122, not 123
+ *
+ * Sweeping every cent from $0.01 to $200: the naive form is wrong 287 times at
+ * ratio 25, 573 at 50, 1145 at 100, 148 at 1000 - and never at the default 10,
+ * which is why this went unnoticed. Multiplying integer cents by integer
+ * hundredths keeps every intermediate exact (the largest is 20000 * 100000 =
+ * 2e9, well inside 2^53), so the result is the documented
+ * floor(amount * points_per_dollar) at every ratio validRatio admits.
+ *
+ * The terminal and the scan page compute the same preview client-side and
+ * cannot import this (they are browser bundles, not server modules), so the
+ * expression is duplicated there - public/vendor/terminal.js and
+ * public/scan/scan.js both point back here. Change all three together.
+ */
+export function pointsFor(dollarAmount, ratio) {
+  const cents = Math.round(Number(dollarAmount) * 100);
+  const hundredths = Math.round(Number(ratio) * 100);
+  if (!Number.isFinite(cents) || !Number.isFinite(hundredths)) return 0;
+  return Math.floor((cents * hundredths) / 10000);
+}
+
 // A price is: a positive integer, or null meaning "not sold in this currency".
 // Blank string counts as null so an emptied form field clears the price.
 export function validPrice(raw, label, max) {

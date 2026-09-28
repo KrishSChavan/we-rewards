@@ -87,9 +87,25 @@ export function normalizeLinkCode(input) {
  * invent. Dots are deliberately NOT stripped — that is a Gmail-specific rule,
  * and on most mail systems (including a university's) first.last@ and
  * firstlast@ are genuinely two different people.
+ *
+ * TYPE GATE BEFORE ANY COERCION, exactly as normalizeLinkCode above does it.
+ * `raw` is raw JSON off the wire — the POST /student-email/start handler in
+ * src/routes/student.js opens with `normalizeStudentEmail(req.body?.email)` and
+ * has no shape guard ahead of it — so `{"email":{"toString":1}}` reaches here as
+ * an object with an own, NON-CALLABLE `toString` shadowing the real one, and
+ * `String(that)` throws "TypeError: Cannot convert object to primitive value".
+ * That throw skipped the `if (parsed.error) return 400 BAD_EMAIL` on the very
+ * next line and went to next(err); server.js's global handler has no branch for
+ * a bare TypeError, so logError wrote an error_logs row and web-pushed an alert
+ * to EVERY subscribed operator before answering 500. A malformed request body is
+ * a 400, never an incident. Same class of hole as the tracked-qr and
+ * /unsubscribe ones (see the coercion note on verifyUnsubscribeToken in
+ * src/lib/email.js). A non-string gets the ordinary empty-field refusal, which
+ * is also what undefined/null got before this gate existed.
  */
 export function normalizeStudentEmail(raw) {
-  const email = String(raw ?? '').trim().toLowerCase();
+  if (typeof raw !== 'string') return { error: 'Enter your student email address.' };
+  const email = raw.trim().toLowerCase();
   if (!email) return { error: 'Enter your student email address.' };
   if (email.length > EMAIL_MAX) return { error: 'That email address is too long.' };
   if (!EMAIL_RE.test(email)) return { error: 'That doesn’t look like an email address.' };
@@ -255,6 +271,75 @@ export async function claimHeldByOther(email, userId) {
   }
 }
 
+// Which sendEmail() failures are ABOUT OUR MAIL PLUMBING, and therefore the
+// only ones POST /student-email/start may ever admit to (as 503). Everything
+// else answers the uniform 200, because it might be a fact about ONE mailbox.
+//
+// sendEmail never throws; it returns { ok:false, reason } — and, for reason
+// 'http', additionally { status } — where reason is one of disabled |
+// invalid_to | empty | suppressed | http | timeout | network (the full shape is
+// documented on sendEmail in src/lib/email.js, whose only status-bearing return
+// is `return { ok: false, reason: 'http', status: res.status }` on any non-2xx).
+//
+// ⚠ WHY THIS IS AN ALLOW-LIST OF TRANSPORT REASONS AND NOT A DENY-LIST OF
+// ADDRESS ONES. It used to be the other way round — a two-name set
+// {suppressed, invalid_to}, with everything else, 'http' included, treated as
+// "equally true of every address". That was false, and 'http' is the proof:
+//
+//   • sendEmail's RECIPIENT_FIELD_RE branch (src/lib/email.js, ~:409 — cited by
+//     symbol because that file moves) exists precisely because a 422 NAMING THE
+//     RECIPIENT is a fact about the mailbox: it calls
+//     suppress(to, 'invalid_address', SCOPE_ALL) on it. That send still returns
+//     reason 'http', so 'first..last@psu.edu' (which passes both our own
+//     EMAIL_RE and sendEmail's local guard, reaches Resend, and comes back 422)
+//     answered 503 while 'first.last@psu.edu' answered 200. The response
+//     differed on the address STRING — the enumeration oracle the ⚠ note on the
+//     route forbids, handed back by the very split meant to be safe.
+//   • With a test-mode Resend key it is starker still: Resend answers 403 "You
+//     can only send testing emails to your own email address", so every address
+//     but the key owner's got 503 and the key owner's got 200. A perfect oracle
+//     for one address, live on any staging deploy.
+//
+// SO THE SPLIT IS BY STATUS, not by reason alone. A 5xx is the provider being
+// down and is true of every address at that instant. A 4xx is Resend's verdict
+// on THIS REQUEST — which includes its verdict on this recipient — so it is
+// address-dependent until proven otherwise, and 401 (a missing, revoked or
+// wrong API key) and 429 (rate limit) are the two proven otherwises: both are
+// evaluated against the API KEY, before and irrespective of who the message is
+// addressed to, and both are exactly the "silent dead end" this 503 exists to
+// surface. Anything else 4xx — 403, 422, a shape error — stays 200.
+//
+// AND THE DEFAULT LEANS TO 200 (address), which is the reverse of what the old
+// comment claimed. An unrecognised reason is not automatically address-
+// independent — 'http' was recognised and wasn't — so the two errors are not
+// symmetric: a missing 503 costs a student one confusing retry and a line in
+// the dyno log, while a wrong 503 tells a caller we have mailed that address
+// before, permanently, for any address they care to type. Fail toward 200.
+const TRANSPORT_SEND_REASONS = new Set(['disabled', 'empty', 'timeout', 'network']);
+const TRANSPORT_HTTP_STATUSES = new Set([401, 429]);
+
+/**
+ * 'transport' (may be reported as 503) | 'address' (must answer the uniform
+ * 200) for a failed sendEmail() result — pass the whole result, not just the
+ * reason, because the status is half the decision.
+ *
+ * Exported rather than inlined because this two-line function IS the security
+ * boundary of POST /student-email/start: it is worth being able to assert the
+ * whole (reason, status) table directly, pair by pair, instead of inferring it
+ * from a set literal the way the version this replaced had to be read.
+ *
+ * @param {{reason?: string, status?: number}} sent a failed sendEmail() result
+ * @returns {'transport'|'address'}
+ */
+export function classifySendFailure({ reason, status } = {}) {
+  if (TRANSPORT_SEND_REASONS.has(reason)) return 'transport';
+  // Only 'http' carries a status; >= 500 is the provider, not the mailbox.
+  if (reason === 'http' && Number.isFinite(status)) {
+    if (status >= 500 || TRANSPORT_HTTP_STATUSES.has(status)) return 'transport';
+  }
+  return 'address';
+}
+
 /**
  * Mint a code, store its hash, mail it. Returns { ok, sentTo } — and returns
  * ok:true when the per-account cooldown swallowed the send, on purpose: a
@@ -263,6 +348,15 @@ export async function claimHeldByOther(email, userId) {
  *
  * `willMerge` only reaches the EMAIL. It is the one place the fact can be
  * disclosed safely, because the only reader is whoever holds the inbox.
+ *
+ * `sendFailureClass` is 'transport' | 'address' | null, and exists so the route
+ * can answer 503 when the PROVIDER is down without learning — or leaking — that
+ * a particular mailbox is suppressed or unroutable. classifySendFailure() above
+ * draws that line, and draws it toward 'address' for anything Resend could have
+ * said about this one recipient. The reason string and the HTTP status both
+ * deliberately stay in here: the class is the most the caller is allowed to
+ * know. It is absent entirely on the cooldown path, which must keep answering
+ * 200.
  */
 export async function issueLinkCode({ userId, email, norm, signedInAs, willMerge }) {
   const code = generateLinkCode();
@@ -307,7 +401,12 @@ export async function issueLinkCode({ userId, email, norm, signedInAs, willMerge
     console.warn(`[student-email] send failed for ${maskEmail(email)}: ${sent.reason ?? 'unknown'}`);
   }
 
-  return { ok: true, sentTo: maskEmail(email), sent: sent.ok };
+  return {
+    ok: true,
+    sentTo: maskEmail(email),
+    sent: sent.ok,
+    sendFailureClass: sent.ok ? null : classifySendFailure(sent),
+  };
 }
 
 /**
@@ -328,7 +427,15 @@ export async function checkLinkCode({ userId, code }) {
 
   const pending = data?.[0];
   if (!normalized || !pending || pending.code_burned || !pending.code_hash) {
-    await bcrypt.compare(String(code ?? ''), DUMMY_HASH);
+    // NO String() ON `code` HERE. Same hole as normalizeStudentEmail above, and
+    // this branch is the one a hostile body lands in: POST /student-email/verify
+    // passes `req.body?.code` straight through (src/routes/student.js), so
+    // {"code":{"toString":1}} fails normalizeLinkCode, falls in here, and
+    // `String(that)` would throw "Cannot convert object to primitive value" —
+    // 500 + error_logs row + a push to every operator instead of the 400 BAD_CODE
+    // the next line already returns. The dummy compare only needs *a* string to
+    // burn the same bcrypt time, so a non-string spends it on ''.
+    await bcrypt.compare(typeof code === 'string' ? code : '', DUMMY_HASH);
     return { ok: false, burned: Boolean(pending?.code_burned) };
   }
 

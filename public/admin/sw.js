@@ -59,6 +59,34 @@
 // v26: new Ambassadors tab — add a person with a code they chose, copy it, show
 // its QR, edit them, turn their link off or delete them; scans and signups roll
 // up per person off the shared /r/ rail (index.html + admin.js + admin.css).
+// NOT bumped for the admin.js change that ships alongside this line (deleteVendor
+// printing the server's own 409 sentence — VENDOR_IN_POOL / VENDOR_HAS_BILLING /
+// VENDOR_BILLING_CANCEL_FAILED from the pre-delete guards of DELETE
+// /api/admin/vendors/:id). That is deliberate, and it is the one place this worker
+// differs from its three siblings: the fetch fallback below is a plain exact-URL
+// caches.match with NO ignoreSearch, so a '/admin/admin.js?v=<newhash>' request
+// can never be satisfied by the bare '/admin/admin.js' this cache precached before
+// the deploy — the stale-shell path that forces a bump in public/vendor/sw.js,
+// public/student/sw.js and public/scan/sw.js cannot fire here.
+//
+// Bumping would make the offline story WORSE, not better: the dashboard's own
+// online load after a deploy puts '?v=<newhash>' into whichever cache is current,
+// and a bump then throws that cache away at activate, leaving a cache holding only
+// the bare precached paths. An offline relaunch in that window asks for
+// '?v=<newhash>', misses, and falls through to `caches.match('/admin/')` — which
+// answers a SCRIPT request with the shell's HTML, so admin.js is parsed as HTML
+// and the boot dies. Driven both ways against the real handlers in this file
+// (scratchpad/sw-bump-proof-all.mjs): un-bumped serves the post-deploy admin.js
+// offline, bumped serves the HTML document.
+//
+// What keeps that safe is that every key in here is refreshed by an ordinary
+// online load: a stamped asset arrives under a NEW key, and an unstamped one
+// ('/admin/', the manifest, the icons) is overwritten in place by the put in the
+// fetch handler. Give the fallback an ignoreSearch — the sensible fix for the
+// HTML-answering-a-script bug above, and what the other three already do — and
+// that stops being true, because the first-inserted bare entry then wins over the
+// stamped one. Whoever makes that change must bump this constant in the same
+// commit, and from then on every admin.js change needs the bump the siblings do.
 const CACHE = 'werewards-admin-v30';   // v30: the Refer a friend panel describes the new rule — both bonuses paid at signup (migration-058), "Waiting" now meaning a refused payout rather than a friend who hasn't bought anything, and the two caps called out as the only remaining limit on the program. index.html + admin.js, both precached: an operator left on v29 reads the old anti-fraud reasoning as if it still held and leaves the cap blank
 // v29: the error log names the spot each failure came from — a Vendor row in the detail, the name on the summary line, and a Vendor line in "Copy details" so a pasted report carries it too (admin.js only). Without this bump an operator with the dashboard installed reads rows that have the vendor in their context and no row showing it
 // v28: an ROI tab — per spot, who came back, what the repeat visits were worth, what was given away to get them, and the net, plus the downtown median to compare against; carries each vendor's plan, free-for-life flag and days-past-due from migration-055 (index.html + admin.js + admin.css)

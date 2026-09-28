@@ -1861,9 +1861,24 @@ function onAmountKey(e) {
 
 function renderPad() {
   const amt = Number(padValue || 0);
-  const base = Math.floor(amt * config.pointsPerDollar);
+  // Integer-cent maths, deliberately NOT Math.floor(amt * config.pointsPerDollar).
+  // Both operands are decimal money living in a binary double, so the product
+  // lands a hair BELOW the whole number often enough to matter — 1.16 * 25 is
+  // 28.999999999999996, which floors to 28 instead of 29 — and this preview
+  // would then promise the customer one point fewer than /api/vendor/award is
+  // about to grant them, with the cashier reading the number out loud.
+  // src/lib/rewards.js pointsFor() is the source of truth and carries the full
+  // count of how often the naive form is wrong at each allowed ratio (never at
+  // the default 10, which is why nobody caught it). This is a browser bundle so
+  // it cannot import from src/; public/scan/scan.js carries the same copy of the
+  // expression. All three change together.
+  const base = Math.floor(Math.round(amt * 100) * Math.round(config.pointsPerDollar * 100) / 10000);
   $('pad-amount').textContent = amt.toFixed(2);
-  $('pad-points').textContent = Math.floor(base * currentMultiplier); // match server flooring
+  // The tier multiplier stays a plain float floor because that is exactly what
+  // the server does with it (src/routes/vendor.js: Math.floor(basePoints *
+  // multiplier)) — `base` is already a whole number by this point, so there are
+  // no stray cents left for the double to mangle.
+  $('pad-points').textContent = Math.floor(base * currentMultiplier);
   $('pad-mult').hidden = currentMultiplier <= 1;
   $('pad-mult').textContent = currentMultiplier > 1 ? `(${base} × ${currentMultiplier}x member)` : '';
   $('pad-award').disabled = amt <= 0;
@@ -1893,7 +1908,12 @@ function renderQuickAwards() {
   wrap.closest('.pad-shortcut-wrapper')?.classList.toggle('is-empty', usable.length === 0);
   usable.forEach((t) => {
     const amt = tierAmount(t);
-    const pts = Math.floor(Math.floor(amt * config.pointsPerDollar) * currentMultiplier); // match server flooring
+    // Same integer-cent base as renderPad above (see the long note there and
+    // src/lib/rewards.js pointsFor()), then the multiplier floored on top the way
+    // the server floors it. A quick button is a FIXED amount, so a rate where the
+    // naive float form drops a point would print that wrong figure on the button
+    // every single day until someone changed the rate.
+    const pts = Math.floor(Math.floor(Math.round(amt * 100) * Math.round(config.pointsPerDollar * 100) / 10000) * currentMultiplier);
     const b = document.createElement('button');
     b.className = 'quick-award';
     b.dataset.amt = amt;
@@ -3447,8 +3467,14 @@ function renderBilling(b) {
   region.hidden = false;
 
   // ---- the past-due banner ----
-  // `pastDueDays` is null for a healthy vendor, never 0 — so this cannot render
-  // "0 days late" at someone who is paid up.
+  // `pastDueDays` is null for a healthy vendor — but it is 0, not 1, for the
+  // whole first day of a failing card, so day zero needs its own sentence.
+  // `daysPastDue` in src/lib/plans.js floors the elapsed time to whole days,
+  // and the `invoice.payment_failed` case in src/routes/stripe-webhook.js
+  // stamps `past_due_since` with the instant of the FIRST failure — so for the
+  // first 24 hours after a decline this is 0, which is also the window in which
+  // a vendor is most likely to come looking at this screen. "Outstanding for
+  // 0 days" would read as a glitch to someone whose card declined an hour ago.
   const late = b.pastDueDays;
   const overdue = $('billing-overdue');
   overdue.hidden = late == null;
@@ -3457,9 +3483,14 @@ function renderBilling(b) {
     // 30 is DEGRADE_DAYS in src/lib/plans.js. Said in the copy because the
     // difference between "fix this soon" and "this is already switched off" is
     // the only thing the vendor actually needs to know.
-    $('billing-overdue-text').textContent = late >= 30
-      ? `A payment has been outstanding for ${days}, so deals and the full stats are paused. Update your card to turn them back on.`
-      : `A payment has been outstanding for ${days}. Update your card to keep deals and the full stats (they pause at 30 days).`;
+    //
+    // Day zero says "just failed" rather than naming today: 0 only means less
+    // than 24 hours have passed, which can still straddle midnight.
+    $('billing-overdue-text').textContent = late === 0
+      ? 'A payment has just failed. Update your card to keep deals and the full stats (they pause at 30 days).'
+      : late >= 30
+        ? `A payment has been outstanding for ${days}, so deals and the full stats are paused. Update your card to turn them back on.`
+        : `A payment has been outstanding for ${days}. Update your card to keep deals and the full stats (they pause at 30 days).`;
   }
 
   // ---- the plan line ----
@@ -3481,17 +3512,48 @@ function renderBilling(b) {
   const actions = $('billing-actions');
   $('billing-msg').hidden = true;
 
-  // Someone Stripe already knows: they have a card on file, so everything they
-  // might want (change it, get an invoice, cancel) is behind the one portal
-  // button. Offering "Upgrade" as well would start a SECOND subscription, which
-  // is what the server's ALREADY_SUBSCRIBED refuses.
-  if (b.hasBilling) {
-    // THREE states, not two, and the middle one is the easy one to miss. A
-    // vendor who cancels keeps an `active` subscription until the period runs
-    // out, so `cancelAtPeriodEnd` is the only thing separating "you will be
-    // charged again on the 12th" from "you will not, and this stops on the
-    // 12th". Telling somebody who cancelled ten minutes ago that a payment is
-    // coming is how you get a second, angrier cancellation.
+  // ---- three billing states, and `hasBilling` alone cannot tell them apart ----
+  //
+  // The server sends two booleans off the vendors row, and they mean different
+  // things: `hasBilling` is Boolean(stripe_customer_id) — "Stripe has met this
+  // vendor" — while `hasSubscription` is Boolean(stripe_subscription_id) — "they
+  // are paying us right now". They come apart on cancellation, deliberately: the
+  // customer.subscription.deleted handler nulls stripe_subscription_id and
+  // current_period_end and KEEPS the customer id, so the vendor's saved cards and
+  // their invoice history survive a churn.
+  //
+  //   1. no customer id                 — never bought anything: Upgrade only,
+  //      there is no Customer for the portal to open.
+  //   2. customer id + subscription     — paying: the portal covers everything
+  //      they might want (change the card, get an invoice, cancel), and an
+  //      Upgrade button here would start a SECOND subscription, which is what the
+  //      server's ALREADY_SUBSCRIBED refuses.
+  //   3. customer id, NO subscription   — churned: BOTH. The Upgrade buttons,
+  //      because Checkout reuses the kept Customer and buying again is the whole
+  //      reason that id is kept, and Manage billing, because past invoices are
+  //      still behind it.
+  //
+  // This branch used to test `hasBilling` alone, which folded state 3 into state
+  // 2 and left a vendor who cancelled with no way back: both Upgrade buttons
+  // hidden, no other UI path to POST /api/vendor/checkout, and the single button
+  // left opening a Customer Portal that cannot create a subscription — stuck on
+  // Freshman until an operator hand-edited the row. The "Your plan has ended"
+  // wording below was written for exactly them and was unreachable, because it
+  // sits behind a `renews` that the same webhook had just nulled.
+  //
+  // If `hasSubscription` is missing entirely the bundle is newer than the server
+  // answering it (a terminal left open across a deploy), so fall back to the
+  // renewal date: the row only carries a current_period_end while a subscription
+  // is live, which keeps a paying vendor out of the churned branch.
+  const subscribed = b.hasSubscription ?? Boolean(b.currentPeriodEnd);
+
+  if (b.hasBilling && subscribed) {
+    // THREE ways to word a live subscription, not two, and the middle one is the
+    // easy one to miss. A vendor who cancels keeps an `active` subscription until
+    // the period runs out, so `cancelAtPeriodEnd` is the only thing separating
+    // "you will be charged again on the 12th" from "you will not, and this stops
+    // on the 12th". Telling somebody who cancelled ten minutes ago that a payment
+    // is coming is how you get a second, angrier cancellation.
     //
     // `cancelAtPeriodEnd` is null when the server could not reach Stripe, and
     // null falls through to the renewal wording on purpose: a transient blip
@@ -3510,20 +3572,36 @@ function renderBilling(b) {
     return;
   }
 
-  manage.hidden = true;
+  // Everything from here is a vendor with no live subscription, i.e. state 1 or
+  // state 3 above. Manage billing only opens for state 3, because the portal needs
+  // a Customer and state 1 has never had one; for a churned vendor it sits next to
+  // the Upgrade buttons so their old invoices stay reachable.
+  const churned = Boolean(b.hasBilling);
+  manage.hidden = !churned;
 
   // Stripe is not configured, or the operator has not created the Prices yet.
   // Say so plainly instead of showing a button that answers 503 — this is the
   // state the product ships in until the Stripe account exists.
   if (!b.billingAvailable || (!monthly && !annual)) {
-    $('billing-blurb').textContent =
-      'You are on the free plan. Contact the WeRewards team to add deals, visits and the full stats.';
-    actions.hidden = true;
+    $('billing-blurb').textContent = churned
+      ? 'Your plan has ended. Contact the WeRewards team to start a new one.'
+      : 'You are on the free plan. Contact the WeRewards team to add deals, visits and the full stats.';
+    // Explicit, not just left to `actions.hidden`: this function re-runs on every
+    // /api/vendor/billing load, and for a churned vendor the row below STAYS on
+    // screen for the Manage-billing button, so a stale Upgrade button would
+    // otherwise survive into a state that has no price to sell.
+    buyMonthly.hidden = true;
+    buyAnnual.hidden = true;
+    actions.hidden = manage.hidden;
     return;
   }
 
-  $('billing-blurb').textContent =
-    'Discovery adds deals, the 30-day stats and unlimited reward items. Cancel any time.';
+  // The churned copy the old `hasBilling` branch was trying to say and could not
+  // reach: their plan is over, starting again is a thing they can do themselves
+  // right here, and nothing they had is lost in the meantime.
+  $('billing-blurb').textContent = churned
+    ? 'Your plan has ended. Start a new one whenever you like — your card and past invoices are still on the billing page.'
+    : 'Discovery adds deals, the 30-day stats and unlimited reward items. Cancel any time.';
   buyMonthly.hidden = !monthly;
   buyAnnual.hidden = !annual;
   if (monthly) buyMonthly.textContent = `Upgrade ${monthly}/month`;
@@ -3884,6 +3962,13 @@ function toggleSwitch(el) {
 
 function updateRatioExample() {
   const r = Number($('set-ratio').value);
+  // The one points preview in this file that does NOT need the integer-cent form
+  // from src/lib/rewards.js pointsFor(): the amount is the literal 10, so the
+  // product is r * 10 and a double only ever floors short when the true answer is
+  // a whole number the product lands just under. Swept every rate validRatio
+  // admits (0.50 to 1000.00 in hundredths): zero disagreements with pointsFor at
+  // $10. Left as-is so the example line stays readable; if this ever takes a
+  // vendor-typed amount instead of 10, switch it to the pointsFor expression.
   $('set-ratio-eg').textContent = Number.isFinite(r) && r > 0 ? `${Math.floor(10 * r)} pts` : '';
 }
 

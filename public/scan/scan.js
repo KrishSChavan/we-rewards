@@ -1245,8 +1245,24 @@ function onAmountKey(e) {
 
 function renderPad() {
   var amt = Number(padValue || 0);
-  var base = Math.floor(amt * config.pointsPerDollar);
+  // Integer-cent maths, deliberately NOT Math.floor(amt * config.pointsPerDollar).
+  // Both operands are decimal money living in a binary double, so the product
+  // lands a hair BELOW the whole number often enough to matter — 1.16 * 25 is
+  // 28.999999999999996, which floors to 28 instead of 29 — and this preview
+  // would then promise the customer one point fewer than /api/vendor/award is
+  // about to grant them, in front of the counter staff. Multiplying integer
+  // cents by integer hundredths keeps every step exact.
+  // src/lib/rewards.js pointsFor() is the source of truth and carries the full
+  // count of how often the naive form is wrong at each allowed ratio (never at
+  // the default 10, which is why nobody caught it). This is a browser bundle so
+  // it cannot import from src/; public/vendor/terminal.js carries the same copy
+  // of the expression. All three change together.
+  var base = Math.floor(Math.round(amt * 100) * Math.round(config.pointsPerDollar * 100) / 10000);
   $('pad-amount').textContent = amt.toFixed(2);
+  // The tier multiplier stays a plain float floor because that is exactly what
+  // the server does with it (src/routes/vendor.js: Math.floor(basePoints *
+  // multiplier)) — `base` is already a whole number by this point, so there are
+  // no stray cents left for the double to mangle.
   $('pad-points').textContent = Math.floor(base * currentMultiplier);
   $('pad-mult').hidden = currentMultiplier <= 1;
   $('pad-mult').textContent = currentMultiplier > 1 ? ('(' + base + ' × ' + currentMultiplier + 'x member)') : '';
@@ -1271,7 +1287,13 @@ function renderQuickAwards() {
   if (wrapper) wrapper.classList.toggle('is-empty', usable.length === 0);
   usable.forEach(function (t) {
     var amt = tierAmount(t);
-    var pts = Math.floor(Math.floor(amt * config.pointsPerDollar) * currentMultiplier);
+    // Same exact integer-cent base as renderPad() above — a quick-award button
+    // is a one-tap shortcut into awardAmount(), so the "+N pts" it prints has to
+    // be the number the server will actually award. See the comment in
+    // renderPad() and src/lib/rewards.js pointsFor(); public/vendor/terminal.js
+    // carries the same copy.
+    var base = Math.floor(Math.round(amt * 100) * Math.round(config.pointsPerDollar * 100) / 10000);
+    var pts = Math.floor(base * currentMultiplier);
     var b = document.createElement('button');
     b.className = 'quick-award';
     b.dataset.amt = amt;

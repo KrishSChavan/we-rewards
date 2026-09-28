@@ -53,7 +53,19 @@ export function secondsLeftInWindow(nowMs = Date.now()) {
   return PUNCH_WINDOW_SECONDS - (Math.floor(nowMs / 1000) % PUNCH_WINDOW_SECONDS);
 }
 
-/** Mint the token the terminal displays for its current (or given) slot. */
+/** Mint the token the terminal displays for its current (or given) slot.
+ *
+ *  `String(vendorId)` here is NOT the coerce-before-check hazard that
+ *  verifyPunchToken's argument is, and deliberately keeps no type gate: the only
+ *  caller in the app is the GET /api/vendor/punch-token handler in
+ *  src/routes/vendor.js, which passes `req.vendor.id` — a vendors.id uuid that
+ *  requireVendor (src/middleware/auth.js) selected out of the database. No
+ *  request field reaches this parameter, so there is no hostile object to
+ *  stringify; verifyPunchToken is the one end of this file that reads the wire.
+ *  Checked with the same eye: punchBindingHash's `String(raw)` takes
+ *  req.headers.cookie, which Node's HTTP parser only ever produces as a string
+ *  (duplicate Cookie headers are joined, not arrayed), and its value is
+ *  hex-validated before hashBinding sees it. */
 export function mintPunchToken(vendorId, windowIndex = currentWindow()) {
   const vid = String(vendorId).toLowerCase();
   return `${vid}.${windowIndex}.${sign(vid, windowIndex)}`;
@@ -69,9 +81,36 @@ export function punchUrl(origin, token) {
  * signature matches AND the slot is fresh (current, ≤ PUNCH_GRACE_WINDOWS old,
  * or ≤ 1 future for clock skew); null for anything else. Constant-time
  * signature compare — this endpoint is reachable unauthenticated via /hold.
+ *
+ * A NON-STRING IS NOT A TOKEN, and the type gate below is load-bearing rather
+ * than tidiness — this is the most exposed coercion in the codebase. POST
+ * /api/punch/hold (server.js) hands `req.body?.token` straight in with NO
+ * authentication of any kind (deliberately: there is no session yet), so
+ * `String(raw ?? '')` on its own turns the anonymous body {"token":{"toString":1}}
+ * into `TypeError: Cannot convert object to primitive value`. That lands in the
+ * handler's `catch (err) { next(err) }`, and the central handler in server.js has
+ * no branch for a bare TypeError: it writes an error_logs row and then calls
+ * notifyError → notifyAdmins (src/lib/alerts.js), which web-pushes EVERY
+ * subscribed operator. Nothing throttles that, so a curl loop inside
+ * punchHoldLimiter's per-IP budget is an operator-paging machine.
+ *
+ * WHY A TYPE GATE AND NOT A try/catch around the coercion: the two callers
+ * (server.js /api/punch/hold, and the `token` branch of POST /api/me/punch in
+ * src/routes/student.js) both already have an answer for an unusable token —
+ * 401 PUNCH_INVALID and `throw new Error('PUNCH_INVALID')` respectively — and
+ * both derive it from `null` coming back from here. Returning null keeps that
+ * single failure shape; swallowing an exception locally would work too, but it
+ * would leave every future caller one coercion away from paging the operator
+ * again. Same guard, for the same reason, as normalizeCode in
+ * src/lib/ambassadors.js and src/lib/referrals.js.
+ *
+ * It rejects no token any real client sends: the QR payload is built by
+ * mintPunchToken below and arrives as a JSON string (public/scan/scan.js,
+ * public/vendor/terminal.js) or a `?punch=` URL segment.
  */
 export function verifyPunchToken(raw, nowMs = Date.now()) {
-  const s = String(raw ?? '').trim();
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
   const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(\d{1,12})\.([0-9a-f]{16})$/i.exec(s);
   if (!m) return null;
   const vendorId = m[1].toLowerCase();

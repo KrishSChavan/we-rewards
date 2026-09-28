@@ -70,10 +70,48 @@ function button(href, label) {
  *
  * The uuid shape is checked first so a malformed id is a clean 400 rather than
  * a database error, matching how every other route in this app handles one.
+ *
+ * ---- Why `typeof === 'string'` and not String(...) ----
+ * NEVER COERCE A QUERY PARAM HERE. express 4's default query parser is
+ * qs.parse(str, { allowPrototypes: true }) (node_modules/express/lib/utils.js),
+ * so a param is only a string when the caller writes it as one: `?u=x&u=y`
+ * arrives as the ARRAY ['x','y'], and `?u[toString]=x` as the OBJECT
+ * { toString: 'x' } — an own, non-callable property shadowing
+ * Object.prototype.toString, which makes `String(that)` throw "TypeError: Cannot
+ * convert object to primitive value".
+ *
+ * BE EXACT ABOUT WHICH SHAPES THROW, because the wrong version of this sentence
+ * is how someone talks themselves into deleting the gate. An own non-callable
+ * `toString` throws. So does a genuinely null-prototype object, which has no
+ * inherited toString/valueOf left to call — but on the qs this repo actually
+ * installs (6.15.3), a query string CANNOT produce one: `?u[__proto__]=x` comes
+ * back as an ORDINARY object, Object.prototype intact, no own keys, and
+ * `String()` on it returns "[object Object]". Same for every other object shape
+ * (`?u[valueOf]=x`, `?u[a]=x`) — they coerce quietly, and a coerced
+ * "[object Object]" would then fail isUuid() as a malformed id instead of
+ * throwing. So the dangerous half of the old String() was narrow, and the reason
+ * to keep a typeof gate rather than special-case it is that `[toString]` is one
+ * URL away and costs nothing to refuse.
+ *
+ * authorize() has no try/catch, so that TypeError went to next(err), and the
+ * global handler in server.js has no branch for it — not
+ * entity.*, not 22P02/22P05, not a decode URIError — so it fell through to
+ * logError: an error_logs INSERT plus a web-push alert to EVERY subscribed
+ * operator, then a 500. On a route that server.js mounts with
+ * `app.use('/unsubscribe', unsubscribeRoutes)` ahead of every limiter
+ * (generalLimiter is scoped to /api), that made `curl` in a loop a way to
+ * page the whole admin team, and it answered the human GET with 500 JSON instead
+ * of the 400 page and Gmail's one-click POST with a non-2xx, which is what makes
+ * Gmail record the unsubscribe as broken and stop offering the button.
+ * Treating a non-string as ABSENT gives all three of those the clean refusal the
+ * malformed-token path already had: 400 HTML on GET, 200 empty on POST.
+ * (verifyUnsubscribeToken refuses a non-string in EITHER argument on its own
+ * first line too — this is deliberately belt and braces, because this is the
+ * frame that throws.)
  */
 function authorize(req) {
-  const userId = String(req.query.u ?? '');
-  const token = String(req.query.t ?? '');
+  const userId = typeof req.query.u === 'string' ? req.query.u : '';
+  const token = typeof req.query.t === 'string' ? req.query.t : '';
   if (!isUuid(userId) || !token) return null;
   return verifyUnsubscribeToken(userId, token) ? userId : null;
 }
@@ -167,6 +205,10 @@ router.get('/', async (req, res, next) => {
       }));
     }
 
+    // Safe to coerce here, unlike in authorize(): we only got past authorize()
+    // because req.query.t was already a 32-character base64url STRING that
+    // verified, so String() cannot be handed an object here. encodeURIComponent
+    // stays as defence in depth against the day the token alphabet changes.
     const undo = `/unsubscribe?u=${encodeURIComponent(userId)}&t=${encodeURIComponent(String(req.query.t))}&resubscribe=1`;
     res.type('html').send(page({
       title: 'You’re unsubscribed',

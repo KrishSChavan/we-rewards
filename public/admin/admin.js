@@ -724,9 +724,25 @@ function paintVendorRow(row, toggle, v) {
   row.classList.toggle('is-off', !v.active);
 }
 
-function showVendorError() {
+// Shared error line for the vendor roster (toggle, delete).
+//
+// `message` is the SERVER'S OWN WORDS when it sent any. DELETE
+// /api/admin/vendors/:id refuses with 409 + a precondition the operator has to
+// go and fix — a points pool to leave (VENDOR_IN_POOL), or a live Stripe
+// subscription to cancel first (VENDOR_HAS_BILLING when Stripe isn't
+// configured here at all, VENDOR_BILLING_CANCEL_FAILED when the cancel itself
+// is refused or cannot be confirmed) — all three raised by the pre-delete
+// guards of DELETE /api/admin/vendors/:id in src/routes/admin.js, cited by
+// route and not by line because that handler keeps moving — and those
+// sentences are the entire reason that route refuses instead of deleting and
+// leaving a card being charged forever. Overwriting them with the generic line
+// told the operator to retry the one thing that cannot succeed.
+//
+// The fallback stays for the cases where there genuinely is nothing to report:
+// a thrown fetch (offline), or a non-JSON error page from a proxy.
+function showVendorError(message) {
   const el = $('vendor-error');
-  el.textContent = 'Couldn’t complete that action. Check your connection and try again.';
+  el.textContent = message || 'Couldn’t complete that action. Check your connection and try again.';
   el.hidden = false;
 }
 
@@ -972,7 +988,18 @@ async function deleteVendor(v, btn, row) {
   try {
     const res = await authFetch(`/api/admin/vendors/${v.id}`, { method: 'DELETE' });
     if (res.status === 403) return denyAccess();
-    if (!res.ok) { showVendorError(); btn.disabled = false; return; }
+    if (!res.ok) {
+      // Show what the server actually said. Every refusal from this route is an
+      // explanation with a next step in it (leave the pool / cancel in Stripe),
+      // so it is parsed out and printed the same way the applications queue does
+      // it — see acceptApplication's `data?.message || …` below. `.catch` covers
+      // a body that isn't JSON; showVendorError then falls back to the generic
+      // line rather than blanking the error row.
+      const data = await res.json().catch(() => ({}));
+      showVendorError(data?.message);
+      btn.disabled = false;
+      return;
+    }
     // Drop it from the in-memory roster and the DOM, then refresh the count. If
     // that leaves nothing on screen, re-render for the empty (or "no match")
     // state; otherwise leave the surviving rows exactly as they are.

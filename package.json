@@ -5,11 +5,12 @@
   "engines": {
     "node": "24.x"
   },
-  "_comment:test-concurrency": "--test-concurrency=1 in the test scripts is load-bearing, not tuning. node --test runs test FILES in parallel processes, and every file importing ../server.js runs buildClientAssets() at import, which rm -rf's and rewrites .build/. Two of those at once is ENOTEMPTY on Windows. Two files import it today: content-type.test.js and not-found.test.js. Same race scripts/_deploy-lib.ps1 sidesteps by running check-client.js instead of the real build, and the same reason a running `npm run dev` must be stopped before a deploy.",
+  "_comment:test-concurrency": "--test-concurrency=1 in the test scripts is load-bearing, not tuning. node --test runs test FILES in parallel processes, and every file importing ../server.js runs buildClientAssets() at import, which rm -rf's and rewrites .build/. Two of those at once is ENOTEMPTY on Windows. SIX files import it today: content-type.test.js, not-found.test.js, upstream-gateway.test.js, seo.test.js and session-replay.test.js import it at top level, and integration/security.test.js reaches it through a dynamic `await import('../../server.js')` inside three of its tests. Recount with `grep -rn \"server.js'\" test/` before touching the flag — five of the six live in test/*.test.js and one in test/integration/, which is why --test-concurrency=1 is on all three test scripts and not just test:unit. Same race scripts/_deploy-lib.ps1 sidesteps by running check-client.js instead of the real build, and the same reason a running `npm run dev` must be stopped before a deploy.",
   "scripts": {
     "dev": "node --watch server.js",
     "nodemon": "nodemon server.js",
     "start": "node server.js",
+    "build:client": "node scripts/build-once.js",
     "onboard": "node scripts/onboard-vendor.js",
     "deploy:staging": "node scripts/run-ps.mjs scripts/deploy-staging.ps1",
     "deploy:prod": "node scripts/run-ps.mjs scripts/promote-to-main.ps1",
@@ -26,7 +27,9 @@
     "test:integration": "node --import ./test/setup.js --test --test-concurrency=1 test/integration/*.test.js",
     "test:sql": "node scripts/run-ps.mjs test/sql/run.ps1"
   },
+  "_comment:capacitor-deps": "The capacitor split across dependencies/devDependencies is load-bearing, not tidiness. server.js calls buildClientAssets() AT IMPORT, so the production dyno runs the client build at boot, and Heroku installs no devDependencies there — that is exactly why esbuild is a real dependency. scripts/build-client.js never bundles (it only ever calls esbuild.transformSync), so it cannot resolve a bare import; instead it copies browser bundles straight out of node_modules by path, see SUPABASE_SRC and POSTHOG_SRC in that file. @capacitor/core ships precisely such a bundle (dist/capacitor.js, its `unpkg` entry), so the camera/push work will be wired in the same way and will need it present at boot; demoting it would break the dyno build the day that lands, so it STAYS in dependencies even though nothing imports it yet. @capacitor/ios by contrast ships no JavaScript at all — its `files` list is Swift/Obj-C sources plus podspecs — and only @capacitor/cli and CocoaPods ever read it, on a developer machine running `npx cap sync` against webDir .build/student. Nothing can ever import it, so it moved to devDependencies. Verified: `npm ci --dry-run` still reports package.json and package-lock.json in sync after the move (lockfileVersion 3 takes the root dependency split from package.json), and `npm ci --omit=dev` — what the dyno runs — then drops @capacitor/ios while still installing @capacitor/core and esbuild.",
   "dependencies": {
+    "@capacitor/core": "^8.5.2",
     "@supabase/supabase-js": "^2.45.0",
     "@tesseract.js-data/eng": "^1.0.0",
     "bcryptjs": "^2.4.3",
@@ -51,6 +54,8 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/ios": "^8.5.2",
     "nodemon": "^3.1.14"
   },
   "directories": {

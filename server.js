@@ -93,7 +93,24 @@ app.use(helmet({
       'font-src': ["'self'", 'https://fonts.gstatic.com'],
       // Google avatars + OpenStreetMap tiles for the vendor map thumbnails
       // (keyless; served straight from tile.openstreetmap.org).
-      'img-src': ["'self'", 'data:', 'https://*.googleusercontent.com', 'https://tile.openstreetmap.org'],
+      //
+      // blob: IS LOAD-BEARING — do not prune it as dead weight. Every image the
+      // user picks is decoded through the same createImageBitmap-then-<img>
+      // ladder — decodeImage() in public/vendor/terminal.js, public/join/join.js
+      // and public/admin/admin.js, and the same ladder under the name
+      // decodeReceiptImage() in public/student/app.js — and the fallback leg
+      // sets `img.src = URL.createObjectURL(file)`. CSP matches blob: on the
+      // scheme, and 'self' does NOT cover it, so without this entry that leg is
+      // blocked outright: img.onerror fires and the picker reports "Couldn't
+      // read that image..." for every file. On modern browsers the bitmap path
+      // wins and nothing is ever requested over blob:, which is exactly why the
+      // omission stayed invisible — but WebKit only shipped createImageBitmap
+      // in Safari 15, so on the iOS 13.4-14.2 iPads that scripts/build-client.js
+      // records as the tested floor for /terminal ([[browser-support-floor]],
+      // ~line 57) the <img> leg is the ONLY path there is. A vendor on such a
+      // device could not set a logo and a student could not submit a receipt
+      // photo at all.
+      'img-src': ["'self'", 'data:', 'blob:', 'https://*.googleusercontent.com', 'https://tile.openstreetmap.org'],
       // Our own origin ('self' — covers the REST API and the same-origin
       // Socket.IO transport, which falls back to same-origin long-polling if a
       // browser won't upgrade ws under 'self'), Supabase (auth + REST), and —

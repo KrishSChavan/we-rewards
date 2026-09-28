@@ -12,7 +12,7 @@ import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WIN
 import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupVendorAnalytics } from '../lib/analytics.js';
-import { validReward, validRatio } from '../lib/rewards.js';
+import { validReward, validRatio, pointsFor } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 import { validLogo } from '../lib/logo.js';
@@ -45,6 +45,49 @@ const PIN_SESSION_HOURS = 8;
 // Keep in sync with the keypad + quick-button caps in public/vendor/terminal.js
 // and validTiers below.
 const MAX_AWARD_DOLLARS = 200;
+
+/**
+ * COERCE-BEFORE-CHECK, the one rule every request-body field in this file obeys.
+ *
+ * Fold a body field that is only meaningful as text: a string passes through
+ * verbatim, an absent or null field becomes `fallback`, and ANYTHING ELSE
+ * becomes '' — a value the validator sitting under every call site already
+ * rejects with that route's own 400.
+ *
+ * WHY THIS EXISTS. `String(req.body?.x ?? '')` looks total and is not:
+ * String({toString:1}) throws `TypeError: Cannot convert object to primitive
+ * value`, and express.json (strict mode, see src/middleware/require-json.js)
+ * accepts that object happily. Every handler below is `try { … } catch (err) {
+ * next(err) }`, and the central handler in server.js has no branch for a bare
+ * TypeError — it writes an error_logs row and calls notifyError → notifyAdmins
+ * (src/lib/alerts.js), web-pushing EVERY subscribed operator, then answers 500.
+ * So one malformed JSON field from a single logged-in terminal becomes an
+ * operator-paging loop inside generalLimiter's budget.
+ *
+ * WHY A TYPE GATE AND NOT A try/catch: the 400 these routes already return is
+ * the correct answer to a malformed field, and it is sitting right there — the
+ * gate routes the bad value INTO it instead of jumping over it. A try/catch
+ * would only stop the page; it would still answer with something nobody wrote.
+ * Same guard, for the same reason, as normalizeCode in src/lib/ambassadors.js
+ * and src/lib/referrals.js, and validLogo in src/lib/logo.js.
+ *
+ * Strings only, no numbers: every client that talks to these routes builds
+ * these fields as strings (public/vendor/terminal.js, public/scan/scan.js — the
+ * codes come out of a regex match and the PIN out of keypad concatenation), so
+ * nothing a real client sends changes shape here.
+ */
+const bodyText = (v, fallback = '') => (v == null ? fallback : typeof v === 'string' ? v : '');
+
+/**
+ * True when a body field was supplied as something other than text — the other
+ * half of the rule above, for the sites where folding to '' would be WRONG
+ * because '' means something on that field (clear the emoji, clear the address)
+ * and a malformed request must not quietly perform it. Used where the validator
+ * lives in another module and cannot be reached from here: validReward in
+ * src/lib/rewards.js opens with String(title ?? '') / String(emoji ?? '🎁'), so
+ * the call sites in this file type-gate before handing it a body field.
+ */
+const badText = (v) => v !== undefined && typeof v !== 'string';
 
 const router = Router();
 
@@ -125,7 +168,11 @@ router.use(requireVendor);
 
 /** Resolve a live 6-digit earn code to its student, or throw CODE_INVALID. */
 async function resolveEarnCode(code) {
-  const c = String(code ?? '').trim();
+  // bodyText, not String(): `code` is req.body.code from POST /scan and POST
+  // /award. A non-string folds to '' and fails the digit test below, so the
+  // caller's existing CODE_INVALID answer stands. PRE-EXISTING (unchanged in
+  // main); vendor-authenticated by router.use(requireVendor), not anonymous.
+  const c = bodyText(code).trim();
   if (!/^[0-9]{6}$/.test(c)) throw new Error('CODE_INVALID');
   const { data } = await supabaseAdmin
     .from('earn_codes')
@@ -203,7 +250,10 @@ async function wrongLocationError(c, vendor) {
  * sibling's code from a dead one.
  */
 async function resolveRedeemCode(code, vendor) {
-  const c = String(code ?? '').trim();
+  // bodyText for the same reason as resolveEarnCode: `code` arrives as
+  // req.body.code from POST /redeem-preview, so a non-string has to become the
+  // CODE_INVALID below rather than a TypeError. PRE-EXISTING.
+  const c = bodyText(code).trim();
   if (!/^\d{4}$/.test(c)) throw new Error('CODE_INVALID');
   const { data } = await supabaseAdmin
     .from('redeem_codes')
@@ -382,7 +432,15 @@ router.post('/award', async (req, res, next) => {
     if (dollarAmount > MAX_AWARD_DOLLARS) {
       return res.status(400).json({ error: 'AMOUNT_TOO_LARGE', message: `Max award ($${MAX_AWARD_DOLLARS}) reached` });
     }
-    const basePoints = Math.floor(dollarAmount * ratio);
+    // Integer-cent maths through pointsFor(), NEVER `Math.floor(dollarAmount *
+    // ratio)`. Both inputs are decimal money and doubles are binary, so the
+    // naive product lands a hair below the whole number for many ordinary
+    // amounts and the floor then pays the customer one point less than the rate
+    // printed on their receipt promises — at the counter, in front of them. The
+    // doc comment on pointsFor in src/lib/rewards.js has the reasoning, the
+    // ratios it actually bites at, and the reason the terminal and scan previews
+    // duplicate the expression rather than import it; all three move together.
+    const basePoints = pointsFor(dollarAmount, ratio);
     if (basePoints < 1) {
       return res.status(400).json({ error: 'BAD_AMOUNT', message: 'Amount is too small to earn points.' });
     }
@@ -491,7 +549,10 @@ router.post('/redeem-preview', requirePin, async (req, res, next) => {
  */
 router.post('/redeem', requirePin, async (req, res, next) => {
   try {
-    const code = String(req.body?.code ?? '').trim();
+    // bodyText: a non-string code folds to '' and takes the CODE_INVALID throw
+    // on the next line, which the central handler already maps to a 401. See
+    // bodyText above for why this is a type gate and not a try/catch.
+    const code = bodyText(req.body?.code).trim();
     if (!/^\d{4}$/.test(code)) throw new Error('CODE_INVALID');
 
     // Whose code is this? (looked up before the RPC consumes it, for the live push)
@@ -570,7 +631,9 @@ router.get('/visit-impact', requirePin, async (req, res, next) => {
  */
 router.post('/reverse', requirePin, async (req, res, next) => {
   try {
-    const transactionId = String(req.body?.transactionId ?? '').trim();
+    // bodyText: a non-string id folds to '', which isUuid rejects, so the
+    // BAD_REQUEST below answers instead of a TypeError. PRE-EXISTING.
+    const transactionId = bodyText(req.body?.transactionId).trim();
     if (!isUuid(transactionId)) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'A transaction to undo is required.' });
     }
@@ -634,6 +697,16 @@ router.get('/rewards', async (req, res, next) => {
 /** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji } */
 router.post('/rewards', requirePin, async (req, res, next) => {
   try {
+    // Type-gate the two TEXT fields before validReward coerces them. It opens
+    // with String(title ?? '') / String(emoji ?? '🎁') (src/lib/rewards.js —
+    // shared with routes/admin.js, so the coercion cannot be changed from here),
+    // and String({toString:1}) throws a TypeError that this handler's catch turns
+    // into next(err): an error_logs row plus a web push to every operator, where
+    // a 400 was already written. costInPoints / costInVisits need no gate —
+    // validPrice uses Number(), which answers NaN instead of throwing.
+    if (badText(req.body?.title) || badText(req.body?.emoji)) {
+      return res.status(400).json({ error: 'BAD_REWARD', message: 'Give the item a name and an emoji as text.' });
+    }
     const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
 
@@ -688,6 +761,16 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
     // A malformed id is a clean 404, not a uuid-cast 500 in the update query.
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
+    }
+
+    // Same gate as POST /rewards, and it matters MORE here: this path writes
+    // `updates.emoji = v.emoji` whenever emoji was supplied, so folding a
+    // malformed emoji to '' would let validReward's default 🎁 overwrite the one
+    // the vendor chose on a request that should have been refused. Refusing it is
+    // also what keeps a non-string title out of String(title ?? '') inside
+    // validReward (src/lib/rewards.js), which throws and pages every operator.
+    if (badText(req.body?.title) || badText(req.body?.emoji)) {
+      return res.status(400).json({ error: 'BAD_REWARD', message: 'Give the item a name and an emoji as text.' });
     }
 
     const touchesFields =
@@ -810,7 +893,12 @@ router.post('/verify-pin', async (req, res, next) => {
       });
     }
 
-    const ok = await bcrypt.compare(String(pin ?? ''), req.vendor.pin_hash);
+    // bodyText, not String(): the PIN pad sends a string (`pinValue` in
+    // public/vendor/terminal.js and public/scan/scan.js), and a non-string folds
+    // to '' — which no bcrypt hash of a 4-digit PIN can match, so this answers
+    // the 401 BAD_PIN below. Handing bcrypt.compare an object instead would
+    // throw before the compare and page every operator. PRE-EXISTING.
+    const ok = await bcrypt.compare(bodyText(pin), req.vendor.pin_hash);
     if (!ok) {
       // Record the failure atomically; the RPC locks the vendor at the threshold.
       const { data: lock } = await supabaseAdmin.rpc('record_pin_result', {
@@ -1097,6 +1185,14 @@ router.get('/campaigns', requirePin, async (req, res, next) => {
  */
 router.get('/campaigns/reach', requirePin, requirePlan('discovery'), async (req, res, next) => {
   try {
+    // String(), not bodyText, and deliberately: this is req.QUERY, not a JSON
+    // body. Express's query parser (qs, allowPrototypes:false) can only produce
+    // strings, arrays of strings, and plain objects that still carry
+    // Object.prototype — `?audience[toString]=1` and `?audience[__proto__][x]=1`
+    // are both dropped, verified against the installed qs — so there is no query
+    // value whose String() can throw. An array folds to 'a,b' and an object to
+    // '[object Object]', neither of which is in CAMPAIGN_AUDIENCES, so the 400
+    // below answers. Same for the Number(req.query.…) reads in /visit-impact.
     const audience = String(req.query.audience ?? 'top');
     if (!CAMPAIGN_AUDIENCES.has(audience)) {
       return res.status(400).json({ error: 'BAD_AUDIENCE', message: 'Pick a valid audience.' });
@@ -1133,10 +1229,16 @@ router.get('/campaigns/reach', requirePin, requirePlan('discovery'), async (req,
 router.post('/campaigns', requirePin, requirePlan('discovery'), async (req, res, next) => {
   try {
     const b = req.body ?? {};
-    const title = String(b.title ?? '').trim();
-    const body = String(b.body ?? '').trim();
-    const kind = String(b.kind ?? 'deal');
-    const audience = String(b.audience ?? 'top');
+    // bodyText on all four: each has its own BAD_CAMPAIGN 400 a few lines down
+    // (empty headline, empty message, unknown kind/audience), and folding a
+    // non-string to '' is what lets those answer instead of a TypeError from
+    // String(). Note the defaults survive — an ABSENT kind/audience is still
+    // 'deal'/'top', while a supplied non-string becomes '' and is refused rather
+    // than silently sent to the default audience. PRE-EXISTING.
+    const title = bodyText(b.title).trim();
+    const body = bodyText(b.body).trim();
+    const kind = bodyText(b.kind, 'deal');
+    const audience = bodyText(b.audience, 'top');
     const durationHours = Number(b.durationHours ?? CAMPAIGN_CONFIG.defaultDurationHours);
 
     if (!title || title.length > CAMPAIGN_TITLE_MAX) {
@@ -1271,7 +1373,10 @@ router.patch('/campaigns/:id', requirePin, requirePlan('discovery'), async (req,
     const patch = {};
 
     if (b.title !== undefined) {
-      const title = String(b.title).trim();
+      // bodyText: the presence check above lets `null` and any object through, and
+      // String() would either throw (object) or store the literal text "null".
+      // Both fold to '' and take the BAD_CAMPAIGN 400 below. PRE-EXISTING.
+      const title = bodyText(b.title).trim();
       if (!title || title.length > CAMPAIGN_TITLE_MAX) {
         return res.status(400).json({
           error: 'BAD_CAMPAIGN',
@@ -1281,7 +1386,8 @@ router.patch('/campaigns/:id', requirePin, requirePlan('discovery'), async (req,
       patch.title = title;
     }
     if (b.body !== undefined) {
-      const body = String(b.body).trim();
+      // bodyText, same reasoning as the title branch above.
+      const body = bodyText(b.body).trim();
       if (!body || body.length > CAMPAIGN_BODY_MAX) {
         return res.status(400).json({
           error: 'BAD_CAMPAIGN',
@@ -1401,7 +1507,10 @@ function validTiers(raw) {
   }
   const tiers = [];
   for (const row of raw) {
-    const label = String(row?.label ?? '').trim();
+    // bodyText: `raw` is req.body.tiers, so a row's label can be any JSON value.
+    // A non-string folds to '' and takes the "needs a label" error below, which
+    // PATCH /settings turns into its own 400 BAD_SETTINGS. PRE-EXISTING.
+    const label = bodyText(row?.label).trim();
     const amount = Number(row?.amount);
     if (!label || label.length > 40) return { error: 'Each button needs a label (up to 40 characters).' };
     // Cap at the per-award ceiling so a saved button can always actually award
@@ -1437,7 +1546,15 @@ function validSettings(body) {
   }
 
   if (body?.address != null) {
-    const a = String(body.address).trim();
+    // An explicit type gate here rather than bodyText's fold-to-'', because ''
+    // is not a rejected value on this field — it CLEARS the stored address and
+    // its coordinates. Folding a malformed field to '' would quietly wipe a
+    // vendor's address (and take them off the map) on a save that should have
+    // been refused; String() alone would throw and page every operator. So this
+    // returns validSettings' own { error } shape, which PATCH /settings answers
+    // as 400 BAD_SETTINGS. PRE-EXISTING.
+    if (typeof body.address !== 'string') return { error: 'Address must be text.' };
+    const a = body.address.trim();
     if (a.length > ADDRESS_MAX) return { error: `Address must be ${ADDRESS_MAX} characters or fewer.` };
     updates.address = a || null; // '' clears the address (and its coordinates)
   }
@@ -1445,7 +1562,11 @@ function validSettings(body) {
   // What this branch is called in the store switcher (migration-043). '' clears
   // it back to unlabelled, which is what a single-location vendor stays at.
   if (body?.locationLabel != null) {
-    const l = String(body.locationLabel).trim();
+    // Type-gated, not folded, for the same reason as address: '' clears the
+    // label here, so a malformed field must be refused rather than treated as
+    // "unlabel this branch". PRE-EXISTING.
+    if (typeof body.locationLabel !== 'string') return { error: 'The location name must be text.' };
+    const l = body.locationLabel.trim();
     if (l.length > LABEL_MAX) return { error: `The location name must be ${LABEL_MAX} characters or fewer.` };
     updates.location_label = l || null;
   }
@@ -1459,8 +1580,14 @@ function validSettings(body) {
   }
 
   if (body?.pin != null && body.pin !== '') {
-    if (!/^\d{4}$/.test(String(body.pin))) return { error: 'The staff PIN must be exactly 4 digits.' };
-    pin = String(body.pin);
+    // bodyText: a non-string folds to '', fails the digit test, and gets the
+    // existing "must be exactly 4 digits" error — the answer a malformed PIN
+    // deserves. String(body.pin) threw on an object, which paged every operator
+    // (see bodyText). Strings only, matching what verify-pin now compares, so a
+    // PIN that can be set is always a PIN that can be entered. PRE-EXISTING.
+    const p = bodyText(body.pin);
+    if (!/^\d{4}$/.test(p)) return { error: 'The staff PIN must be exactly 4 digits.' };
+    pin = p;
   }
 
   // Punch cards (migration-028): the vendor's own on/off switch + card shape.
@@ -1740,10 +1867,40 @@ router.get('/billing', requirePin, async (req, res, next) => {
       // a paying vendor their plan ends next week because of a transient blip
       // costs a phone call, where the reverse only shows a stale date.
       cancelAtPeriodEnd: liveSub ? liveSub.cancelAtPeriodEnd : null,
-      // Drives which button the card shows: a vendor Stripe has never met gets
-      // "Upgrade", one it has gets "Manage billing". The id itself is not sent
-      // — the terminal has no use for it and it is an account identifier.
+      // TWO booleans, because the card has THREE states to tell apart and one
+      // flag can only describe two of them. Neither id itself is ever sent —
+      // the terminal has no use for either and both are account identifiers.
+      //
+      //   hasBilling=false                 Stripe has never met this vendor.
+      //                                    Offer Upgrade; Checkout will create
+      //                                    the Customer.
+      //   hasBilling && hasSubscription    a live subscription. Manage billing
+      //                                    (the portal) is the only door — a
+      //                                    second Upgrade would buy a second
+      //                                    subscription, which /checkout 409s.
+      //   hasBilling && !hasSubscription   CHURNED: known to Stripe, paying for
+      //                                    nothing. customer.subscription.deleted
+      //                                    in routes/stripe-webhook.js nulls
+      //                                    stripe_subscription_id and KEEPS
+      //                                    stripe_customer_id on purpose, so
+      //                                    their invoice history stays in one
+      //                                    place and a return visit reuses the
+      //                                    same Customer. They must be offered
+      //                                    Upgrade again: the Customer Portal
+      //                                    cannot START a subscription, so a
+      //                                    card that reads hasBilling alone
+      //                                    hides both Upgrade buttons and a
+      //                                    vendor who cancelled can never come
+      //                                    back — /checkout would take them
+      //                                    (its 409 keys on the subscription id,
+      //                                    not the customer id) and no button
+      //                                    reaches it.
+      //
+      // hasBilling keeps its old meaning exactly — "is there a Customer to open
+      // the portal for" — so an older terminal bundle is no worse off than it
+      // was, and public/vendor/terminal.js reads both.
       hasBilling: Boolean(v.stripe_customer_id),
+      hasSubscription: Boolean(v.stripe_subscription_id),
       prices,
       // So the card can explain itself instead of showing a dead button.
       billingAvailable: stripeEnabled,
@@ -1783,7 +1940,23 @@ router.post('/checkout', requirePin, async (req, res, next) => {
       });
     }
 
-    const interval = String(req.body?.interval ?? 'monthly');
+    // bodyText, not String(): a non-string interval has to reach the BAD_INTERVAL
+    // 400 four lines down, and String({toString:1}) threw before it could —
+    // TypeError → next(err) → an error_logs row and a web push to every
+    // subscribed operator (src/lib/alerts.js notifyAdmins) plus a 500. A type
+    // gate rather than a try/catch because the right answer already exists here;
+    // see the note on bodyText, and normalizeCode in src/lib/ambassadors.js.
+    //
+    // SEVERITY, so it reads honestly: requirePin guards this route, so this is a
+    // vendor-authenticated hole, not an anonymous one — the caller must already
+    // hold a vendor login (and a PIN session, unless the vendor has no PIN set).
+    // The unauthenticated member of this class is verifyPunchToken in
+    // src/lib/punch.js, reached by POST /api/punch/hold.
+    //
+    // 'monthly' still stands in for an ABSENT (or null) interval, which is what
+    // an older terminal bundle sends; a supplied non-string folds to '' and
+    // lookupKeyFor answers null for it, which is the BAD_INTERVAL path.
+    const interval = bodyText(req.body?.interval, 'monthly');
     const lookupKey = lookupKeyFor('discovery', interval);
     if (!lookupKey) {
       return res.status(400).json({
@@ -1812,7 +1985,20 @@ router.post('/checkout', requirePin, async (req, res, next) => {
     if (!customerId) {
       const customer = await createCustomer({
         vendorId: v.id,
-        email: req.user?.email ?? null,
+        // NOT req.user.email when an operator is driving. requirePin waves the
+        // operator straight through (see the comment on it in
+        // middleware/auth.js — they cannot know a shop's bcrypt-hashed PIN), and
+        // an operator-run upgrade is a legitimate flow we deliberately keep
+        // open; but req.user is then the TERMINAL_ADMIN account, and stamping
+        // that address here would send every invoice, receipt and dunning mail
+        // for this shop to the operator's inbox instead of the vendor's. Two
+        // things make it permanent rather than a tidy-up later: createCustomer
+        // is idempotent on the vendor id forever, and nothing in this codebase
+        // ever updates a Customer's email. Sending null instead leaves the field
+        // empty, and Checkout then collects the real email from whoever pays and
+        // saves it onto the Customer itself — which is the vendor, at the till,
+        // typing their own address.
+        email: req.terminalAdmin ? null : (req.user?.email ?? null),
         name: v.location_label ? `${v.name} (${v.location_label})` : v.name,
       });
       customerId = customer.id;

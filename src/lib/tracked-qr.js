@@ -51,9 +51,23 @@ export function mintCode() {
  * Fold whatever arrived in the URL into a code, or null. Case is forgiven
  * because someone typing off a banner will use their phone's auto-capitalised
  * keyboard; nothing else is, because everything else is a wrong code.
+ *
+ * A NON-STRING IS NOT A CODE, and the guard is load-bearing rather than
+ * defensive tidiness — this was the only one of the three sibling normalizers
+ * (src/lib/ambassadors.js, src/lib/referrals.js) without it, and the gap cost a
+ * 500. `rawCode` does not only arrive from req.params.code: accept-terms hands
+ * this function req.body.trackedQr through attributionCodeFor (src/routes/
+ * student.js), i.e. OUTSIDE maybeAwardTrackedQr's catch — and `String(raw)`
+ * throws TypeError, not a wrong code, for any object with no usable toString
+ * (`{ toString: 1 }`, Object.create(null)). That escaped to the global handler,
+ * which paged every operator over a request that should simply have proceeded
+ * with no attribution. Returning null also stops a posted NUMBER being queried
+ * as a code: String(23456789) is eight characters of CODE_ALPHABET, so
+ * `{ trackedQr: 23456789 }` used to run a lookup for a code nobody printed.
  */
 export function normalizeCode(raw) {
-  const s = String(raw ?? '').trim().toLowerCase();
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim().toLowerCase();
   if (s.length !== CODE_LENGTH) return null;
   for (const ch of s) if (!CODE_ALPHABET.includes(ch)) return null;
   return s;

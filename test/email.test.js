@@ -4,11 +4,19 @@
 // No API key is set in the test environment, so `emailEnabled` is false and
 // sendEmail short-circuits before any network call — which is itself one of the
 // things worth asserting: a checkout with no keys must never reach out, and
-// must never throw at a caller who is on a request path.
+// must never throw at a caller who is on a request path. The handful of cases
+// that DO need a configured transport (what a 422 does, and the boot-time sender
+// warning, both of which are decided at import time) run in a child process with
+// the env set and fetch stubbed. See runWithKey below.
 //
 // What is covered here is the logic that has no second chance to be right:
 //   • the unsubscribe HMAC, which is the ONLY thing standing between a public
-//     URL and unsubscribing somebody else,
+//     URL and unsubscribing somebody else — and which must REFUSE a malformed
+//     token rather than throw, because the throw reaches the global handler and
+//     pages every admin from an unauthenticated, unthrottled public route,
+//   • which 422 from Resend blames the recipient and which blames our own
+//     EMAIL_FROM / EMAIL_REPLY_TO, because suppressing on the second one mutes
+//     every address mailed during a misconfiguration, permanently,
 //   • the Svix signature, which is the only thing standing between a public URL
 //     and suppressing an address (a denial of service against a vendor's
 //     password reset),
@@ -16,6 +24,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
 import {
   emailEnabled, sendEmail, maskEmail, emailUrl,
   unsubscribeToken, verifyUnsubscribeToken, unsubscribeUrl,
@@ -37,6 +48,159 @@ test('a malformed recipient is refused locally, before it can cost an API call',
   for (const to of ['', 'not-an-address', 'a@b', 'a b@c.com', null, undefined]) {
     const res = await sendEmail({ to, subject: 'x', html: '<p>x</p>' });
     assert.equal(res.ok, false, `${to} should not be sendable`);
+  }
+});
+
+/* ---------- which 422 is the recipient's fault, and which is our own config ---------- */
+
+const LIB = pathToFileURL(path.resolve('src/lib/email.js')).href;
+
+/**
+ * Load src/lib/email.js in a CHILD PROCESS with RESEND_API_KEY / EMAIL_FROM /
+ * EMAIL_REPLY_TO set, global fetch replaced by a stub and console.warn captured,
+ * then run `body` and print what it returns as JSON.
+ *
+ * Why a child: emailEnabled, FROM and REPLY_TO are all read at IMPORT time — the
+ * boot-time sender-format warning is the whole point of that check, so it cannot
+ * be exercised any other way — and exporting a key into this process would leave
+ * every other test in the suite holding a transport that believes it can send.
+ * Same shape, and the same reasoning, as runWithKey in test/posthog.test.js.
+ *
+ * The stub answers api.resend.com with the given status/detail and Supabase with
+ * the smallest body postgrest-js accepts: `[]` for the suppression lookup, which
+ * it reads as "no row" so the send proceeds, and `{}` for the email_suppress RPC.
+ * Every request is recorded, so a test can assert whether suppress() ran AT ALL —
+ * which is the actual question here, because the write is fire-and-forget and
+ * sendEmail's return value looks identical either way.
+ */
+function runWithKey(body, {
+  status = 422,
+  detail = '',
+  from = 'WeRewards <hello@we-rewards.com>',
+  replyTo = '',
+} = {}) {
+  const src = `
+    const calls = [];
+    const warnings = [];
+    console.warn = (...a) => { warnings.push(a.map(String).join(' ')); };
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      calls.push({ url: u, method: init.method || 'GET', body: typeof init.body === 'string' ? init.body : null });
+      const json = { 'Content-Type': 'application/json' };
+      if (u.startsWith('https://api.resend.com/')) {
+        return new Response(${JSON.stringify(detail)}, { status: ${Number(status)}, headers: json });
+      }
+      // Supabase. '[]' is "no row" to postgrest-js's maybeSingle (so the address
+      // is not already suppressed and the send goes ahead) and a fine enough
+      // answer for the email_suppress RPC, whose result this module ignores.
+      return new Response('[]', { status: 200, headers: json });
+    };
+    const mail = await import(${JSON.stringify(LIB)});
+    const out = await (${body})(mail, calls, warnings);
+    console.log('__RESULT__' + JSON.stringify(out));
+  `;
+  const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
+    env: {
+      ...process.env,
+      RESEND_API_KEY: 're_test_key',
+      EMAIL_FROM: from,
+      EMAIL_REPLY_TO: replyTo,
+      APP_ORIGIN: 'https://we-rewards.test',
+    },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const line = stdout.split('\n').find((l) => l.startsWith('__RESULT__'));
+  assert.ok(line, `child produced no result. stdout:\n${stdout}`);
+  return JSON.parse(line.slice('__RESULT__'.length));
+}
+
+/** Send one mail through the child and report what the 422 caused. */
+function sendAgainst422(detail, opts = {}) {
+  return runWithKey(`async (mail, calls) => {
+    const res = await mail.sendEmail({ to: 'student@example.com', subject: 'x', html: '<p>x</p>', text: 'x' });
+    return {
+      res,
+      suppressed: calls.some((c) => c.url.includes('/rpc/email_suppress')),
+      reachedResend: calls.some((c) => c.url.startsWith('https://api.resend.com/')),
+    };
+  }`, { status: 422, detail, ...opts });
+}
+
+// Resend's real wording for a sender it will not accept. Held in a constant with
+// genuine backticks because the backticks are what the narrowed test keys on.
+const BT = String.fromCharCode(96);
+const FROM_422 = `{"statusCode":422,"name":"validation_error","message":"Invalid ${BT}from${BT} field. The email address needs to follow the ${BT}email@example.com${BT} or ${BT}Name <email@example.com>${BT} format."}`;
+
+test('a 422 about our own From line must not suppress the recipient', () => {
+  // This is the bug this test exists for. `to` is validated locally before any
+  // request is made, so a 422 arriving from Resend is far more likely to be about
+  // the request shape — and a wording-only /invalid/ test matched the sender error
+  // above, suppressing at scope 'all' every address mailed while EMAIL_FROM was
+  // wrong. Nothing ever un-does that: both deletes of email_suppressions filter
+  // on scope='marketing' and prune_email_suppressions is not scheduled anywhere,
+  // so it is password resets and sign-in codes dying silently and permanently for
+  // real people, for one typo in a config var.
+  const out = sendAgainst422(FROM_422, { from: 'WeRewards <hello@we-rewards.com>' });
+  assert.equal(out.reachedResend, true, 'the send must actually have been attempted');
+  assert.equal(out.suppressed, false, 'a sender-side 422 must never touch the suppression list');
+  assert.deepEqual(out.res, { ok: false, reason: 'http', status: 422 });
+});
+
+test('a 422 about reply_to must not suppress the recipient either', () => {
+  // EMAIL_REPLY_TO is sent verbatim and was never format-checked at all, so it is
+  // the same failure with a second env var. The substring "to" inside "reply_to"
+  // is exactly the trap a loose word-boundary test falls into.
+  const out = sendAgainst422(`{"statusCode":422,"message":"Invalid ${BT}reply_to${BT} field. The email address is not valid."}`);
+  assert.equal(out.suppressed, false);
+});
+
+test('a 422 that names the recipient still suppresses the address', () => {
+  // The narrowing must not cost us the real case: Resend validates syntax and
+  // known-invalid domains before accepting, so an address it names is one the
+  // student typed wrong at signup and retrying it forever is how a sending
+  // domain's bounce rate climbs.
+  for (const detail of [
+    `{"statusCode":422,"message":"Invalid ${BT}to${BT} field. Please use the format email@example.com"}`,
+    '{"statusCode":422,"message":"The recipient address is not valid."}',
+  ]) {
+    const out = sendAgainst422(detail);
+    assert.equal(out.suppressed, true, `should suppress on: ${detail}`);
+  }
+});
+
+test('a 500 from Resend never suppresses, however it is worded', () => {
+  // A bad minute at the vendor is not a statement about the mailbox. Suppressing
+  // on one would mute a live address permanently for a transient outage.
+  const out = sendAgainst422('{"statusCode":500,"message":"Invalid recipient (not really, this is a server error)"}', { status: 500 });
+  assert.equal(out.suppressed, false);
+  assert.deepEqual(out.res, { ok: false, reason: 'http', status: 500 });
+});
+
+test('a malformed sender line is warned about at boot, loudly, without disabling mail', () => {
+  // The warning IS the fix for the silent version of this outage: every caller
+  // swallows a failed send (vendor-recover answers ACCEPTED, student-email returns
+  // ok:true), so without a line in the Heroku log at boot there is no symptom at
+  // all beyond mail simply never arriving.
+  const bad = runWithKey(
+    'async (mail, calls, warnings) => ({ enabled: mail.emailEnabled, warnings })',
+    { from: 'WeRewards hello@we-rewards.com' }
+  );
+  assert.equal(bad.enabled, true, 'a malformed From must NOT change what emailEnabled means');
+  assert.ok(bad.warnings.some((w) => w.includes('EMAIL_FROM')), `expected an EMAIL_FROM warning, got ${JSON.stringify(bad.warnings)}`);
+
+  const badReply = runWithKey(
+    'async (mail, calls, warnings) => ({ warnings })',
+    { replyTo: 'not-an-address' }
+  );
+  assert.ok(badReply.warnings.some((w) => w.includes('EMAIL_REPLY_TO')), `expected an EMAIL_REPLY_TO warning, got ${JSON.stringify(badReply.warnings)}`);
+
+  // Both accepted forms stay silent: a display name with the address in angle
+  // brackets (what we actually send, because a bare From line is a cheap spam
+  // signal) and a bare address.
+  for (const from of ['WeRewards <hello@we-rewards.com>', 'hello@we-rewards.com']) {
+    const ok = runWithKey('async (mail, calls, warnings) => ({ warnings })', { from, replyTo: 'support@we-rewards.com' });
+    assert.deepEqual(ok.warnings, [], `${from} is valid and must not warn`);
   }
 });
 
@@ -81,6 +245,73 @@ test('verification refuses every malformed token without throwing', () => {
   for (const bad of ['', 'x', good.slice(0, -1), `${good}x`, null, undefined, 12345]) {
     assert.equal(verifyUnsubscribeToken(u, bad), false, `${bad} should be refused`);
   }
+
+  // THE ONE THAT GOT THROUGH: a JS-length guard is not a byte-length guard.
+  // String#length counts UTF-16 code units and timingSafeEqual compares utf8
+  // BYTES, so 31 base64url characters plus one multibyte character is length 32
+  // and 33 bytes — it passed the old guard and threw a RangeError out of
+  // src/routes/unsubscribe.js authorize(), which has no try/catch, all the way to
+  // logError: an error_logs insert plus a web-push alert to every operator, then
+  // a 500, on a route that mounts ahead of every rate limiter. Anyone with curl
+  // could page the whole admin team in a loop.
+  for (const multibyte of [`${good.slice(0, -1)}é`, `${good.slice(0, -2)}€`, `${good.slice(0, -1)}\u{1F600}`]) {
+    assert.equal(
+      verifyUnsubscribeToken(u, multibyte), false,
+      `a ${Buffer.byteLength(multibyte)}-byte, ${multibyte.length}-character token must be refused, not thrown on`
+    );
+  }
+  // Right length, wrong alphabet: refused by shape before any comparison, which
+  // is also what keeps both buffers one byte per character.
+  for (const outside of [`${good.slice(0, -1)}!`, `${good.slice(0, -1)}+`, `${good.slice(0, -1)} `]) {
+    assert.equal(verifyUnsubscribeToken(u, outside), false, `${outside} should be refused`);
+  }
+
+  // THE ONE THAT GOT THROUGH THE *FIRST* FIX: the shape gate was behind a
+  // `String(token ?? '')`, and String() throws on an object that has no primitive
+  // conversion. This is not a hypothetical value — express 4 parses the query with
+  // qs.parse(str, { allowPrototypes: true }), so `?t[toString]=x` IS this object.
+  // (A null-prototype object throws for the same reason — nothing inherited left
+  // to call — but a query string can't make one: measured against the installed
+  // qs 6.15.3, `?t[__proto__]=x` yields an ORDINARY object whose String() is
+  // "[object Object]". Kept in the table anyway: this function is also called
+  // with values that did not come from qs.) Same 500 as the multibyte case
+  // above (error_logs row + push to every operator, no rate limiter in front),
+  // just thrown one line earlier, so the type gate has to come before any
+  // coercion. Labels are hand-written: interpolating these values into the
+  // assertion message would throw inside the test itself.
+  const noPrimitive = [
+    ['{ toString: "x" }', { toString: 'x' }],
+    ['Object.create(null)', Object.create(null)],
+    ['{ toString() { throw } }', { toString() { throw new Error('nope'); } }],
+    ['{ valueOf: null, toString: null }', { valueOf: null, toString: null }],
+  ];
+  for (const [label, hostile] of noPrimitive) {
+    assert.equal(verifyUnsubscribeToken(u, hostile), false, `${label} should be refused, not thrown on`);
+  }
+  // Arrays are the everyday version of the same thing: `?t=a&t=b` is ['a','b'].
+  assert.equal(verifyUnsubscribeToken(u, [good]), false, 'a repeated ?t= param arrives as an array');
+  assert.equal(verifyUnsubscribeToken(u, [good, good]), false, 'a repeated ?t= param arrives as an array');
+
+  // AND THE *OTHER* ARGUMENT. Gating only `token` left the function non-total:
+  // unsubscribeToken() coerces userId inside `unsub:${userId}`, so a hostile FIRST
+  // argument threw from a frame with no guard of its own — the same TypeError, the
+  // same error_logs row and push to every operator. authorize() pins `u` to a
+  // string and then a uuid today, so this is not live; it is asserted because the
+  // function's contract is "refuses everything, throws at nobody", and the next
+  // caller will not read authorize() first. Token is well-formed in every case, so
+  // only the userId type can be what refuses it.
+  for (const [label, hostile] of noPrimitive) {
+    assert.equal(
+      verifyUnsubscribeToken(hostile, good), false,
+      `userId ${label} should be refused, not thrown on`,
+    );
+  }
+  assert.equal(verifyUnsubscribeToken([u], good), false, 'a repeated ?u= param arrives as an array');
+  assert.equal(verifyUnsubscribeToken(undefined, good), false, 'a missing ?u= is not a user');
+  assert.equal(verifyUnsubscribeToken(null, good), false, 'a missing ?u= is not a user');
+
+  // ...and none of that broke the happy path.
+  assert.equal(verifyUnsubscribeToken(u, good), true);
 });
 
 test('the unsubscribe URL carries both halves the route needs', () => {

@@ -116,6 +116,30 @@ async function main() {
     return;
   }
 
+  // The THIRD outcome of the reader's contract (see the header of
+  // src/lib/gemini-receipt.js): the API answered, but no verdict survived —
+  // output truncated at MAX_OUTPUT_TOKENS, an Interaction that came back
+  // not-'completed' (a safety block), or JSON with no is_receipt in it. This is
+  // NOT a pass: `result` is `{ unreadable: true }` and carries none of the
+  // fields printed below, so without this branch the script announced "OK round
+  // trip" and then died on result.rawText.length. It is not the tesseract case
+  // either — the route refuses the claim outright here.
+  if (result.unreadable) {
+    fail(`The reader was reached but no verdict survived, after ${elapsed}ms.`,
+      'Output truncated at max_output_tokens, a safety block (interaction status'
+      + ' != completed),\n        or JSON with no is_receipt field.');
+    // Worth one plain-text ping anyway: key, model and endpoint are demonstrably
+    // usable (a bad key or model id would have failed above as "no usable
+    // result"), so a 200 here localises the fault to this image or to the
+    // response shape rather than the configuration.
+    await diagnose();
+    console.error('\n  In the app this is a 400 RECEIPT_UNREADABLE — the student is asked to');
+    console.error('  retake the photo, and tesseract is deliberately NOT used, because an');
+    console.error('  image able to provoke this could otherwise pick the reader that has no');
+    console.error('  forgery check. If a plain photo trips it, that is a bug worth chasing.');
+    return;
+  }
+
   console.log(`  OK        round trip in ${elapsed}ms\n`);
   console.log(`  is_receipt          ${result.isReceipt}`);
   console.log(`  confidence          ${result.confidence}`);

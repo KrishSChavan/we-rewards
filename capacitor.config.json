@@ -1,0 +1,9 @@
+{
+  "appId": "com.werewards.app",
+  "appName": "WeRewards",
+  "webDir": ".build/student",
+  "server": {
+    "url": "https://we-rewards.com",
+    "cleartext": false
+  }
+}
