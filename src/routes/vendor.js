@@ -4,7 +4,11 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireUser, requireVendor, requirePin, requirePlan } from '../middleware/auth.js';
-import { effectivePlan, itemCap, daysPastDue, PLAN_LABELS } from '../lib/plans.js';
+// DEGRADE_DAYS is imported for ONE reason: itemCapRefusal below has to draw the
+// "never had it" / "pays for it and the card is failing" line at exactly the day
+// count planRejection draws it at, or the ITEMS 402 and the DEALS 402 describe
+// the same vendor differently on the same shift. Never re-derive 30 here.
+import { effectivePlan, itemCap, daysPastDue, planLocks, PLAN_LABELS, DEGRADE_DAYS } from '../lib/plans.js';
 import { isTerminalAdmin } from '../lib/terminal-admin.js';
 import { emitBalance, emitPunch, emitDeal } from '../lib/realtime.js';
 import { CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS } from '../lib/campaigns.js';
@@ -337,6 +341,18 @@ router.get('/config', async (req, res, next) => {
       grandfathered: Boolean(v.grandfathered),
       pastDueDays: daysPastDue(v),
       itemCap: itemCap(v),
+      // WHAT IS LOCKED, in words, from src/lib/plans.js — null when nothing is.
+      // Sent on /config specifically because /config is the ONE request the
+      // terminal makes at boot (and again after a settings save or a store
+      // switch): the DEALS, VISITS and STATS screens can each render their
+      // locked panel from what they already have, with no second round trip and
+      // no waiting for a 402 to teach them. GET /billing returns the identical
+      // value from the identical call for the Settings card, so the two screens
+      // can never disagree about what a vendor is missing.
+      //
+      // Still presentation only, like the three fields above it: the gates are
+      // requirePlan() and the ITEM_CAP counts, and a client cannot be a gate.
+      planLocks: planLocks(v),
     });
   } catch (err) {
     next(err);
@@ -694,6 +710,71 @@ router.get('/rewards', async (req, res, next) => {
 // validPrice / validReward moved to src/lib/rewards.js (shared with the admin
 // routes, which can now edit the same fields from the operator dashboard).
 
+/**
+ * The 402 body for a reward refused by the free tier's active-item cap.
+ *
+ * ONE function because there are TWO doors into that cap — POST /rewards (a
+ * fourth item created) and PATCH /rewards/:id (a fourth item switched back on) —
+ * and the message they sent had drifted into conflict with the rest of the
+ * screen. Both used to read `The ${PLAN_LABELS[effectivePlan(vendor)]} plan keeps
+ * N rewards active at a time … or upgrade in Settings.` For a vendor degraded by
+ * a failing card effectivePlan is 'freshman', so that sentence lands one tap
+ * under #items-cap-note (public/vendor/index.html), which is painted from
+ * planLocks' itemCap copy and correctly says the cap is there because a payment
+ * is outstanding and the fix is their card. Two instructions, one screen,
+ * opposite actions — and the "upgrade" half invites a vendor who already pays
+ * $29/month for Discovery to buy Discovery, the single mistake src/lib/plans.js
+ * (planLocks' LOCKS docstring) and public/vendor/terminal.js (handlePlanBlocked's
+ * notes) both exist to prevent.
+ *
+ * THE SPLIT IS planRejection's, COPIED RATHER THAN REINVENTED. planRejection in
+ * src/lib/plans.js keys its PLAN_PAST_DUE branch on `late !== null && late >=
+ * DEGRADE_DAYS` and on nothing else, so this keys on the same thing. A different
+ * test here would mean the 402 from Send-a-deal and the 402 from a reward toggle
+ * disagreeing about whether the same vendor owes money. Consequence worth
+ * stating: a row whose nominal plan is 'freshman' but which still carries a live
+ * past_due_since reads as past due here — which is already how every
+ * requirePlan() refusal in this file reads it, so this is consistency, not a new
+ * judgement.
+ *
+ * THE PAST-DUE WORDING NAMES NO PLAN, deliberately, exactly as planRejection's
+ * does not. effectivePlan is 'freshman' for these vendors, so naming it tells a
+ * payer their plan is the tier they were demoted to; naming vendor.plan instead
+ * would be wrong for the row above. It also promises nothing was deleted, which
+ * is TRUE and was checked against the code, not assumed: the cap is a
+ * create/activate gate only, no path in this repo ever deletes a rewards row or
+ * flips `active` to false to enforce a plan (src/routes/stripe-webhook.js never
+ * touches the table, and the only other writers are the operator's own routes in
+ * src/routes/admin.js).
+ *
+ * Kept local instead of exported from src/lib/plans.js beside the planLocks
+ * itemCap copy — which is where a shared generator belongs, since both sentences
+ * already derive the number from itemCap(vendor) — only to keep this repair to
+ * one file. The two are a PAIR: move the itemCap `upgrade`/`pastDue` copy in
+ * src/lib/plans.js and this has to move with it or the screen contradicts itself
+ * again.
+ *
+ * `error: 'ITEM_CAP_REACHED'`, `cap` and `plan` are the wire contract — the
+ * terminal switches on that code and prints `message` verbatim
+ * (handlePlanBlocked deliberately skips this 402), so only the prose changes.
+ *
+ * @param {'create'|'activate'} door which gate is refusing, for the way out.
+ */
+function itemCapRefusal(vendor, cap, door) {
+  const plan = effectivePlan(vendor);
+  const late = daysPastDue(vendor);
+  // The no-cost way out differs by door: POST is adding a new item, PATCH is
+  // switching this one on. Said the same way in both branches so the only thing
+  // the vendor's billing state changes is the CAUSE and the fix, not the advice.
+  const room = door === 'activate' ? 'Turn one off first' : 'Turn one off to add another';
+  const message = (late !== null && late >= DEGRADE_DAYS)
+    ? `Rewards are capped at ${cap} active while a payment is outstanding (${late} days) — nothing was deleted. `
+      + `${room}, or update your card in Settings and the cap lifts again.`
+    : `The ${PLAN_LABELS[plan] ?? plan} plan keeps ${cap} rewards active at a time. `
+      + `${room}, or upgrade in Settings.`;
+  return { error: 'ITEM_CAP_REACHED', message, cap, plan };
+}
+
 /** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji } */
 router.post('/rewards', requirePin, async (req, res, next) => {
   try {
@@ -724,13 +805,9 @@ router.post('/rewards', requirePin, async (req, res, next) => {
         .eq('active', true);
       if (countErr) throw countErr;
       if ((count ?? 0) >= cap) {
-        return res.status(402).json({
-          error: 'ITEM_CAP_REACHED',
-          message: `The ${PLAN_LABELS[effectivePlan(req.vendor)]} plan keeps ${cap} rewards active at a time. `
-            + 'Turn one off to add another, or upgrade in Settings.',
-          cap,
-          plan: effectivePlan(req.vendor),
-        });
+        // Wording comes from itemCapRefusal so a degraded payer is pointed at
+        // their card and never at a purchase — see the helper for why.
+        return res.status(402).json(itemCapRefusal(req.vendor, cap, 'create'));
       }
     }
 
@@ -823,13 +900,10 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
           .neq('id', req.params.id);
         if (countErr) throw countErr;
         if ((count ?? 0) >= cap) {
-          return res.status(402).json({
-            error: 'ITEM_CAP_REACHED',
-            message: `The ${PLAN_LABELS[effectivePlan(req.vendor)]} plan keeps ${cap} rewards active at a time. `
-              + 'Turn one off first, or upgrade in Settings.',
-            cap,
-            plan: effectivePlan(req.vendor),
-          });
+          // Same two-state message as the POST door — this is the switch-back-on
+          // door, so the way out is "turn one off first" rather than "to add
+          // another"; itemCapRefusal holds both so they cannot drift apart.
+          return res.status(402).json(itemCapRefusal(req.vendor, cap, 'activate'));
         }
       }
     }
@@ -1859,6 +1933,14 @@ router.get('/billing', requirePin, async (req, res, next) => {
       planLabel: PLAN_LABELS[effectivePlan(v)] ?? 'Freshman',
       grandfathered,
       pastDueDays: daysPastDue(v),
+      // The same list GET /config sends, from the same function, so the billing
+      // card and the per-tab panels cannot drift apart — and so the card can
+      // answer "what does my money actually buy" with the four things this
+      // vendor is missing rather than a one-line blurb. null for a paying
+      // discovery/goto vendor and for a grandfathered spot (planLocks explains
+      // why the sixteen get nothing here; the whole region is hidden for them
+      // anyway — see renderBilling in public/vendor/terminal.js).
+      planLocks: planLocks(v),
       subscriptionStatus: v.subscription_status ?? null,
       currentPeriodEnd: v.current_period_end ?? null,
       // TRUE = already cancelled, running out the paid period. NULL = we could

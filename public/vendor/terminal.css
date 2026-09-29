@@ -1111,6 +1111,104 @@ body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea,
   border-bottom: 3px solid var(--sky-line);
 }
 
+/* ---------- plan locks: what this plan does not include ----------
+
+   Five things on four screens, and they are grouped here rather than filed under
+   each screen because they have to look like ONE story: the itemised list inside
+   the "Your plan" card (#billing-locks), a panel each on DEALS (#deals-lock),
+   VISITS (#punch-lock) and STATS (#stats-lock), and the active-item cap line on
+   ITEMS (#items-cap-note). Every one starts `hidden` in index.html and is
+   revealed only by terminal.js from `planLocks` (src/lib/plans.js, sent on
+   GET /api/vendor/config and GET /api/vendor/billing), so none of these rules may
+   assume its element is on screen — for a paying or grandfathered spot none of
+   them ever are.
+
+   WHY THESE ARE NOT STYLED LIKE .billing-overdue. That card is red-bordered and
+   red-headed because it is a fault the vendor has to act on today. A lock is not
+   a fault: nothing is broken, the vendor simply does not have the feature. Red
+   here would teach a free vendor that their terminal is failing, and it would
+   make the two states planRejection() in src/lib/plans.js is careful to keep
+   apart — never had it, versus paid for it and the card is failing — look
+   identical on screen. A vendor whose payment bounced would then have two red
+   panels saying different things and no way to tell which one to believe.
+
+   So a lock wears --sky, the fill already used for chips and tier cards, headed
+   in --navy: the colour of the primary action rather than the colour of an error.
+   The panel says "this is about your plan"; the words inside it, all
+   server-written, say which of the two states it is.
+
+   Sizing: these are read standing at a counter, often on an iPad, so nothing in
+   here drops below the .manage-note text beside it, and the CTA is the same
+   .btn-primary .btn-compact used by the buttons in the billing card. */
+
+/* The panel shape, worn by #deals-lock, #punch-lock and #stats-lock on top of
+   .stats-card. Only the two colours change: display, direction, gap, padding and
+   radius all stay .stats-card's, which is what keeps .stats-card[hidden] and the
+   flex-gap fallback scripts/build-client.js already emits for .stats-card working
+   on these unchanged. */
+.plan-lock { background: var(--sky); border-color: var(--sky-line); }
+.plan-lock h3 { color: var(--navy); }
+/* The DEALS and STATS panels sit inside .deals-inner / .stats-inner, which are
+   already min(50rem, 100%). The VISITS screen has no such wrapper — .punch-screen
+   centres its stage directly — so this one has to carry the width itself or the
+   panel shrinks to the width of its longest sentence and stops matching the QR
+   card under it. */
+.punch-screen .plan-lock { width: min(50rem, 100%); }
+/* The reason, one sentence, from the server. Full --ink and heavier than a
+   .manage-note: --muted on --sky is a weak pairing at counter distance, and this
+   line is the entire point of the panel. */
+.plan-lock-text { font-size: 1.05rem; font-weight: 700; line-height: 1.35; color: var(--ink); }
+
+/* The itemised list inside the "Your plan" card. Its own sky block rather than a
+   bare list, so it reads as one answer under the plan line instead of trailing
+   off the blurb above it — and so it is visibly the same kind of thing as the
+   three panels above, which a vendor may well have arrived here from.
+
+   display/direction/gap MUST stay together in this one rule: the fallback
+   generator in scripts/build-client.js groups rules by EXACT selector text and
+   only registers a flex container where it sees the display, so a later rule that
+   revised `gap` alone would drop this container out of the no-flex-gap fallback
+   entirely and collapse the list on Safari below 14.1 — i.e. on the older
+   counter iPads. Same trap documented on .deals-compose. */
+.plan-locks {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  background: var(--sky); border: 2.5px solid var(--sky-line); border-radius: 0.8rem;
+  padding: 0.9rem 1rem;
+}
+/* `display: flex` above beats the UA's [hidden] rule outright, the same bug
+   .stats-card[hidden] and .pool-card[hidden] exist to fix. Without this line
+   every paying vendor would find an empty sky box under their plan, and every
+   grandfathered one would too. */
+.plan-locks[hidden] { display: none; }
+.plan-locks-head { font-size: 1.05rem; font-weight: 900; color: var(--navy); line-height: 1.3; }
+/* list-style: none plus a flex column, the same shape as .stats-list: the global
+   `* { padding: 0 }` reset puts markers outside the box where they clip, which is
+   why no list in this app uses them. */
+.plan-locks-list { list-style: none; display: flex; flex-direction: column; gap: 0.55rem; }
+/* One entry is a label line with the actionable sentence under it, separated by a
+   rule rather than a bullet — the same treatment .deal-row gives the deals
+   history, so a list of four locks stays scannable without numbering that would
+   imply an order they do not have. */
+.plan-locks-list li { display: flex; flex-direction: column; gap: 0.15rem; }
+.plan-locks-list li + li { border-top: 2px solid var(--sky-line); padding-top: 0.5rem; }
+.plan-locks-list strong { font-size: 1.05rem; font-weight: 900; }
+/* --ink, not --muted: #5a6678 on --sky lands around 4:1, which is under the bar
+   for a sentence this size and well under it across a counter. */
+.plan-locks-list span { font-size: 0.98rem; font-weight: 600; color: var(--ink); }
+
+/* The active-item cap on ITEMS. A line, not a panel: nothing on that screen is
+   locked, there is simply a number that applies to the list under it, and a
+   bordered card would outweigh the list it is about. Keeps .manage-note's
+   min(50rem, 100%) so it lines up with #reward-list rather than centring over it,
+   and takes --ink back off .manage-note's --muted because this one is live state
+   about this spot, not standing explanation — the same distinction
+   .poster-file-line draws. */
+.plan-note {
+  color: var(--ink); font-weight: 700;
+  background: var(--sky); border: 2.5px solid var(--sky-line); border-radius: 0.6rem;
+  padding: 0.7rem 0.9rem;
+}
+
 /* unsaved-changes cue: an amber note above the actions + a dot on the tab, plus
    a ring on Save so the way out of the state is obvious. */
 .settings-dirty { color: var(--redeem); font-weight: 800; font-size: 1.05rem; text-align: right; }
@@ -1235,6 +1333,14 @@ body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea,
   gap: 0.9rem; text-align: center;
   width: 100%;
 }
+/* `display: flex` above beats the UA's [hidden] rule, the same trap
+   .stats-card[hidden], .pool-card[hidden] and .plan-locks[hidden] each exist to
+   close. setPunchStageHidden() in terminal.js hides this whole stage when the
+   punch-in code is plan-locked, so without this line the locked VISITS screen
+   keeps its headline, a blank QR card and a 0% timer under the panel that says
+   the code is locked. The kiosk rule below deliberately sets no `display`, so
+   this one selector is enough to cover fullscreen too. */
+.punch-stage[hidden] { display: none; }
 
 .punch-title { margin-bottom: 0.1rem; }
 
@@ -1677,6 +1783,25 @@ body.punch-fs .punch-stage .punch-actions { display: none; }
   .logo-preview { width: 4rem; height: 4rem; }
   .settings-dirty { font-size: 0.95rem; text-align: left; }
   .region-head { font-size: 0.95rem; letter-spacing: 0.08em; }
+
+  /* ---------- plan locks ----------
+
+     The three .plan-lock panels are .stats-card underneath, so they already took
+     this breakpoint's card padding and h3 size above; only the type that was set
+     larger than .manage-note needs bringing back into line with it. Nothing here
+     goes below 0.9rem — .manage-note's phone size — because a lock read on a
+     phone-width till is still the thing being sold, and the .btn-compact CTA keeps
+     the phone padding the rest of this file's compact buttons get.
+
+     No display or gap is touched, deliberately: .plan-locks and .plan-locks-list
+     stay the same flex containers they are above, so the no-flex-gap fallback
+     scripts/build-client.js emitted for each of them still applies here. */
+  .plan-locks { padding: 0.8rem 0.85rem; }
+  .plan-locks-head { font-size: 0.98rem; }
+  .plan-locks-list strong { font-size: 1rem; }
+  .plan-locks-list span { font-size: 0.92rem; }
+  .plan-lock-text { font-size: 1rem; }
+  .plan-note { padding: 0.65rem 0.8rem; }
 
   /* ---------- overlays ---------- */
 

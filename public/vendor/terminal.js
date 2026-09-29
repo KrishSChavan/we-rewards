@@ -64,6 +64,13 @@ let settingsBaseline = null; // keyed snapshot of the Settings form at load/save
 let pendingMode = null;    // tab the vendor tried to open while Settings had unsaved edits
 let pendingLeave = null;   // same, for a leave that isn't a tab: a store switch
                            // waiting on the unsaved-Settings guard, as a callback
+let settingsScrollTo = null;   // a region of the Settings screen to bring into view
+                               // on arrival — 'billing', set by a plan-lock panel's
+                               // button. Consumed by enterSettings, because the
+                               // navigation can be held on the way in (the staff PIN
+                               // pad, the unsaved-edits guard) and scrolling a screen
+                               // nobody has landed on yet would be undone by the
+                               // real arrival.
 // Idempotency for awards: reuse one token across a retry of the SAME award
 // (customer + amount) so the server can dedupe if a network drop hid a success.
 // { key, token } — kept only while the last attempt failed at the network layer.
@@ -260,6 +267,15 @@ function bootFailed(message) {
   window.addEventListener('resize', syncTabRail);
   window.addEventListener('orientationchange', syncTabRail);
   if (document.fonts) document.fonts.ready.then(syncTabRail);
+  // The three plan-lock panels (DEALS, VISITS, STATS) all lead to the same place,
+  // Settings → Plan & billing, so they share one handler. Bound defensively, with
+  // no assumption the elements exist: index.html and this bundle are separate
+  // static files under public/vendor/, and a counter iPad holding one in cache and
+  // not the other must lose a button, not the whole boot — everything below this
+  // line in this listener block would go with it.
+  ['deals-lock-cta', 'punch-lock-cta', 'stats-lock-cta'].forEach((id) => {
+    $(id)?.addEventListener('click', openPlanBilling);
+  });
   $('punch-fullscreen').addEventListener('click', enterPunchFullscreen);
   $('punch-exit-fs').addEventListener('click', exitPunchFullscreen);
   // System fullscreen exited some other way (Esc, swipe): drop the CSS kiosk too.
@@ -556,6 +572,11 @@ async function enterApp() {
   syncPunchTab();
   refreshRewards();
   refreshLastActivity();
+  // The plan prompts, from the config that just landed. Before any screen is
+  // entered, so a vendor whose first tap is DEALS or VISITS finds the explanation
+  // already on it rather than after a refusal. Every panel it paints is hidden
+  // again by the same call when nothing is locked, which is every paying vendor.
+  applyPlanLocks();
   // Back from Stripe: open SETTINGS rather than SCAN, because the vendor was
   // mid-task and the answer to "did that work?" is on the billing card. Goes
   // through switchMode, so a PIN-protected terminal still asks for the PIN —
@@ -1001,6 +1022,12 @@ function repaintForStore() {
   paintAdminChrome();
   $('signout-vendor').textContent = config?.name ?? '';
   syncPunchTab();
+  // Locations are INDEPENDENT vendors (see the section header above): separate
+  // plan, separate billing, separate past-due clock. So the store that was just
+  // switched to can be locked out of things the last one paid for, or the reverse,
+  // and repainting from the new config is the only thing that keeps the panels
+  // describing the shop this terminal is now ringing up for.
+  applyPlanLocks();
   refreshRewards();
   refreshLastActivity();
   enterScan();   // land on SCAN: un-gated, and where a till wants to be anyway
@@ -1186,6 +1213,64 @@ function handlePinRequired(res, data, retry) {
     return true;
   }
   return false;
+}
+
+/**
+ * A 402 from one of the requirePlan gates, shown in the words src/lib/plans.js
+ * wrote for it. Sibling of handlePinRequired above, called the same way —
+ * `if (handled) return;` immediately after the json() — and there for the same
+ * reason: the gate answers with a body written for the person standing at the
+ * counter, and until now every call site in this file threw that body away and
+ * put up its own "try again in a moment", which is advice for a problem the
+ * vendor does not have. Nothing on this path is retryable. The plan is the
+ * answer, and only Settings can change it.
+ *
+ * `showMessage` gets the SERVER's message, verbatim and unwrapped. planRejection()
+ * deliberately writes two different sentences — PLAN_REQUIRED for "you never had
+ * this, upgrade" and PLAN_PAST_DUE for "you had this and a payment is failing,
+ * fix your card" — and a generic client string erases exactly the distinction
+ * that decides what the vendor is supposed to DO next. So this file never
+ * paraphrases it.
+ *
+ * It also gets a SECOND argument, `pastDue`, which is that same distinction as a
+ * boolean — and it is the only trustworthy source of it on this path. The client's
+ * own wording (a panel heading, the button word) used to be derived from
+ * `config.planLocks`, and config is fetched at sign-in, at a store switch and
+ * after a settings save, with no poll: a terminal signed in on day 29 of a failing
+ * card still holds `planLocks: null` when the server starts refusing at day 30, so
+ * it painted "See plans" over the server's own "a payment is outstanding" sentence
+ * and invited a paying vendor to buy their own plan. This 402 is by definition
+ * fresher than any config, since the server answered it just now. See
+ * ensureLockPanel and paintLockPanel, which take it explicitly.
+ *
+ * Returns false, on purpose, for two 402s it should not claim:
+ *
+ *   • one with no message — the caller's own !res.ok branch then runs, because a
+ *     blank error line is worse than its generic one. planRejection always sends
+ *     a message; this is for a body that arrived mangled.
+ *   • ITEM_CAP_REACHED, which is also a 402 (see POST/PATCH /api/vendor/rewards)
+ *     but is about one item rather than a locked screen, and is ALREADY shown
+ *     verbatim where it happens — saveReward and toggleReward both read
+ *     data.message. Claiming it here would only move the same words somewhere
+ *     less useful. The standing explanation for that cap is #items-cap-note,
+ *     which goes up before the vendor ever hits it.
+ *
+ * The callback is `showMessage` and not `show` because the screen-switcher defined
+ * immediately below is called show(), and a parameter of that name would shadow it
+ * here — quietly, and only for whatever this function grows into later.
+ */
+function handlePlanBlocked(res, data, showMessage) {
+  if (res.status !== 402) return false;
+  const err = data?.error;
+  if (err !== 'PLAN_REQUIRED' && err !== 'PLAN_PAST_DUE') return false;
+  const message = typeof data?.message === 'string' ? data.message.trim() : '';
+  if (!message) return false;
+  // The boolean is derived HERE, from the code the server just sent, and never
+  // re-derived downstream from `config`: that is the whole point of threading it
+  // (see the paragraph above). `err` is already narrowed to the two plan codes,
+  // so this is the complete distinction, not a partial test.
+  if (typeof showMessage === 'function') showMessage(message, err === 'PLAN_PAST_DUE');
+  return true;
 }
 
 function show(id) {
@@ -2225,6 +2310,12 @@ let punchHasQr = false;      // something is drawn (Reconnecting… vs Can't loa
 
 function enterPunch() {
   show('screen-punch');      // show() runs syncPunch()
+  // Nothing about the plan here: #punch-lock is painted from /config by
+  // applyPlanLocks, and the loop syncPunch starts is itself the probe —
+  // fetchPunchToken clears the panel on a 200 and calls showPunchLocked on a 402.
+  // The loop is deliberately NOT skipped when the config says locked: the server
+  // is the authority on the gate, and a client that refused to ask would deny a
+  // paying vendor their punch code on the strength of a stale payload.
 }
 
 // Show/hide the PUNCH tab per the vendor's setting, and never leave the mode
@@ -2282,11 +2373,34 @@ async function fetchPunchToken() {
         syncPunchTab();
         return;
       }
+      // PLAN-LOCKED. This token IS the punch card — it mints the rotating 30
+      // second URL a student scans, and there is no other way to hand out a visit
+      // — and it is behind requirePlan('discovery'), while the punchEnabled
+      // SETTING that shows the tab is not gated at all. So a free vendor can
+      // switch visits on and land here, and until this branch existed the answer
+      // was the catch below: the QR covered with "Reconnecting…", which is a lie,
+      // and another attempt every two seconds for as long as the tab is open,
+      // against a route that will refuse every one of them until somebody pays.
+      if (handlePlanBlocked(res, data, showPunchLocked)) return;
       throw new Error('punch token fetch failed');
     }
+    // The apparatus comes back BEFORE the draw, not with the panel below: the
+    // stage is what showPunchLocked took away (headline, QR card, timer, hint),
+    // and punchQrSize measures #punch-stage in kiosk mode, where a stage still
+    // `display: none` measures zero and the QR would be sized off the raw window
+    // instead. A 200 from a gated route is the server saying this vendor is not
+    // locked, whatever a config cached before an upgrade still claims.
+    setPunchStageHidden(false);
     drawPunchQr($('punch-qr'), data.url, punchQrSize());
     punchHasQr = true;
     $('punch-qr-cover').hidden = true;
+    // A 200 from a gated route is the server saying this vendor is not locked,
+    // whatever a config cached before an upgrade still claims — so the lock panel
+    // and the Fullscreen button both come back to life. Unconditional rather than
+    // behind a flag: the code is live, and that is the only state this draws.
+    clearLockPanel('punch-lock');
+    const fullscreenBtn = $('punch-fullscreen');
+    if (fullscreenBtn) fullscreenBtn.hidden = false;
     punchWindowMs = (data.windowSeconds ?? 30) * 1000;
     punchExpiresAt = Date.now() + Math.max(1, data.expiresIn ?? 30) * 1000;
     // No vendor-level card since migration-029: punches are a currency, and
@@ -2295,6 +2409,13 @@ async function fetchPunchToken() {
   } catch {
     // The shown code is stale (or absent): cover it so nobody scans a dead
     // code, and retry shortly. Recovers by itself when the connection does.
+    //
+    // The stage is deliberately NOT revealed here. The only two things that hide
+    // it are showPunchLocked and syncPunchLock, and both leave #punch-lock up in
+    // the same breath — so a vendor whose stage is hidden has the plan sentence on
+    // screen, and 'Can't load the code' would offer them a connection problem they
+    // do not have. A vendor who is not locked still has the stage, and the cover
+    // lands on it exactly as it always did.
     $('punch-qr-cover').hidden = false;
     $('punch-qr-cover-text').textContent = punchHasQr
       ? 'Reconnecting…'
@@ -2304,6 +2425,118 @@ async function fetchPunchToken() {
   } finally {
     punchFetching = false;
   }
+}
+
+/**
+ * Show or hide the whole punch apparatus — #punch-stage in index.html, which
+ * holds the "SCAN TO ADD A VISIT" headline, the reward line, the QR card and its
+ * stale-code cover, the countdown bar, the hint "Scan with your phone camera or
+ * the WeRewards app · one visit per night", and the Fullscreen button.
+ *
+ * ALL OF IT IS A PROMISE OF A CODE, which is why a plan-locked VISITS screen
+ * cannot keep it. showPunchLocked used to blank only #punch-reward-line and leave
+ * the rest standing, so a freshman spot with visits switched on (PATCH /settings
+ * accepts punch_enabled on any plan) got a large instruction to scan, a blank
+ * white square and a 0% timer bar sitting directly under a panel saying the code
+ * is locked. A customer at the counter who follows that instruction finds nothing
+ * to scan, which reads as a broken terminal rather than as a plan nobody bought —
+ * the exact reading the panel exists to prevent.
+ *
+ * THE ATTRIBUTE ALONE, because .punch-stage has a companion rule. .punch-stage
+ * is `display: flex`, an author declaration that beats the UA sheet's
+ * `[hidden] { display: none }` — the same trap .stats-card[hidden],
+ * .pool-card[hidden] and .plan-locks[hidden] each exist to close. So
+ * `.punch-stage[hidden]` sits beside that rule in terminal.css and this function
+ * only has to set the attribute. Do not "simplify" by deleting that CSS line:
+ * without it this hides nothing at all, silently, and only on a real browser
+ * (a stub-DOM test that reads .hidden would still pass).
+ *
+ * Kiosk mode is left FIRST when hiding: `body.punch-fs .punch-stage` IS the
+ * fullscreen surface (position: fixed, inset: 0 — terminal.css:1389) and
+ * #punch-exit-fs lives inside it, so hiding the stage while that class is on the
+ * body would strand the terminal in fullscreen with no visible way out.
+ * showPunchLocked already leaves kiosk on its own path; this covers the
+ * config-driven one through syncPunchLock.
+ *
+ * Tolerates the element being missing, like paintLockPanel: index.html and this
+ * file are separate static files under public/vendor/, so a counter iPad can hold
+ * one in cache and not the other — and that has to be a screen that draws nothing
+ * rather than a TypeError thrown out of fetchPunchToken.
+ */
+function setPunchStageHidden(hide) {
+  const stage = $('punch-stage');
+  if (!stage) return;
+  if (hide && document.body.classList.contains('punch-fs')) exitPunchFullscreen();
+  stage.hidden = Boolean(hide);
+}
+
+/**
+ * The VISITS screen with the punch-in code plan-locked: no code, and a sentence
+ * saying why.
+ *
+ * The tab STAYS (it follows the vendor's own punchEnabled setting, and a plan
+ * must not move a tab — the screen is where this gets explained). What goes is
+ * everything that pretends a code is coming:
+ *
+ *   • the 250ms loop, because every tick would re-ask a route that has already
+ *     said no, and the refusal will not change until a card does;
+ *   • kiosk mode, for the reason the PUNCH_DISABLED branch gives — a fullscreen
+ *     stage with nothing live on it is a terminal that looks dead;
+ *   • the Fullscreen button, because there is nothing to make a counter-top sign
+ *     out of;
+ *   • THE WHOLE APPARATUS behind it — the headline, the QR card, the timer bar and
+ *     the "Scan with your phone camera or the WeRewards app" hint, which are each
+ *     an instruction about a code that is not coming and so cannot be left
+ *     standing under a panel saying the code is locked. setPunchStageHidden above
+ *     has the mechanics and the bug;
+ *   • the "Customers scan this once a night" line, which would be an instruction
+ *     to scan a blank square.
+ *
+ * fetchPunchToken puts every one of those back on its next 200 — the stage, the
+ * Fullscreen button, the reward line and the panel — so a vendor who upgrades, or
+ * whose card is fixed, gets a working VISITS screen without reloading a terminal
+ * that is bolted to a counter.
+ *
+ * The stale-code cover is left HIDDEN on purpose rather than used: it exists to
+ * warn a customer off a code that has gone dead mid-shift ("Reconnecting…"), and
+ * there is no code here to warn anybody off — the card it covers is gone with the
+ * rest of the stage, and the panel is the explanation.
+ */
+function showPunchLocked(message, pastDue) {
+  stopPunchLoop();
+  if (document.body.classList.contains('punch-fs')) exitPunchFullscreen();
+  punchHasQr = false;
+  // Wipe anything already drawn. A PAYING vendor can cross DEGRADE_DAYS in the
+  // middle of a shift with a code on screen, and that code is then both dead (the
+  // token is signed and lives 30 seconds) and not theirs to offer — leaving it up
+  // on a counter-top sign invites a customer to scan something that can only fail.
+  const canvas = $('punch-qr');
+  const ctx = canvas?.getContext?.('2d');
+  if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const cover = $('punch-qr-cover');
+  if (cover) cover.hidden = true;
+  $('punch-timer-fill').style.width = '0%';
+  const fullscreenBtn = $('punch-fullscreen');
+  // Hidden in its own right as well as with the stage: syncPunchLock can reveal
+  // the stage again from a fresher config before any token has arrived, and a live
+  // Fullscreen button there turns a blank square into a counter-top sign.
+  if (fullscreenBtn) fullscreenBtn.hidden = true;
+  // The apparatus, not just the one line under the headline — see
+  // setPunchStageHidden above for what is on it and why none of it can stay.
+  setPunchStageHidden(true);
+  // Blanked as well as hidden, for the same reason as the button: fetchPunchToken
+  // rewrites this line on every 200, so the only way it is ever read again is on a
+  // stage revealed before a token exists, and "Customers scan this once a night"
+  // over an empty canvas is the instruction this function exists to take away.
+  $('punch-reward-line').textContent = '';
+  // `pastDue` rides in from the 402 handlePlanBlocked just read (this function IS
+  // that callback — fetchPunchToken passes it by name). It is not defaulted to
+  // locksArePastDue() here: the one caller always has a 402 in hand, and a
+  // parameter that silently falls back to `config` would reintroduce the stale
+  // read this threading exists to remove. A vendor 30 days past due on Discovery
+  // gets the paused heading and "Update your card" even on a terminal whose
+  // config was fetched on day 29 and says `planLocks: null`.
+  ensureLockPanel('punch-lock', 'punch-lock-text', 'punch-lock-cta', 'visits', message, pastDue);
 }
 
 // How big to draw the QR: as much of the screen as fits after the copy above
@@ -2357,6 +2590,10 @@ function enterManage() {
   // the way in rather than in renderRewardList, which is what puts the row back
   // after that same failure and would wipe the explanation with it.
   $('reward-error').hidden = true;
+  // The cap line (#items-cap-note) is painted from /config by applyPlanLocks and
+  // needs nothing here: there is no gated GET on this screen to probe with, which
+  // is exactly why the note has to be standing before the vendor writes an item.
+  // Learning the cap from a rejected save is the thing it replaces.
   renderRewardList();
   // Then catch up on anything changed elsewhere — a second terminal on the same
   // login, or an admin editing this vendor. This used to happen as a side
@@ -2738,6 +2975,12 @@ let dealSendArmed = false;      // two-tap confirm, like Undo last
 let dealArmTimer = null;
 let dealReachTimer = null;
 let dealQuota = null;
+// Is the server currently refusing a send? Owned by setDealsSendLocked and read
+// by the two other places that decide the Send button — renderDealQuota and
+// sendDeal's finally — both of which otherwise look only at this week's quota,
+// which comes from the UNGATED GET /api/vendor/campaigns and is therefore
+// answered in full for a vendor who cannot spend a single one of those sends.
+let dealsSendLocked = false;
 // Idempotency, same contract as an award retry: one token per composed message,
 // so a Send that fails at the network layer can be repeated without fanning out
 // to a hundred students twice.
@@ -2753,6 +2996,11 @@ function enterDeals() {
   disarmDealSend();
   disarmDealDown(true);
   loadCampaigns();
+  // #deals-lock is already painted from /config (applyPlanLocks) and is NOT
+  // repainted here on purpose: refreshReach below is a gated route, so it is the
+  // live probe, and it gets to correct the panel in both directions. Painting from
+  // a possibly-stale config first would only put a panel up for the 250ms until
+  // the server disagreed with it. See the plan-locks section.
   refreshReach();
 }
 
@@ -2772,11 +3020,93 @@ async function loadCampaigns() {
 function renderDealQuota() {
   const q = dealQuota;
   if (!q) return;
+  // A locked vendor's weekly allowance is a number they cannot spend. GET
+  // /api/vendor/campaigns is not gated — it is the history, which stays readable
+  // on every plan — so it answers `quota` for everybody, and this line used to
+  // print "2 sends left this week" an inch above #deals-lock saying that sending
+  // is part of Discovery (or, for a failing card, that it is paused). The vendor
+  // then wrote a headline and a message and learned the truth from a 402. The
+  // count is not WRONG, it is unspendable, so it waits until the gate opens; the
+  // panel is the sentence on this screen and it does not need contradicting.
+  if (dealsSendLocked) {
+    clearDealQuotaLine();
+    // Re-asserted rather than left to setDealsSendLocked: loadCampaigns can land
+    // after the lock (enterDeals fires it first, and refreshReach is debounced
+    // 250ms behind it), and this is the function that would otherwise be the last
+    // writer of the button.
+    const send = $('deal-send');
+    if (send) send.disabled = true;
+    return;
+  }
   $('deals-quota').textContent = q.left === 1
     ? '1 send left this week'
     : `${q.left} sends left this week`;
   $('deals-quota').classList.toggle('is-spent', q.left === 0);
   $('deal-send').disabled = q.left === 0;
+}
+
+/** Blank the sends-left line without pretending the quota is spent: `is-spent`
+ *  is the "0 left this week" styling and this is not that state. */
+function clearDealQuotaLine() {
+  const quota = $('deals-quota');
+  if (!quota) return;
+  quota.textContent = '';
+  quota.classList.remove('is-spent');
+}
+
+/**
+ * The rest of the DEALS screen agreeing with #deals-lock: the sends-left line
+ * and the Send button.
+ *
+ * #deals-lock used to be the only thing on this screen that knew sending was
+ * blocked — the quota line and the button went on offering sends beside it. The
+ * composer itself deliberately stays readable and
+ * typeable (the screen is where this gets explained, and a vendor mid-draft when
+ * a card fails should not lose their words), so what changes is only the two
+ * controls that ADVERTISE a send: the quota line and the button that spends it.
+ *
+ * Called from three kinds of place, in order of how fresh their answer is:
+ *
+ *   • the two 402 paths (refreshReach's audience count and POST /campaigns),
+ *     where the server has just refused the very gate Send sits behind;
+ *   • refreshReach's 200, which is the same gate ALLOWING them — so it hands the
+ *     controls back even if `config` still lists 'deals' as locked (an upgrade
+ *     bought on another device, a card fixed at home, a webhook that landed an
+ *     hour ago). The server is the authority in both directions;
+ *   • syncDealsLock, from the config in hand, which is what paints the screen
+ *     before either probe answers.
+ *
+ * NOT A GATE, exactly as the locks section says of every panel here: POST
+ * /api/vendor/campaigns is behind requirePlan('discovery') server-side, so a
+ * wrong answer here costs a disabled button for the 250ms until refreshReach
+ * disagrees with it, never a send. That is also why unlocking re-runs
+ * renderDealQuota instead of just clearing `disabled`: quota exhaustion is the
+ * OTHER reason Send is off, and a vendor with 0 left this week must stay off.
+ */
+function setDealsSendLocked(locked) {
+  dealsSendLocked = Boolean(locked);
+  const send = $('deal-send');
+  if (dealsSendLocked) {
+    clearDealQuotaLine();
+    if (send) {
+      // A half-finished two-tap arm would otherwise sit there reading "Tap again
+      // to send" under a panel saying sending is locked, and its 5s timer would
+      // fire disarmDealSend into a disabled button anyway. Guarded with the
+      // button because disarmDealSend dereferences it: this function runs from
+      // applyPlanLocks at sign-in, and index.html and terminal.js are separate
+      // static files, so a counter iPad can hold a cached markup without this
+      // screen. That must be a control nobody paints, not a TypeError thrown
+      // inside loadConfig — the same tolerance paintLockPanel states.
+      disarmDealSend();
+      send.disabled = true;
+    }
+    return;
+  }
+  if (dealQuota) { renderDealQuota(); return; }
+  // No quota in hand yet (GET /campaigns still in flight, or it failed and the
+  // prior render was kept): leave Send usable. The server refuses an over-quota
+  // send on its own, and loadCampaigns will repaint both as soon as it lands.
+  if (send) send.disabled = false;
 }
 
 function renderDealNote(d) {
@@ -2827,7 +3157,40 @@ function refreshReach() {
       const res = await authFetch(`/api/vendor/campaigns/reach?audience=${dealAudience}`);
       const data = await res.json().catch(() => ({}));
       if (handlePinRequired(res, data)) return;
+      // The audience count is behind requirePlan('discovery'); the composer it
+      // sits in is not. This is the first gated call a free vendor makes on this
+      // screen (enterDeals fires it), so it doubles as the live probe for the
+      // panel: a 402 here is the server confirming the lock, and it fills the
+      // panel in the one case planLocks cannot — a server that answers /config
+      // without the field. The count line is emptied rather than left reading
+      // "Checking…" forever, which is what it did before this branch existed.
+      if (handlePlanBlocked(res, data, (message, pastDue) => {
+        $('deal-reach').textContent = '';
+        // `pastDue` is the 402's own error code, threaded through
+        // handlePlanBlocked. It is the freshest answer available — this refusal
+        // was written by the server a moment ago — and it beats
+        // config.planLocks, which on a counter terminal can predate the
+        // crossing by a day or a month (there is no /config poll).
+        ensureLockPanel('deals-lock', 'deals-lock-text', 'deals-lock-cta', 'deals', message, pastDue);
+        // The server just refused the audience count, which is the same
+        // requirePlan('discovery') gate POST /campaigns sits behind. So Send
+        // cannot succeed, and the quota line (from the UNGATED GET /campaigns)
+        // must stop advertising sends this vendor cannot spend.
+        setDealsSendLocked(true);
+      })) return;
       if (!res.ok) { $('deal-reach').textContent = ''; return; }
+      // A 200 from a gated route is the server saying this vendor is NOT locked,
+      // and it is fresher than the config this terminal signed in with — so a
+      // panel left up by a stale payload (an upgrade bought on another device, a
+      // webhook that landed an hour ago) comes down. The server is the authority
+      // in both directions; see the locks section.
+      clearLockPanel('deals-lock');
+      // Both directions, for the same reason: this 200 proves the gate lets them
+      // through, so the quota line and the Send button come back even if a config
+      // cached before an upgrade (or before a card was fixed on another device)
+      // still lists 'deals' as locked. renderDealQuota then re-reads dealQuota, so
+      // a vendor who really has 0 left this week stays disabled on that ground.
+      setDealsSendLocked(false);
       const n = data.reach ?? 0;
       $('deal-reach').textContent = n === 0
         ? 'Nobody matches this yet. Award some points first.'
@@ -2885,6 +3248,20 @@ async function sendDeal(title, body) {
     });
     const data = await res.json().catch(() => ({}));
     if (handlePinRequired(res, data)) return;
+    // POST /campaigns is requirePlan('discovery'). The message below would have
+    // shown the server's words anyway — this branch is here for the panel: a
+    // vendor who has just written a headline and a message deserves the standing
+    // explanation on screen next to the composer, not only a line under the
+    // Send button that the next keystroke clears (see onDealInput).
+    if (handlePlanBlocked(res, data, (message, pastDue) => {
+      dealError(message);
+      // Same threading as refreshReach: the panel's heading and button word come
+      // from THIS refusal, not from the cached config. Without it a Discovery
+      // vendor whose card is failing read the server's "a payment is outstanding"
+      // sentence under a blue button offering to sell them Discovery.
+      ensureLockPanel('deals-lock', 'deals-lock-text', 'deals-lock-cta', 'deals', message, pastDue);
+      setDealsSendLocked(true);
+    })) return;
     if (!res.ok) {
       dealError(data?.message || 'Could not send that. Try again in a moment.');
       return;
@@ -2906,7 +3283,11 @@ async function sendDeal(title, body) {
     dealError('No connection. Tap send again when you are back online.');
   } finally {
     busy = false;
-    $('deal-send').disabled = dealQuota ? dealQuota.left === 0 : false;
+    // `finally` runs even on the `return` inside the handlePlanBlocked branch
+    // above, which has just called setDealsSendLocked(true) — so without the
+    // first term this line would hand the button straight back to a vendor the
+    // server refused a moment ago, and they would tap it again.
+    $('deal-send').disabled = dealsSendLocked || (dealQuota ? dealQuota.left === 0 : false);
     disarmDealSend();
   }
 }
@@ -3023,6 +3404,23 @@ async function saveDealEdit(row, id) {
     });
     const data = await res.json().catch(() => ({}));
     if (handlePinRequired(res, data)) return;
+    // PATCH /campaigns/:id is requirePlan('discovery') (src/routes/vendor.js), the
+    // same gate POST /campaigns and GET /campaigns/reach sit behind — so a refusal
+    // here is the same news, and it gets the same three moves the other two call
+    // sites make (refreshReach, sendDeal): the server's sentence where the vendor
+    // is looking, the standing panel, and Send locked. With only the first of the
+    // three, the row read "this is paused while a payment is outstanding" while
+    // the screen above it still advertised "2 sends left this week" beside a live
+    // Send button — the contradiction setDealsSendLocked exists to remove, and
+    // reachable because refreshReach is the live probe that would have raised the
+    // panel and its catch only blanks #deal-reach when the counter wifi drops.
+    // `pastDue` is this 402's own error code, which beats config.planLocks on a
+    // terminal that signed in before the crossing (see handlePlanBlocked).
+    if (handlePlanBlocked(res, data, (message, pastDue) => {
+      showErr(message);
+      ensureLockPanel('deals-lock', 'deals-lock-text', 'deals-lock-cta', 'deals', message, pastDue);
+      setDealsSendLocked(true);
+    })) return;
     if (!res.ok) {
       showErr(data?.message || 'Could not save that. Try again in a moment.');
       return;
@@ -3101,17 +3499,123 @@ const money = (n) => '$' + (Number(n) || 0).toFixed(2);
 const num = (n) => (Number(n) || 0).toLocaleString();
 
 function renderAnalytics(d) {
+  /* ---- what this response is missing, and why it matters here ----
+
+     GET /api/vendor/analytics does not answer 402 for a free vendor: it TRIMS
+     itself and says so, because (its own comment) a 402 "would black out the
+     whole STATS tab, and the tab is where the upgrade prompt has to live". What
+     it drops is last30, daily and topRewards, flagged `limited: true` with
+     `lockedSections` naming them.
+
+     This file never read either field, and the three renderers below were being
+     handed `?? {}` and `?? []` — so a trimmed response did not leave three blank
+     sections, it PRINTED A SET OF CLAIMS THE SERVER NEVER MADE: $0.00 of revenue
+     over 30 days, 0 customers, 0 redemptions, and "No redemptions in the last 30
+     days" under Top rewards. A vendor reading that concludes either that the till
+     is broken or that they had a catastrophic month. Neither is a thing anybody
+     should have to un-learn from a paywall.
+
+     So the locked sections say '—' and #stats-lock says why. `limited` (and not
+     planLocks) decides that, because this endpoint is the authority on what it
+     actually trimmed out of its own body; planLocks is consulted only for the
+     WORDS, below. */
+  const sections = Array.isArray(d.lockedSections) ? d.lockedSections : [];
+  const limited = d.limited === true || sections.length > 0;
+  // Named by the server, or simply absent from a response that says it is
+  // limited. The second test is the belt to the first's braces: `lockedSections`
+  // and the trimming are written in two places in the same route handler (a
+  // destructure, then a literal array), and reading the ABSENCE keeps this honest
+  // if those two ever disagree. The names in lockedSections ARE the payload keys.
+  const isLocked = (name) => sections.includes(name) || (limited && d[name] == null);
+
+  // Today is free forever — the four tiles are the "is the till working?" answer
+  // that no vendor should have to pay for — so nothing here is ever locked.
   $('st-revenue').textContent = money(d.today?.revenue);
   $('st-awarded').textContent = num(d.today?.earnPoints);
   $('st-redemptions').textContent = num(d.today?.redemptions);
   $('st-customers').textContent = num(d.today?.customers);
 
+  // The chart needs no flag: with no `daily` it draws no columns and no peak
+  // label, which claims nothing. The two below would each state a figure.
   buildChart(d.daily ?? []);
   fillSummary('stats-7', d.last7 ?? {});
-  fillSummary('stats-30', d.last30 ?? {});
-  renderTopRewards(d.topRewards ?? []);
+  fillSummary('stats-30', d.last30 ?? {}, isLocked('last30'));
+  renderTopRewards(d.topRewards ?? [], isLocked('topRewards'));
+  syncStatsLock(limited, sections);
   loadPoolSettlement();
   loadRecent();
+}
+
+/**
+ * The STATS prompt — the only lock panel NOT driven by planLocks, for the reason
+ * renderAnalytics gives above: this endpoint knows what it trimmed. planLocks is
+ * asked for the sentence only, and its 'stats30' detail is the right one because
+ * it names these same three sections and is already written for upgrade-vs-past-due.
+ */
+function syncStatsLock(limited, sections) {
+  if (!limited) { clearLockPanel('stats-lock'); return; }
+  // One answer feeds the sentence, the heading and the button, so the three
+  // cannot disagree. No 402 is in play on this path — the analytics route trims
+  // its body and answers 200 — so locksArePastDue() (planLocks when it is there,
+  // the /config past-due fields when it is not) is the best state this screen has.
+  const pastDue = locksArePastDue();
+  const detail = lockedItem('stats30')?.detail ?? statsLockFallback(sections, pastDue);
+  paintLockPanel('stats-lock', 'stats-lock-text', 'stats-lock-cta', detail, pastDue);
+}
+
+/** The three trimmable sections, in the words this screen's own headings use. */
+const STATS_SECTION_NAMES = Object.freeze({
+  last30: 'the 30-day totals',
+  daily: 'the two-week chart',
+  topRewards: 'your top rewards',
+});
+
+/**
+ * WORDS OF LAST RESORT, for the one state planLocks cannot describe: a server
+ * that sends `limited` and `lockedSections` (both of which predate this work) but
+ * no `planLocks` on /config. There is then no server sentence to show, and the
+ * alternative is three dashes with nothing explaining them.
+ *
+ * Even here the feature list is not hardcoded — the names come from
+ * lockedSections, which the route sends precisely so "the prompt does not have to
+ * hardcode a feature list that drifts", and an unrecognised key is dropped rather
+ * than guessed at.
+ *
+ * NEITHER SENTENCE CLAIMS ANYTHING ABOUT ENTITLEMENT, which is the only thing
+ * this function is genuinely ignorant of. It used to read "Your plan does not
+ * include the 30-day totals, the two-week chart and your top rewards" and call
+ * that neutral; it is not neutral, it is the upgrade framing, and it is flatly
+ * FALSE for the vendor most likely to read it — somebody paying $29/month for
+ * Discovery whose card has failed. Their plan does include all three. They are
+ * paused. Both arms below describe what this TERMINAL is showing, which is the
+ * one fact the analytics response actually established.
+ *
+ * `pastDue` is only ever used to add the cause and the action when the caller can
+ * prove one (see locksArePastDue); with no proof, the first arm says less rather
+ * than guessing, and points at the card in Settings that has the whole story.
+ *
+ * Both arms are also built to survive any subset of the three names: "the 30-day
+ * totals" takes a plural verb and "the two-week chart" a singular one, so a
+ * sentence whose verb agrees with the list would be wrong for one of them. Hence
+ * "not showing <list>" in both, and "the rest" rather than "them" for the way
+ * back. Returns '' when it cannot name anything, which leaves the panel hidden
+ * rather than empty.
+ */
+function statsLockFallback(sections, pastDue) {
+  const names = sections.map((s) => STATS_SECTION_NAMES[s]).filter(Boolean);
+  if (!names.length) return '';
+  const list = names.length === 1
+    ? names[0]
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  if (pastDue) {
+    // No day count: this arm runs precisely when planLocks is absent, so the
+    // number in hand may be older than the crossing it would be describing. The
+    // overdue banner on the billing card carries the authoritative count.
+    return `Today and the last seven days keep working. This terminal is not showing ${list} while a `
+      + 'payment is outstanding. Update your card in Settings to get the rest back.';
+  }
+  return `Today and the last seven days are on every plan. This terminal is not showing ${list} `
+    + 'right now. Plan & billing in Settings has the details.';
 }
 
 /* ---------- STATS: who funded whom, when points are shared ----------
@@ -3329,24 +3833,42 @@ function buildChart(daily) {
   });
 }
 
-function fillSummary(id, b) {
+// `locked` means this window was trimmed out of the response by plan (only ever
+// the 30-day one — the 7-day summary is free forever). The rows still render, and
+// that is the point: the labels are what the vendor is being offered, so blanking
+// the card would hide the thing #stats-lock is selling. What must not appear is a
+// NUMBER, because there isn't one — `money(undefined)` is $0.00, which reads as a
+// month with no takings rather than as a month nobody sent us. See renderAnalytics.
+function fillSummary(id, b, locked) {
+  const none = '—';
   const rows = [
-    ['Revenue', money(b.revenue)],
-    ['Points awarded', num(b.earnPoints)],
-    ['Redemptions', num(b.redemptions)],
-    ['Customers', num(b.customers)],
+    ['Revenue', locked ? none : money(b.revenue)],
+    ['Points awarded', locked ? none : num(b.earnPoints)],
+    ['Redemptions', locked ? none : num(b.redemptions)],
+    ['Customers', locked ? none : num(b.customers)],
   ];
   // Only when it's happened — most vendors never see a transfer, and a
   // permanent 0 row would just beg the question the onboarding already answers.
-  if (b.movedInPoints > 0) rows.push(['Community pts in', num(b.movedInPoints)]);
-  if (b.returningCustomers != null) rows.push(['Returning', num(b.returningCustomers)]);
+  // Never on a locked window: the fields are absent there, so their absence says
+  // nothing about whether this spot has ever taken a community point.
+  if (!locked && b.movedInPoints > 0) rows.push(['Community pts in', num(b.movedInPoints)]);
+  if (!locked && b.returningCustomers != null) rows.push(['Returning', num(b.returningCustomers)]);
   $(id).innerHTML = rows
     .map(([k, v]) => `<li><span>${k}</span><strong>${v}</strong></li>`)
     .join('');
 }
 
-function renderTopRewards(list) {
+function renderTopRewards(list, locked) {
   const wrap = $('stats-top');
+  // LOCKED IS NOT EMPTY, and the empty line below is the one place on this screen
+  // where that difference is a statement about the vendor's business: "No
+  // redemptions in the last 30 days" is a fact the server never sent, because for
+  // a free vendor the ranking was trimmed out of the response entirely
+  // (lockedSections). A dash says the number is not here; #stats-lock says why.
+  if (locked) {
+    wrap.innerHTML = '<p class="stats-empty">—</p>';
+    return;
+  }
   if (!list.length) {
     wrap.innerHTML = `<p class="stats-empty">No redemptions in the last 30 days.</p>`;
     return;
@@ -3382,6 +3904,346 @@ function enterSettings() {
   loadSettings();
   loadPoster();
   loadBilling();
+  // A lock panel's button asked for the billing card specifically, not just for
+  // Settings. Consumed here, at the arrival, because openPlanBilling's
+  // switchMode can be held on the way in — the staff PIN pad, or the
+  // unsaved-edits guard — and a scroll fired at tap time would be thrown away by
+  // the real entry. Read-and-clear: if the vendor cancelled the PIN pad instead
+  // of finishing the trip, the worst this can do is scroll a later, unrelated
+  // visit to the top of a screen whose first region is the billing card anyway.
+  const focus = settingsScrollTo;
+  settingsScrollTo = null;
+  if (focus === 'billing') scrollSettingsToBilling();
+}
+
+/* ---------- what this plan blocks (migration-055) ----------
+
+   A vendor has to be able to see, without pressing anything and without being
+   refused first, WHICH PLAN THEY ARE ON and WHAT IT IS HOLDING BACK. Five places
+   say it, all fed from here:
+
+     • the list under the blurb on the Plan & billing card (renderBillingLocks),
+     • an inline panel on DEALS  (#deals-lock),
+     • an inline panel on VISITS (#punch-lock),
+     • an inline prompt on STATS (#stats-lock, painted by renderAnalytics),
+     • the cap line on ITEMS     (#items-cap-note).
+
+   THE LIST IS NOT WRITTEN IN THIS FILE. planLocks() in src/lib/plans.js builds
+   it from the same table its requirePlan gates are read from, and it arrives on
+   GET /api/vendor/config and GET /api/vendor/billing as `planLocks`. This bundle
+   cannot import that module — it is a browser file, not part of the server's
+   graph — so a feature list typed here would drift the first time a gate moves,
+   and the drift would be invisible until a vendor paid for something they
+   already had. It is the same argument GET /api/vendor/analytics makes when it
+   sends `lockedSections` instead of letting this file name the three sections it
+   trimmed. Nothing below decides what is locked; it only decides where the
+   server's sentences are drawn.
+
+   NONE OF IT IS A GATE, for the reason the billing card already states about
+   itself: every paid feature is refused by requirePlan on the server, so a panel
+   that is wrong — a config cached across an upgrade, a Stripe webhook that has
+   not landed yet — costs a sentence on a screen and never costs a feature. That
+   cuts both ways, and the second direction is the useful one: a 200 from a route
+   that IS gated is the server saying this vendor is not locked, so the two live
+   probes (GET /campaigns/reach on entering DEALS, GET /punch-token on entering
+   VISITS) are allowed to take a stale panel back down.
+
+   TWO STATES, NEVER CONFLATED. planLocks().reason is 'upgrade' (they never had
+   this; the fix is a purchase) or 'past_due' (they hold a paid plan and
+   effectivePlan has degraded them at DEGRADE_DAYS; the fix is a card). Every
+   `detail` string is already written for whichever state the vendor is in, which
+   is why this file shows them verbatim, and the only wording it chooses itself —
+   the list heading and the panel buttons — has to keep the same line. Telling
+   somebody whose card just failed to "upgrade" invites them to buy a plan they
+   are already paying for.
+
+   ABSENT, NOT EMPTY, when nothing is locked: `planLocks` is null for every
+   paying vendor and for the sixteen grandfathered spots, and it is missing
+   ENTIRELY from a server older than this bundle, or from this bundle running in
+   a counter iPad that has had the page open since before the field existed. All
+   three read the same way here, and every access tolerates them.              */
+
+/** The whole payload, or null. `config` itself is absent until loadConfig lands. */
+const planLocks = () => (config?.planLocks ?? null);
+
+/**
+ * One locked feature by its stable key — 'deals' | 'visits' | 'stats30' |
+ * 'itemCap' — or null when this plan does not block it. Those four keys are the
+ * contract with the LOCKS table in src/lib/plans.js; a key that stops matching
+ * is a panel that silently never appears, which is why they are not spelled
+ * anywhere but in the call that wants one.
+ */
+function lockedItem(key) {
+  const items = planLocks()?.items;
+  if (!Array.isArray(items)) return null;
+  return items.find((it) => it?.key === key) ?? null;
+}
+
+/**
+ * Is the lock a payment that is failing, rather than a plan never bought?
+ *
+ * `planLocks.reason` is the exact answer and is used whenever it is there. It is
+ * often NOT there, and that is the case this fallback exists for: `config` is
+ * fetched at sign-in, at a store switch and after a settings save, and NOWHERE
+ * ELSE — no poll, nothing on resume. A counter terminal signed in on day 29 of a
+ * failing card holds `planLocks: null` (correctly: nothing was locked yet) and
+ * goes on holding it after the server degrades the vendor at DEGRADE_DAYS, so
+ * every panel painted in that window used to default to the upgrade word and
+ * invite a paying vendor to buy their own plan.
+ *
+ * The fallback reads two fields that PREDATE planLocks and ride on the same
+ * /config (src/routes/vendor.js): `nominalPlan` — what they are subscribed to,
+ * as opposed to `plan`, which is already degraded — and `pastDueDays`.
+ *
+ *   • plan !== nominalPlan is the server having ALREADY degraded them in the
+ *     payload we hold. effectivePlan only ever drops a vendor for non-payment,
+ *     so that difference cannot mean anything else. (renderBilling reads the
+ *     same difference, under the name `degraded`, for the same reason.)
+ *   • a paid nominalPlan plus a day count at or past the line is the same test
+ *     planLocks makes server-side, for a payload read after the crossing but
+ *     from a server too old to send planLocks at all.
+ *
+ * Spelled as the two paid slugs rather than `!== 'freshman'` so a missing or
+ * unrecognised value reads as unpaid: guessing "past due" for a vendor who never
+ * subscribed would hide the Upgrade wording from somebody who needs it, which is
+ * this rule's mirror-image mistake.
+ *
+ * Still only ever the FALLBACK. Where a 402 has just arrived, its error code is
+ * the freshest answer in the building and is threaded in explicitly instead —
+ * see handlePlanBlocked and ensureLockPanel.
+ */
+function locksArePastDue() {
+  const locks = planLocks();
+  if (locks) return locks.reason === 'past_due';
+  const nominal = config?.nominalPlan;
+  const paid = nominal === 'discovery' || nominal === 'goto';
+  if (!paid) return false;
+  if (config?.plan && config.plan !== nominal) return true;
+  // 30 is DEGRADE_DAYS in src/lib/plans.js, written here as a literal for the
+  // same reason renderBilling's overdue banner writes it: this bundle cannot
+  // import that module. It is only ever read to choose a WORD — the gates are
+  // server-side — so a drift costs a sentence, never a feature.
+  return typeof config?.pastDueDays === 'number' && config.pastDueDays >= 30;
+}
+
+/**
+ * The heading each panel gets when the vendor is PAST DUE, replacing the
+ * upgrade-state heading that ships in index.html ("Sending deals is locked right
+ * now", …). Worded here because the heading is about the STATE, which is the one
+ * thing a server-written feature sentence cannot say — the same division of
+ * labour renderBillingLocks sets out for its own heading.
+ *
+ * Nothing is locked *away* from these vendors: they pay for it and it is paused.
+ * A heading that says "locked" over a sentence that says "a payment is
+ * outstanding" is the same conflation as a "See plans" button, one line higher.
+ */
+const PAST_DUE_HEADINGS = Object.freeze({
+  'deals-lock': 'Sending deals is paused right now',
+  'punch-lock': 'The punch-in code is paused right now',
+  'stats-lock': 'Some of these numbers are paused',
+});
+
+/**
+ * Draw one inline lock panel: reveal it carrying the server's sentence, or put
+ * it away. Every one of them is `hidden` in the markup and only ever revealed
+ * from here, so a terminal that never asks for locks never shows one.
+ *
+ * `detail` is plans.js copy and goes in verbatim. It already says what still
+ * works ("Deals already out there keep running"), which is the half a vendor
+ * needs most when they are looking at a screen they thought was broken, and
+ * summarising it in the client is how that half gets lost.
+ *
+ * Tolerates the whole panel being missing. index.html and this file are separate
+ * static files served from public/vendor/, so a counter iPad can hold one in
+ * cache and not the other — and a missing element must be a prompt that doesn't
+ * appear, not a TypeError thrown inside enterDeals that takes the screen with it.
+ *
+ * `pastDue` IS A PARAMETER, not something this function works out. It used to
+ * call locksArePastDue() itself, which reads `config` — and config is stale for
+ * exactly the vendor this matters most for (see locksArePastDue). Every caller
+ * passes the freshest thing it has: a 402's own error code where one has just
+ * arrived, locksArePastDue() where the paint is coming from config in the first
+ * place. All three of the heading, the button word and the sentence then come
+ * from one answer, so the panel cannot contradict itself.
+ */
+function paintLockPanel(panelId, textId, ctaId, detail, pastDue) {
+  const panel = $(panelId);
+  if (!panel) return;
+  if (!detail) { panel.hidden = true; return; }
+  const text = $(textId);
+  if (text) text.textContent = detail;
+
+  // The markup's own <h3> is the upgrade-state wording, so it is remembered the
+  // first time this panel is painted and put back when the state goes the other
+  // way (a card fixed on another device, then a 200 from a gated route). Kept in
+  // the DOM rather than in a variable because the heading is per panel and the
+  // markup is the one place that already holds the upgrade half of it — no copy
+  // is duplicated into this file that index.html does not already own.
+  const head = panel.querySelector('h3');
+  const paused = PAST_DUE_HEADINGS[panelId];
+  if (head && paused) {
+    if (head.dataset.upgradeHead == null) head.dataset.upgradeHead = head.textContent;
+    head.textContent = pastDue ? paused : head.dataset.upgradeHead;
+  }
+
+  const cta = $(ctaId);
+  // The button leads to the same place in both states — the billing card holds
+  // the Upgrade buttons AND the overdue banner — but the WORD on it must not.
+  // See the two-states note at the top of this section.
+  if (cta) cta.textContent = pastDue ? 'Update your card' : 'See plans';
+  panel.hidden = false;
+}
+
+/** Put a lock panel away (a 200 from a gated route, or a plan that now reaches). */
+function clearLockPanel(panelId) {
+  const panel = $(panelId);
+  if (panel) panel.hidden = true;
+}
+
+/**
+ * Put a panel up for a 402 that just happened, WITHOUT overwriting what
+ * planLocks already gave it. planRejection's message is one line about one
+ * refused request; the locks `detail` for the same feature is the fuller
+ * sentence, so the 402's words are the fallback rather than the winner — and the
+ * case they are for is real: a server that answers /config without `planLocks`
+ * leaves these panels empty, and its refusal is then the only sentence anyone
+ * has written about this screen.
+ *
+ * `pastDue` comes from the 402 that is being handled (handlePlanBlocked passes
+ * `data.error === 'PLAN_PAST_DUE'`), and it decides TWO things here, not one:
+ *
+ *   • the heading and the button word, passed straight down; and
+ *   • whether the cached sentence may be used at all. `detail` is written for one
+ *     state or the other — plans.js has an `upgrade` and a `pastDue` variant of
+ *     every entry — so a cached one from the OTHER state is not merely staler
+ *     than the 402's message, it says the opposite thing. In that case the 402's
+ *     message wins, because the request it refused just proved which state this
+ *     vendor is in. Reachable exactly when a config read before the crossing
+ *     still carries upgrade copy for a vendor the server has since degraded.
+ */
+function ensureLockPanel(panelId, textId, ctaId, key, message, pastDue) {
+  const agrees = locksArePastDue() === Boolean(pastDue);
+  const cached = agrees ? lockedItem(key)?.detail : null;
+  paintLockPanel(panelId, textId, ctaId, cached || message, Boolean(pastDue));
+}
+
+/** DEALS. The composer is never taken away, and neither is the tab: the screen is
+ *  where this gets explained, and GET /campaigns is not gated at all, so the
+ *  history of what they have already sent stays readable either way. */
+function syncDealsLock() {
+  paintLockPanel('deals-lock', 'deals-lock-text', 'deals-lock-cta', lockedItem('deals')?.detail,
+    locksArePastDue());
+  // The panel is not the only thing on the screen that has to know. The sends
+  // quota and the Send button are painted from the UNGATED GET /campaigns, so
+  // without this they went on advertising "2 sends left this week" beside a panel
+  // saying sending is locked — see setDealsSendLocked.
+  setDealsSendLocked(Boolean(lockedItem('deals')));
+}
+
+/** VISITS. The tab's visibility is the vendor's own punchEnabled setting and
+ *  stays that way (a plan must not move a tab); what is plan-locked is the
+ *  rotating code inside it, which is why this panel exists at all. */
+function syncPunchLock() {
+  paintLockPanel('punch-lock', 'punch-lock-text', 'punch-lock-cta', lockedItem('visits')?.detail,
+    locksArePastDue());
+  // The panel is not the only thing on this screen that has to know — the point
+  // syncDealsLock makes above about the sends quota. #punch-stage is the headline,
+  // the QR card, the timer bar and the "Scan with your phone camera" hint, and
+  // leaving it up beside a panel saying the code is locked is the contradiction
+  // setPunchStageHidden documents. Painting it from the config here means it is
+  // never briefly live for a vendor /config already knows is locked, instead of
+  // standing until the 402 lands.
+  //
+  // Symmetric on purpose — Boolean(lockedItem(...)), exactly as setDealsSendLocked
+  // is called above — and the un-hide half is safe because applyPlanLocks never
+  // runs while screen-punch is the visible screen: its four callers are sign-in
+  // and a store switch (both land on SCAN) and a settings save and adoptPlanLocks
+  // from a billing load (both on SETTINGS). Re-entering VISITS restarts the loop
+  // (show → syncPunch → startPunchLoop), so a stage revealed by a stale "nothing
+  // is locked" is probed at once and a 402 takes it away again before a customer
+  // could act on it.
+  setPunchStageHidden(Boolean(lockedItem('visits')));
+}
+
+/** ITEMS. The number, before they hit it — a cap learned from a rejection after
+ *  writing an item is the thing this line exists to stop. No button: the note is
+ *  a fact about the menu, and the way out that costs nothing (turn one off) is in
+ *  the server's own sentence. */
+function syncItemCapNote() {
+  const note = $('items-cap-note');
+  if (!note) return;
+  const detail = lockedItem('itemCap')?.detail;
+  if (!detail) { note.hidden = true; return; }
+  note.textContent = detail;
+  note.hidden = false;
+}
+
+/**
+ * Repaint every plan prompt from the config now in hand. Four callers, each one
+ * a point where the answer can have changed: sign-in (enterApp), a store switch
+ * (locations are independent vendors with independent plans — see the
+ * store-switcher notes), a settings save (it re-reads /config), and a billing
+ * load that carried a fresher payload (adoptPlanLocks).
+ *
+ * NOT every replacement of `config`: pushStaffPin re-reads /config after a new
+ * staff PIN and does not call this. Deliberately left alone — that path is the
+ * PIN flow, it ends in flood() → switchMode('scan'), and a PIN change cannot
+ * move a plan, so the panels it would repaint are identical and off-screen. The
+ * honest statement is therefore the list above, not "wherever config is
+ * replaced": a maintainer who believes the stronger claim would look for a bug
+ * here when a panel goes stale, and the four places it can actually go stale in
+ * are the ones with no /config read at all (there is no poll — see
+ * locksArePastDue, which is the fallback written for exactly that window).
+ *
+ * STATS is deliberately NOT painted here. GET /api/vendor/analytics is the
+ * authority on what it actually trimmed out of its own response, so that panel
+ * is driven by `limited` / `lockedSections` in renderAnalytics and consults
+ * planLocks only for the wording.
+ */
+function applyPlanLocks() {
+  syncDealsLock();
+  syncPunchLock();
+  syncItemCapNote();
+}
+
+/**
+ * Take the vendor to Settings → Plan & billing. Every lock panel's button ends
+ * here, and there is one path: through switchMode, exactly as the return from
+ * Stripe does (see billingReturn in enterApp). Not by unhiding the screen —
+ * proceedSwitchMode is what puts the staff PIN in front of Settings and what
+ * lets the unsaved-edits guard hold the navigation, and a panel button that
+ * reached around both would be a way past them.
+ */
+function openPlanBilling() {
+  settingsScrollTo = 'billing';
+  switchMode('settings');
+}
+
+/**
+ * Bring the Plan & billing region to the top of the Settings scroll.
+ *
+ * The arithmetic rather than scrollIntoView, for the reason scrollTabIntoView
+ * spells out: the options object and smooth behaviour both land after the Safari
+ * the older counter iPads are stuck on, and a bare scrollIntoView() there
+ * scrolls the whole page instead. `.settings-screen` is itself the scroller
+ * (overflow-y: auto in terminal.css), so this is its scrollTop and nothing else
+ * on the page moves.
+ *
+ * The region is FIRST on that screen by design (index.html says why: a vendor
+ * opening Settings in a hurry is doing it because a card stopped working), and
+ * it can still be hidden at this instant — loadBilling is in flight, and
+ * renderBilling hides the card entirely for a grandfathered spot, or on a
+ * deployment with no Stripe keys and no billing relationship. So a missing or
+ * hidden region falls back to the top of the screen, which is where the card
+ * will appear if it appears at all.
+ */
+function scrollSettingsToBilling() {
+  const screen = $('screen-settings');
+  if (!screen) return;
+  const region = $('settings-billing');
+  if (!region || region.hidden) { screen.scrollTop = 0; return; }
+  const offset = region.getBoundingClientRect().top - screen.getBoundingClientRect().top;
+  screen.scrollTop = Math.max(0, screen.scrollTop + offset - 12);
 }
 
 /* ---------- plan & billing (migration-055) ----------
@@ -3432,8 +4294,29 @@ async function loadBilling() {
     const data = await res.json().catch(() => ({}));
     if (seq !== billingLoadSeq) return;
     if (handlePinRequired(res, data)) return;
-    if (res.ok) { billingState = data; renderBilling(data); }
+    if (res.ok) { billingState = data; adoptPlanLocks(data); renderBilling(data); }
   } catch { /* keep whatever's on screen — the card is informational */ }
+}
+
+/**
+ * Take the `planLocks` this response carried into `config`, which is what the
+ * DEALS, VISITS and ITEMS prompts are painted from.
+ *
+ * Both endpoints send the same thing — GET /config and GET /billing each call
+ * planLocks() in src/lib/plans.js — but this is the fresher of the two: /config
+ * was read at sign-in, and a terminal bolted to a counter stays open for weeks
+ * while a card expires, a webhook lands, or an operator changes a plan by hand.
+ *
+ * `in` rather than a truthiness test, and the distinction is the whole point:
+ * `null` is a MEANINGFUL answer ("nothing is locked") and has to be adopted so
+ * the panels come down after an upgrade, while a field that is not there at all
+ * means the server predates this payload and must not be allowed to wipe what
+ * /config already told us.
+ */
+function adoptPlanLocks(b) {
+  if (!b || !('planLocks' in b)) return;
+  if (config) config.planLocks = b.planLocks ?? null;
+  applyPlanLocks();
 }
 
 function renderBilling(b) {
@@ -3502,6 +4385,23 @@ function renderBilling(b) {
     ? `${b.planLabel} (your ${b.nominalPlan === 'goto' ? 'Go-to' : 'Discovery'} plan is paused)`
     : b.planLabel;
 
+  // ---- what that plan is holding back ----
+  // Under the blurb and above #billing-msg / #billing-actions, which is what
+  // index.html says about this same block, and the order is the deliberate one:
+  // #billing-plan-line and #billing-blurb are ONE thought — which plan, and what
+  // happens next with it ("Next payment October 12.", "A payment is outstanding.")
+  // — and a four-item list pushed between them would leave a vendor reading the
+  // state of their own subscription two paragraphs apart. The list is the detail
+  // under that, and it sits immediately above the button it is the reason to
+  // press. (The comment here used to claim the list rendered above the blurb,
+  // which the markup has never done; a maintainer chasing that would have gone
+  // looking for a CSS order override that does not exist.)
+  //
+  // Painted before the three-state branch below because two of its arms RETURN,
+  // and the list is the same list in all three — a churned vendor is as locked as
+  // one who never bought anything.
+  renderBillingLocks(b);
+
   // ---- the blurb and the buttons ----
   const monthly = priceText(b.prices?.monthly);
   const annual = priceText(b.prices?.annual);
@@ -3558,13 +4458,56 @@ function renderBilling(b) {
     // `cancelAtPeriodEnd` is null when the server could not reach Stripe, and
     // null falls through to the renewal wording on purpose: a transient blip
     // must never announce the end of a plan nobody cancelled.
-    $('billing-blurb').textContent = renews
+    // ---- an outstanding payment outranks the renewal date ----
+    //
+    // `currentPeriodEnd` on a past_due or unpaid row is the end of the period
+    // whose invoice FAILED. Stripe does not advance it while that invoice is
+    // unpaid and subscriptionPatch (src/routes/stripe-webhook.js) copies it
+    // verbatim, so by the time the debt reaches DEGRADE_DAYS that date is today or
+    // already behind us — and "Next payment October 1." was printing between the
+    // red banner at the top of this card ("A payment has been outstanding for 34
+    // days, so deals and the full stats are paused") and the locked list below it
+    // ("Paused until your payment goes through:"). Three sentences in one card,
+    // one of them a payment date that has already gone.
+    //
+    // Keyed on `pastDueDays` rather than on subscriptionStatus: it is non-null for
+    // BOTH past_due and unpaid (the status string is read nowhere else here, and
+    // the unpaid row is the one that keeps its stale date FOREVER — Stripe emits
+    // nothing further about an unpaid subscription, so nothing re-clears it), and
+    // it is the same field the banner above renders from, so the two halves of the
+    // card cannot disagree about whether money is owed.
+    //
+    // ⚠ THE THREE CANCEL STATES BELOW ARE UNTOUCHED — byte for byte, and in
+    // meaning too. `cancelAtPeriodEnd` null still reads as "not cancelling": the
+    // sentence this branch gives a null is about the payment and says nothing
+    // about a plan ending, so the transient-blip rule the comment above spells out
+    // (and src/routes/vendor.js repeats next to the field) still holds. And
+    // subscriptionStatus 'canceled' cannot co-occur with a debt at all: both
+    // terminal paths in stripe-webhook.js — the TERMINAL_STATUSES branch and
+    // customer.subscription.deleted — null past_due_since together with the
+    // subscription id and current_period_end.
+    //
+    // WHICH FACT LEADS for a vendor who has cancelled AND owes money, which IS
+    // reachable when the final invoice is the one that declines: the
+    // cancellation, because it decides what paying achieves. Clearing the arrears
+    // settles a debt but does not un-cancel anything, so leading with "update your
+    // card" would read as "pay and it all comes back" — the one thing it will not
+    // do. The date is dropped from that sentence rather than kept, because it is
+    // the same untrustworthy currentPeriodEnd: the end of the period nobody paid
+    // for.
+    const owedLine = b.pastDueDays == null
+      ? null
+      : (b.cancelAtPeriodEnd === true
+        ? 'Cancelled, and a payment is still outstanding. Your plan does not renew; '
+          + 'you can clear the payment or start a new plan on the billing page.'
+        : 'A payment is outstanding. Update your card on the billing page to clear it.');
+    $('billing-blurb').textContent = owedLine || (renews
       ? (b.subscriptionStatus === 'canceled'
         ? 'Your plan has ended. You can start a new one from the billing page.'
         : b.cancelAtPeriodEnd === true
           ? `Cancelled. Your plan runs until ${renews}, then stops. You can restart it on the billing page.`
           : `Next payment ${renews}.`)
-      : 'Change your card, get invoices, or cancel on the billing page.';
+      : 'Change your card, get invoices, or cancel on the billing page.');
     buyMonthly.hidden = true;
     buyAnnual.hidden = true;
     manage.hidden = false;
@@ -3613,6 +4556,86 @@ function renderBilling(b) {
     buyAnnual.textContent = saved > 0 ? `${annual}/year (save $${saved})` : `${annual}/year`;
   }
   actions.hidden = false;
+}
+
+/**
+ * The locked list on the billing card: what this plan is holding back, named by
+ * the server.
+ *
+ * WHY A LIST AND NOT A BETTER BLURB. The line above it ("Discovery adds deals,
+ * the 30-day stats and unlimited reward items") is sell copy written in this
+ * file, and it is already out of date — it does not mention visits, which is a
+ * real gate (GET /api/vendor/punch-token is requirePlan('discovery')). That is
+ * the drift this list cannot have: it comes from planLocks() in
+ * src/lib/plans.js, which is built from the gates themselves. The blurb is left
+ * exactly as it was, because it is doing a different job — it is the sentence
+ * that sits next to a price.
+ *
+ * THE HEADING IS THE ONE THING WORDED HERE, because it is about the STATE rather
+ * than the features, and the state is the thing a feature list cannot say:
+ *
+ *   'upgrade'  — they are on a plan that never included these. Name the plan they
+ *                are on ('Not included on Freshman'), which is the honest frame
+ *                for a list of things to buy.
+ *   'past_due' — they PAY for every line in this list and a failing card has
+ *                switched it off. The word "upgrade" must not appear anywhere
+ *                near them (see planRejection, and the two-states note in the
+ *                locks section above). The day count is not repeated either: the
+ *                overdue banner at the top of this very card already carries it,
+ *                and saying "34 days" twice in one card reads like two problems.
+ *
+ * Built with textContent rather than innerHTML — the strings are server copy
+ * containing apostrophes and parentheses, and there is no reason to hand them to
+ * a parser when the only markup wanted is an <li> with two children.
+ */
+function renderBillingLocks(b) {
+  const box = $('billing-locks');
+  if (!box) return;                     // markup older than this bundle: no list, no crash
+  const list = $('billing-locks-list');
+  const head = $('billing-locks-head');
+  const locks = b?.planLocks ?? null;
+  // A label is what makes a list item readable, so an entry without one is
+  // dropped rather than rendered as a bare sentence with a gap in front of it.
+  const items = Array.isArray(locks?.items) ? locks.items.filter((it) => it?.label) : [];
+
+  // Nothing locked (every paying vendor, and the sixteen), or a server that does
+  // not send the field: the container goes away and takes the last render with
+  // it, so an upgrade that lands while Settings is open does not leave a list of
+  // things the vendor now has.
+  if (!items.length) {
+    box.hidden = true;
+    if (list) list.innerHTML = '';
+    return;
+  }
+
+  if (head) {
+    const plan = b?.planLabel || 'your plan';
+    head.textContent = locks.reason === 'past_due'
+      ? 'Paused until your payment goes through:'
+      : `Not included on ${plan}:`;
+  }
+
+  if (list) {
+    list.innerHTML = '';
+    items.forEach((it) => {
+      // <strong> then <span>, and no separator between them: .plan-locks-list in
+      // terminal.css makes each li a flex COLUMN and styles exactly those two
+      // children (the label heavier, the sentence under it at --ink), with a rule
+      // between entries instead of a bullet. A dash or a bare text node here would
+      // land as an unstyled anonymous flex item and undo that.
+      const li = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = it.label;
+      li.appendChild(name);
+      if (it.detail) {
+        const detail = document.createElement('span');
+        detail.textContent = it.detail;
+        li.appendChild(detail);
+      }
+      list.appendChild(li);
+    });
+  }
+  box.hidden = false;
 }
 
 /**
@@ -4080,6 +5103,12 @@ async function pushSettings(body, afterTarget) {
     // strip reading the old name until the next store switch.
     paintAdminChrome();
     syncPunchTab();   // the PUNCH tab appears/disappears with the toggle
+    // Repainted from the config this save just re-read. A settings PATCH cannot
+    // change a plan — but it CAN switch visits on, and a free vendor who does
+    // exactly that is the case the punch panel was written for: PATCH /settings
+    // accepts punchEnabled on any plan while GET /punch-token is gated, so the tab
+    // appears here and the explanation has to appear with it.
+    applyPlanLocks();
 
     if (data.pinChanged) {
       // Defensive now that the PIN saves itself from Access: this body no longer

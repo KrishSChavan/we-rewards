@@ -395,6 +395,65 @@
            it dies almost immediately. Fullscreen mode turns the terminal into a
            counter-top sign. -->
       <section id="screen-punch" class="screen punch-screen" hidden>
+        <!-- VISITS IS THE ONE TAB WHOSE SWITCH AND WHOSE GATE DISAGREE, and this
+             panel is what stops that from reading as a fault.
+
+             Whether this tab exists at all is the vendor's own punch_enabled
+             setting, and PATCH /api/vendor/settings accepts that switch on ANY
+             plan. But the code the screen is for comes from
+             GET /api/vendor/punch-token, which is requirePlan('discovery') in
+             src/routes/vendor.js. So a freshman spot can turn visits on in
+             Settings, land here, and watch the QR never arrive. Worse, the only
+             thing that appeared was #punch-qr-cover saying "Reconnecting…",
+             which asserts the opposite of what is happening: nothing is
+             reconnecting, and waiting will not help.
+
+             The screen is NOT hidden by plan. src/routes/vendor.js makes the
+             argument on the analytics route ("you cannot sell somebody a better
+             version of a screen they cannot open") and it holds here too: this
+             screen IS the pitch for punch cards. So it stays and this explains
+             it.
+
+             terminal.js owns the visibility and the sentence, and it has TWO
+             sources for them, not one. syncPunchLock draws the panel from
+             `planLocks` (src/lib/plans.js, sent on GET /api/vendor/config)
+             whenever config is replaced; fetchPunchToken's own loop is the live
+             probe and gets the last word in both directions — a 200 from
+             GET /api/vendor/punch-token clears the panel however stale the cached
+             config is, and a 402 raises it through showPunchLocked even on a
+             server that sends no `planLocks` at all. So it is down for a paid spot
+             that is current on payment and for a grandfathered one, and up in one
+             of two wordings: for a spot that never had Discovery, or for a paid
+             one whose card has failed and whom DEGRADE_DAYS has dropped to
+             freshman. Telling the second one to upgrade to the plan they already
+             pay for is the single sentence this panel must never produce.
+
+             THE <h3> AND THE BUTTON WORD BELOW ARE THE UPGRADE HALF ONLY, which
+             is worth knowing before editing either of them. paintLockPanel in
+             terminal.js reads this heading once, keeps it, and swaps in that
+             panel's PAUSED heading whenever the vendor is past due — putting this
+             one back the next time it paints in the other state (a card fixed on
+             another device, then a 200 from the gated route). It overwrites the
+             button in both directions too: "See plans" for a spot that never
+             bought, "Update your card" for a payer. So the strings here are the
+             never-had-it wording and nothing else; their paused twins live in
+             terminal.js next to paintLockPanel, and the sentence between them is
+             always the server's.
+
+             `hidden` sits on the PANEL and on nothing inside it, here and on the
+             DEALS, STATS and billing blocks below. The children are always filled
+             the moment the panel is revealed, and a stray `hidden` left on one of
+             them would leave a vendor looking at a lock heading and a button with
+             the explanation missing — which is the whole of what this is for.
+             .plan-lock inherits .stats-card's display: flex, so the `hidden` here
+             needs the explicit .stats-card[hidden] rule in terminal.css to bite:
+             the UA rule alone loses to an author display. -->
+        <div id="punch-lock" class="stats-card plan-lock" hidden>
+          <h3>The punch-in code is locked right now</h3>
+          <p id="punch-lock-text" class="plan-lock-text"></p>
+          <button id="punch-lock-cta" class="btn-primary btn-compact" type="button">See plans</button>
+        </div>
+
         <div id="punch-stage" class="punch-stage">
           <h2 class="scan-title punch-title">SCAN TO <br />ADD A VISIT</h2>
           <p id="punch-reward-line" class="punch-reward-line"></p>
@@ -422,6 +481,59 @@
           <button id="add-reward-btn" class="btn-primary btn-compact">+ Add item</button>
         </div>
         <p class="manage-note">Items that are ON show in the student app, so customers can pick one and bring you a redeem code.</p>
+        <!-- THE ACTIVE-ITEM CAP, said before it is hit instead of after.
+             ITEM_CAP in src/lib/plans.js holds a freshman spot to a handful of
+             items ON at once (ITEM_CAP.freshman, three today — the figure is
+             never written into this markup), and both POST /api/vendor/rewards
+             and PATCH /api/vendor/rewards/:id (the switch-back-on door) answer
+             402 ITEM_CAP_REACHED. That refusal writes its own sentence
+             (itemCapRefusal in src/routes/vendor.js), but it only arrives once
+             the vendor has already written the fourth item or tapped a fourth row
+             ON, which is the worst possible moment to learn there was a limit.
+             This line states the rule up front.
+
+             A line rather than a panel, deliberately: the cap is not a locked
+             screen, it is a number that applies to the list directly below it,
+             and a bordered card here would outweigh the list it is about.
+
+             Filled and revealed by syncItemCapNote in terminal.js from
+             `planLocks` (src/lib/plans.js, sent on GET /api/vendor/config), which
+             derives the number from itemCap(vendor) — the same call both cap
+             refusals in src/routes/vendor.js count against, so ITEM_CAP is the
+             only place in code the cap is written and the NUMBER on this line
+             cannot disagree with the route that enforces it.
+
+             The 402's sentence stays a separate string, but the two are a PAIR:
+             this one comes from the LOCKS table in src/lib/plans.js, that one
+             from itemCapRefusal in src/routes/vendor.js, and each is written
+             TWICE — once for a spot that never had Discovery, once for a paid spot
+             DEGRADE_DAYS has dropped to freshman, for whom the cap is real again
+             and whose fix is a card rather than a purchase. They can end up one
+             tap apart on this screen (the note above the list, the refusal under
+             the row), so a change to either state's wording has to be made in
+             both places or the screen contradicts itself.
+
+             NEITHER SENTENCE STATES THE VENDOR'S OWN COUNT, on purpose. Nothing
+             in this repo deactivates rewards when a plan drops, so the spot this
+             line exists for is usually OVER the cap rather than at it — nine rows
+             switched on under a cap of three — and "turn one off to make room"
+             would be false for exactly them. src/lib/plans.js makes the argument
+             at the itemCap entry; planLocks is pure and has no count to work
+             from, and GET /api/vendor/config sends the cap itself but never how
+             many rewards are switched on.
+
+             Hidden entirely on a plan with no cap, which is both paid plans.
+             Unlike DEALS and VISITS there is no gated GET on this screen, so
+             nothing here can probe a stale config back into line: applyPlanLocks
+             is all this line ever gets, and it runs at sign-in, at a store
+             switch, after a settings save, and when a billing load brings a
+             fresher payload (adoptPlanLocks). A terminal signed in before a card
+             failed therefore keeps showing the upgrade wording until one of those
+             four happens.
+
+             Outside #reward-list because that element is emptied and rebuilt on
+             every toggle, the same reason #reward-error below sits outside it. -->
+        <p id="items-cap-note" class="manage-note plan-note" hidden></p>
         <div id="reward-list" class="reward-list"></div>
         <!-- Why an ON/OFF didn't stick. Outside #reward-list because that
              element is emptied and rebuilt every time a toggle settles, which
@@ -442,6 +554,57 @@
           <div class="stats-head">
             <h2>Send a deal</h2>
             <span id="deals-quota" class="deals-quota"></span>
+          </div>
+
+          <!-- WHAT A FREE SPOT CANNOT DO HERE, above the composer rather than
+               instead of it.
+
+               POST /api/vendor/campaigns, PATCH /api/vendor/campaigns/:id and
+               GET /api/vendor/campaigns/reach are all requirePlan('discovery')
+               in src/routes/vendor.js, so on an effective freshman plan Send deal
+               answers 402 and the audience count cannot be had either: refreshReach
+               empties #deal-reach on that refusal rather than leaving it reading
+               "Checking…" for ever, and the same 402 is what raises this panel.
+               GET /api/vendor/campaigns is deliberately NOT gated, which is why
+               "Sent recently" below still fills in and why this heading says
+               SENDING is locked rather than that deals are.
+
+               Hiding the tab was the alternative and it is the wrong one:
+               src/routes/vendor.js argues it on the analytics route ("you cannot
+               sell somebody a better version of a screen they cannot open"), and
+               a composer a vendor can read is the clearest description of the
+               feature we have. So the form stays on screen and readable, and this
+               panel goes above it saying what pressing Send would do.
+
+               THE PANEL IS NOT THE ONLY THING HERE THAT HAS TO AGREE WITH IT.
+               #deals-quota and #deal-send are painted from that ungated
+               GET /api/vendor/campaigns, which counts sends by the week and knows
+               nothing about plans — so a locked spot read "2 sends left this week"
+               beside a panel saying sending is locked, with Send still pressable
+               into a 402. syncDealsLock and refreshReach now take the quota line
+               and the button out of service alongside the panel, and put both back
+               on a 200 from the gated route (a vendor who has genuinely spent the
+               week's sends stays disabled on that ground instead).
+
+               terminal.js owns the text and the visibility, from two sources.
+               syncDealsLock draws the panel from `planLocks` (src/lib/plans.js,
+               sent on GET /api/vendor/config) whenever config is replaced, and
+               refreshReach — the gated GET /api/vendor/campaigns/reach that
+               enterDeals fires on the way in — is the live probe that gets the
+               last word both ways: a 200 takes a panel left up by a stale config
+               back down, and a 402 raises it (through ensureLockPanel) even on a
+               server that sends no `planLocks`. Down for a paid spot current on
+               payment and for a grandfathered one; up in one of two wordings, for
+               a spot that never had Discovery or for one whose card is failing —
+               a vendor already paying for deals must never be told to upgrade to
+               get them.
+
+               Same shape and the same `hidden`-on-the-panel-only rule as
+               #punch-lock above; the note there explains why. -->
+          <div id="deals-lock" class="stats-card plan-lock" hidden>
+            <h3>Sending deals is locked right now</h3>
+            <p id="deals-lock-text" class="plan-lock-text"></p>
+            <button id="deals-lock-cta" class="btn-primary btn-compact" type="button">See plans</button>
           </div>
 
           <div class="stats-card deals-compose">
@@ -506,6 +669,74 @@
             <div class="stat-tile"><span id="st-awarded" class="stat-num">0</span><span class="stat-label">Points awarded</span></div>
             <div class="stat-tile"><span id="st-redemptions" class="stat-num">0</span><span class="stat-label">Redemptions</span></div>
             <div class="stat-tile"><span id="st-customers" class="stat-num">0</span><span class="stat-label">Customers</span></div>
+          </div>
+
+          <!-- WHICH NUMBERS ARE NOT IN THIS PLAN.
+
+               The four tiles above are today's and they are free forever.
+               GET /api/vendor/analytics deliberately does NOT answer 402 for a
+               freshman spot — read the comment on that route in
+               src/routes/vendor.js: a 402 "would black out the whole STATS tab,
+               and the tab is where the upgrade prompt has to live". Instead it
+               trims its own response, dropping last30, daily and topRewards and
+               flagging `limited: true` with
+               `lockedSections: ['last30', 'daily', 'topRewards']`.
+
+               Those three are, in order, the "Last 30 days" list, the
+               "Revenue · last 14 days" chart and "Top rewards · 30 days" — the
+               three cards immediately below this panel. Until it existed they
+               simply rendered empty, and an empty chart on a till reads as "the
+               terminal is broken", not as "that one is on the paid plan".
+
+               Placed HERE, above the first locked card rather than at the top of
+               the screen, so the reading order down the page is: what you do
+               have, then what you do not.
+
+               NOT DRIVEN BY `planLocks`, unlike the DEALS, VISITS and billing
+               blocks. renderAnalytics in public/vendor/terminal.js reads the two
+               fields that same response carries — `limited` and `lockedSections`
+               — and hands them to syncStatsLock, which is the only thing that
+               ever writes this panel. That is deliberate: GET /api/vendor/analytics
+               is the authority on what it actually trimmed out of its own body, and
+               a panel drawn from the response the numbers above were drawn from
+               cannot claim something the payload beside it contradicts. A cached
+               /config can (a terminal signs in once and stays open for weeks), so
+               applyPlanLocks paints the other three prompts and skips this one.
+
+               `planLocks` (src/lib/plans.js, sent on GET /api/vendor/config) is
+               asked for the WORDS, never for whether to appear — its 'stats30'
+               detail, which names these same three sections and is already written
+               twice over: once for a spot that never had them, once for a paid spot
+               whose card is failing and whom DEGRADE_DAYS has dropped to freshman.
+               Those are PAUSED, not missing, and inviting a vendor to buy what they
+               already pay for is the one sentence this panel must never produce.
+               Choosing between those two wordings (syncStatsLock asks
+               locksArePastDue, which reads planLocks.reason when it is there and
+               the /config past-due fields when it is not) is the whole of what the
+               plan state decides on this screen: it picks the sentence, the heading
+               and the button word, and hides nothing.
+
+               With no `planLocks` on /config at all — a server older than this
+               bundle, or a counter iPad whose cached config predates the field —
+               statsLockFallback words the sentence from `lockedSections` instead,
+               in the same two states, so the dashes are never left unexplained. It
+               claims nothing about entitlement in either state, because it cannot
+               know: it says what this terminal is not showing, where "your plan
+               does not include" would be flatly false for a payer whose card has
+               failed. If it cannot name a single section it returns nothing at all,
+               which leaves the panel hidden rather than empty.
+
+               So, for whoever changes one side: dropping 'stats30' from the LOCKS
+               table in src/lib/plans.js does NOT stop this panel appearing, it
+               only takes the server's sentence away and leaves the fallback's.
+               What stops it appearing is this route no longer flagging `limited`.
+
+               Same shape and the same `hidden`-on-the-panel-only rule as
+               #punch-lock; the note there explains why. -->
+          <div id="stats-lock" class="stats-card plan-lock" hidden>
+            <h3>Some of these numbers are locked</h3>
+            <p id="stats-lock-text" class="plan-lock-text"></p>
+            <button id="stats-lock-cta" class="btn-primary btn-compact" type="button">See plans</button>
           </div>
 
           <div class="stats-card">
@@ -611,6 +842,69 @@
               <h3>Your plan</h3>
               <p id="billing-plan-line" class="billing-plan-line">&hellip;</p>
               <p id="billing-blurb" class="manage-note"></p>
+              <!-- WHAT IS LOCKED, ITEMISED. The blurb above is one sentence of
+                   sales copy; this is the actual answer to the question a vendor
+                   asks standing at the till, which is "what am I not getting?"
+
+                   Deliberately EMPTY markup. Every FEATURE string in here — the
+                   label on each row and the sentence under it — comes from
+                   `planLocks` on GET /api/vendor/billing, built by
+                   src/lib/plans.js from the same gates requirePlan() enforces,
+                   because public/vendor/terminal.js is a separate bundle that
+                   cannot import that module — a feature list written in this file
+                   would drift the moment a gate moved. It already had: the old
+                   hardcoded blurb promised "unlimited reward items" from a
+                   browser bundle that has never been able to see ITEM_CAP.
+
+                   #billing-locks-head is THE ONE STRING IN THIS LIST WORDED IN
+                   THE CLIENT, by renderBillingLocks, because it is about the STATE
+                   and not about the features — which is the thing a server-written
+                   feature list cannot say. It branches on planLocks.reason:
+                   'upgrade' gets "Not included on <plan>:", naming the plan from
+                   the payload's own planLabel rather than a slug typed here, and
+                   'past_due' gets "Paused until your payment goes through:". That
+                   planLabel is the EFFECTIVE plan, which would read "Freshman" to
+                   somebody paying for Discovery — they never reach this arm,
+                   because a debt past DEGRADE_DAYS is exactly what makes the
+                   reason 'past_due' (planLocks in src/lib/plans.js keys it on the
+                   day count, the same test planRejection makes).
+                   The word "upgrade" is in neither, and must never reach the
+                   second one — they pay for every line in this list (see
+                   planRejection in src/lib/plans.js). The day count is not
+                   repeated here either: the red #billing-overdue card above is the
+                   one that says a payment failed and for how long, and this list
+                   must not compete with it or contradict it.
+
+                   It is no longer the only state wording in the client, and the
+                   rest follow the same division: paintLockPanel words the paused
+                   heading and the button on each inline lock panel, and
+                   statsLockFallback words a whole sentence for a server that sends
+                   no planLocks at all. What the client writes in every case is the
+                   STATE; the feature copy is still the server's.
+
+                   Above #billing-msg and #billing-actions on purpose: the list is
+                   the reason to press the button that follows it — the Upgrade
+                   buttons for a spot that never bought or has churned, and for a
+                   past-due payer Manage billing, which is the only button
+                   renderBilling gives them and is the right door anyway, since
+                   their fix is the card and not a second subscription.
+                   renderBillingLocks owns visibility and hides the whole block
+                   whenever the payload has no locked items — every paid spot that
+                   is current on payment, and any server that does not send the
+                   field. The sixteen grandfathered spots never get this far:
+                   renderBilling hides the entire billing region for them before
+                   this runs. Inside this block #billing-locks is the only element
+                   carrying `hidden`, for the reason set out on #punch-lock: the
+                   head and the list are always filled when it is revealed.
+                   (#billing-msg and #billing-actions below carry their own, and
+                   are not part of it.) .plan-locks is its own flex container
+                   rather than a .stats-card, so terminal.css gives it a
+                   .plan-locks[hidden] rule of its own — without one this block
+                   would show as an empty sky box on every paid spot. -->
+              <div id="billing-locks" class="plan-locks" hidden>
+                <p id="billing-locks-head" class="plan-locks-head"></p>
+                <ul id="billing-locks-list" class="plan-locks-list"></ul>
+              </div>
               <p id="billing-msg" class="field-error" hidden></p>
               <div id="billing-actions" class="pad-actions billing-actions" hidden>
                 <button id="billing-buy-monthly" class="btn-primary btn-compact" type="button" hidden></button>
