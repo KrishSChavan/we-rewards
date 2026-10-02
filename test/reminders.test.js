@@ -728,3 +728,49 @@ test('every knob reads the env var its name implies', () => {
   });
   assert.deepEqual(out, { minIntervalHours: 48, maxUsers: 7, tickSeconds: 90, nearCount: 11 });
 });
+
+test('the cheerful title never promises "free" for a reward that costs money', () => {
+  // The one correctness rule inside the copy, and nothing pinned it before.
+  // Reward titles are typed by vendors, so the set includes discounts as well as
+  // giveaways. A hardcoded "Free food is waiting!" over a body quoting "$2 off
+  // any sub" contradicts itself in the one place a student cannot check it
+  // without walking to the counter, and being told something is free when it is
+  // not is how a notification channel loses its permission for good.
+  const affordable = (title) => pickReminder({
+    vendors: [vendor('Sub Shop', 500, [reward(title, 100)])],
+  });
+
+  for (const title of ['Free slice', 'free coffee', 'FREE cookie']) {
+    const { title: head } = composeReminder(affordable(title));
+    assert.match(head, /free/i, `"${title}" earns the free framing`);
+  }
+
+  for (const title of ['$2 off any sub', 'Half price tacos', 'Buy one get one', 'Freestyle bowl discount']) {
+    const { title: head, body } = composeReminder(affordable(title));
+    assert.doesNotMatch(
+      head,
+      /\bfree\b/i,
+      `"${title}" does not make it free, so the title must not say so (got "${head}")`,
+    );
+    // The reward's own words still have to reach the student, or the message is
+    // cheerful about nothing in particular.
+    assert.ok(body.includes(title), `the body should quote the vendor's own title: ${body}`);
+  }
+});
+
+test('every tier sounds pleased to be there', () => {
+  // The owner asked for this voice explicitly, so it is pinned rather than left
+  // to drift back to the flat phrasing on the next edit. One per line is the
+  // ceiling as well as the floor: push permission is one-shot, and three
+  // exclamation marks in a row is how a channel gets muted.
+  for (const { kind, payload } of everyTier()) {
+    assert.match(payload.title, /!$/, `tier ${kind} has a flat title: "${payload.title}"`);
+    assert.match(payload.body, /!/, `tier ${kind} has a flat body: "${payload.body}"`);
+    for (const line of [payload.title, payload.body]) {
+      assert.equal(
+        (line.match(/!/g) ?? []).length, 1,
+        `tier ${kind} shouts: "${line}"`,
+      );
+    }
+  }
+});

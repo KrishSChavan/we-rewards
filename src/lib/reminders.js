@@ -372,42 +372,64 @@ export function composeReminder(candidate) {
     tag: REMINDER_TAG,
   });
 
+  // THE VOICE. Warm, specific, and at most one exclamation mark per LINE (so a
+  // notification carries two: the title and the body).
+  //
+  // One each, not three, and that restraint is the product decision rather than a
+  // style preference: browser push permission is one-shot, and migration-032's
+  // header spells out that once a student taps Block, requestPermission() no-ops
+  // forever and the deal alerts die with it. A reminder is the least welcome of
+  // the four things that can reach them (it is the only one with no news in it),
+  // so it has to read like a friend pointing something out, not like marketing.
+  // Cheerful earns its place; shouty costs the other three features.
+  //
+  // Every line also stays CONCRETE. "Your points are waiting!" on its own is the
+  // kind of notification people mute; the same sentence with the spot, the number
+  // and the reward named is one they act on. The happiness is in the framing, not
+  // in replacing the facts with enthusiasm.
+  //
+  // No em dashes anywhere (the repo copy rule, asserted per tier in
+  // test/reminders.test.js), and deliberately no randomised variants: this
+  // function is pure and a test pins that equal inputs produce equal output, so
+  // the same student never sees a different sentence for the same situation.
   switch (kind) {
     case 'afford':
       return out(
         // DERIVED, never asserted. Reward titles are typed by vendors and include
         // discounts ("Half price tacos", "$2 off any sub"), so a hardcoded
-        // "Free food waiting" would sit above a body quoting a reward that costs
-        // money and contradict itself. The free framing is kept where the
+        // "Free food is waiting!" would sit above a body quoting a reward that
+        // costs money and contradict itself. The free framing is kept where the
         // vendor's own words earn it and dropped everywhere else.
         /^free\b/i.test(String(candidate.rewardTitle ?? '').trim())
-          ? 'Free food waiting'
-          : 'You can cash this in',
-        `You have ${candidate.points} pts at ${vendor}, enough for ${rewardPhrase(candidate.rewardTitle)}.`
+          ? 'Free food is waiting!'
+          : 'Treat yourself!',
+        `You have ${candidate.points} pts at ${vendor}, enough for ${rewardPhrase(candidate.rewardTitle)}. Go claim it!`
       );
     case 'close':
       return out(
-        'You are nearly there',
-        `You are ${candidate.shortfall} pts from ${rewardPhrase(candidate.rewardTitle)} at ${vendor}.`
+        'So close!',
+        `Just ${candidate.shortfall} pts to go and ${rewardPhrase(candidate.rewardTitle)} at ${vendor} is yours!`
       );
     case 'deal':
       return out(
-        'Something is on today',
+        'Something good is on!',
         vendor
-          ? `${vendor}: ${candidate.dealTitle}. Tap to see it.`
-          : `${candidate.dealTitle}. Tap to see it.`
+          ? `${vendor} has something on: ${candidate.dealTitle}. Have a look!`
+          : `${candidate.dealTitle}. Have a look!`
       );
     case 'discover':
       return out(
-        'A spot you have not tried',
-        `You have never been to ${vendor}. Worth a look this week.`
+        'A new spot to try!',
+        `You have not been to ${vendor} yet. It could be your new go-to!`
       );
     default:
-      // The generic tier, and anything a future tier forgets to handle. Says
-      // nothing it cannot back up.
+      // The generic tier, and anything a future tier forgets to handle. The one
+      // line here with no number in it, so it is the one that has to work
+      // hardest: it promises a look rather than a reward, because this tier
+      // fires precisely when we have nothing specific to offer.
       return out(
-        'There is more on WeRewards',
-        'Open the app to see which spots are giving points and what they cost.'
+        'Your points are waiting!',
+        'Take a look at what your points can get you today. Free food might be closer than you think!'
       );
   }
 }
