@@ -1439,10 +1439,15 @@ end $$;
 -- explicit `revoke ... from public` in migration-061 is load-bearing rather than
 -- decorative.
 --
--- The claim's signature is the EIGHT arguments the function declares. Note that
--- migration-061's own revoke, grant and comment for that function all name a
--- NINE-argument signature (an extra `integer` between p_quiet_end and
--- p_timezone), which no function has -- see this file's accompanying notes.
+-- The claim's signature is the EIGHT argument types the function declares, and it
+-- is spelled out as a variable rather than inlined because it is the one thing
+-- here that has already been got wrong once: migration-061 shipped its comment,
+-- revoke and grant for that function against a NINE-type signature (an extra
+-- `integer`, copied from claim_reminder_pushes, which has p_min_interval_hours
+-- and this does not). A signature naming no function raises 42883, and inside
+-- that file's begin/commit it rolls the WHOLE migration back -- so the symptom was
+-- not a missing grant but a feature that did not exist. M1 below is the guard
+-- that would have caught it from this side.
 do $$
 declare
   aud_sig    text := 'text, uuid, integer';
@@ -1452,10 +1457,12 @@ declare
   v_args text;
   n integer;
 begin
-  -- A signature guard before anything leans on it: if the claim does not have
-  -- exactly eight arguments, every has_function_privilege call below raises
-  -- rather than failing, and run.ps1 reports one dead block instead of nine
-  -- findings.
+  -- A signature guard, FIRST, because everything after it leans on the strings
+  -- above resolving. has_function_privilege and ::regprocedure both RAISE on a
+  -- signature that matches nothing, which kills this whole DO block -- so without
+  -- this line the only output would be a bare 42883 and a report of zero
+  -- assertions for a block that never ran. Notices are flushed per statement, so
+  -- the FAIL below is printed before that happens and names the cause.
   select count(*) into n
   from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
   where ns.nspname = 'public' and p.proname = 'claim_admin_broadcast_pushes' and p.pronargs = 8;
@@ -1665,11 +1672,20 @@ begin
          week_count = 0, week_start = now()
    where user_id = s_bc;
 
+  -- Fixture guard, because this block's whole meaning depends on it: the scan is
+  -- ordered by (broadcast created_at, user_id), so the two students who cannot be
+  -- delivered to have to be the two the cap would reach FIRST. If seed-061's three
+  -- Batch Spot uuids ever stop ascending, the assertion below starts testing
+  -- nothing and would quietly go green.
+  if s_ba < s_bb and s_bb < s_bc then
+    raise notice 'PASS N1: fixture — the two cooldown-bound students hold the lowest uuids, so they head the queue';
+  else raise notice 'FAIL N1: the Batch Spot uuids are not ascending (%, %, %), so the head of the queue is not the parked pair', s_ba, s_bb, s_bc; end if;
+
   select coalesce(array_agg(out_user_id), '{}'::uuid[]) into got
   from public.claim_admin_broadcast_pushes(p_max_users => 2, p_quiet_start => 0, p_quiet_end => 0);
   if s_bc = any(got) then
-    raise notice 'PASS N1: a tick reaches an eligible student behind two who are inside their cooldown';
+    raise notice 'PASS N2: a tick reaches an eligible student behind two who are inside their cooldown';
   else
-    raise notice 'FAIL N1: the batch was spent on two refused students at the head of the queue and returned % — the driving query has no budget pre-filter (migration-047/060 document this as not optional)', got;
+    raise notice 'FAIL N2: the batch was spent on two refused students at the head of the queue and returned % - the driving query has no budget pre-filter (migration-047/060 document this as not optional)', got;
   end if;
 end $$;

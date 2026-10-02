@@ -491,14 +491,22 @@ begin
 end;
 $$;
 
-comment on function public.claim_admin_broadcast_pushes(integer, uuid[], integer, integer, integer, integer, integer, integer, text) is
+-- ⚠ EIGHT argument types, not nine. claim_reminder_pushes in migration-060 has
+-- the same shape plus p_min_interval_hours (its 72-hour cadence gate), and this
+-- function has no such knob — a broadcast is sent once, so there is nothing to
+-- space out. Copying that signature here cost a whole failed application: the
+-- identity in a comment/revoke/grant must match the parameter list exactly, and
+-- a wrong one raises 42883 "function does not exist", which inside this file's
+-- begin/commit rolls the entire migration back. The arity is now checked by
+-- test/migration-signatures.test.js rather than by counting.
+comment on function public.claim_admin_broadcast_pushes(integer, uuid[], integer, integer, integer, integer, integer, text) is
   'Students who may be sent a queued operator broadcast right now, oldest '
   'broadcast first, with its copy (migration-061). SPENDS a slot from the SAME '
   'daily/weekly budget as deal alerts, nearby alerts and reminders, at claim '
   'time — so every row returned must be settled by finish_admin_broadcast.';
 
-revoke execute on function public.claim_admin_broadcast_pushes(integer, uuid[], integer, integer, integer, integer, integer, integer, text) from public, anon, authenticated;
-grant  execute on function public.claim_admin_broadcast_pushes(integer, uuid[], integer, integer, integer, integer, integer, integer, text) to service_role;
+revoke execute on function public.claim_admin_broadcast_pushes(integer, uuid[], integer, integer, integer, integer, integer, text) from public, anon, authenticated;
+grant  execute on function public.claim_admin_broadcast_pushes(integer, uuid[], integer, integer, integer, integer, integer, text) to service_role;
 
 
 -- ---------- 6. settling one ----------
