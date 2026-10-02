@@ -92,6 +92,7 @@
       <button id="tab-poster" class="tab" type="button">QR poster</button>
       <button id="tab-pools" class="tab" type="button">Pools</button>
       <button id="tab-ambassadors" class="tab" type="button">Ambassadors</button>
+      <button id="tab-broadcast" class="tab" type="button">Broadcast</button>
     </nav>
 
     <main>
@@ -609,6 +610,83 @@
           <button id="amb-add-btn" class="btn-primary btn-compact" type="button">Add ambassador</button>
         </div>
         <div id="amb-list" class="amb-list"></div>
+      </div>
+    </div>
+
+    <!-- ===== BROADCAST (migration-061) =====
+         The only place WeRewards speaks to students in its own voice. Everything
+         else a student receives was composed by a vendor, by proximity, or by
+         the absence of activity.
+
+         The card is deliberately heavy on what the operator CANNOT take back,
+         because none of it is reversible once a push lands: there is no recall,
+         no in-app list to correct it in, and no email follow-up. The two-tap arm
+         on Send is the same guard the vendor deal composer uses. -->
+    <div id="view-broadcast" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>Send a notification</h3>
+          <span id="bc-reach" class="chart-max">Checking…</span>
+        </div>
+        <p class="muted">Goes to students who have deal alerts on and a working subscription. It spends the same allowance as vendor deals and reminders, so nobody gets more than two notifications a day, none between 10pm and 9am, and nothing closer together than four hours. Students who are over that today receive it when a slot opens, or not at all if it expires first.</p>
+
+        <!-- A push cannot be recalled, so this is stated before the fields and
+             not in a tooltip afterwards. -->
+        <p class="inc-note">There is no undo. Cancelling only stops whatever has not gone out yet.</p>
+
+        <form id="bc-form" class="inc-form" novalidate>
+          <div class="inc-field inc-field-wide bc-field">
+            <label class="vendor-edit-label" for="bc-title">Headline</label>
+            <input id="bc-title" class="nv-input" type="text" maxlength="60" autocomplete="off" required placeholder="Six new spots just joined" />
+            <span id="bc-title-count" class="bc-count" aria-hidden="true">0/60</span>
+          </div>
+
+          <div class="inc-field inc-field-wide bc-field">
+            <label class="vendor-edit-label" for="bc-body">Message</label>
+            <textarea id="bc-body" class="nv-input" maxlength="140" rows="3" required placeholder="Tacos, bubble tea and three more are now earning points. Open the app to see them."></textarea>
+            <span id="bc-body-count" class="bc-count" aria-hidden="true">0/140</span>
+          </div>
+
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="bc-url">Where it opens <em class="nv-opt">(optional)</em></label>
+            <input id="bc-url" class="nv-input" type="text" maxlength="200" autocomplete="off" placeholder="/?deals=1" />
+            <span class="vendor-edit-hint">A path on WeRewards, starting with one slash. Leave it blank for the home screen.</span>
+          </div>
+
+          <div class="inc-field inc-field-wide">
+            <span class="vendor-edit-label" id="bc-audience-label">Who gets it</span>
+            <div id="bc-audience" class="bc-chips" role="group" aria-labelledby="bc-audience-label">
+              <button class="bc-chip is-active" type="button" data-audience="all">Everyone</button>
+              <button class="bc-chip" type="button" data-audience="spendable">Can redeem now</button>
+              <button class="bc-chip" type="button" data-audience="lapsed">Stopped coming</button>
+              <button class="bc-chip" type="button" data-audience="vendor">One spot’s customers</button>
+            </div>
+            <span class="vendor-edit-hint">“Can redeem now” is everyone holding enough points for a reward they could claim today.</span>
+          </div>
+
+          <!-- Only for the 'vendor' audience. Hidden rather than disabled: a
+               disabled select still reads as a thing you were meant to fill in. -->
+          <div id="bc-vendor-field" class="inc-field inc-field-wide" hidden>
+            <label class="vendor-edit-label" for="bc-vendor">Which spot</label>
+            <select id="bc-vendor" class="nv-input"></select>
+            <span class="vendor-edit-hint">Everyone who has ever earned points there.</span>
+          </div>
+
+          <p id="bc-error" class="field-error" role="alert" hidden></p>
+          <p id="bc-ok" class="inc-ok" hidden></p>
+          <div class="inc-actions">
+            <button id="bc-send" class="btn-primary" type="submit">Send</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Recent broadcasts</h3>
+          <span id="bc-history-count" class="chart-max"></span>
+        </div>
+        <p id="bc-history-error" class="field-error" role="alert" hidden></p>
+        <div id="bc-history" class="bc-history"></div>
       </div>
     </div>
 

@@ -1219,3 +1219,54 @@ h1, h3 { margin: 0; }
 .roi-bench { margin: 0; font-size: 0.82rem; }
 .roi-bench.is-up { color: var(--good); }
 .roi-bench.is-down { color: var(--muted); }
+
+/* ---------- broadcast tab (migration-061) ----------
+   Ported from the vendor deal composer (public/vendor/terminal.css:968-987),
+   recoloured to this app's palette. The shapes are deliberately the same: an
+   operator who has used the vendor terminal should recognise the character
+   counters, the audience chips and the armed Send button.
+
+   ⚠ Every flex container below declares display AND flex-direction in the SAME
+   rule as its gap. scripts/build-client.js generates its flex-gap fallbacks by
+   walking rules grouped on exact selector text, so splitting those across two
+   rules silently drops the fallback (the trap documented at
+   public/vendor/terminal.css:960-966). */
+
+/* position:relative so the counter can sit in the field's bottom-right corner. */
+.bc-field { display: flex; flex-direction: column; gap: 0.4rem; position: relative; }
+.bc-count {
+  align-self: flex-end; font-size: 0.78rem; font-weight: 700; color: var(--muted);
+}
+
+.bc-chips { display: flex; flex-direction: row; gap: 0.4rem; flex-wrap: wrap; }
+.bc-chip {
+  font: inherit; font-size: 0.82rem; font-weight: 700; cursor: pointer;
+  color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0.35rem 0.7rem;
+}
+.bc-chip:hover { color: var(--ink); }
+.bc-chip.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.bc-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The armed state. Red rather than accent-blue, because the tap that follows it
+   is the irreversible one and it must not look like the same button it was. */
+#bc-send.is-armed { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+.bc-history { display: flex; flex-direction: column; gap: 0.6rem; }
+.bc-row {
+  display: flex; flex-direction: row; gap: 0.75rem;
+  align-items: flex-start; justify-content: space-between;
+  padding: 0.65rem 0.75rem; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.bc-row-main { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.bc-row-title { margin: 0; font-weight: 800; font-size: 0.92rem; color: var(--ink); }
+/* overflow-wrap, because a broadcast body is free text an operator typed and a
+   long unbroken string would otherwise push the Stop button off the card. */
+.bc-row-body { margin: 0; font-size: 0.84rem; color: var(--muted); overflow-wrap: anywhere; }
+.bc-row-meta { margin: 0.1rem 0 0; font-size: 0.76rem; color: var(--muted); }
+
+.bc-state { font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+.bc-state.is-queued { color: var(--warn); }
+.bc-state.is-done { color: var(--good); }
+.bc-state.is-cancelled { color: var(--bad); }

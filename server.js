@@ -35,6 +35,7 @@ import { loadVendorLogo } from './src/lib/cache.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { startReferralWorker, stopReferralWorker } from './src/lib/referrals.js';
 import { startReminderWorker, stopReminderWorker } from './src/lib/reminders.js';
+import { startBroadcastWorker, stopBroadcastWorker } from './src/lib/broadcasts.js';
 import { publicSignupBonus } from './src/lib/signup-bonus.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
@@ -1692,6 +1693,19 @@ if (isMain) {
   // happens to run does the right thing and the rest are cheap no-ops.
   startReminderWorker();
 
+  // Operator broadcasts (migration-061). Same posture as the three workers
+  // above, and the same load-bearing no-op without VAPID keys: the claim SPENDS
+  // a student's share of the one shared storm budget, so a worker that could not
+  // deliver must never claim.
+  //
+  // Started AFTER the reminder worker on purpose. Both drain the same
+  // student_notify_state row and whichever claims first wins the slot, so the
+  // order here is a tie-break on a cold boot: an operator who has just pressed
+  // Send on an announcement should beat a reminder that could equally well go
+  // out three days from now. It is only a tie-break — once both are running the
+  // 30s and 300s intervals decide, and either way the student's cap is the cap.
+  startBroadcastWorker();
+
   // Graceful shutdown. Heroku sends SIGTERM on every deploy and cycles dynos
   // ~daily, then SIGKILLs after ~30s. Draining first lets in-flight awards /
   // redeems finish instead of being cut mid-request. io.close() disconnects the
@@ -1706,6 +1720,7 @@ if (isMain) {
     stopCampaignWorker();   // don't claim a batch we won't live to deliver
     stopReferralWorker();   // the sweep is idempotent; the next boot picks it up
     stopReminderWorker();   // same: an unclaimed student is simply due again next boot
+    stopBroadcastWorker();  // a queued recipient is still queued next boot; nothing is lost
     io.close(async () => {
       // Last call for queued analytics. capture() batches in memory to keep a
       // third-party hop off the request path, which means SIGTERM — the one

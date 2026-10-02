@@ -42,7 +42,7 @@ const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now"
 // evaluating — declared below the boot IIFE it would be in its temporal dead
 // zone at that moment, and the throw is swallowed, so the report would quietly
 // arrive missing the context it exists for.
-const VIEWS = ['dashboard', 'roi', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'students'];
+const VIEWS = ['dashboard', 'roi', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'broadcast', 'students'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -106,6 +106,14 @@ function bootFailed(message) {
   $('roi-window').addEventListener('change', () => loadRoi());
   $('tab-pools').addEventListener('click', openPools);
   $('tab-ambassadors').addEventListener('click', openAmbassadors);
+  $('tab-broadcast').addEventListener('click', openBroadcast);
+  $('bc-form').addEventListener('submit', onBroadcastSubmit);
+  $('bc-title').addEventListener('input', onBroadcastInput);
+  $('bc-body').addEventListener('input', onBroadcastInput);
+  $('bc-url').addEventListener('input', onBroadcastInput);
+  $('bc-audience').addEventListener('click', onBroadcastAudiencePick);
+  $('bc-vendor').addEventListener('change', refreshBroadcastReach);
+  $('bc-history').addEventListener('click', onBroadcastHistoryTap);
   $('amb-add-btn').addEventListener('click', () => openAmbModal(null));
   $('amb-form').addEventListener('submit', submitAmbassador);
   $('amb-cancel').addEventListener('click', closeAmbModal);
@@ -312,6 +320,10 @@ async function loadAll() {
       // Same bargain again for the ambassadors tab: one view query, paid for
       // only once somebody has opened the screen it draws.
       ambLoaded ? loadAmbassadors() : null,
+      // And again for broadcasts: the history card's counts move on their own as
+      // the worker drains a queue, so a reload here keeps an operator who left
+      // the tab open from reading a stale "0 of 312 sent".
+      bcLoaded ? loadBroadcasts() : null,
       // Unauthenticated and tiny, but it belongs to a dialog only an admin can
       // open, so it rides along here rather than firing on the sign-in screen.
       loadCuisineVocab(),
@@ -5945,4 +5957,262 @@ async function downloadAmbQrPng(btn) {
 function openAmbassadors() {
   setView('ambassadors');
   loadAmbassadors();
+}
+
+/* ---------- broadcast: one operator message to students (migration-061) ----------
+
+   The only screen in this product that writes to students in WeRewards' own
+   voice, so it is the only one where the UI's job is partly to slow the operator
+   down. Three things do that, and all three are copied from the vendor deal
+   composer rather than invented, because they already work there:
+
+     1. A live audience count, so "Everyone" is a number before it is a decision.
+     2. A two-tap arm on Send, which any edit disarms. A push cannot be recalled.
+     3. Copy that says what cannot be taken back, above the fields rather than
+        after them.
+
+   What this screen deliberately does NOT do is promise delivery. The count it
+   shows is the audience, not the reach: every student's own frequency budget is
+   decided later, at claim time, and a student who is over it today simply does
+   not get this one. Saying "Reaches 312" would be a number we cannot honour. */
+
+let bcLoaded = false;        // false until the first open pays for the history load
+let bcAudience = 'all';      // which chip is lit
+let bcArmed = false;         // Send tapped once, waiting for the confirm tap
+let bcArmTimer = null;
+let bcToken = null;          // idempotency token, kept across a failed attempt
+let bcReachSeq = 0;          // drops a reach response that a later pick outran
+
+function openBroadcast() {
+  setView('broadcast');
+  // Reload every open rather than once: a queue drains in the background, so the
+  // counts in the history card are stale the moment the operator looks away.
+  loadBroadcasts();
+  syncBroadcastVendors();
+  refreshBroadcastReach();
+}
+
+/** The spot picker, filled from the roster already loaded for the vendors panel. */
+function syncBroadcastVendors() {
+  const sel = $('bc-vendor');
+  const keep = sel.value;
+  // Active spots only. Messaging the customers of a spot that is switched off
+  // would send them to a card they can no longer open.
+  const live = vendors.filter((v) => v.active !== false);
+  sel.innerHTML = live
+    .map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.name)}</option>`)
+    .join('');
+  if (keep && live.some((v) => v.id === keep)) sel.value = keep;
+}
+
+function onBroadcastInput() {
+  $('bc-title-count').textContent = `${$('bc-title').value.length}/60`;
+  $('bc-body-count').textContent = `${$('bc-body').value.length}/140`;
+  // Any edit disarms: the words that were about to go out are no longer the
+  // words on screen, so the confirm tap would be confirming something else.
+  disarmBroadcast();
+  $('bc-error').hidden = true;
+  $('bc-ok').hidden = true;
+}
+
+function onBroadcastAudiencePick(e) {
+  const chip = e.target.closest('.bc-chip');
+  if (!chip) return;
+  bcAudience = chip.dataset.audience || 'all';
+  [...$('bc-audience').querySelectorAll('.bc-chip')]
+    .forEach((c) => c.classList.toggle('is-active', c === chip));
+  $('bc-vendor-field').hidden = bcAudience !== 'vendor';
+  disarmBroadcast();
+  refreshBroadcastReach();
+}
+
+function disarmBroadcast() {
+  if (!bcArmed) return;
+  bcArmed = false;
+  clearTimeout(bcArmTimer);
+  $('bc-send').textContent = 'Send';
+  $('bc-send').classList.remove('is-armed');
+}
+
+function broadcastError(msg) {
+  const el = $('bc-error');
+  el.textContent = msg;
+  el.hidden = false;
+  $('bc-ok').hidden = true;
+}
+
+/**
+ * How many students the chosen audience currently matches.
+ *
+ * `bcReachSeq` is the whole reason this is not a plain await: picking three chips
+ * quickly fires three requests whose responses can land in any order, and the
+ * last ANSWER is not necessarily the last QUESTION. Only the newest sequence
+ * number is allowed to write, so the number on screen always belongs to the chip
+ * that is lit.
+ */
+async function refreshBroadcastReach() {
+  const el = $('bc-reach');
+  const seq = ++bcReachSeq;
+  const audience = bcAudience;
+  const vendorId = $('bc-vendor').value;
+  if (audience === 'vendor' && !vendorId) { el.textContent = 'Pick a spot'; return; }
+
+  el.textContent = 'Checking…';
+  try {
+    const q = new URLSearchParams({ audience });
+    if (audience === 'vendor') q.set('vendorId', vendorId);
+    const res = await authFetch(`/api/admin/broadcasts/reach?${q}`);
+    if (seq !== bcReachSeq) return;                 // a later pick already won
+    if (res.status === 403) { await denyAccess(); return; }
+    if (!res.ok) { el.textContent = 'Audience unknown'; return; }
+    const body = await res.json();
+    if (seq !== bcReachSeq) return;
+    const n = Number(body.reach) || 0;
+    // "matches", not "reaches": see this section's header.
+    el.textContent = n === 1 ? '1 student matches' : `${num(n)} students match`;
+  } catch {
+    if (seq === bcReachSeq) el.textContent = 'Audience unknown';
+  }
+}
+
+async function onBroadcastSubmit(e) {
+  e.preventDefault();
+  const title = $('bc-title').value.trim();
+  const body = $('bc-body').value.trim();
+  const url = $('bc-url').value.trim();
+  if (!title || !body) { broadcastError('Write a headline and a message first.'); return; }
+  if (bcAudience === 'vendor' && !$('bc-vendor').value) { broadcastError('Pick which spot’s customers to message.'); return; }
+
+  // Two taps, not a confirm() dialog: the audience count is on screen and the
+  // armed button is next to it, so the second tap is made while looking at the
+  // thing being confirmed. 6 seconds, then it forgets.
+  if (!bcArmed) {
+    bcArmed = true;
+    bcToken = bcToken || `bc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    $('bc-send').textContent = 'Tap again to send';
+    $('bc-send').classList.add('is-armed');
+    clearTimeout(bcArmTimer);
+    bcArmTimer = setTimeout(disarmBroadcast, 6000);
+    return;
+  }
+  disarmBroadcast();
+
+  $('bc-send').disabled = true;
+  $('bc-error').hidden = true;
+  $('bc-ok').hidden = true;
+  try {
+    const res = await authFetch('/api/admin/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({
+        title,
+        body,
+        url: url || undefined,
+        audience: bcAudience,
+        vendorId: bcAudience === 'vendor' ? $('bc-vendor').value : undefined,
+        requestId: bcToken,
+      }),
+    });
+    if (res.status === 403) { await denyAccess(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { broadcastError(data.message || 'Couldn’t queue that broadcast.'); return; }
+
+    const queued = Number(data.queued) || 0;
+    const ok = $('bc-ok');
+    ok.textContent = queued === 0
+      ? 'Nobody matched that audience, so nothing went out.'
+      : `Queued for ${num(queued)} student${queued === 1 ? '' : 's'}. It goes out over the next few minutes, skipping anyone who is over their limit for today.`;
+    ok.hidden = false;
+    // Cleared only on success, along with the token: a retry after a network
+    // failure has to carry the SAME token or it queues the student body twice.
+    bcToken = null;
+    $('bc-title').value = '';
+    $('bc-body').value = '';
+    $('bc-url').value = '';
+    // The counters are resynced directly rather than through onBroadcastInput,
+    // which exists to react to TYPING and would hide the success line we just
+    // wrote. Clearing the fields is not an edit the operator made.
+    $('bc-title-count').textContent = '0/60';
+    $('bc-body-count').textContent = '0/140';
+    await loadBroadcasts();
+  } catch {
+    // Token deliberately KEPT, so tapping send again when the connection is back
+    // cannot produce a second broadcast if the first request actually landed.
+    broadcastError('No connection. Tap send again when you are back online.');
+  } finally {
+    $('bc-send').disabled = false;
+  }
+}
+
+async function loadBroadcasts() {
+  bcLoaded = true;
+  const err = $('bc-history-error');
+  try {
+    const res = await authFetch('/api/admin/broadcasts');
+    if (res.status === 403) { await denyAccess(); return; }
+    if (!res.ok) throw new Error(String(res.status));
+    const { broadcasts } = await res.json();
+    err.hidden = true;
+    renderBroadcasts(broadcasts ?? []);
+  } catch {
+    err.textContent = 'Couldn’t load recent broadcasts.';
+    err.hidden = false;
+  }
+}
+
+const BC_AUDIENCE_LABEL = {
+  all: 'Everyone',
+  spendable: 'Can redeem now',
+  lapsed: 'Stopped coming',
+  vendor: 'One spot',
+};
+
+function renderBroadcasts(rows) {
+  $('bc-history-count').textContent = rows.length ? `${rows.length} most recent` : '';
+  if (!rows.length) {
+    $('bc-history').innerHTML = '<p class="muted">Nothing sent yet.</p>';
+    return;
+  }
+  $('bc-history').innerHTML = rows.map((b) => {
+    const who = b.audience === 'vendor' && b.vendorName
+      ? escapeHtml(b.vendorName)
+      : (BC_AUDIENCE_LABEL[b.audience] ?? escapeHtml(b.audience));
+    // "of N queued", because sent < queued is the NORMAL resting state, not a
+    // failure: the difference is students whose own daily cap or quiet hours
+    // kept them out, which is the system working.
+    const progress = `${num(b.sent)} of ${num(b.queued)} sent`;
+    const cancellable = b.status === 'queued' && b.sent < b.queued;
+    return `
+      <div class="bc-row">
+        <div class="bc-row-main">
+          <p class="bc-row-title">${escapeHtml(b.title)}</p>
+          <p class="bc-row-body">${escapeHtml(b.body)}</p>
+          <p class="bc-row-meta">${who} · ${progress} · <span class="bc-state is-${escapeHtml(b.status)}">${escapeHtml(b.status)}</span></p>
+        </div>
+        ${cancellable ? `<button class="vr-save bc-cancel" type="button" data-id="${escapeHtml(b.id)}">Stop</button>` : ''}
+      </div>`;
+  }).join('');
+}
+
+async function onBroadcastHistoryTap(e) {
+  const btn = e.target.closest('.bc-cancel');
+  if (!btn) return;
+  // confirm() rather than a two-tap arm: this one is rare, and the thing worth
+  // saying out loud is that stopping does not unsend.
+  if (!confirm('Stop sending this broadcast?\n\nAnything already delivered stays delivered. A notification cannot be recalled.')) return;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/broadcasts/${encodeURIComponent(btn.dataset.id)}/cancel`, { method: 'POST' });
+    if (res.status === 403) { await denyAccess(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      $('bc-history-error').textContent = data.message || 'Couldn’t stop that broadcast.';
+      $('bc-history-error').hidden = false;
+    }
+    await loadBroadcasts();
+  } catch {
+    $('bc-history-error').textContent = 'No connection, try again.';
+    $('bc-history-error').hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
 }

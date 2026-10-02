@@ -2940,6 +2940,216 @@ router.post('/push/test', async (req, res, next) => {
   }
 });
 
+/* ---------- broadcasts: one operator message to students (migration-061) ----------
+
+   The only path in this product by which WeRewards itself addresses students.
+   Everything else is composed by a vendor, by proximity, or by the absence of
+   activity. That makes it the most dangerous button in /admin, and the limits
+   below are the whole reason it is safe to have:
+
+     • Nothing is delivered here. create_admin_broadcast writes recipient rows
+       and returns; delivery is src/lib/broadcasts.js draining that queue. A
+       request cannot hold a few thousand sequential pushes open, and a dyno
+       restart mid-send must not lose the back half.
+     • Nothing escapes the shared budget. The claim spends the same
+       student_notify_state counters deal alerts, nearby alerts and reminders
+       spend, so a broadcast costs a deal-alert slot and obeys quiet hours.
+       Privacy Policy §7.4 promises "two per day… whatever the reason", and our
+       own reasons are reasons.
+     • The operator never learns who is in an audience. /reach answers a COUNT,
+       the same shape the vendor composer's own reach endpoint uses — a list of
+       names would be a disclosure we have no reason to make.
+*/
+
+const BROADCAST_TITLE_MAX = 60;    // what a notification shade actually shows
+const BROADCAST_BODY_MAX = 140;    // matches CAMPAIGN_BODY_MAX; same shade, same room
+const BROADCAST_AUDIENCES = new Set(['all', 'lapsed', 'spendable', 'vendor']);
+const BROADCAST_PAGE = 20;         // recent broadcasts listed under the composer
+
+/**
+ * Where tapping the notification lands. Same-origin paths only, and deliberately
+ * strict rather than clever: an operator typing a full https:// URL here would
+ * produce a notification that walks the student out of the PWA (and, inside the
+ * Capacitor iOS wrapper, out of the app), while a protocol-relative '//evil.com'
+ * is a redirect wearing a path's clothes. One leading slash, no second one.
+ */
+export function broadcastUrl(raw) {
+  const v = String(raw ?? '').trim();
+  // One shape on every path: { url } or { error }, never a bare null. The field
+  // is optional, so "nothing typed" is a legitimate answer rather than a
+  // refusal, and it is expressed as a null URL rather than by returning a
+  // different type the caller has to remember to narrow.
+  if (!v) return { url: null };
+  if (!v.startsWith('/') || v.startsWith('//')) return { error: 'Use a path that starts with a single /, like /?deals=1' };
+  if (v.length > 200) return { error: 'That link is too long.' };
+  return { url: v };
+}
+
+/**
+ * GET /api/admin/broadcasts/reach?audience=&vendorId=
+ * How many students that audience currently matches. A COUNT, never identities.
+ *
+ * Advisory on purpose, and the UI says so: this is the audience size, not the
+ * number who will be reached. Reachability (a live subscription, deal alerts on)
+ * and every student's own frequency budget are decided later, at claim time.
+ */
+router.get('/broadcasts/reach', async (req, res, next) => {
+  try {
+    const audience = String(queryScalar(req.query?.audience) ?? 'all');
+    const vendorId = queryScalar(req.query?.vendorId) ?? null;
+    if (!BROADCAST_AUDIENCES.has(audience)) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Pick a valid audience.' });
+    }
+    if (audience === 'vendor' && !isUuid(vendorId)) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Pick which spot’s customers to message.' });
+    }
+
+    const { data, error } = await supabaseAdmin.rpc('admin_broadcast_audience', {
+      p_audience: audience,
+      p_vendor_id: audience === 'vendor' ? vendorId : null,
+    });
+    if (error) throw error;
+    res.json({ audience, reach: Array.isArray(data) ? data.length : 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/broadcasts
+ * The last few broadcasts, newest first, with how they are getting on.
+ */
+router.get('/broadcasts', async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('admin_broadcasts')
+      .select('id, title, body, url, audience, vendor_id, status, queued_count, sent_count, expires_at, created_at')
+      .order('created_at', { ascending: false })
+      .limit(BROADCAST_PAGE);
+    if (error) throw error;
+
+    // Spot names for the 'vendor' rows, resolved in one read rather than per row.
+    const ids = [...new Set((data ?? []).map((b) => b.vendor_id).filter(Boolean))];
+    const names = new Map();
+    if (ids.length) {
+      const { data: vs } = await supabaseAdmin.from('vendors').select('id, name').in('id', ids);
+      (vs ?? []).forEach((v) => names.set(v.id, v.name));
+    }
+
+    res.json({
+      broadcasts: (data ?? []).map((b) => ({
+        id: b.id,
+        title: b.title,
+        body: b.body,
+        url: b.url,
+        audience: b.audience,
+        vendorName: b.vendor_id ? (names.get(b.vendor_id) ?? null) : null,
+        status: b.status,
+        queued: b.queued_count,
+        sent: b.sent_count,
+        expiresAt: b.expires_at,
+        createdAt: b.created_at,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/broadcasts  { title, body, url?, audience, vendorId?, requestId? }
+ *
+ * Queues one. `requestId` is the double-tap guard, the same mechanism and the
+ * same shape the vendor deal composer uses: a repeated token returns the FIRST
+ * broadcast rather than queueing the student body twice, so a retried request is
+ * indistinguishable from the original.
+ */
+router.post('/broadcasts', async (req, res, next) => {
+  try {
+    const b = req.body ?? {};
+    const title = String(b.title ?? '').trim();
+    const body = String(b.body ?? '').trim();
+    const audience = String(b.audience ?? 'all');
+    const vendorId = b.vendorId ?? null;
+
+    if (!title || title.length > BROADCAST_TITLE_MAX) {
+      return res.status(400).json({ error: 'BAD_BROADCAST', message: `Give it a headline (up to ${BROADCAST_TITLE_MAX} characters).` });
+    }
+    if (!body || body.length > BROADCAST_BODY_MAX) {
+      return res.status(400).json({ error: 'BAD_BROADCAST', message: `Write the message (up to ${BROADCAST_BODY_MAX} characters).` });
+    }
+    if (!BROADCAST_AUDIENCES.has(audience)) {
+      return res.status(400).json({ error: 'BAD_BROADCAST', message: 'Pick a valid audience.' });
+    }
+    if (audience === 'vendor' && !isUuid(vendorId)) {
+      return res.status(400).json({ error: 'BAD_BROADCAST', message: 'Pick which spot’s customers to message.' });
+    }
+    // No em dash, because the repo copy rule applies to everything a student
+    // reads and this is the one place an operator types it by hand. Refused
+    // rather than silently rewritten: the operator should see their own words.
+    if (title.includes('—') || body.includes('—')) {
+      return res.status(400).json({ error: 'BAD_BROADCAST', message: 'Use a comma or a full stop instead of an em dash (house copy rule).' });
+    }
+
+    const link = broadcastUrl(b.url);
+    if (link?.error) return res.status(400).json({ error: 'BAD_BROADCAST', message: link.error });
+
+    const clientToken = (typeof b.requestId === 'string' && /^[\w-]{8,64}$/.test(b.requestId)) ? b.requestId : null;
+
+    const { data, error } = await supabaseAdmin.rpc('create_admin_broadcast', {
+      p_created_by: req.user.id,
+      p_title: title,
+      p_body: body,
+      p_url: link?.url ?? null,
+      p_audience: audience,
+      p_vendor_id: audience === 'vendor' ? vendorId : null,
+      p_client_token: clientToken,
+    });
+    if (error) throw error;
+
+    // The RPC returns a one-row set, which supabase-js hands back as an array.
+    const row = Array.isArray(data) ? data[0] : data;
+    res.status(201).json({ id: row?.out_id ?? null, queued: Number(row?.out_queued ?? 0) });
+  } catch (err) {
+    // The RPC's own refusals, turned into sentences for the operator rather than
+    // a 500. Anything unrecognised still goes to the error handler.
+    const m = String(err?.message ?? '');
+    if (m.includes('BAD_AUDIENCE')) return res.status(400).json({ error: 'BAD_BROADCAST', message: 'Pick a valid audience.' });
+    if (m.includes('VENDOR_REQUIRED')) return res.status(400).json({ error: 'BAD_BROADCAST', message: 'Pick which spot’s customers to message.' });
+    if (m.includes('TITLE_REQUIRED') || m.includes('BODY_REQUIRED')) {
+      return res.status(400).json({ error: 'BAD_BROADCAST', message: 'Write a headline and a message.' });
+    }
+    if (m.includes('admin_broadcast') || m.includes('create_admin_broadcast')) {
+      return res.status(503).json({ error: 'BROADCAST_UNAVAILABLE', message: 'Broadcasts need migration-061 applied to the database.' });
+    }
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/broadcasts/:id/cancel
+ * Stop one that is still going out. Already-delivered pushes are gone — a
+ * notification cannot be recalled — so this only prevents the remainder, and the
+ * UI says exactly that rather than implying an undo.
+ */
+router.post('/broadcasts/:id/cancel', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'BAD_REQUEST', message: 'Unknown broadcast.' });
+    const { data, error } = await supabaseAdmin
+      .from('admin_broadcasts')
+      .update({ status: 'cancelled' })
+      .eq('id', req.params.id)
+      .eq('status', 'queued')
+      .select('id, sent_count')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(409).json({ error: 'NOT_CANCELLABLE', message: 'That broadcast has already finished or been cancelled.' });
+    res.json({ ok: true, alreadySent: data.sent_count });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /* ---------- students ---------- */
 
 /**

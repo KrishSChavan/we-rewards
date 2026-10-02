@@ -158,7 +158,29 @@
 // means having already sent something §7.4 did not cover. If you need to defer
 // the interruption, revert this one line and the Policy's "Last Updated" date
 // together — never one without the other.
-export const TERMS_VERSION = '2026-10-01';
+// 2026-10-02: operator broadcasts (Policy §2.6, §7.4; migration-061). A new
+// class of push, sent by US to a group of accounts WE choose, with arbitrary
+// copy. Material on the same ground as the three bumps above: §7.4 enumerated
+// the kinds of message a student can receive and this was not one of them, and
+// students are reached through a switch (Deal alerts) they set before this
+// existed.
+//
+// §7.4 WAS REWRITTEN GENERICALLY RATHER THAN EXTENDED, and that is the point of
+// this revision. The old section listed features; the new one describes two
+// CATEGORIES — reminders about your own points, and announcements about the
+// service — and says in so many words that a future kind of house message is
+// covered by the same limits and the same switch. Three bumps in three
+// revisions were each "we added one more kind of notification", and every one
+// of them interrupted every student. This should be the last bump that sentence
+// describes.
+//
+// What did NOT change, deliberately, is the promise the frequency section
+// makes. A broadcast spends the same student_notify_state budget as a vendor
+// deal, a nearby alert and a reminder (claim_admin_broadcast_pushes, see
+// migration-061), so "two per day… whatever the reason" stays true with our own
+// reasons included. An exempt broadcast would have been the easy build and
+// would have made that sentence false.
+export const TERMS_VERSION = '2026-10-02';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

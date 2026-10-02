@@ -1,7 +1,7 @@
 /* WeRewards — minimal service worker.
    Network-first with cache fallback for the app shell; API calls untouched. */
 
-const CACHE = 'werewards-v93';   // v93: app.js only — the 'balance' socket listener no longer drops a push that carries no vendorId, so an earn that belongs to no spot repaints Home immediately instead of waiting for the next reconnect or home load: pushCommunityBalance() and the email-link bonus in src/routes/student.js, the operator's Give in src/routes/admin.js, and the merge's { refresh: true }. v92 shipped the both-sides invite bonus (migration-058) that makes those pushes common, so leaving an installed PWA on v92 keeps exactly the students who invite a friend watching a counter that never moves. Offline is where a skipped bump bites: the catch below matches with ignoreSearch and Cache.match returns the first-INSERTED entry, which is the bare '/app.js' precached under v92 — and production serves this worker verbatim (serveTestSw's build-id suffix in server.js is off-production only), so this constant is the only signal there is. Online PWAs are unaffected — network-first, and versionAssets re-stamps ?v=<hash>
+const CACHE = 'werewards-v94';   // v94: sw.js only — notificationclick now has a THIRD route. A deal (/?deal=) opens the deals list and a nearby alert (/?spot=) opens that spot, as before, but a push with NEITHER — a generic reminder (migration-060) or an operator broadcast sent without a link (migration-061) — now focuses the app and opens nothing, instead of falling to the deals default. Only an ALREADY-OPEN tab showed the bug: openWindow('/') lands on Home correctly, while a focused tab was handed 'open-deals' and opened a list of vendor offers over an announcement that had nothing to do with them. Worth the bump on its own because broadcasts are the first notification an operator composes by hand, and the linkless case is the default one   // v93: app.js only — the 'balance' socket listener no longer drops a push that carries no vendorId, so an earn that belongs to no spot repaints Home immediately instead of waiting for the next reconnect or home load: pushCommunityBalance() and the email-link bonus in src/routes/student.js, the operator's Give in src/routes/admin.js, and the merge's { refresh: true }. v92 shipped the both-sides invite bonus (migration-058) that makes those pushes common, so leaving an installed PWA on v92 keeps exactly the students who invite a friend watching a counter that never moves. Offline is where a skipped bump bites: the catch below matches with ignoreSearch and Cache.match returns the first-INSERTED entry, which is the bare '/app.js' precached under v92 — and production serves this worker verbatim (serveTestSw's build-id suffix in server.js is off-production only), so this constant is the only signal there is. Online PWAs are unaffected — network-first, and versionAssets re-stamps ?v=<hash>
 // v92: the invite bonus is paid to BOTH sides at signup (migration-058), so the Invite button no longer says "when they buy something" and History labels a referrer payout "A friend joined with your invite". app.js only, but an installed PWA left on v91 keeps telling students their bonus is waiting on a purchase that is no longer part of the deal — which is the one thing the change was made to stop
 // v91: two things. Sign in always shows Google's account chooser (prompt=select_account), so signing out and back in can reach a DIFFERENT account on the same device instead of silently re-entering the last one; and the link-email code screen now says to check spam, which is the likeliest and quietest way that flow fails. app.js + index.html + styles.css, so skipping this bump leaves installed PWAs on the old shell — precisely where someone juggling a personal and a student account is stuck
 // v87: a visit lands in the RECENT SPOTS row on the socket push that carries it, instead of waiting for the next /balances refetch — and a spot visited for the first time ever pops a "New spot unlocked" pill. app.js and styles.css (the pill's third colour), both precached: without this bump an installed PWA keeps the old handlers and never asks for the flags, and an installed PWA that somehow got the new JS would paint the new pill with no background at all
@@ -161,10 +161,23 @@ self.addEventListener('notificationclick', (e) => {
   // else is a deal and wants the deals list. The message type is what tells
   // app.js which, since a focused tab is handed the target rather than being
   // navigated to it.
-  let type = 'open-deals';
+  // THREE kinds now, not two. A deal points at /?deal=<id> and wants the deals
+  // list; a nearby alert points at /?spot=<id> and wants that spot's screen; and
+  // since migration-060/061 there are notifications with NEITHER — a generic
+  // reminder, and an operator broadcast the operator chose not to give a link.
+  //
+  // Those used to fall to the deals default, which is wrong in a way only an
+  // already-open tab shows: openWindow('/') lands on Home correctly, but a
+  // FOCUSED tab was handed 'open-deals' and opened the deals sheet over it. The
+  // student tapped an announcement about new spots and got a list of vendor
+  // offers that said nothing about it. app.js ignores a type it does not know,
+  // so a neutral one focuses the app and opens nothing.
+  let type = 'focus';
   try {
-    if (new URL(url, self.location.origin).searchParams.get('spot')) type = 'open-spot';
-  } catch { /* keep the deals default */ }
+    const q = new URL(url, self.location.origin).searchParams;
+    if (q.get('spot')) type = 'open-spot';
+    else if (q.has('deal') || q.has('deals')) type = 'open-deals';
+  } catch { /* unparseable target — just focus the app */ }
   e.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       const hit = list.find((c) => new URL(c.url).origin === self.location.origin);
