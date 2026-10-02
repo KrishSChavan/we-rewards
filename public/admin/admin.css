@@ -35,7 +35,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 h1, h3 { margin: 0; }
-.muted { color: var(--muted); font-size: 0.85rem; margin: 0.35rem 0 0; }
+.muted { color: var(--muted); font-size: 0.85rem; margin: 0.35rem 0 0.35rem; }
 
 /* ---------- login ---------- */
 .login { min-height: 100dvh; display: grid; place-items: center; padding: 1.5rem; }
