@@ -31,6 +31,12 @@ let balance = 0;
 let myCodeTimer = null;     // home-screen earn-code refresh loop
 let redeemCountdown = null; // redemption-code modal countdown
 let selectedItem = null;
+// Currency of the code currently on screen, so "Get a new code" mints the same
+// kind the student originally chose instead of silently falling back to points.
+let redeemPaidWith = null;
+// When the live code was painted, for the redeem_code_shown -> _expired/_confirmed
+// funnel. Wall-clock is fine here: it only ever feeds an analytics prop.
+let redeemShownAt = 0;
 let socket = null;          // socket.io connection for live balance pushes
 let currentToken = null;    // latest Supabase access token (socket auth)
 // The signed-in student's uuid. NOT for identifying them to the server — every
@@ -347,6 +353,10 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     render(null);
   });
   // account → your data: export + delete
+  $('account-help').addEventListener('click', openHelpSheet);
+  $('help-close').addEventListener('click', closeHelpSheet);
+  $('help-done').addEventListener('click', closeHelpSheet);
+  $('help-modal').addEventListener('click', (e) => { if (e.target === $('help-modal')) closeHelpSheet(); });
   $('account-export').addEventListener('click', exportMyData);
   // account → link a student email (migration-057)
   $('link-email-btn').addEventListener('click', openLinkSheet);
@@ -496,6 +506,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('item-close').addEventListener('click', closeItemModal);
   $('item-redeem').addEventListener('click', () => onRedeemTap('points'));
   $('item-redeem-visits').addEventListener('click', () => onRedeemTap('visits'));
+  $('item-renew').addEventListener('click', renewRedemptionCode);
   $('item-modal').addEventListener('click', (e) => { if (e.target === $('item-modal')) closeItemModal(); });
   // visits: the vendor-page counter opens the progress sheet; the bottom
   // button opens the full-screen scanner
@@ -518,6 +529,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // and the sheet of per-device instructions for a student who has already
   // blocked location and therefore cannot be re-prompted.
   $('nearby-toggle').addEventListener('click', onNearbyToggle);
+  $('reminders-toggle').addEventListener('click', onRemindersToggle);
   $('nearby-optin-enable').addEventListener('click', onNearbyOptinEnable);
   $('nearby-optin-dismiss').addEventListener('click', dismissNearbyOptin);
   $('nearby-help-close').addEventListener('click', closeNearbyHelp);
@@ -602,6 +614,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     closePickSheet();
     closePunchScanSheet();
     closePunchModal();
+    closeHelpSheet();
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
     closeHub();
@@ -982,6 +995,33 @@ function setAvatar(url, seed) {
     img.hidden = true;
     fb.hidden = false;
   }
+}
+
+/* ---------- account: how it works ----------
+   A read-only sheet, so it needs none of the state the other overlays carry:
+   no fetch, no skeleton, no reset. Same .overlay.sheet mechanics as the rest
+   (reflow, then .is-open, then wait out the 360ms slide on the way down) and
+   the same aria-expanded bookkeeping on the button that opens it. */
+
+function openHelpSheet() {
+  const ov = $('help-modal');
+  if (ov.classList.contains('is-open')) return;
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('account-help').setAttribute('aria-expanded', 'true');
+}
+
+function closeHelpSheet() {
+  const ov = $('help-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  ov.classList.remove('is-open');
+  $('account-help').setAttribute('aria-expanded', 'false');
+  setTimeout(() => {
+    // Unless it was reopened during the slide, which would otherwise hide a
+    // sheet the student is looking at.
+    if (!ov.classList.contains('is-open')) ov.hidden = true;
+  }, 360);
 }
 
 /* ---------- account tab: export + delete my data ---------- */
@@ -6872,6 +6912,12 @@ function applyBalance(next) {
   // A drop while the sheet is showing a code means this redemption just went
   // through — close the card (after a beat so the "Redeemed" toast registers).
   if (next < prev && !$('item-modal').hidden && !$('item-code').hidden) {
+    // Funnel close. Paired with redeem_code_shown this is the number the whole
+    // exercise is for: how many shown codes a counter actually consumes.
+    track('redeem_confirmed', {
+      secondsToConfirm: redeemShownAt ? Math.round((Date.now() - redeemShownAt) / 1000) : null,
+      paidWith: redeemPaidWith ?? 'points',
+    });
     setTimeout(closeItemModal, 1000);
     // Trigger 1: first successful redemption. The hook waits ~1.5s so the nudge
     // lands after the success toast + card-close animation, not during them.
@@ -7065,6 +7111,14 @@ function onItemTap(e) {
   $('item-redeem-visits').hidden = !a.byVisits;
   $('item-redeem-visits').disabled = false;
   $('item-notready').hidden = a.byPoints || a.byVisits;
+  // The row under the finger already computed the exact shortfall (decorateCard,
+  // which also handles the pooled "earn at any of them" wording), so the sheet
+  // reads it back rather than deriving it a second time and risking a different
+  // sentence. Only when short: a ready card's status line says "Ready to redeem".
+  if (!(a.byPoints || a.byVisits)) {
+    const gap = card.querySelector('.ic-status')?.textContent?.trim();
+    if (gap) $('item-notready-sub').textContent = gap;
+  }
 
   // Only warn when there is actually surplus to lose: spending exactly what you
   // have forfeits nothing.
@@ -7078,7 +7132,16 @@ function onItemTap(e) {
   clearInterval(redeemCountdown);
   redeemCountdown = null;
   $('item-code').hidden = true;
+  $('item-expired').hidden = true;
+  $('item-renew').hidden = true;
   openSheet();
+  // Funnel step 1. `affordable` is what makes the rest readable: a sheet opened
+  // on a reward they cannot afford yet is not a redemption that failed.
+  track('reward_sheet_opened', {
+    vendorId: vendor?.vendorId ?? null,
+    rewardId: selectedItem.id,
+    affordable: a.byPoints || a.byVisits,
+  });
 }
 
 function openSheet() {
@@ -7106,6 +7169,9 @@ function closeItemModal() {
     $('item-notready').hidden = true;
     $('item-forfeit').hidden = true;
     $('item-code').hidden = true;
+    $('item-expired').hidden = true;
+    $('item-renew').hidden = true;
+    $('item-renew').disabled = false;
     selectedItem = null;
     loadVendors();                     // balance may have changed while open
   }, 360);
@@ -7129,13 +7195,20 @@ function dropItemModal() {
   $('item-notready').hidden = true;
   $('item-forfeit').hidden = true;
   $('item-code').hidden = true;
+  $('item-expired').hidden = true;
+  $('item-renew').hidden = true;
+  $('item-renew').disabled = false;
   selectedItem = null;
 }
 
 /* ---------- redemption code ---------- */
 
 async function onRedeemTap(paidWith = 'points') {
-  if (!selectedItem || !vendor) return;
+  if (!selectedItem || !vendor) return false;
+  // Held for renewRedemptionCode, which has no other way to know which of the
+  // two buttons produced the code that just lapsed.
+  redeemPaidWith = paidWith;
+  track('redeem_tapped', { vendorId: vendor.vendorId, rewardId: selectedItem.id, paidWith });
   // Both buttons go down: whichever currency wins, the other code is invalidated
   // server-side (one live code per student per vendor across both).
   $('item-redeem').disabled = true;
@@ -7151,24 +7224,68 @@ async function onRedeemTap(paidWith = 'points') {
       $('item-status').className = 'detail-status locked';
       $('item-redeem').disabled = false;
       $('item-redeem-visits').disabled = false;
-      return;
+      track('redeem_failed', { error: data.error || String(res.status) });
+      return false;
     }
+    // Still `?? 120` deliberately, even though the server now sends 300: an
+    // unknown TTL has to be assumed SHORT. Guessing long would paint a countdown
+    // that outlives the code and send a student to the counter holding a number
+    // the terminal has already forgotten.
     showRedemptionCode(data.code, data.ttlSeconds ?? 120);
+    return true;
   } catch {
     $('item-status').textContent = 'No connection, try again.';
     $('item-redeem').disabled = false;
     $('item-redeem-visits').disabled = false;
+    track('redeem_failed', { error: 'NETWORK' });
+    return false;
+  }
+}
+
+/**
+ * Mint a replacement for a code that ran out, from the same currency as the one
+ * it replaces.
+ *
+ * Takes the expired block down FIRST so there is no frame where the student sees
+ * "that code ran out" above a live QR, and puts it back if the mint fails --
+ * otherwise a failed renew leaves the sheet with no affordance at all, which is
+ * the dead end this whole block exists to remove.
+ */
+async function renewRedemptionCode() {
+  track('redeem_code_renewed', { paidWith: redeemPaidWith ?? 'points' });
+  $('item-renew').disabled = true;
+  $('item-expired').hidden = true;
+  $('item-renew').hidden = true;
+  const ok = await onRedeemTap(redeemPaidWith ?? 'points');
+  $('item-renew').disabled = false;
+  if (!ok) {
+    $('item-expired').hidden = false;
+    $('item-renew').hidden = false;
   }
 }
 
 /* Replace the Redeem button, in place, with the live QR + code + a countdown. */
 function showRedemptionCode(code, seconds) {
+  // The sheet can be gone by the time the mint lands: closeItemModal resets its
+  // contents 360ms after the tap, and a slow network (or a second mint from the
+  // renew button) can easily outlast that. Painting anyway would un-hide
+  // #item-code inside a closed sheet and, worse, arm a countdown that nothing on
+  // screen owns — it would tick until the next open happened to clear it. The
+  // code itself is not lost by returning here: it stays live server-side for its
+  // full TTL, and create_redeem_code replaces it on the next tap either way.
+  const ov = $('item-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
   // All three of the pre-code affordances go, or one would sit live beside the QR.
   $('item-redeem').hidden = true;
   $('item-redeem-visits').hidden = true;
   $('item-notready').hidden = true;
   $('item-forfeit').hidden = true;
-  $('item-status').textContent = 'Show this at the counter';
+  // A renewed code lands here too, so the expired block has to come down.
+  $('item-expired').hidden = true;
+  $('item-renew').hidden = true;
+  // Names the staff action, because the student is the one who has to prompt a
+  // cashier who has not done this before. (No em dash: repo copy rule.)
+  $('item-status').textContent = 'Show this at the counter. Staff scan it on their terminal.';
   $('item-status').className = 'detail-status ok';
   $('item-code-value').textContent = code;
   try {
@@ -7177,13 +7294,25 @@ function showRedemptionCode(code, seconds) {
   $('item-code').hidden = false;
 
   clearInterval(redeemCountdown);
+  redeemShownAt = Date.now();
+  track('redeem_code_shown', { ttlSeconds: seconds, paidWith: redeemPaidWith ?? 'points' });
   let left = seconds;
   const tick = () => {
     if (left > 0) {
       $('item-code-timer').textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
     } else {
-      $('item-code-timer').textContent = 'Expired';
+      // Take the QR DOWN rather than label it. A code the terminal will refuse is
+      // worse than no code: the student goes on holding it up at the counter and
+      // reads the refusal as the app being broken. The renew button replaces it.
       clearInterval(redeemCountdown);
+      redeemCountdown = null;
+      $('item-code').hidden = true;
+      $('item-expired').hidden = false;
+      $('item-renew').hidden = false;
+      $('item-renew').disabled = false;
+      $('item-status').textContent = '';
+      $('item-status').className = 'detail-status';
+      track('redeem_code_expired', { secondsShown: seconds });
     }
     left -= 1;
   };
@@ -7768,6 +7897,11 @@ let pushFailNote = '';
 // student on iOS who never installed the PWA this is the only switch that can
 // do anything at all, because web push does not exist for them.
 let dealEmailsOn = true;
+// The fourth switch (migration-060). A plain preference like dealEmailsOn: there
+// is no permission and no endpoint of its own to reconcile, because the server's
+// claim re-derives reachability and also requires push_opt_in -- which is why the
+// row explains itself when deal alerts are off rather than lying about delivery.
+let remindersOn = true;
 // Whether THIS deployment can send mail at all (/api/public-config). The Deal
 // emails row stays hidden without it: a switch that cannot do anything reads as
 // a promise, and a student who turns it on and never gets an email learns that
@@ -7791,9 +7925,11 @@ async function loadDeals() {
     // the same occasions, and a second request would double the cost of every
     // foreground return to carry one boolean.
     nearbyOn = data.nearbyAlerts !== false;
+    remindersOn = data.reminders !== false;
     renderDealsCard(data.unread ?? 0);
     setDealsToggle(dealAlertsOn);
     setDealEmailsToggle(dealEmailsOn);
+    setRemindersToggle(remindersOn);
     void initNearby();
     if (!$('deals-modal').hidden) renderDealsList();
     // Only ask about notifications once there is something to be notified
@@ -7873,6 +8009,7 @@ function dropDealsSheet() {
   pushReady = null;
   dealAlertsOn = true;
   dealEmailsOn = true;
+  remindersOn = true;
   pushFailNote = '';
 }
 
@@ -8341,6 +8478,9 @@ function setDealsToggle(on) {
   $('deals-toggle').setAttribute('aria-checked', on && granted && reachable ? 'true' : 'false');
   $('deals-toggle').disabled = blocked;
   $('deals-blocked-note').hidden = !blocked;
+  // The reminders note is a statement ABOUT this switch, so it is re-derived
+  // whenever this one is repainted (a permission change, a lost endpoint).
+  syncRemindersNote();
 }
 
 async function onDealsToggle() {
@@ -8449,6 +8589,64 @@ async function onDealEmailsToggle() {
     dealEmailsOn = wasOn;                    // the server never heard it
     setDealEmailsToggle(wasOn);
     console.warn('[email] deal-emails toggle failed:', err?.message ?? err);
+  }
+  sw.disabled = false;
+}
+
+
+/* ---------- account: the weekly-reminders switch (migration-060) ----------
+
+   Same shape as the deal-emails switch above and for the same reason: the flag
+   is the entire truth, so the switch may move immediately and be put back if the
+   write fails. No permission to grant, no endpoint to go stale.
+
+   The one thing it does owe the student is honesty about a dependency. The
+   server's claim_reminder_pushes requires push_opt_in AND a stored student
+   endpoint, so with Deal alerts off these cannot arrive however this switch
+   reads. Rather than show an "on" switch that silently delivers nothing, the
+   note under the row says what else has to be on. */
+
+function setRemindersToggle(on) {
+  $('reminders-toggle').setAttribute('aria-checked', on ? 'true' : 'false');
+  syncRemindersNote();
+}
+
+function syncRemindersNote() {
+  const note = $('reminders-fail-note');
+  // Read the deal-alerts switch's own aria-checked rather than dealAlertsOn: that
+  // attribute is the EFFECTIVE truth (setDealsToggle folds in the browser
+  // permission and whether the server still holds an endpoint), and the stored
+  // flag can be true while none of that holds. Reusing it means this note cannot
+  // drift from the switch it is talking about.
+  const alertsLive = $('deals-toggle').getAttribute('aria-checked') === 'true';
+  // Only worth saying when the switch is ON and therefore making a promise it
+  // cannot keep. Off-and-undeliverable needs no explanation.
+  const stranded = remindersOn && !alertsLive;
+  note.hidden = !stranded;
+  if (stranded) note.textContent = 'Turn on Deal alerts above and these will start arriving too.';
+}
+
+async function onRemindersToggle() {
+  const sw = $('reminders-toggle');
+  const wasOn = sw.getAttribute('aria-checked') === 'true';
+  const next = !wasOn;
+
+  remindersOn = next;
+  setRemindersToggle(next);
+  sw.disabled = true;
+  try {
+    // Only this key, for the same reason the other switches send only theirs: a
+    // stale Account screen must not overwrite a sibling switch with whatever it
+    // happened to be showing.
+    const res = await authFetch('/api/me/notify', {
+      method: 'PATCH',
+      body: JSON.stringify({ reminders: next }),
+    });
+    if (!res.ok) throw new Error(`notify failed: ${res.status}`);
+  } catch (err) {
+    remindersOn = wasOn;                     // the server never heard it
+    setRemindersToggle(wasOn);
+    console.warn('[reminders] toggle failed:', err?.message ?? err);
   }
   sw.disabled = false;
 }

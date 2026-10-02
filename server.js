@@ -34,6 +34,7 @@ import { isUuid } from './src/lib/ids.js';
 import { loadVendorLogo } from './src/lib/cache.js';
 import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js';
 import { startReferralWorker, stopReferralWorker } from './src/lib/referrals.js';
+import { startReminderWorker, stopReminderWorker } from './src/lib/reminders.js';
 import { publicSignupBonus } from './src/lib/signup-bonus.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
@@ -1122,6 +1123,17 @@ const CLIENT_EVENTS = new Set([
   // healthy funnel has a matching install_prompt_shown close behind most of these.
   'install_eligible', 'install_prompt_deferred', 'install_prompt_shown',
   'install_prompt_dismissed', 'install_accepted', 'pwa_launched',
+  // The redemption funnel, in order. The pair that matters is
+  // redeem_code_shown -> redeem_confirmed: a redemption lives or dies at the
+  // counter, and nothing in the database can tell us how often that step fails.
+  // create_redeem_code PRUNES expired rows as housekeeping, so a code that was
+  // minted and never consumed leaves no trace at all once it lapses -- these
+  // events are the only record that it happened. redeem_code_expired and
+  // redeem_code_renewed separate the two ways that goes wrong: a student who
+  // walked away, versus a counter too slow for one code's life.
+  'reward_sheet_opened', 'redeem_tapped', 'redeem_code_shown',
+  'redeem_code_expired', 'redeem_code_renewed', 'redeem_confirmed',
+  'redeem_failed',
 ]);
 app.post('/api/client-event', async (req, res) => {
   const b = req.body ?? {};
@@ -1665,6 +1677,21 @@ if (isMain) {
   // for the same reason the campaign worker is.
   startReferralWorker();
 
+  // Weekly reminder pushes (migration-060). Same posture as the two above: only
+  // when run directly, and a complete no-op without VAPID keys -- which here is
+  // load-bearing rather than merely tidy. Claiming a student SPENDS their share
+  // of the storm budget (student_notify_state is one row for deals, nearby
+  // alerts and this), so a worker that could not deliver must never claim; see
+  // the guard at the top of runReminderTick.
+  //
+  // The cadence lives in SQL, not in this timer. The tick is deliberately far
+  // more frequent than the ~72h interval it enforces, because a single web dyno
+  // restarts on every deploy and cycles daily: a timer that tried to be the
+  // schedule would skip a week or fire twice depending on when it happened to be
+  // alive. claim_reminder_pushes asks "who is due?" instead, so any tick that
+  // happens to run does the right thing and the rest are cheap no-ops.
+  startReminderWorker();
+
   // Graceful shutdown. Heroku sends SIGTERM on every deploy and cycles dynos
   // ~daily, then SIGKILLs after ~30s. Draining first lets in-flight awards /
   // redeems finish instead of being cut mid-request. io.close() disconnects the
@@ -1678,6 +1705,7 @@ if (isMain) {
     console.log(`${signal} received — draining connections and shutting down`);
     stopCampaignWorker();   // don't claim a batch we won't live to deliver
     stopReferralWorker();   // the sweep is idempotent; the next boot picks it up
+    stopReminderWorker();   // same: an unclaimed student is simply due again next boot
     io.close(async () => {
       // Last call for queued analytics. capture() batches in memory to keep a
       // third-party hop off the request path, which means SIGTERM — the one

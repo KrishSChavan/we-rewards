@@ -7,6 +7,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { consentRejection } from '../src/middleware/auth.js';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { TERMS_VERSION, TERMS_DOCUMENTS } from '../src/lib/terms.js';
 
 const V = '2026-07-19';
@@ -64,6 +66,34 @@ test('the live TERMS_VERSION is a usable version string', () => {
     consentRejection({ terms_accepted_at: '2026-07-19T12:00:00Z', terms_version: TERMS_VERSION }),
     null
   );
+});
+
+test('every consent document says the same "Last Updated" date TERMS_VERSION claims', () => {
+  // The process at the top of src/lib/terms.js is "bump TERMS_VERSION to the new
+  // Last Updated date and update the matching date in the HTML", and until now
+  // nothing checked the second half. Half-doing it is the one failure mode that
+  // is invisible in production and indefensible afterwards: the consent record
+  // points at a date the document does not carry, so there is no way to prove
+  // which text a student actually agreed to.
+  //
+  // Compared as a parsed calendar date, not as a string, because the constant is
+  // ISO ('2026-10-01') and the documents are prose ('October 1, 2026').
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+    'August', 'September', 'October', 'November', 'December'];
+  const [y, m, d] = TERMS_VERSION.split('-').map(Number);
+  const expected = `${MONTHS[m - 1]} ${d}, ${y}`;
+
+  for (const doc of TERMS_DOCUMENTS) {
+    const html = readFileSync(new URL(`../legal/${basename(doc.path)}`, import.meta.url), 'utf8');
+    const found = html.match(/Last Updated:\s*([A-Z][a-z]+ \d{1,2}, \d{4})/);
+    assert.ok(found, `${doc.path} has no "Last Updated:" line to check`);
+    assert.equal(
+      found[1],
+      expected,
+      `${doc.path} says "Last Updated: ${found[1]}" but TERMS_VERSION is ${TERMS_VERSION} `
+      + '(bump both together, or neither — see the header of src/lib/terms.js)'
+    );
+  }
 });
 
 test('every consent document the modal links is under /legal/', () => {

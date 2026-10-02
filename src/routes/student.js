@@ -1103,6 +1103,23 @@ router.post('/earn-code', requireConsent, async (req, res, next) => {
 });
 
 /**
+ * How long a minted redemption code stays good.
+ *
+ * Five minutes, matching the earn code above, and the reason is the queue. The
+ * old 120s was measured from the tap, not from reaching the counter, so a
+ * student who hit Redeem while still in line watched it die in front of them —
+ * and the sheet had no way to mint another, so the only exit was to close it
+ * and start over. The window now outlasts a normal queue, and showRedemptionCode
+ * offers a fresh code when it does lapse, so expiry is recoverable either way.
+ *
+ * create_redeem_code takes this as a parameter and still defaults to 120, so a
+ * database that has not been re-migrated is unaffected by this number moving.
+ * It deletes any live code for the pair before inserting, which is what makes
+ * re-minting safe rather than a way to leave two codes at one counter.
+ */
+const REDEEM_TTL_SECONDS = 300;
+
+/**
  * POST /api/me/redeem-code  { vendorId, rewardId, paidWith }
  * Pre-checks affordability so the student gets a clear error before showing a
  * code, then mints a unique 4-digit redemption code (one live code per student
@@ -1169,10 +1186,10 @@ router.post('/redeem-code', requireConsent, async (req, res, next) => {
       p_vendor_id: vendorId,
       p_reward_id: rewardId,
       p_paid_with: paidWith,
-      p_ttl_seconds: 120,
+      p_ttl_seconds: REDEEM_TTL_SECONDS,
     });
     if (error) throw error;
-    res.json({ code: data, ttlSeconds: 120, paidWith });
+    res.json({ code: data, ttlSeconds: REDEEM_TTL_SECONDS, paidWith });
   } catch (err) {
     next(err);
   }
@@ -2018,7 +2035,7 @@ router.get('/deals', requireConsent, async (req, res, next) => {
         .limit(50),
       supabaseAdmin
         .from('student_notify_state')
-        .select('push_opt_in, email_opt_in, nearby_opt_in')
+        .select('push_opt_in, email_opt_in, nearby_opt_in, reminder_opt_in')
         .eq('user_id', req.user.id)
         .maybeSingle(),
       // Do we actually hold somewhere to send to? claim_campaign_pushes will not
@@ -2075,6 +2092,9 @@ router.get('/deals', requireConsent, async (req, res, next) => {
       // only thing that can tell whether it is truly working, and it writes the
       // answer back here (PATCH /api/me/notify) rather than being asked.
       nearbyAlerts: state?.nearby_opt_in ?? true,
+      // migration-060. Defaults true like the other three: a student who has
+      // never had a row has opted out of nothing.
+      reminders: state?.reminder_opt_in ?? true,
     });
   } catch (err) {
     next(err);
@@ -2209,10 +2229,12 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
     const push = req.body?.dealAlerts;
     const mail = req.body?.dealEmails;
     const near = req.body?.nearbyAlerts;
+    const remind = req.body?.reminders;
     const hasPush = typeof push === 'boolean';
     const hasMail = typeof mail === 'boolean';
     const hasNear = typeof near === 'boolean';
-    if (!hasPush && !hasMail && !hasNear) {
+    const hasRemind = typeof remind === 'boolean';
+    if (!hasPush && !hasMail && !hasNear && !hasRemind) {
       return res.status(400).json({ error: 'BAD_REQUEST', message: 'Deal alerts must be on or off.' });
     }
 
@@ -2220,6 +2242,7 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
     if (hasPush) patch.push_opt_in = push;
     if (hasMail) patch.email_opt_in = mail;
     if (hasNear) patch.nearby_opt_in = near;
+    if (hasRemind) patch.reminder_opt_in = remind;
 
     const { error } = await supabaseAdmin
       .from('student_notify_state')
@@ -2256,6 +2279,7 @@ router.patch('/notify', requireConsent, async (req, res, next) => {
     if (hasPush) body.dealAlerts = push;
     if (hasMail) body.dealEmails = mail;
     if (hasNear) body.nearbyAlerts = near;
+    if (hasRemind) body.reminders = remind;
     res.json(body);
   } catch (err) {
     next(err);
@@ -2341,7 +2365,7 @@ router.get('/export', async (req, res, next) => {
         .from('campaign_recipients')
         .select('campaign_id, status, pushed_at, read_at, opened_at, vendor_campaigns(title, body, kind, created_at, vendors(name))')
         .eq('user_id', uid),
-      supabaseAdmin.from('student_notify_state').select('push_opt_in, email_opt_in, nearby_opt_in, last_push_at, last_email_at').eq('user_id', uid).maybeSingle(),
+      supabaseAdmin.from('student_notify_state').select('push_opt_in, email_opt_in, nearby_opt_in, reminder_opt_in, last_push_at, last_email_at, last_reminder_at').eq('user_id', uid).maybeSingle(),
       // Community points we GAVE them and why (migration-039/040). Not a
       // transaction, so the history above misses it entirely — and "points that
       // appeared from nowhere" is exactly what an export exists to explain.
@@ -2434,7 +2458,7 @@ router.get('/export', async (req, res, next) => {
       transactions: transactions.data ?? [],
       scores: scores.data,
       deals: deals.data ?? [],
-      notifications: notify.data ?? { push_opt_in: true, email_opt_in: true, nearby_opt_in: true, last_push_at: null, last_email_at: null },
+      notifications: notify.data ?? { push_opt_in: true, email_opt_in: true, nearby_opt_in: true, reminder_opt_in: true, last_push_at: null, last_email_at: null, last_reminder_at: null },
       // Flattened to a spot name for the same reason poolBalances is: a person
       // reading their own data should not be handed a bare uuid and asked to
       // resolve it. Empty for every student who has never had one fire.

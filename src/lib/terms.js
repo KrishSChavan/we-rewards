@@ -137,7 +137,28 @@
 // migration-058 makes all of them payable on the next 45-second sweep. That
 // number is knowable before you ship — see the header of migration-058, which
 // is where the warning belongs since it is the paste that spends the money.
-export const TERMS_VERSION = '2026-09-14';
+// 2026-10-01: weekly reminder pushes (Policy §2.6, §7.4; migration-060).
+// Material on the same ground as the 2026-08-20 bump above, and for the two
+// reasons that bump names. First, it is a NEW CLASS of push notification sent by
+// WeRewards itself rather than by a vendor, and the prior §7.4 enumerated the
+// kinds of message a student can receive — a list a reminder is not on, which
+// makes it a promise this feature breaks rather than a gap it fills. Second,
+// students are opted in BY DEFAULT (reminder_opt_in defaults true, same as the
+// other three switches), so the consent has to come from somewhere, and per the
+// rule at the top of this file that somewhere is a bump.
+//
+// It also records one more thing about each student — last_reminder_at, the
+// cadence gate — which §2.6 now names alongside the existing counters.
+//
+// ⚠ DELIVERY IS NOT LIVE THE MOMENT THIS SHIPS. The reminder worker no-ops
+// without VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY, and claim_reminder_pushes does not
+// exist until migration-060 is applied by hand. So this bump can reach students
+// BEFORE the feature it discloses does. That ordering is deliberate and is the
+// safe direction: disclosing early costs one consent prompt, disclosing late
+// means having already sent something §7.4 did not cover. If you need to defer
+// the interruption, revert this one line and the Policy's "Last Updated" date
+// together — never one without the other.
+export const TERMS_VERSION = '2026-10-01';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

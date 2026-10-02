@@ -2240,6 +2240,29 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .inr-head { font-weight: 900; font-size: 1.15rem; color: var(--ink); }
 .inr-sub { font-weight: 600; font-size: 0.92rem; color: var(--muted); }
 
+/* ---------- the how-it-works sheet (Account > Help) ----------
+   A numbered list inside a .detail-card, which centres its children -- so this
+   resets to left-aligned text: a wrapped sentence centred on four lines is
+   unreadable. The counter is drawn by ::before rather than list-style so the
+   number can be a weighted brand-coloured block matching .step-num on the
+   landing page, and so no list marker hangs outside the padded card. */
+.help-steps {
+  margin: 0.9rem 0 0; padding: 0; width: 100%;
+  list-style: none; counter-reset: help-step;
+  text-align: left;
+  display: flex; flex-direction: column; gap: 1.05rem;
+}
+.help-steps > li { counter-increment: help-step; }
+.help-steps > li::before {
+  content: counter(help-step);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6rem; height: 1.6rem; margin-bottom: 0.35rem;
+  border-radius: 50%; background: var(--brand); color: var(--card);
+  font-weight: 900; font-size: 0.9rem;
+}
+.help-steps h3 { margin: 0 0 0.2rem; font-size: 1.05rem; font-weight: 900; line-height: 1.25; color: var(--ink); }
+.help-steps p { margin: 0; color: var(--muted); font-weight: 500; font-size: 0.95rem; line-height: 1.5; }
+
 /* Redemption code shown in place of the Redeem button: code + timer, side by side. */
 .item-code {
   margin-top: 0.6rem; width: 100%;
