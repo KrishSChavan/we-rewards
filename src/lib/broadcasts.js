@@ -188,6 +188,45 @@ let running = false;   // one tick at a time, whatever the interval does
 const ZERO = { claimed: 0, delivered: 0, failed: 0 };
 
 /**
+ * Students a recent tick claimed and could not reach, with the ms it happened,
+ * so the next tick does not pick the same ones straight back up.
+ *
+ * THE SAME MECHANISM src/lib/reminders.js CARRIES, and it is not optional here
+ * either -- it is worse here, because this queue has an order. A failed settle
+ * calls finish_admin_broadcast(false), which sets last_push_at = null to give
+ * the budget back and requeues the recipient; the claim then sorts candidates
+ * `order by b.created_at, r2.user_id` (migration-061). That order is STABLE, so
+ * a student whose endpoint fails with a code push.js does not prune (it deletes
+ * only on 401/403/404/410, so a 500, a dropped socket or a malformed p256dh
+ * survives) is re-claimed on the very next tick, and on every tick after it.
+ *
+ * Below p_max_users such students that is merely wasted sends. At or above it --
+ * forty, by default -- they fill every batch for the whole 48-hour expires_at
+ * window and NOBODY ELSE IN THE AUDIENCE EVER RECEIVES THE BROADCAST. The
+ * operator watches sent_count sit far below queued_count with no error anywhere,
+ * having already told the campus something.
+ *
+ * In memory rather than a column, for the same reason reminders.js chose that: it
+ * is a scheduling hint, not a fact about the student. Losing it on deploy costs
+ * one extra attempt, and a dyno that has forgotten is a dyno that correctly
+ * retries after a push service's bad afternoon.
+ */
+const recentlyFailed = new Map();
+
+/** How long a failed student is passed over. Shorter than the reminder worker's
+ *  day, because a broadcast expires in 48 hours and a student skipped for 24 of
+ *  them has lost half their chance of hearing it at all. */
+const FAILED_BACKOFF_MS = 2 * 60 * 60 * 1000;
+
+/** The still-live entries, pruned as they are read so the map cannot grow without bound. */
+function backedOffUserIds(now) {
+  for (const [id, at] of recentlyFailed) {
+    if (now - at >= FAILED_BACKOFF_MS) recentlyFailed.delete(id);
+  }
+  return [...recentlyFailed.keys()];
+}
+
+/**
  * Settle one claimed recipient, whatever became of the send.
  *
  * EVERY row the claim returns must come through here exactly once. The claim
@@ -265,6 +304,11 @@ export async function runBroadcastTick() {
   // sits above everything else rather than inside the loop.
   if (!pushEnabled) return { ...ZERO };
 
+  // Outside the try so the catch can still read it. Once the claim returns, this
+  // many students have had their shared budget spent and their recipient rows
+  // moved to 'sending', whatever happens next.
+  let claimedCount = 0;
+
   try {
     const { data: rows, error } = await supabaseAdmin.rpc('claim_admin_broadcast_pushes', {
       p_max_users: BROADCAST_CONFIG.maxUsers,
@@ -275,7 +319,12 @@ export async function runBroadcastTick() {
       // this degrades to "some foreground students still get a push", never to
       // a double send -- the recipient row's primary key is what guarantees
       // that second part.)
-      p_skip_users: visibleUserIds(),
+      // Two exclusions, one argument. visibleUserIds() is "do not interrupt
+      // someone already looking at the app"; backedOffUserIds() is "do not
+      // re-claim whoever we just failed to reach", which is what stops a handful
+      // of dead endpoints starving the rest of an audience -- see recentlyFailed.
+      // Deduped, because the two sets can overlap.
+      p_skip_users: [...new Set([...visibleUserIds(), ...backedOffUserIds(Date.now())])],
       // CAMPAIGN_CONFIG's own values, FORWARDED rather than copied -- see
       // BROADCAST_CONFIG's comment. One place to retune the storm defences, and
       // no way for a fourth feature to drift into believing a student has a
@@ -299,6 +348,7 @@ export async function runBroadcastTick() {
     }
 
     const claimedRows = (rows ?? []).filter(Boolean);
+    claimedCount = claimedRows.length;
     if (!claimedRows.length) return { ...ZERO };
 
     let delivered = 0;
@@ -317,8 +367,15 @@ export async function runBroadcastTick() {
     // recipient row inside one batch. One student, at most one broadcast, per
     // claim.
     for (const row of claimedRows) {
-      const userId = row.out_user_id ?? null;
-      const broadcastId = row.out_broadcast_id ?? null;
+      // Declared here and READ inside the try below, not assigned here. Reading
+      // a property is the first thing in this body that can throw, so it has to
+      // be the first thing the per-row catch covers -- outside it, one malformed
+      // row escapes to the outer catch and defeats the very guard the rest of
+      // this block depends on, abandoning every row after it with its budget
+      // already spent. The catch still needs the names in scope to settle with,
+      // which is why they are `let` out here rather than `const` in there.
+      let userId = null;
+      let broadcastId = null;
       let accepted = 0;
       // Set immediately BEFORE the settle call rather than after it, so the
       // catch below can tell "we never got that far" from "the database has
@@ -334,6 +391,9 @@ export async function runBroadcastTick() {
       // student silenced for four hours and no refund, because by then those
       // ids are out of scope. One bad row must cost one send.
       try {
+        userId = row.out_user_id ?? null;
+        broadcastId = row.out_broadcast_id ?? null;
+
         if (!userId || !broadcastId) {
           // Unsettlable: finish_admin_broadcast keys on both ids and returns
           // false for a null either side. Nothing to do but say so loudly and
@@ -381,6 +441,13 @@ export async function runBroadcastTick() {
           console.warn(`[broadcasts] unusable copy broadcast=${broadcastId} user=${userId} — requeueing`);
         }
 
+        // Recorded BEFORE the settle, not after: the settle is what makes this
+        // student immediately re-claimable (it nulls last_push_at), so the thing
+        // that keeps them out of the next batch has to be written whether or not
+        // the settle itself succeeds.
+        if (accepted > 0) recentlyFailed.delete(userId);
+        else recentlyFailed.set(userId, Date.now());
+
         settleAsked = true;
         await settle(broadcastId, userId, accepted > 0);
         if (accepted > 0) delivered += 1;
@@ -407,7 +474,13 @@ export async function runBroadcastTick() {
     // Never throws upward: this is a background sweep with nothing downstream
     // of it, and the next tick retries from scratch. Same posture as
     // runReminderTick and claimNearby.
-    console.error(`[broadcasts] tick failed: ${err?.message ?? err}`);
+    // claimedRows is deliberately in the message. If the throw happened AFTER
+    // the claim, the database has already spent N students' budgets and moved
+    // their recipient rows to 'sending' -- reporting a bare failure with
+    // claimed:0 would tell the operator nothing was touched, which is the
+    // opposite of true. The ten-minute 'sending' sweep in the claim recovers
+    // those rows; this line is how anyone knows to expect it.
+    console.error(`[broadcasts] tick failed after claiming ${claimedCount} row(s): ${err?.message ?? err}`);
     return { ...ZERO };
   }
 }

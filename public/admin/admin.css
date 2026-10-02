@@ -272,7 +272,7 @@ h1, h3 { margin: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .reset-card { animation: none; } }
 .reset-card h2 { margin: 0; font-size: 1.25rem; font-weight: 900; }
-.reset-card .muted { font-size: 0.88rem; margin: 0.5rem 0 0; }
+.reset-card .muted { font-size: 0.88rem; margin: 0.5rem 0 0.5rem; }
 
 .reset-pick { margin-top: 1rem; display: grid; gap: 0.4rem; }
 .reset-pick-label { margin: 0; font-size: 0.78rem; font-weight: 700; color: var(--muted); }

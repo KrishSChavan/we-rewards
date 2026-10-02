@@ -61,8 +61,10 @@ declare
 begin
   -- ---------- fixtures first ----------
   -- Both of these guard assertions that would otherwise pass for the wrong
-  -- reason: A3 proves nothing if the non-consenting user has a profile, and A9
-  -- proves nothing if the dual-role account is an ordinary student. The
+  -- reason: A5 proves nothing if the non-consenting user has a profile, and A6
+  -- proves nothing if the dual-role account is an ordinary student. (These read
+  -- A3/A9 until a review caught it: A9 is the p_limit clamp, which has nothing
+  -- to do with either fixture.) The
   -- is_vendor flag especially, because migration-035 put a BEFORE INSERT trigger
   -- on profiles that overwrites whatever the seed supplies.
   select count(*) into n from public.profiles where user_id = noconsent;
@@ -294,7 +296,7 @@ declare
   v_vendor_balance integer;
   v_pool_balance   integer;
 begin
-  -- Fixture guard for D3, and the reason D3 is the assertion worth having. If
+  -- Fixture guard for D4, and the reason D3 is the assertion worth having. If
   -- the per-vendor row were missing rather than zero, a buggy reader would find
   -- a NULL, and somebody might later "fix" it with a coalesce that accidentally
   -- works. A real row holding a real 0 leaves the bug no way to look right.
@@ -965,6 +967,7 @@ declare
   h    integer;
   off  integer;
   tz   text;
+  tz3  text;   -- a second fold of the clock, to local hour 3 (see I6)
   n    integer;
   m    integer;
 begin
@@ -1031,14 +1034,67 @@ begin
   if n = 1 then raise notice 'PASS I4: a quiet-hours refusal spends nobody''s quota';
   else raise notice 'FAIL I4: a due student had their budget charged by a quiet tick'; end if;
 
-  -- 00:00-01:00 in the same zone is NOT now: same branch, opposite arm. This is
-  -- what proves I2 was the window rather than an empty candidate set.
+  -- 00:00-01:00 in the same zone is NOT now, so the claim is allowed. This is
+  -- what proves I2 was the WINDOW refusing rather than an empty candidate set.
+  --
+  -- ⚠ It is NOT the opposite arm of the same branch, and the comment here used to
+  -- say it was. (0, 1) has start < end, so control reaches the PLAIN branch; only
+  -- a pair with start > end enters the midnight-wrap arm at all. I6 below is the
+  -- real opposite arm.
   select coalesce(array_agg(out_user_id), '{}'::uuid[]) into got
   from public.claim_admin_broadcast_pushes(
     p_max_users => 40, p_quiet_start => 0, p_quiet_end => 1, p_timezone => tz);
   if coalesce(array_length(got, 1), 0) = 1 and s_ba = any(got) then
-    raise notice 'PASS I5: outside the window the same branch allows the claim';
-  else raise notice 'FAIL I5: a non-matching wrapped window still returned %', got; end if;
+    raise notice 'PASS I5: a plain (start < end) window that excludes now allows the claim';
+  else raise notice 'FAIL I5: a non-matching plain window still returned %', got; end if;
+
+  -- ---------- I6: the wrap branch's OTHER arm, and the shipped pair ----------
+  --
+  -- The wrap condition is `v_hour >= p_quiet_start OR v_hour < p_quiet_end`. I2
+  -- exercised the LEFT arm (local 23 against a window starting at 23). Nothing
+  -- had ever exercised the RIGHT one -- the small hours, where v_hour is BELOW
+  -- quiet_end -- which is the arm the shipped 22-to-9 window actually uses every
+  -- night between midnight and 9am.
+  --
+  -- A second fold of the clock, to local hour 3. The sign on Etc/GMT is inverted
+  -- by POSIX convention (Etc/GMT+5 is UTC-5), which is why this looks backwards
+  -- and is not; the branch below keeps the offset inside the +/-12 zones that
+  -- actually exist.
+  h := extract(hour from (now() at time zone 'UTC'))::integer;
+  off := 3 - h;
+  if off > 12 then off := off - 24; elsif off < -12 then off := off + 24; end if;
+  if off = 0 then tz3 := 'UTC';
+  elsif off > 0 then tz3 := 'Etc/GMT-' || off::text;
+  else tz3 := 'Etc/GMT+' || abs(off)::text;
+  end if;
+
+  -- Fixture guard: if the fold is wrong the two assertions below would pass or
+  -- fail for reasons that have nothing to do with the branch under test.
+  if extract(hour from (now() at time zone tz3))::integer = 3
+  then raise notice 'PASS I6a: the clock folded to local hour 3 in %', tz3;
+  else raise notice 'FAIL I6a: % is local hour %, not 3', tz3,
+    extract(hour from (now() at time zone tz3))::integer; end if;
+
+  perform public.finish_admin_broadcast(bid, s_ba, false);   -- due again
+
+  -- The SHIPPED window, at 3am. Refuses via `v_hour < p_quiet_end` (3 < 9).
+  select coalesce(array_agg(out_user_id), '{}'::uuid[]) into got
+  from public.claim_admin_broadcast_pushes(
+    p_max_users => 40, p_quiet_start => 22, p_quiet_end => 9, p_timezone => tz3);
+  if coalesce(array_length(got, 1), 0) = 0
+  then raise notice 'PASS I6b: the shipped 22-to-9 window refuses at 3am (the wrap branch''s lower arm)';
+  else raise notice 'FAIL I6b: a 3am tick inside quiet hours claimed %', got; end if;
+
+  -- Same zone, same branch, now OUTSIDE the window: 4am-to-2am excludes 3am
+  -- only via the lower arm being false (3 >= 4 is false, 3 < 2 is false).
+  select coalesce(array_agg(out_user_id), '{}'::uuid[]) into got
+  from public.claim_admin_broadcast_pushes(
+    p_max_users => 40, p_quiet_start => 4, p_quiet_end => 2, p_timezone => tz3);
+  if coalesce(array_length(got, 1), 0) = 1 and s_ba = any(got)
+  then raise notice 'PASS I6c: a wrapped window that excludes 3am allows the claim';
+  else raise notice 'FAIL I6c: a wrapped window excluding now still returned %', got; end if;
+
+  perform public.finish_admin_broadcast(bid, s_ba, false);   -- due again for I7
 
   -- start = end must mean DISABLED, not a 23-hour window silencing everybody,
   -- and it is checked at local hour 23 -- the one hour I2 has just proved IS
@@ -1463,11 +1519,43 @@ begin
   -- this line the only output would be a bare 42883 and a report of zero
   -- assertions for a block that never ran. Notices are flushed per statement, so
   -- the FAIL below is printed before that happens and names the cause.
+  -- ALL FOUR, not just the claim. The earlier version of this block checked
+  -- claim_admin_broadcast_pushes alone while feeding aud_sig, create_sig and
+  -- fin_sig straight into has_function_privilege below, each of which raises
+  -- 42883 on a signature matching nothing -- so a wrong arity in any of those
+  -- three still killed the block with no assertion naming it.
+  --
+  -- This is not hypothetical. migration-061 shipped with a NINE-type identity in
+  -- its own comment/revoke/grant for the eight-argument claim, copied from
+  -- migration-060's claim_reminder_pushes (which legitimately has one more
+  -- parameter, its cadence gate). The whole migration rolled back on
+  -- application. to_regprocedure is used rather than ::regprocedure because it
+  -- returns NULL instead of raising, which is the only way to report the problem
+  -- rather than become it.
+  if to_regprocedure('public.admin_broadcast_audience(' || aud_sig || ')') is not null
+     and to_regprocedure('public.create_admin_broadcast(' || create_sig || ')') is not null
+     and to_regprocedure('public.claim_admin_broadcast_pushes(' || claim_sig || ')') is not null
+     and to_regprocedure('public.finish_admin_broadcast(' || fin_sig || ')') is not null
+  then raise notice 'PASS M1: all four signatures resolve exactly as the contract spells them';
+  else raise notice 'FAIL M1: a signature does not resolve -- audience=% create=% claim=% finish=%',
+    to_regprocedure('public.admin_broadcast_audience(' || aud_sig || ')'),
+    to_regprocedure('public.create_admin_broadcast(' || create_sig || ')'),
+    to_regprocedure('public.claim_admin_broadcast_pushes(' || claim_sig || ')'),
+    to_regprocedure('public.finish_admin_broadcast(' || fin_sig || ')');
+  end if;
+
+  -- And the arities, named individually, so a FAIL says which one moved.
   select count(*) into n
   from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
-  where ns.nspname = 'public' and p.proname = 'claim_admin_broadcast_pushes' and p.pronargs = 8;
-  if n = 1 then raise notice 'PASS M1: the claim exists exactly once, with the eight arguments the contract names';
-  else raise notice 'FAIL M1: % functions named claim_admin_broadcast_pushes take 8 arguments', n; end if;
+  where ns.nspname = 'public'
+    and (p.proname, p.pronargs) in (
+      ('admin_broadcast_audience', 3),
+      ('create_admin_broadcast', 8),
+      ('claim_admin_broadcast_pushes', 8),
+      ('finish_admin_broadcast', 3)
+    );
+  if n = 4 then raise notice 'PASS M1b: each function takes exactly the number of arguments the contract names';
+  else raise notice 'FAIL M1b: only % of 4 functions have their contracted arity', n; end if;
 
   -- ---------- audience ----------
   if has_function_privilege('anon', 'public.admin_broadcast_audience(' || aud_sig || ')', 'execute')

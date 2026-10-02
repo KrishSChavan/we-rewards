@@ -146,9 +146,10 @@ test('a broadcast carries a collapse tag of its own, never the deals one', () =>
   // nothing logged anywhere. 'wr-reminder' is the same mistake in the other
   // direction. Asserted by name rather than "not equal to the others", so a
   // fourth feature inventing a fifth tag does not quietly pass.
+  // By name, and ONLY by name. The two notEqual assertions that used to sit here
+  // could never fail: a value equal to 'wr-broadcast' is already unequal to the
+  // other two, so they asserted nothing and read as if they were the real check.
   assert.equal(composeBroadcast(claimed()).tag, 'wr-broadcast');
-  assert.notEqual(composeBroadcast(claimed()).tag, 'wr-deals');
-  assert.notEqual(composeBroadcast(claimed()).tag, 'wr-reminder');
 });
 
 test('the operator cannot burst the lengths a notification actually shows', () => {
@@ -318,7 +319,7 @@ const KEYS = webpush.generateVAPIDKeys();
  * has already filled in — the parent could not have imported broadcasts.js at
  * all otherwise.
  */
-function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null } = {}) {
+function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, delivering = false } = {}) {
   const src = `
     // Any socket at all is a failure in most of these tests, but it must be
     // observable rather than a thrown ECONNREFUSED that reads as an unrelated
@@ -343,14 +344,47 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     // reason. Named routing lets each function answer as itself; anything
     // unrouted gets an empty list.
     const BY_NAME = ${JSON.stringify(rpcByName)};
+    // JSON cannot carry a getter, so a row that must THROW when read is written
+    // in the fixture as a sentinel string and built here. This is the only way
+    // to exercise the per-row try/catch, whose job is that one row failing to be
+    // read costs one send rather than the remainder of the batch.
+    const materialise = (d) => (Array.isArray(d)
+      ? d.map((r) => (r === '__THROWING_ROW__'
+        ? { get out_user_id() { throw new TypeError('unreadable claim row'); } }
+        : r))
+      : d);
     supabaseAdmin.rpc = async (name, params) => {
       seen.push({ name, params });
       if (BY_NAME) {
         const hit = Object.prototype.hasOwnProperty.call(BY_NAME, name) ? BY_NAME[name] : { data: [], error: null };
-        return { data: hit.data ?? null, error: hit.error ?? null };
+        return { data: materialise(hit.data ?? null), error: hit.error ?? null };
       }
       return { data: ${JSON.stringify(rows)}, error: ${JSON.stringify(error)} };
     };
+
+    // The 'delivering' option makes a SUCCESSFUL send constructible, which the
+    // fetch stub above cannot: it answers '[]' to everything, so
+    // studentSubscriptions always
+    // finds zero endpoints and every claim settles as a failure. Without this the
+    // delivered branch is unreachable, and 'accepted > 0' in the lib could be
+    // replaced by a literal 'true' without a single test noticing.
+    //
+    // Two stubs, both shapes test/push.test.js already uses: the query chain
+    // studentSubscriptions walks (.from().select().eq().eq(), awaited), and
+    // webpush.sendNotification replaced on the shared module object BEFORE the
+    // tick runs -- push.js imports webpush at module scope but calls the method
+    // at call time, so the swap takes effect.
+    const sent = [];
+    if (${JSON.stringify(delivering)}) {
+      const chain = {
+        select: () => chain,
+        eq: () => chain,
+        then: (res) => res({ data: [{ endpoint: 'https://push.test/a', p256dh: 'p', auth: 'a' }], error: null }),
+      };
+      supabaseAdmin.from = () => chain;
+      const webpush = (await import('web-push')).default;
+      webpush.sendNotification = async (sub, b) => { sent.push({ endpoint: sub.endpoint, body: b }); return { statusCode: 201 }; };
+    }
 
     const { CAMPAIGN_CONFIG } = await import(${JSON.stringify(CAMPAIGNS)});
     const broadcasts = await import(${JSON.stringify(LIB)});
@@ -361,7 +395,7 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     globalThis.setInterval = (fn, ms) => { armed.push(ms); return { unref() {} }; };
     globalThis.clearInterval = () => {};
 
-    const out = await (${body})({ broadcasts, seen, fetches, armed, CAMPAIGN_CONFIG, supabaseAdmin });
+    const out = await (${body})({ broadcasts, seen, fetches, armed, CAMPAIGN_CONFIG, supabaseAdmin, sent });
     console.log('__RESULT__' + JSON.stringify(out ?? null));
   `;
   const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
@@ -407,9 +441,11 @@ test('the caps forwarded to the claim are CAMPAIGN_CONFIG’s own, not a second 
   // p_skip_users has a default in SQL ('{}'), so a tick that passes nothing is
   // legal; a tick that passes something which is not a list of ids is not — that
   // is a 400 from PostgREST and a feature that never delivers anything.
-  if ('p_skip_users' in p) {
-    assert.ok(Array.isArray(p.p_skip_users), `p_skip_users was ${JSON.stringify(p.p_skip_users)}`);
-  }
+  // Unconditional. This used to be wrapped in `if ('p_skip_users' in p)`, which
+  // made it vacuous exactly when it mattered: deleting the forward from the lib
+  // removed the key, skipped the assertion, and left the suite green. The lib
+  // passes it on every call, so its absence is a failure, not a variant.
+  assert.ok(Array.isArray(p.p_skip_users), 'the claim was called without a skip list');
 
   // A claim that came back empty must stop there rather than going on to read
   // subscriptions for nobody.
@@ -633,4 +669,135 @@ test('a claimed row with no ids is counted, not settled against null', () => {
     [],
     'a settle was attempted against a null id, which can only ever return false',
   );
+});
+
+/* ---------- the delivered path, and a batch with one bad row ----------
+
+   Everything above settles as a FAILURE: the child's fetch stub answers '[]' to
+   every query, so studentSubscriptions finds no endpoints and accepted is always
+   zero. That left the two halves of the loop's contract uncovered, and both were
+   mutation-verified as uncovered before these existed:
+
+     • `accepted > 0` could be replaced with a literal `true` -- every settle
+       would claim success -- and all 18 tests stayed green.
+     • the per-row try/catch could be deleted outright, and they stayed green
+       too, because no batch ever had a second row for a first bad one to harm. */
+
+test('a delivered broadcast is settled as delivered, once, with the right ids', () => {
+  const out = runConfigured(`async ({ broadcasts, seen, sent }) => ({
+    result: await broadcasts.runBroadcastTick(),
+    finishes: seen.filter((c) => c.name === 'finish_admin_broadcast').map((c) => c.params),
+    sent,
+  })`, { ...ONE_CLAIMED, delivering: true });
+
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0 });
+  assert.equal(out.sent.length, 1, 'exactly one push for one claimed recipient');
+  assert.equal(out.sent[0].endpoint, 'https://push.test/a');
+  // The copy the claim returned, carried through compose to the wire. The claim
+  // hands back the words precisely so there is no second read here.
+  const payload = JSON.parse(out.sent[0].body);
+  assert.equal(payload.title, 'Six new spots just joined');
+  assert.equal(payload.tag, 'wr-broadcast');
+  assert.equal(payload.url, '/?spots=1');
+  // p_delivered TRUE is the half no previous test could reach.
+  assert.deepEqual(out.finishes, [{
+    p_broadcast_id: CLAIMED_BROADCAST,
+    p_user_id: CLAIMED_USER,
+    p_delivered: true,
+  }]);
+});
+
+test('one unreadable row costs one send, not the rest of the batch', () => {
+  // The per-row try/catch's whole stated job. The first row's id getter throws,
+  // which is the earliest point in the body that CAN throw -- and the reason the
+  // reads were moved inside the try. Before that fix this returned
+  // {claimed:0,delivered:0,failed:0} with a single rpc call: row two's student
+  // had their budget spent by the claim and was never settled at all.
+  const GOOD_USER = '00000000-0000-4000-8000-0000000000bb';
+  const out = runConfigured(`async ({ broadcasts, seen, sent }) => ({
+    result: await broadcasts.runBroadcastTick(),
+    finishes: seen.filter((c) => c.name === 'finish_admin_broadcast').map((c) => c.params),
+    sent,
+  })`, {
+    delivering: true,
+    rpcByName: {
+      claim_admin_broadcast_pushes: {
+        data: [
+          // Row 1: reading out_user_id throws. JSON cannot express a getter, so
+          // the fixture is built in the child by the hook below.
+          '__THROWING_ROW__',
+          {
+            out_user_id: GOOD_USER,
+            out_broadcast_id: CLAIMED_BROADCAST,
+            out_title: 'Still goes out',
+            out_body: 'The second row must be delivered even though the first could not be read.',
+            out_url: '/',
+          },
+        ],
+      },
+      finish_admin_broadcast: { data: true },
+    },
+  });
+
+  // Both rows accounted for: claimed === delivered + failed, always.
+  assert.equal(out.result.claimed, 2, 'the batch size the claim returned');
+  assert.equal(out.result.delivered + out.result.failed, out.result.claimed, 'a row went unaccounted for');
+  assert.equal(out.result.delivered, 1, 'the good row should still have been delivered');
+  assert.equal(out.result.failed, 1, 'the unreadable row should be counted as failed');
+  // The good row was settled. The bad one cannot be (its ids are unreadable), so
+  // the claim's ten-minute sweep recovers it -- that is why there is exactly one.
+  assert.deepEqual(out.finishes, [{
+    p_broadcast_id: CLAIMED_BROADCAST,
+    p_user_id: GOOD_USER,
+    p_delivered: true,
+  }]);
+});
+
+test('a student just failed is kept out of the very next claim', () => {
+  // THE QUEUE HALF of the failure path, and nothing else covers it. The only
+  // assertion on p_skip_users elsewhere is Array.isArray, so replacing the whole
+  // forward with a literal `[]` left the suite green -- mutation-verified.
+  //
+  // It matters more here than in reminders.js because this queue has a stable
+  // ORDER. finish_admin_broadcast(false) nulls last_push_at to hand the budget
+  // back, and migration-061's claim sorts `order by b.created_at, r2.user_id` --
+  // so a student whose endpoint fails with a code push.js does not prune (it
+  // deletes only on 401/403/404/410, so a 500, a dropped socket or a malformed
+  // p256dh survives) is re-claimed on every single tick. At or above p_max_users
+  // such students, they fill every batch for the whole 48-hour expiry window and
+  // nobody else in the audience ever hears the broadcast, while the operator
+  // watches sent_count sit below queued_count with no error anywhere.
+  const out = runConfigured(`async ({ broadcasts, seen }) => {
+    const first = await broadcasts.runBroadcastTick();
+    const second = await broadcasts.runBroadcastTick();
+    return {
+      first,
+      second,
+      skips: seen.filter((c) => c.name === 'claim_admin_broadcast_pushes').map((c) => c.params.p_skip_users),
+    };
+  }`, ONE_CLAIMED);
+
+  // Both ticks claimed (the fixture answers the same row every time), and both
+  // failed to deliver, because without `delivering` there are no endpoints.
+  assert.equal(out.first.failed, 1);
+  assert.equal(out.skips.length, 2, 'expected one claim per tick');
+  assert.deepEqual(out.skips[0], [], 'the first tick had nobody to skip yet');
+  assert.deepEqual(
+    out.skips[1],
+    [CLAIMED_USER],
+    'the second tick asked for the same student it had just failed to reach',
+  );
+});
+
+test('a student who was reached is not carried in the skip list', () => {
+  // The other direction: the backoff must be CLEARED on success, or one
+  // transient failure would park a perfectly good student for the whole window.
+  const out = runConfigured(`async ({ broadcasts, seen }) => {
+    await broadcasts.runBroadcastTick();
+    await broadcasts.runBroadcastTick();
+    return { skips: seen.filter((c) => c.name === 'claim_admin_broadcast_pushes').map((c) => c.params.p_skip_users) };
+  }`, { ...ONE_CLAIMED, delivering: true });
+
+  assert.deepEqual(out.skips[0], []);
+  assert.deepEqual(out.skips[1], [], 'a delivered student was treated as a failure');
 });
