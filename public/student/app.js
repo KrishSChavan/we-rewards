@@ -423,6 +423,9 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     setTheme(next);
   });
   $('vendor-carousel').addEventListener('click', onVendorTap);
+  $('home-reward').addEventListener('click', onHomeRewardTap);
+  $('home-email-nudge').addEventListener('click', openLinkSheet);
+  $('history-find-spot').addEventListener('click', () => setTab(TAB.spots));
   // Page dots under the carousel. #vendor-carousel and #vendor-dots are stable
   // elements — only their children are replaced — so these bind exactly once.
   $('vendor-carousel').addEventListener('scroll', onCarouselScroll, { passive: true });
@@ -797,6 +800,7 @@ function render(session) {
     resetTier();            // …as is the tier chip on the pill above it
     allVendors = [];
     resetVendorRow();           // …and unpaint the cards, or the next student reads them
+    renderHomeExtras();         // …and the reward / getting-started cards built from them
     resetSpots();               // …and the directory, which carries their saved spots
     vendor = null;
     historyLoaded = false;
@@ -1878,11 +1882,15 @@ function renderHistory(items) {
     // branch has to write its own text rather than just unhide it.
     $('history-empty').textContent = items.length
       ? 'No activity at this spot in this window.'
-      : `No activity in the last ${historyDays} days.`;
+      : `Nothing in the last ${historyDays} days. Every time you earn or spend points, it shows up here.`;
     $('history-empty').hidden = false;
+    // "Find a spot" only for a truly empty window, not a filtered one: there,
+    // the way out is the All chip right above, not another tab.
+    $('history-find-spot').hidden = items.length > 0;
     return;
   }
   $('history-empty').hidden = true;
+  $('history-find-spot').hidden = true;
 
   let lastDay = null;
   shown.forEach((tx) => {
@@ -2621,9 +2629,11 @@ function renderTier(t) {
 
   const mult = `${t.multiplier}x`;
   $('tier-earning-mult').textContent = mult;
+  // Says what the next tier is worth, not just how far off it is: "1.5x" alone
+  // is a number, "1.5x points at every spot" is a reason.
   $('tier-hint').textContent =
     t.nextTierScore != null
-      ? `${t.nextTierScore - t.score} pts to ${t.nextMultiplier}x`
+      ? `${t.nextTierScore - t.score} pts to ${t.nextMultiplier}x, then you earn ${t.nextMultiplier}x points at every spot`
       : 'Max multiplier ✓';
 
   // The same chip in two places: the collapsed pill and the panel's own header.
@@ -3038,6 +3048,7 @@ function resetStudentEmail() {
   const title = $('link-email-title');
   if (btn) btn.hidden = true;
   if (title) title.hidden = true;
+  renderHomeEmailNudge();     // studentEmail is null now, so this hides it
 }
 
 function renderStudentEmailButton() {
@@ -3053,6 +3064,8 @@ function renderStudentEmailButton() {
     title.hidden = true;
     btn.hidden = true;
     dropLinkSheet();
+    renderHomeEmailNudge();
+    renderHomeStart();
     return;
   }
 
@@ -3072,6 +3085,9 @@ function renderStudentEmailButton() {
   }
   title.hidden = false;
   btn.hidden = false;
+  // Home's nudge and checklist step read the same state.
+  renderHomeEmailNudge();
+  renderHomeStart();
 }
 
 function showLinkView(id) {
@@ -4148,6 +4164,99 @@ function vendorMonogram(name) {
   return initials.toUpperCase();
 }
 
+/* ---------- reward progress (card bars + Home's reward cards) ----------
+   Everything here reads the `rewards` each row of /api/me/balances already
+   carries (the same list renderItems() draws on the spot screen), so it costs
+   no extra request and moves with every balance push.
+
+   Points-priced rewards only. A visit price has its own counter on the spot
+   screen, and one bar cannot honestly show two currencies at once. */
+
+/**
+ * Where this spot's balance stands against its rewards.
+ * null when the spot has no points-priced reward, which hides the bar.
+ * `best` is the dearest reward the balance already covers (what "ready" names),
+ * `next` is the cheapest one it does not cover yet.
+ */
+function spotRewardState(v) {
+  const bal = v?.balance ?? 0;
+  const priced = (v?.rewards ?? [])
+    .filter((r) => r.cost_in_points != null)
+    .slice()
+    .sort((a, b) => a.cost_in_points - b.cost_in_points);
+  if (!priced.length) return null;
+  const ready = priced.filter((r) => bal >= r.cost_in_points);
+  return {
+    bal,
+    ready,
+    best: ready[ready.length - 1] ?? null,
+    next: priced.find((r) => bal < r.cost_in_points) ?? null,
+  };
+}
+
+// How many reward rows a card is ever built with. fitCardRewards() then hides
+// whatever does not fit the card's actual height on this phone, so this is a
+// ceiling, not what is shown.
+const CARD_REWARDS_MAX = 4;
+
+// The card's rewards list: every points-priced reward, cheapest first, each
+// with its own bar. '' when the spot has none, so the slot collapses instead
+// of drawing an empty heading.
+function cardProgressHtml(v) {
+  const st = spotRewardState(v);
+  if (!st) return '';
+  const priced = (v.rewards ?? [])
+    .filter((r) => r.cost_in_points != null)
+    .slice()
+    .sort((a, b) => a.cost_in_points - b.cost_in_points)
+    .slice(0, CARD_REWARDS_MAX);
+  const rows = priced.map((r) => {
+    const ready = st.bal >= r.cost_in_points;
+    const pct = ready ? 100 : Math.max(0, Math.min(1, st.bal / (r.cost_in_points || 1))) * 100;
+    return `<span class="vc-reward${ready ? ' is-ready' : ''}">
+        <span class="vc-goal"><b>${escapeHtml(r.title)}</b><span>${ready ? 'Ready ✓' : `${r.cost_in_points - st.bal} pts to go`}</span></span>
+        <span class="vc-track"><i style="width:${pct.toFixed(1)}%"></i></span>
+      </span>`;
+  }).join('');
+  return `<span class="vc-progress">
+      <span class="vc-rewards-head">Rewards</span>
+      <span class="vc-reward-list">${rows}</span>
+    </span>`;
+}
+
+// Show as many reward rows as the card has room for on THIS screen, never
+// fewer than one. The card stretches to fill Home (see .home-spots in
+// styles.css), so its height depends on the phone and on whatever else is on
+// Home right now (reward card, checklist, banners). Rows are only ever hidden
+// from the bottom, so the cheapest — the nearest goal — always survives.
+function fitCardRewards() {
+  document.querySelectorAll('#vendor-carousel .vc-reward-list').forEach((list) => {
+    const rows = [...list.children];
+    rows.forEach((r) => { r.hidden = false; });
+    for (let n = rows.length - 1; n > 0 && list.scrollHeight > list.clientHeight + 1; n--) {
+      rows[n].hidden = true;
+    }
+  });
+}
+
+// Repaint a card's bar in place. Cards are pooled and only .vc-num is patched
+// on a balance push (see syncVendorCards), so the bar needs the same treatment
+// or it would sit at the balance the card was built with.
+function paintCardProgress(card, v) {
+  const slot = card.querySelector('.vc-progress-slot');
+  if (!slot) return;
+  const html = cardProgressHtml(v);
+  if (slot.dataset.html !== html) { slot.innerHTML = html; slot.dataset.html = html; }
+}
+
+// The vendor's mark: their artwork when they have it, their initials when not.
+// Shared by the carousel cards and Home's reward cards so the two always match.
+function vendorMarkHtml(v) {
+  return v.hasLogo
+    ? `<span class="vc-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
+    : `<span class="vc-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
+}
+
 function buildVendorCard(v) {
   const card = document.createElement('button');
   card.className = 'vendor-card';
@@ -4156,7 +4265,9 @@ function buildVendorCard(v) {
     ? vendorMapHtml(v.latitude, v.longitude)
     : '';
   if (!map) card.classList.add('no-map');   // shrink to content + centre in the row (styles.css)
-  const address = v.address ? `<span class="vc-address">📍 ${escapeHtml(shortAddress(v.address))} 👆</span>` : '';
+  // The underline already says "tappable"; the old 📍 … 👆 emoji pair said it
+  // twice and crowded a line that only has two lines to work with.
+  const address = v.address ? `<span class="vc-address">${escapeHtml(shortAddress(v.address))}</span>` : '';
   // What a dollar spent here is worth, right under the balance it feeds. Empty
   // string when the rate is missing, so the line disappears rather than lying.
   const rate = earnRateText(v.pointsPerDollar);
@@ -4168,9 +4279,8 @@ function buildVendorCard(v) {
   // both kinds of vendor render the same card — the point of the whole layout.
   // aria-hidden because it is the vendor name rendered as a picture and the name
   // itself sits right beside it; announcing it twice buys nothing.
-  const mark = v.hasLogo
-    ? `<span class="vc-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
-    : `<span class="vc-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
+  const mark = vendorMarkHtml(v);
+  const progress = cardProgressHtml(v);
   // Two zones sharing one left edge: the letterhead band says who, the body says
   // how much. Then the map at the bottom — band and map are the two parts that
   // bleed to the card's rounded edges.
@@ -4183,6 +4293,7 @@ function buildVendorCard(v) {
       <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
       ${poolChip ? `<span class="vc-pool">${escapeHtml(poolChip)}</span>` : ''}
       ${rate ? `<span class="vc-rate">${rate}</span>` : ''}
+      <span class="vc-progress-slot" data-html="${escapeHtml(progress)}">${progress}</span>
       ${address}
     </span>
     ${map}`;
@@ -4206,7 +4317,10 @@ function buildVendorCard(v) {
 // so a size change that does not alter the sentence (there isn't one today, but
 // a future fallback could) does not throw the map tiles away for nothing.
 function vendorCardSig(v) {
-  return JSON.stringify([v.name, v.address ?? '', v.latitude ?? null, v.longitude ?? null, !!v.hasLogo, v.pointsPerDollar ?? null, poolChipText(v)]);
+  // The rewards are in it too: the progress bar names one, so a vendor renaming
+  // or repricing a reward has to rebuild the card rather than keep the old one.
+  const rewards = (v.rewards ?? []).map((r) => [r.id, r.title, r.cost_in_points ?? null]);
+  return JSON.stringify([v.name, v.address ?? '', v.latitude ?? null, v.longitude ?? null, !!v.hasLogo, v.pointsPerDollar ?? null, poolChipText(v), rewards]);
 }
 
 // Bring the card pool in line with allVendors — build what's new, patch what
@@ -4229,6 +4343,7 @@ function syncVendorCards() {
     const num = card.querySelector('.vc-num');
     const points = String(v.balance ?? 0);
     if (num && num.textContent !== points) num.textContent = points;
+    paintCardProgress(card, v);
   });
   vendorCards.forEach((card, id) => {      // deleting while iterating a Map is safe
     if (!live.has(id)) { card.remove(); vendorCards.delete(id); }
@@ -4251,6 +4366,154 @@ function paintVendorRow() {
     // in one pass with a move only where the order actually differs.
     if (wrap.children[k] !== el) wrap.insertBefore(el, wrap.children[k] ?? null);
   });
+}
+
+/* ---------- Home: rewards ready / closest reward / getting started ----------
+   Three cards that only ever show one at a time, in this order of priority:
+
+     1. Rewards ready: every spot where the balance already covers a reward,
+        each with its own Redeem (which opens that spot's screen, where
+        redeeming actually happens).
+     2. Closest reward: nothing is ready yet, so name the one reward the
+        student is nearest to, and where.
+     3. Getting started: a student who has never been anywhere gets the three
+        steps instead (#home-start), since there is no balance to talk about.
+
+   All of it is drawn from allVendors, so it repaints with renderVendors() on
+   every socket push and costs no request of its own. */
+
+const HOME_READY_CAP = 3;   // more than this and the card outgrows the screen
+
+// One row per business, not per branch: pooled spots share one balance, so
+// their identical rewards would otherwise be listed once for every counter.
+function onePerPool(list) {
+  const seen = new Set();
+  return list.filter((v) => {
+    const key = v.poolId ? `p:${v.poolId}` : `v:${v.vendorId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+const GIFT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M12 8v13M3 12h18M12 8c-2-4-6-4-6-1s6 1 6 1 6 2 6-1-4-3-6 1"/></svg>`;
+
+function renderHomeReward() {
+  const el = $('home-reward');
+  if (!el) return;
+  // Recent spots first: those are the counters the student is likeliest to be
+  // standing at, which is where a Redeem is any use.
+  const byRecency = allVendors.slice().sort((a, b) => Number(!!b.recent) - Number(!!a.recent));
+
+  const ready = onePerPool(byRecency.filter((v) => spotRewardState(v)?.best));
+  if (ready.length) {
+    const rows = ready.slice(0, HOME_READY_CAP).map((v) => {
+      const st = spotRewardState(v);
+      return `<button class="hr-row" type="button" data-vendor="${escapeHtml(String(v.vendorId))}">
+        <span class="hr-mark" aria-hidden="true">${vendorMarkHtml(v)}</span>
+        <span class="hr-text">
+          <span class="hr-name">${escapeHtml(st.best.title)}</span>
+          <span class="hr-sub">${escapeHtml(v.name)}</span>
+        </span>
+        <span class="hr-go">Redeem</span>
+      </button>`;
+    }).join('');
+    const more = ready.length - HOME_READY_CAP;
+    el.className = 'home-reward is-ready';
+    el.innerHTML = `
+      <h2 class="hr-title">${GIFT_SVG}${ready.length === 1 ? 'Reward ready' : `${ready.length} rewards ready`}</h2>
+      ${rows}
+      ${more > 0 ? `<p class="hr-more">+${more} more on the Spots tab</p>` : ''}`;
+    el.hidden = false;
+    return;
+  }
+
+  // Nearest by points still to earn. Only spots with a balance: "200 pts to a
+  // free drink" at a place they have never been is an advert, not progress.
+  let best = null;
+  allVendors.forEach((v) => {
+    const st = spotRewardState(v);
+    if (!st?.next || st.bal <= 0) return;
+    const gap = st.next.cost_in_points - st.bal;
+    if (!best || gap < best.gap) best = { v, r: st.next, gap };
+  });
+  if (best) {
+    el.className = 'home-reward is-close';
+    el.innerHTML = `
+      <button class="hr-close" type="button" data-vendor="${escapeHtml(String(best.v.vendorId))}">
+        <span class="hr-icon" aria-hidden="true">${GIFT_SVG}</span>
+        <span class="hr-text">
+          <span class="hr-kicker">Closest reward</span>
+          <span class="hr-name">${best.gap} pts to ${escapeHtml(best.r.title)}</span>
+          <span class="hr-sub">${escapeHtml(best.v.name)}</span>
+        </span>
+      </button>`;
+    el.hidden = false;
+    return;
+  }
+
+  el.hidden = true;
+  el.innerHTML = '';
+}
+
+// The first-visit checklist. Only for a student the server says has never
+// been anywhere: visitedAllTime false means an older server that cannot say,
+// and guessing "new" there would greet regulars with a tutorial.
+function renderHomeStart() {
+  const el = $('home-start');
+  if (!el) return;
+  const isNew = visitedAllTime && allVendors.length > 0 && !allVendors.some((v) => v.visited);
+  if (!isNew) { el.hidden = true; return; }
+
+  const s = studentEmail;
+  const steps = [];
+  // The email step only where linking is actually on offer for this student.
+  if (s && (s.eligible || s.linked)) {
+    steps.push({
+      done: Boolean(s.linked),
+      title: 'Add your student email',
+      sub: s.bonus?.points ? `Unlocks ${s.bonus.points} community points` : 'Brings your spots together',
+    });
+  }
+  steps.push({ done: false, title: 'Show your code at the counter', sub: 'Points land in your account right away' });
+  steps.push({ done: false, title: 'Trade points for free food', sub: 'Each spot sets its own rewards' });
+
+  $('home-start-list').innerHTML = steps.map((st, i) => `
+    <li class="hs-step${st.done ? ' is-done' : ''}">
+      <span class="hs-num" aria-hidden="true">${st.done ? '✓' : i + 1}</span>
+      <span class="hs-text">
+        <span class="hs-title">${escapeHtml(st.title)}${st.done ? '<span class="sr-only"> (done)</span>' : ''}</span>
+        <span class="hs-sub">${escapeHtml(st.sub)}</span>
+      </span>
+    </li>`).join('');
+  el.hidden = false;
+}
+
+// The green "add your student email" nudge at the top of Home. Same rule as
+// the Account button it shortcuts to: only when the student can link one and
+// has not, and the bonus is only named when a program is paying it.
+function renderHomeEmailNudge() {
+  const btn = $('home-email-nudge');
+  if (!btn) return;
+  const s = studentEmail;
+  const show = Boolean(s?.eligible && !s.linked);
+  btn.hidden = !show;
+  if (show) {
+    $('home-email-nudge-sub').textContent = s.bonus?.points
+      ? `Get ${s.bonus.points} free points to start`
+      : 'Bring your spots and points together';
+  }
+}
+
+function renderHomeExtras() {
+  renderHomeReward();
+  renderHomeStart();
+  renderHomeEmailNudge();
+}
+
+function onHomeRewardTap(e) {
+  const hit = e.target.closest('[data-vendor]');
+  if (hit) openVendor(hit.dataset.vendor);
 }
 
 /* ============================================================
@@ -5454,7 +5717,7 @@ function recentVendors() {
  * URL bar covers the bottom ~110px of it. A height query would report 667 on a
  * phone showing 553. The scroll container's own clientHeight does not lie.
  */
-const HOME_OVERFLOW_TOLERANCE = 24;   // px of scroll not worth reshaping the screen for
+// (HOME_OVERFLOW_TOLERANCE retired with the collapse, see syncHomeDensity.)
 
 function syncHomeDensity() {
   const page = $('tab-home');
@@ -5467,9 +5730,16 @@ function syncHomeDensity() {
   // Measure in the RANKED form every time, then decide. Reading the collapsed
   // height would be reading the consequence of the last decision: the row would
   // fit, un-collapse, stop fitting, re-collapse, and flip on every resize.
+  // The collapse is retired (Oct 2026). Home no longer has to fit one screen:
+  // the spots block stretches to fill whatever is left and the page simply
+  // scrolls when there is less than its floor (see .home-spots in styles.css),
+  // so squeezing the earn buttons into a row of squares to win back ~60px is
+  // no longer worth the inconsistent shape. The class is still cleared here so
+  // a session that had it set before this change does not keep it.
   actions.classList.remove('is-flat');
-  const overflow = page.scrollHeight - page.clientHeight;   // forces the layout we need
-  actions.classList.toggle('is-flat', overflow > HOME_OVERFLOW_TOLERANCE);
+  // The cards' height just settled, so this is the moment to decide how many
+  // reward rows each one has room for.
+  fitCardRewards();
 }
 
 function renderVendors() {
@@ -5487,6 +5757,9 @@ function renderVendors() {
   // runs on every socket push, not just the first load.
   syncMapButton();
   refreshMapPins();
+  // Home's reward / getting-started cards ride the same data, and they change
+  // the stack's height, so they go in before the density pass measures it.
+  renderHomeExtras();
   // Last: the carousel's own height is part of what decides this, so it has to
   // be measured after the row it pages through exists.
   syncHomeDensity();

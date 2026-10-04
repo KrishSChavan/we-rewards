@@ -3783,3 +3783,501 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .mp.is-focus .mp-body { border-color: var(--brand); box-shadow: 0 0 0 3px var(--hub-glow), 0 3px 7px rgba(16, 29, 51, 0.4); }
 .mp.is-focus .mp-tip { border-top-color: var(--brand); }
 .leaflet-marker-icon:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 0.5rem; }
+
+/* =====================================================
+   Refresh (Oct 2026): calmer surfaces, more colour
+   =====================================================
+   One block, last in the file, so every change in this pass is in one place
+   and can be read (or backed out) as a unit. It only restyles: no element
+   here moves to a new place in the layout, and none of .home-main's gap
+   arithmetic changes (no auto margins, no new padding on .home-main's
+   children).
+
+   What it does:
+     - drops the 3px outline + hard offset shadow on the Home and Account
+       cards. With every box outlined the same way nothing stood out; the
+       earn code button, community card and invite now carry the emphasis.
+     - gives the community card its own purple and the invite button a
+       wavy outline.
+     - colours the three tier levers so they can be told apart.
+     - turns the RECENT SPOTS pill back into a heading.
+     - centres the app at phone width on a desktop.
+
+   Tokens first, light then dark, so both themes get every change. */
+
+:root {
+  /* the soft lift that replaces the hard sticker shadow on light paper */
+  --rf-lift: 0 1px 2px rgba(16, 29, 51, 0.06), 0 6px 18px rgba(16, 29, 51, 0.07);
+  --rf-community-bg: #f1ecfb;
+  --rf-community-ink: #6a48b0;
+  --rf-community-tile: #e2d8f7;
+  --rf-wave-fill: #eef2fd;
+  --rf-wave-line: #6f86d6;
+  --rf-wave-ink: #24325c;
+}
+:root[data-theme="dark"] {
+  --rf-lift: none;
+  --rf-community-bg: #251f42;
+  --rf-community-ink: #c9b3ff;
+  --rf-community-tile: #342a5c;
+  --rf-wave-fill: #1b2440;
+  --rf-wave-line: #9daef0;
+  --rf-wave-ink: #dce4ff;
+}
+
+/* ---------- surfaces: no outline, no hard shadow ---------- */
+.community-card,
+.earn-btn,
+.install-banner,
+.vendor-card,
+.account-card,
+.setting-row,
+.data-btn {
+  border: 0;
+  box-shadow: var(--rf-lift);
+}
+.community-card:active,
+.earn-btn:active,
+.data-btn:active { transform: scale(0.98); box-shadow: var(--rf-lift); }
+.vc-band { border-bottom: 0; }
+.vc-map { border-top: 0; }
+/* the carousel only kept 0.45rem of bottom padding to clear the hard shadow */
+.vendor-carousel { padding-bottom: 0.6rem; }
+
+/* ---------- community points: its own purple ---------- */
+.community-card { background: var(--rf-community-bg); }
+.cc-label { color: var(--rf-community-ink); }
+.cc-num { color: var(--ink); }
+.cc-sub,
+.cc-amount small,
+.cc-chevron { color: var(--rf-community-ink); }
+/* A fixed square now that it holds an icon rather than an emoji: stretched to
+   the card's height it read as a pill. Sizes outright, never derived, for the
+   WebKit reason given on .vc-mark. */
+.cc-icon {
+  align-self: center; aspect-ratio: auto;
+  width: 3rem; height: 3rem;
+  background: var(--rf-community-tile); color: var(--rf-community-ink);
+  padding: 0;
+}
+.cc-icon svg { width: 1.6rem; height: 1.6rem; display: block; }
+
+/* ---------- show earn code ----------
+   Keeps its original navy fill and green label (see .show-code-btn above). */
+
+/* ---------- invite a friend: the wavy one ----------
+   The button is transparent and the SVG inside it is the shape: a wavy
+   rounded rectangle, filled and stroked, stretched to the button's box.
+   isolation + z-index -1 keep the path under the icon and label without
+   having to position them. */
+.invite-btn {
+  position: relative; isolation: isolate;
+  background: transparent; box-shadow: none;
+  color: var(--rf-wave-ink);
+}
+.invite-btn:active { box-shadow: none; }
+.invite-wave {
+  position: absolute; top: 0; left: 0; z-index: -1;
+  width: 100%; height: 100%;
+  pointer-events: none; overflow: visible;
+}
+.invite-wave path { fill: var(--rf-wave-fill); stroke: var(--rf-wave-line); stroke-width: 1.6; stroke-linejoin: round; }
+.invite-btn .et-icon { background: transparent; color: var(--rf-wave-line); }
+.invite-btn:focus-visible { outline: 2px solid var(--rf-wave-line); outline-offset: 3px; border-radius: 1.1rem; }
+
+/* ---------- install banner ---------- */
+.install-banner-emoji { display: flex; color: var(--brand); }
+.install-banner-emoji svg { width: 1.35rem; height: 1.35rem; display: block; }
+/* 44px tap targets; the old pair were 27px */
+.install-banner-add { min-height: 2.75rem; padding: 0 1rem; }
+.install-banner-close {
+  width: 2.75rem; height: 2.75rem;
+  border: 0; background: transparent;
+}
+
+/* ---------- RECENT SPOTS: a heading again, not a pill ---------- */
+.home-sub {
+  border: 0; padding: 0;
+  min-height: 2.75rem; height: auto;
+  color: var(--ink);
+}
+.home-sub-label { font-size: 0.95rem; letter-spacing: 0.08em; }
+.map-open-btn {
+  border: 0; box-shadow: none;
+  min-height: 2.75rem; padding: 0 0.6rem;
+  background: transparent; color: var(--brand);
+}
+.map-open-btn:active { transform: scale(0.96); box-shadow: none; }
+.map-open-icon { display: flex; }
+.map-open-icon svg { width: 1.15rem; height: 1.15rem; display: block; }
+
+/* ---------- tier chip on the hub pill: a gold star at every tier ---------- */
+.hub-tier i { color: #ffd76e; }
+
+/* ---------- hub: the tier meter + levers ----------
+   The first node's caption ("Current tier" for a new student) is centred on
+   a dot that sits at the very edge of the track, so half of it hung off the
+   panel. Anchor that one caption to the dot's left edge instead. */
+.tier-node:first-child { align-items: flex-start; transform: translateX(calc(-1 * var(--tier-inset))); }
+
+/* Variety blue, Loyalty gold, Spend green. Fixed colours rather than theme
+   tokens: the hub panel is navy in BOTH themes. */
+#lever-variety-fill { background: var(--accent); }
+#lever-loyalty-fill { background: #ffd76e; }
+#lever-spend-fill   { background: #5bd69a; }
+#lever-variety-val  { color: var(--accent); }
+#lever-loyalty-val  { color: #ffd76e; }
+#lever-spend-val    { color: #5bd69a; }
+.lever-track { height: 0.45rem; }
+.lever-tip {
+  background: rgba(150, 190, 230, 0.14);
+  color: #dbe8f7;
+}
+
+/* ---------- History: a proper empty state ---------- */
+#history-empty {
+  margin-top: 3.5rem;
+  padding: 0 1.5rem;
+  font-style: normal; font-weight: 600; font-size: 0.95rem; line-height: 1.5;
+  white-space: normal;
+}
+#history-empty::before {
+  content: "";
+  display: block;
+  width: 5.5rem; height: 5.5rem; margin: 0 auto 1.1rem;
+  border-radius: 50%;
+  background-color: var(--card);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2396bee6' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 2.8h12v18.4l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z'/%3E%3Cpath d='M9.4 8.4h5.2M9.4 12.4h5.2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: center; background-size: 2.5rem;
+  box-shadow: var(--rf-lift);
+}
+
+/* ---------- desktop: phone-width, centred ----------
+   The app is a phone layout; stretched across 1500px the cards and the
+   carousel float in empty space. Capped and centred instead, with the
+   fixed-position pieces that sit outside #app (the hub panel and the
+   sheets) capped to the same column. */
+@media (min-width: 761px) {
+  #app { max-width: 34rem; box-shadow: 0 0 0 1px var(--hairline); }
+  .hub-panel {
+    left: max(var(--hub-gutter), calc(50% - 17rem + var(--hub-gutter)));
+    right: max(var(--hub-gutter), calc(50% - 17rem + var(--hub-gutter)));
+  }
+  .detail-card,
+  .earn-card { max-width: 34rem; }
+}
+
+/* ---------- Refresh, part 2: colour ----------
+   Same idea as the mockups: each thing on Home gets its own hue instead of
+   everything being navy-on-navy. Washes are rgba over the existing surfaces,
+   so one value works in both themes; text colours that sit on light paper get
+   a deeper variant, since the bright ones fail contrast on white.
+   No color-mix(): it is newer than this app's Safari floor. */
+
+/* Spot cards cycle through five hues: orange, mint, lilac, gold, pink. The
+   cycle is by position, so neighbours in the carousel never share one. */
+.vendor-card { --spot: #f5b48a; --spot-deep: #b4572a; --spot-wash: rgba(245, 180, 138, 0.2); }
+.vendor-card:nth-child(5n+2) { --spot: #8fd9c0; --spot-deep: #1e7f63; --spot-wash: rgba(143, 217, 192, 0.2); }
+.vendor-card:nth-child(5n+3) { --spot: #c9b3ff; --spot-deep: #6a48b0; --spot-wash: rgba(201, 179, 255, 0.22); }
+.vendor-card:nth-child(5n+4) { --spot: #ffd66b; --spot-deep: #8a6000; --spot-wash: rgba(255, 214, 107, 0.2); }
+.vendor-card:nth-child(5n+5) { --spot: #f7a8c4; --spot-deep: #a83a66; --spot-wash: rgba(247, 168, 196, 0.2); }
+
+.vc-band { background: linear-gradient(var(--spot-wash), var(--spot-wash)), var(--plate); }
+/* the mark's square takes the spot's colour; a monogram prints dark on it */
+.vc-mark { background: var(--spot); }
+.vc-mono { color: #0e1a2f; }
+.vc-num { color: var(--spot-deep); }
+:root[data-theme="dark"] .vc-num { color: var(--spot); }
+
+/* Install nudge: teal, so it reads as its own thing and not as another card */
+:root { --rf-teal-bg: #e3f6f1; --rf-teal: #1e7f6a; --rf-teal-btn-ink: #ffffff; }
+:root[data-theme="dark"] { --rf-teal-bg: #16302c; --rf-teal: #7ed6c8; --rf-teal-btn-ink: #0b1f1c; }
+.install-banner { background: var(--rf-teal-bg); }
+.install-banner-emoji { color: var(--rf-teal); }
+.install-banner-add { background: var(--rf-teal); color: var(--rf-teal-btn-ink); }
+.install-banner-add:active { background: var(--rf-teal); opacity: 0.85; }
+.install-banner-close { color: var(--rf-teal); }
+
+/* Scan a receipt: an amber icon tile */
+:root { --rf-amber-bg: #fcebd3; --rf-amber: #9a5b00; }
+:root[data-theme="dark"] { --rf-amber-bg: #3a2a16; --rf-amber: #ffb86b; }
+.scan-receipt-btn .et-icon { background: var(--rf-amber-bg); color: var(--rf-amber); }
+
+/* The tier chip on the pill: gold, like the star. t3 keeps its orange. */
+.hub-tier.t1, .hub-tier.t2 { color: #ffd76e; }
+
+/* Account: the student email row is worth 50 points, so it gets the green */
+:root { --rf-green-bg: #e4f5ea; --rf-green: #15703f; }
+:root[data-theme="dark"] { --rf-green-bg: #1f3b2e; --rf-green: #5bd69a; }
+#link-email-btn { background: var(--rf-green-bg); }
+#link-email-btn .data-btn-name,
+#link-email-btn .data-btn-chevron { color: var(--rf-green); }
+/* On the dark page a warm wash over the blue plate turns muddy, so the band
+   stays neutral there and the colour rides on the mark and the number. */
+:root[data-theme="dark"] .vc-band { background: rgba(255, 255, 255, 0.05); }
+
+/* ---------- Refresh, part 3: reward progress + Home's reward cards ----------
+   The pieces app.js now builds from each spot's rewards (renderHomeExtras,
+   cardProgressHtml). Layout uses grid `gap`, never flex `gap`, so none of it
+   goes through the build's margin-synthesis fallback. */
+
+:root { --rf-ready-bg: #e4f5ea; --rf-ready: #15703f; --rf-ready-fill: #2fb36d; --rf-ready-ink: #ffffff; }
+:root[data-theme="dark"] { --rf-ready-bg: #1f3b2e; --rf-ready: #5bd69a; --rf-ready-fill: #5bd69a; --rf-ready-ink: #0e1a2f; }
+
+/* the bar on each spot card, under the rate. Coloured by the card's --spot. */
+.vc-progress-slot { align-self: stretch; }
+.vc-progress-slot:empty { display: none; }
+.vc-progress { display: grid; gap: 0.4rem; margin-top: 0.45rem; }
+.vc-track {
+  display: block; height: 0.5rem; border-radius: 1rem; overflow: hidden;
+  background: var(--hairline);
+}
+.vc-track i {
+  display: block; height: 100%; border-radius: 1rem;
+  background: var(--spot-deep);
+  transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+:root[data-theme="dark"] .vc-track i { background: var(--spot); }
+.vc-goal {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: baseline;
+  font-size: 0.8rem; line-height: 1.25;
+}
+.vc-goal b { font-weight: 800; color: var(--ink); overflow-wrap: anywhere; }
+.vc-goal span { font-weight: 700; color: var(--muted); white-space: nowrap; }
+.vc-progress.is-ready .vc-track i { background: var(--rf-ready-fill); }
+.vc-progress.is-ready .vc-goal span { color: var(--rf-ready); }
+@media (prefers-reduced-motion: reduce) { .vc-track i { transition: none; } }
+
+/* ---------- Home: the student email nudge (green) ---------- */
+.home-email-nudge {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
+  width: 100%; text-align: left;
+  padding: 0.85rem 1rem; border-radius: 1.1rem;
+  background: var(--rf-ready-bg); color: var(--ink);
+  box-shadow: var(--rf-lift);
+}
+.home-email-nudge:active { transform: scale(0.98); }
+.hen-icon { display: flex; color: var(--rf-ready); }
+.hen-icon svg { width: 1.5rem; height: 1.5rem; display: block; }
+.hen-text { display: grid; gap: 0.1rem; }
+.hen-title { font-weight: 900; font-size: 0.95rem; }
+.hen-sub { font-weight: 600; font-size: 0.8rem; color: var(--rf-ready); }
+.hen-go { font-weight: 900; font-size: 0.9rem; color: var(--rf-ready); }
+
+/* ---------- Home: rewards ready (green) / closest reward (amber) ---------- */
+.home-reward { border-radius: 1.2rem; box-shadow: var(--rf-lift); }
+.home-reward.is-ready {
+  display: grid; gap: 0.15rem;
+  padding: 0.9rem 0.9rem 0.6rem;
+  background: var(--rf-ready-bg);
+}
+.hr-title {
+  display: flex; align-items: center;
+  font-size: 1.05rem; font-weight: 900; color: var(--ink);
+  margin-bottom: 0.35rem;
+}
+.hr-title svg { width: 1.25rem; height: 1.25rem; margin-right: 0.45rem; color: var(--rf-ready); flex: 0 0 auto; }
+.hr-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
+  width: 100%; text-align: left; padding: 0.45rem 0;
+  border-top: 1px solid rgba(21, 112, 63, 0.15);
+}
+.hr-row:first-of-type { border-top: 0; }
+.hr-mark {
+  width: 2.6rem; height: 2.6rem; border-radius: 0.6rem; overflow: hidden;
+  display: block; background: var(--plate);
+}
+.hr-text { display: grid; gap: 0.05rem; min-width: 0; }
+.hr-name { font-weight: 900; font-size: 0.95rem; color: var(--ink); overflow-wrap: anywhere; }
+.hr-sub { font-weight: 600; font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hr-go {
+  display: flex; align-items: center; min-height: 2.75rem; padding: 0 1rem;
+  border-radius: 0.8rem; font-weight: 900; font-size: 0.9rem;
+  background: var(--rf-ready-fill); color: var(--rf-ready-ink);
+}
+.hr-row:active .hr-go { transform: scale(0.96); }
+.hr-more { font-size: 0.8rem; font-weight: 700; color: var(--rf-ready); padding: 0.2rem 0 0.2rem; }
+
+.home-reward.is-close { background: var(--rf-amber-bg); }
+.hr-close {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.85rem; align-items: center;
+  width: 100%; text-align: left; padding: 0.95rem 1rem;
+}
+.hr-close:active { transform: scale(0.98); }
+.hr-icon {
+  width: 3rem; height: 3rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: #ffb86b; color: #1a0f0b;
+}
+.hr-icon svg { width: 1.5rem; height: 1.5rem; display: block; }
+.hr-kicker { font-weight: 800; font-size: 0.78rem; color: var(--rf-amber); }
+.home-reward.is-close .hr-name { font-size: 1.05rem; }
+
+/* ---------- Home: the first-visit checklist ---------- */
+.home-start {
+  padding: 1rem 1.05rem 1.1rem; border-radius: 1.2rem;
+  background: var(--card); box-shadow: var(--rf-lift);
+}
+.hs-head { font-size: 1.05rem; font-weight: 900; }
+.hs-lead { font-size: 0.85rem; font-weight: 600; color: var(--muted); margin: 0.15rem 0 0.85rem; }
+.hs-list { list-style: none; display: grid; gap: 0.8rem; }
+.hs-step { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.75rem; align-items: start; }
+.hs-num {
+  width: 1.8rem; height: 1.8rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 0.85rem;
+  background: var(--plate); color: var(--ink);
+}
+.hs-step.is-done .hs-num { background: var(--rf-ready-fill); color: var(--rf-ready-ink); }
+.hs-step.is-done .hs-title { text-decoration: line-through; color: var(--muted); }
+.hs-text { display: grid; gap: 0.1rem; }
+.hs-title { font-weight: 800; font-size: 0.92rem; }
+.hs-sub { font-weight: 600; font-size: 0.8rem; color: var(--muted); }
+
+/* ---------- History: the way out of an empty window ---------- */
+.history-find-spot {
+  align-self: center; margin-top: 1.1rem;
+  min-height: 3rem; padding: 0 1.6rem; border-radius: 0.9rem;
+  background: var(--accent); color: #0e1a2f;
+  font-weight: 900; font-size: 1rem;
+}
+.history-find-spot:active { transform: scale(0.97); }
+.hr-mark .vc-mono { color: var(--brand); }
+
+/* ---------- Refresh, part 4: spots as wide rectangles, still sideways ----------
+   The carousel itself is untouched (scroll-snap, page dots, measureDotSnaps
+   in app.js all work as before); only the CARD changes shape, from a tall
+   near-square to a wide, short rectangle. The next card peeks in from the
+   right, which is what says "swipe".
+
+   The card markup is unchanged, so every class app.js patches still exists.
+   .vc-band and .vc-body become display: contents and their children are laid
+   out on ONE grid on the card:
+
+       [mark]  name ........  points
+       [mark]  address .....    rate
+       pool chip ......................
+       progress bar ...................
+
+   display: contents is Safari 11.1, below this app's floor, and both wrappers
+   are bare spans with no role, so nothing leaves the accessibility tree. */
+
+.vendor-card {
+  flex: 0 0 88%; max-width: 22rem;
+  min-width: 0; min-height: 0;
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  grid-template-areas:
+    "mark name pts"
+    "mark addr rate"
+    "pool pool pool"
+    "prog prog prog";
+  column-gap: 0.85rem; row-gap: 0.1rem;
+  align-items: center; align-self: stretch;
+  padding: 0.9rem 1rem;
+  border-radius: 1.1rem;
+}
+.vendor-carousel.single .vendor-card { flex-basis: 100%; max-width: none; }
+.vendor-card:hover { transform: none; }
+.vendor-card:active { transform: scale(0.98); }
+.vc-band, .vc-body { display: contents; }
+
+.vc-mark { grid-area: mark; width: 3rem; height: 3rem; border-radius: 0.75rem; align-self: center; }
+.vc-name { grid-area: name; font-size: 1rem; line-height: 1.2; -webkit-line-clamp: 2; line-clamp: 2; }
+.vc-points { grid-area: pts; justify-self: end; align-self: end; }
+.vc-num { font-size: 1.55rem; }
+.vc-points small { font-size: 0.75rem; }
+.vc-rate { grid-area: rate; justify-self: end; align-self: start; font-size: 0.72rem; white-space: nowrap; }
+.vc-address {
+  grid-area: addr; align-self: start; margin-top: 0;
+  font-size: 0.8rem; text-decoration: none;
+  -webkit-line-clamp: 1; line-clamp: 1;
+}
+.vc-pool { grid-area: pool; margin-top: 0.4rem; }
+.vc-progress-slot { grid-area: prog; }
+.vc-progress { margin-top: 0.65rem; }
+/* the optional map picture belongs to the old tall card; a rectangle has no room */
+.vendor-carousel .vc-map { display: none; }
+
+/* the pre-load placeholders take the new, shorter height so the swap is not a jump */
+.vskel-card { flex-basis: 88%; max-width: 22rem; min-height: 8rem; }
+.vskel-map { display: none; }
+
+/* ---------- Refresh, part 5: earn buttons as rectangles ----------
+   Row two (Scan a receipt / Invite a friend) goes from icon-over-label
+   squares to the wide form: icon beside label, one short row. The icons drop
+   their tiles, and the earn code's QR gets bigger, as in the mockups.
+   The short-screen form (.is-flat) still turns every button back into a
+   column, which is the one place the tighter shape earns its keep. */
+.home-actions-row .earn-btn {
+  flex-direction: row; gap: 0.55rem;
+  min-height: 3.3rem; padding: 0.6rem 0.8rem;
+}
+.home-actions-row .et-icon { width: auto; height: auto; background: transparent; border-radius: 0; color: inherit; }
+.home-actions-row .et-icon svg { width: 1.4rem; height: 1.4rem; }
+.home-actions-row .et-title { font-size: 0.95rem; }
+.invite-btn .et-icon { color: var(--rf-wave-line); }
+
+.show-code-btn { min-height: 4rem; }
+.show-code-btn .et-icon { width: 2.6rem; height: 2.6rem; background: transparent; }
+.show-code-btn .et-icon svg { width: 2.1rem; height: 2.1rem; }
+.show-code-btn .et-title { font-size: 1.15rem; }
+
+.home-actions.is-flat .earn-btn { flex-direction: column; gap: 0.4rem; padding: 0.7rem 0.45rem; }
+.home-actions.is-flat .show-code-btn .et-icon svg { width: 1.6rem; height: 1.6rem; }
+.home-actions.is-flat .show-code-btn .et-title { font-size: 0.85rem; }
+
+/* ---------- Refresh, part 6: Home fills the screen ----------
+   Home used to split its leftover height into three equal gaps (see
+   .home-main). That suited the old tall cards, but with short rectangle cards
+   the leftover became big empty bands. Now the gaps are fixed, and the spots
+   block takes all the remaining height: the carousel stretches, each card
+   stretches with it, and the extra room goes to the card's rewards list.
+   fitCardRewards() in app.js then hides the rows that do not fit, so a short
+   phone shows one reward and a tall one shows up to four.
+
+   min-height on the spots block is the floor: below it the page scrolls
+   rather than squashing the cards, and syncHomeDensity() sees that overflow
+   and collapses the earn row exactly as it always has. */
+.home-main { padding-top: 0.9rem; }
+.home-stack { margin: 0 1.3rem; }
+.home-main > .home-spots {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column;
+  min-height: 14rem;
+  margin: 0;
+}
+.home-spots > * { flex: 0 0 auto; }
+.home-spots > .vendor-carousel { flex: 1 1 auto; min-height: 0; align-items: stretch; }
+.home-spots > .vendor-skel { flex: 1 1 auto; }
+
+/* the card: header rows on top, the rewards list takes the rest */
+.vendor-card {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  align-content: start;
+}
+.vc-progress-slot { align-self: stretch; min-height: 0; overflow: hidden; }
+.vc-progress {
+  display: flex; flex-direction: column;
+  height: 100%; margin-top: 0.75rem; padding-top: 0.75rem;
+  border-top: 1px solid var(--hairline);
+}
+.vc-rewards-head {
+  flex: 0 0 auto;
+  font-size: 0.68rem; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 0.6rem;
+}
+.vc-reward-list {
+  flex: 1 1 auto; min-height: 0; overflow: hidden;
+  display: grid; align-content: start; gap: 0.85rem;
+}
+.vc-reward { display: grid; gap: 0.35rem; }
+.vc-reward[hidden] { display: none; }
+.vc-reward .vc-goal { font-size: 0.82rem; }
+.vc-reward.is-ready .vc-track i { background: var(--rf-ready-fill); }
+.vc-reward.is-ready .vc-goal span { color: var(--rf-ready); }
+/* the heading sits closer to the cards it names */
+.home-spots > .vendor-carousel { padding-top: 0.1rem; }
+/* .no-map used to centre a short card in a row of tall ones; every card is the
+   same shape now and they all stretch to the row's height */
+.vendor-card.no-map { align-self: stretch; }
