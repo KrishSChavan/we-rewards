@@ -58,7 +58,7 @@
   <div class="doc-header">
     <p class="doc-label">Legal Document — Student &amp; Vendor-Facing</p>
     <h1>WeRewards<br>Privacy Policy</h1>
-    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: October 2, 2026</p>
+    <p class="doc-effective">Effective Date: July 29, 2026&nbsp;&nbsp;·&nbsp;&nbsp;Last Updated: October 3, 2026</p>
   </div>
 
   <div class="notice">
@@ -114,8 +114,10 @@
 
   <h3>2.6 Deal Notification Data</h3>
   <p>If you grant your browser's notification permission to WeRewards, your browser gives us a <strong>push subscription</strong>: an endpoint URL at your browser vendor's push service (Google, Apple, or Mozilla, depending on your device) plus two encryption keys. We store these against your user identifier so we can deliver notifications to that device, and delete them when you turn deal alerts off, when you revoke permission, or when the push service tells us the subscription is dead.</p>
-  <p>For each deal you are selected to receive, we record which deal it was, whether a message was sent, which way it was sent (push notification or email), and whether you opened it. We also keep a small counter per account (when you were last messaged, when you were last sent a reminder, and how many messages you have had in the current day and week) purely to enforce the frequency limits in Section 7.4. Where we send an announcement ourselves, we also record which accounts it was queued for and whether each one was sent, so that nobody is sent the same announcement twice. These records are deleted about 30 days after the deal expires, and immediately if you delete your account.</p>
+  <p>For each deal you are selected to receive, we record which deal it was, whether a message was sent, which way it was sent (push notification or email), and whether you opened it. We also keep a small counter per account (when you were last messaged, when you were last sent a reminder, and how many messages you have had in the current day and week) to enforce the frequency limits in Section 7.4, and to let us see why a message is still waiting. Where we send an announcement ourselves, we also record which accounts it was queued for and whether each one was sent, so that nobody is sent the same announcement twice. These records are deleted about 30 days after the deal expires, and immediately if you delete your account.</p>
   <p>Where we could not reach you with a push notification, a deal may instead be sent to the email address on your account (Section 7.4). Our email provider tells us whether each message was delivered, could not be delivered, or was reported as spam. If an address permanently cannot receive mail, or its owner reports one of our messages as spam or uses an unsubscribe link, we record that address on an internal <strong>suppression list</strong> so that nothing further is sent to it. That list holds the email address and the reason only.</p>
+  <p><strong>A record of each message.</strong> We also keep a record of every notification and email we send you, or try to send you: what kind of message it was (a deal, a reminder, an announcement, a nearby spot alert, or an account email such as the code to confirm a second address), whether it went by push notification or email, when, and whether it was sent, failed, or was not sent and why (for example, because your alerts are switched off or no device of yours is signed up for them). It includes the message text as it was sent. For an email we keep only the subject line, never the body, and never any code the email contained, together with the address it went to and the delivered, bounced, or spam report from our email provider. For a push notification we also record which of your devices it was tried on and the answer each device's push service gave. A device is shown only by its type of device and browser, such as "iPhone Safari", noted when you turn on alerts, and which company's push service it uses, plus an internal reference number; we never record its push address or keys here. For a nearby spot alert, which your own device shows, the record says only that we allowed it. We do not record whether you opened an email or clicked a link in it.</p>
+  <p>The platform operator can see these records on an administrative screen, along with your name and email address, your frequency counters, which devices you have signed up (shown as described above), your notification switches, whether you have the app open at that moment (we hold back alerts while you do), and any messages still waiting to be sent to you. This is used to check that notifications are reaching people and to fix them when they are not, and for no other purpose. Vendors never see any of it. These records are deleted about 30 days after the message, and immediately if you delete your account.</p>
 
   <h3>2.7 Consent Records</h3>
   <p>When you accept the Terms and this Policy after signing in, we record that you did so: your user identifier, which version of the documents you accepted, the date and time, and — as evidence that the acceptance was genuine — your <strong>IP address</strong> and browser user agent at that moment.</p>
@@ -152,7 +154,7 @@
     <li>Your coordinates are <strong>never sent to us</strong>. We do not receive, store, or log your latitude and longitude, and no vendor ever sees where you are.</li>
     <li>When your device decides you are next to a spot you have not tried, it asks our server one question — <em>"may I show a notification about this spot?"</em> — naming <strong>the spot only</strong>. We record that we told you about that spot, and when.</li>
     <li>That record is coarse location information, and we want to be plain about it rather than hide it: it means you were near that spot at that time. It is not a track of your movements, we keep no other position data, and you can see the whole list in <strong>Download my data</strong>.</li>
-    <li>We use it for one purpose only: making sure you are never told about the same spot twice, and never interrupted more often than our limits allow.</li>
+    <li>We use it to make sure you are never told about the same spot twice, and never interrupted more often than our limits allow. A copy also goes into the notification record described in Section 2.6, where the platform operator can see it to check that it was delivered; that copy is deleted about 30 days after the alert.</li>
   </ul>
   <p><strong>This does not run in the background.</strong> Web apps cannot read your location when they are closed, and WeRewards does not try to. If the app is not open on your screen, nothing here is happening.</p>
   <p>You can switch Nearby spots off at any time in Account &rarr; Notifications, or withdraw location permission in your device settings — the switch turns itself off when you do. Turning it off stops the alerts and no further records are made. It is separate from Deal alerts: switching one off does not affect the other.</p>
@@ -249,6 +251,7 @@
       <tr><td>Diagnose problems and improve the app (Section 2.14)</td><td>User ID, pages visited, device and browser type, and a masked recording of the app's screens as you used them</td></tr>
       <tr><td>Select who receives a vendor's deal</td><td>User ID, transaction history at that vendor, balance at that vendor</td></tr>
       <tr><td>Deliver deal notifications and cap their frequency</td><td>User ID, push subscription, email address, notification history</td></tr>
+      <tr><td>Check and troubleshoot notification delivery (admin-only)</td><td>Notification records (Section 2.6), frequency counters, the type of device and browser each alert was tried on, your notification switches, whether you have the app open at that moment (we hold back alerts while you do), and your name and email address</td></tr>
       <tr><td>Credit a signup promotion</td><td>The email domain of your account and the date it was created</td></tr>
       <tr><td>Credit an invite bonus to both sides</td><td>Invite code, the link between the two accounts, and the date the invited account was created</td></tr>
       <tr><td>Run, audit, and detect abuse of a promotion (admin-only)</td><td>Bonus records, referral records including both accounts' email addresses</td></tr>
@@ -364,6 +367,7 @@
       <tr><td>Push subscriptions</td><td>Until you turn deal alerts off, revoke notification permission, delete your account, or the push service reports the subscription is dead</td></tr>
       <tr><td>Email suppressions (an address that bounced, or whose owner unsubscribed or reported a message as spam)</td><td>Kept so that nothing further is sent to that address. A bounce is dropped after about 180 days, in case the address is repaired. An unsubscribe or a spam report is kept indefinitely, <em>including after the account is deleted</em>: the record is what stops us mailing that address again, so deleting it would undo the very request it exists to honour. It holds the address and the reason only</td></tr>
       <tr><td>Deal delivery records and frequency counters</td><td>About 30 days after the deal expires; deleted immediately if you delete your account</td></tr>
+      <tr><td>Notification records (each notification and email we sent or tried to send you, and how it went)</td><td>About 30 days after the message; deleted immediately if you delete your account</td></tr>
       <tr><td>Your invite code</td><td>Until you delete your account</td></tr>
       <tr><td>Referral records (which account invited which)</td><td>Until either account is deleted, whichever comes first</td></tr>
       <tr><td>Bonus-point records (what we credited and why)</td><td>Retained indefinitely with your identity severed after account deletion (see Section 6)</td></tr>
@@ -392,7 +396,7 @@
   <!-- ══════════════════════════════════════════════════════════ -->
   <h2>7. Your Rights and Choices</h2>
   <h3>7.1 Data Export</h3>
-  <p>You can download a full copy of your WeRewards data at any time through <strong>Account tab → Download my data</strong>. The file is provided as a JSON file and includes your profile, your balances and community points balance, your full transaction history, your engagement scores, your deal-notification records, every bonus we have credited you and what it was for, your invite code, your referral records, any second email address you have linked, and a record of any account that has been joined into yours.</p>
+  <p>You can download a full copy of your WeRewards data at any time through <strong>Account tab → Download my data</strong>. The file is provided as a JSON file and includes your profile, your balances and community points balance, your full transaction history, your engagement scores, your notification records in their own section of the file (each message we sent or tried to send you, when, and how it went), every bonus we have credited you and what it was for, your invite code, your referral records, any second email address you have linked, and a record of any account that has been joined into yours.</p>
   <p>Your referral records are limited to <strong>your</strong> side of each invitation, in line with Section 2.12: an invitation you sent appears as its date, status, and what you were paid, without any identifier for the person you invited.</p>
   <h3>7.2 Account Deletion</h3>
   <p>As described in Section 6, you may delete your account at any time through the app.</p>
@@ -445,7 +449,7 @@
   <h3>12.3 Address Geocoding</h3>
   <p>If a business address is provided, we send that address to <strong>Nominatim</strong>, a geocoding service run by the OpenStreetMap Foundation, to convert it into map coordinates for display in the student app. Only the business address is sent.</p>
   <h3>12.4 Retention</h3>
-  <p>Applications are retained while under review and, if approved, for as long as the vendor account is active. Declined and withdrawn applications are retained only as long as needed for our records. A vendor's own obligations and data rights are governed by the vendor agreement signed with WeRewards.</p>
+  <p>Applications are retained while under review and, if approved, for as long as the vendor account is active. Declined and withdrawn applications are retained only as long as needed for our records. We also keep a record of each email we send an applicant or vendor contact (the address, the subject line, and whether it was delivered) for about 30 days. A vendor's own obligations and data rights are governed by the vendor agreement signed with WeRewards.</p>
 
   <!-- ══════════════════════════════════════════════════════════ -->
   <h2>13. Changes to This Policy</h2>

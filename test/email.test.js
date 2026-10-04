@@ -31,7 +31,8 @@ import {
   emailEnabled, sendEmail, maskEmail, emailUrl,
   unsubscribeToken, verifyUnsubscribeToken, unsubscribeUrl,
 } from '../src/lib/email.js';
-import { verifySvix, classifyEvent, isPermanentBounce } from '../src/routes/webhooks.js';
+import { verifySvix, classifyEvent, isPermanentBounce, deliveryStatusOf } from '../src/routes/webhooks.js';
+import { flushNotificationLog, _resetNotificationLogForTests } from '../src/lib/notification-log.js';
 
 /* ---------- the config gate ---------- */
 
@@ -427,5 +428,424 @@ test('the event decision table', () => {
   // and per-message open data about students is a privacy cost with no benefit.
   for (const type of ['email.sent', 'email.delivered', 'email.opened', 'email.clicked', 'email.delivery_delayed', undefined]) {
     assert.deepEqual(classifyEvent(type, {}), { suppress: false }, `${type} should be ignored`);
+  }
+});
+
+/* ---------- the notification log (migration-062) ---------- */
+//
+// sendEmail writes exactly one notification_log row per call, on every return
+// path, without awaiting it. What is asserted hardest is what must NEVER reach
+// that row: the html, the text, the headers, the unsubscribe URL (a permanent
+// per-student HMAC token) and the reset or link code two templates put in the
+// subject.
+
+const NOTIF_LIB = pathToFileURL(path.resolve('src/lib/notification-log.js')).href;
+const WEBHOOK_LIB = pathToFileURL(path.resolve('src/routes/webhooks.js')).href;
+
+/**
+ * In-process: Supabase answered by `handler(call)`, every request recorded with
+ * its raw body, the log flushed before returning. In this process mail is
+ * disabled, so every send takes the 'disabled' path, which is a real return
+ * path and logs like any other: that is enough to exercise the whole row
+ * builder (redaction included) without a key.
+ */
+async function withLogCapture(handler, fn) {
+  const realFetch = globalThis.fetch;
+  const realWarn = console.warn;
+  const calls = [];
+  const warnings = [];
+  console.warn = (...a) => { warnings.push(a.map(String).join(' ')); };
+  globalThis.fetch = async (input, init = {}) => {
+    const call = { url: String(input?.url ?? input), method: String(init.method ?? 'GET').toUpperCase(), body: typeof init.body === 'string' ? init.body : '' };
+    calls.push(call);
+    const out = await handler(call);
+    return new Response(out.body ?? '[]', { status: out.status ?? 201, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const result = await fn({ calls, warnings });
+    await flushNotificationLog();
+    return { result, calls, warnings };
+  } finally {
+    globalThis.fetch = realFetch;
+    console.warn = realWarn;
+  }
+}
+
+const logInserts = (calls) => calls.filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/notification_log'));
+const rowOf = (call) => {
+  const b = JSON.parse(call.body);
+  return Array.isArray(b) ? b[0] : b;
+};
+
+const STUDENT = '11111111-2222-4333-8444-555555555555';
+const VENDOR_ID = '99999999-8888-4777-8666-555555555555';
+
+test('a disabled send is logged once: refused, with the caller\'s context', async () => {
+  _resetNotificationLogForTests();
+  const { result, calls } = await withLogCapture(() => ({ status: 201, body: '[{"id":"n1"}]' }), () => sendEmail({
+    to: '  Vendor@Example.COM ',
+    subject: 'Sher Halal is live on WeRewards',
+    html: '<p>HTML-MARKER</p>',
+    text: 'TEXT-MARKER',
+    idempotencyKey: 'accept:app-1',
+    tags: ['application-accepted'],
+    log: {
+      kind: 'application_accepted', recipientKind: 'vendor', vendorId: VENDOR_ID,
+      recipientLabel: 'Sher Halal', ref: { applicationId: 'app-1' },
+    },
+  }));
+  // The return value is exactly what it was before logging existed.
+  assert.deepEqual(result, { ok: false, reason: 'disabled' });
+  const inserts = logInserts(calls);
+  assert.equal(inserts.length, 1);
+  const row = rowOf(inserts[0]);
+  assert.equal(row.channel, 'email');
+  assert.equal(row.kind, 'application_accepted');
+  assert.equal(row.outcome, 'refused');
+  assert.equal(row.reason, 'disabled');
+  assert.equal(row.recipient_kind, 'vendor');
+  assert.equal(row.recipient_email, 'vendor@example.com');
+  assert.equal(row.recipient_label, 'Sher Halal');
+  assert.equal(row.vendor_id, VENDOR_ID);
+  assert.equal(row.title, 'Sher Halal is live on WeRewards');
+  assert.equal(row.body, null);
+  assert.equal(row.template, 'application-accepted');
+  assert.equal(row.provider_id, null);
+  assert.deepEqual(row.ref, { applicationId: 'app-1', idempotencyKey: 'accept:app-1' });
+  assert.ok(!inserts[0].body.includes('HTML-MARKER') && !inserts[0].body.includes('TEXT-MARKER'));
+});
+
+test('with no msg.log the row still lands, as kind "other" unless the tag is a known kind', async () => {
+  _resetNotificationLogForTests();
+  const { calls } = await withLogCapture(() => ({}), async () => {
+    await sendEmail({ to: 'a@b.com', subject: 'x', html: 'x', tags: ['vendor-reset'] });
+    await sendEmail({ to: 'a@b.com', subject: 'x', html: 'x', tags: ['broadcast'] });
+    await sendEmail({ to: 'a@b.com', subject: 'x', html: 'x' });
+  });
+  const rows = logInserts(calls).map(rowOf);
+  assert.deepEqual(rows.map((r) => r.kind), ['other', 'broadcast', 'other']);
+  assert.deepEqual(rows.map((r) => r.recipient_kind), ['other', 'other', 'other']);
+  assert.deepEqual(rows.map((r) => r.template), ['vendor-reset', 'broadcast', null]);
+});
+
+test('a reset or link code never reaches any column of the log row', async () => {
+  _resetNotificationLogForTests();
+  const RESET = 'K7M2-NP94';
+  const LINK = '482913';
+  const { calls } = await withLogCapture(() => ({}), async () => {
+    // 1. The call site does everything right: secrets + a fixed safe subject.
+    //    The code is ALSO planted in the label and the ref, which no caller
+    //    should do, to prove the scrub is not subject-only.
+    await sendEmail({
+      to: 'owner@spot.com', subject: `Your WeRewards reset code: ${RESET}`,
+      html: `<b>${RESET}</b>`, text: RESET, idempotencyKey: 'reset:r1',
+      log: {
+        kind: 'vendor_reset', recipientKind: 'vendor', recipientLabel: `Spot ${RESET}`,
+        ref: { resetId: 'r1', issuedBy: 'admin', note: `code ${RESET.toLowerCase()}`, list: [RESET] },
+        secrets: [RESET], logSubject: 'Your WeRewards reset code (code hidden)',
+      },
+    });
+    // 2. Secrets passed in the OTHER spelling, no logSubject.
+    await sendEmail({
+      to: 'owner@spot.com', subject: `Your WeRewards reset code: ${RESET}`, html: 'x',
+      log: { kind: 'vendor_reset', recipientKind: 'vendor', secrets: [RESET.replace('-', '')] },
+    });
+    // 3. A forgetful caller: no msg.log at all. The subject safety net catches it.
+    await sendEmail({ to: 'kid@psu.edu', subject: `Your WeRewards link code: ${LINK}`, html: LINK });
+    // 4. Link code with secrets.
+    await sendEmail({
+      to: 'kid@psu.edu', subject: `Your WeRewards link code: ${LINK}`, html: LINK,
+      log: { kind: 'student_link_code', recipientKind: 'student', studentId: STUDENT, secrets: [LINK], logSubject: 'Your WeRewards link code (code hidden)', ref: { codeId: 'c1' } },
+    });
+  });
+  const inserts = logInserts(calls);
+  assert.equal(inserts.length, 4);
+  for (const call of inserts) {
+    const raw = call.body.toUpperCase();
+    for (const fragment of ['K7M2', 'NP94', LINK]) {
+      assert.ok(!raw.includes(fragment), `"${fragment}" reached the log: ${call.body}`);
+    }
+  }
+  const rows = inserts.map(rowOf);
+  assert.equal(rows[0].title, 'Your WeRewards reset code (code hidden)');
+  assert.equal(rows[0].recipient_label, 'Spot [redacted]');
+  assert.equal(rows[0].ref.resetId, 'r1');
+  assert.equal(rows[1].title, 'Your WeRewards reset code: [redacted]');
+  assert.equal(rows[2].title, 'Your WeRewards link code: [redacted]');
+  assert.equal(rows[3].title, 'Your WeRewards link code (code hidden)');
+  assert.equal(rows[3].student_id, STUDENT);
+});
+
+test('a code nested inside an object in log.ref is scrubbed too, and a cyclic ref still logs', async () => {
+  _resetNotificationLogForTests();
+  const RESET = 'K7M2-NP94';
+  const cyclic = { resetId: 'r2' };
+  cyclic.self = cyclic;
+  const { calls } = await withLogCapture(() => ({}), async () => {
+    await sendEmail({
+      to: 'owner@spot.com', subject: 'x', html: 'x',
+      log: {
+        kind: 'vendor_reset', recipientKind: 'vendor', secrets: [RESET],
+        ref: { resetId: 'r1', reset: { code: RESET, deeper: [{ typed: 'K7M2NP94' }] }, when: 3 },
+      },
+    });
+    await sendEmail({ to: 'owner@spot.com', subject: 'x', html: 'x', log: { kind: 'vendor_reset', ref: cyclic } });
+  });
+  const inserts = logInserts(calls);
+  assert.equal(inserts.length, 2, 'a cyclic ref cost the whole row');
+  assert.ok(!inserts[0].body.toUpperCase().includes('K7M2'), inserts[0].body);
+  const ref = rowOf(inserts[0]).ref;
+  assert.deepEqual(ref, { resetId: 'r1', reset: { code: '[redacted]', deeper: [{ typed: '[redacted]' }] }, when: 3 });
+  assert.equal(rowOf(inserts[1]).ref.resetId, 'r2');
+});
+
+test('a missing log table neither throws nor slows the send, and is not hammered', async () => {
+  _resetNotificationLogForTests();
+  const slowMissing = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return { status: 404, body: JSON.stringify({ code: 'PGRST205', message: 'Could not find the table public.notification_log' }) };
+  };
+  const { result, calls, warnings } = await withLogCapture(slowMissing, async () => {
+    const t0 = Date.now();
+    const res = await sendEmail({ to: 'a@b.com', subject: 'x', html: 'x' });
+    const ms = Date.now() - t0;
+    // Let the first write land and trip the cool-down, then send again.
+    await flushNotificationLog();
+    const again = await sendEmail({ to: 'a@b.com', subject: 'x', html: 'x' });
+    return { res, ms, again };
+  });
+  assert.deepEqual(result.res, { ok: false, reason: 'disabled' });
+  assert.deepEqual(result.again, { ok: false, reason: 'disabled' });
+  assert.ok(result.ms < 200, `sendEmail waited ${result.ms}ms on the log write`);
+  assert.equal(logInserts(calls).length, 1, 'the second send wrote to a table known to be missing');
+  assert.equal(warnings.filter((w) => w.includes('migration-062')).length, 1);
+  _resetNotificationLogForTests();
+});
+
+/**
+ * Child process with mail CONFIGURED, routing Resend by recipient so one run
+ * walks every network return path:
+ *   ok@x.com       200 { id: 're_123' }
+ *   fail@x.com     500
+ *   hang@x.com     never answers until aborted (EMAIL_TIMEOUT_MS=80 -> timeout)
+ *   throw@x.com    the transport rejects (network)
+ *   suppressed@x.com is on the suppression list at scope 'all'
+ * Supabase answers [] for everything else, including the log inserts.
+ */
+function runMailPaths(body) {
+  const src = `
+    const calls = [];
+    console.warn = () => {};
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      const reqBody = typeof init.body === 'string' ? init.body : '';
+      calls.push({ url: u, method: init.method || 'GET', body: reqBody });
+      const json = { 'Content-Type': 'application/json' };
+      if (u.startsWith('https://api.resend.com/')) {
+        const to = JSON.parse(reqBody).to[0];
+        if (to === 'ok@x.com') return new Response('{"id":"re_123"}', { status: 200, headers: json });
+        if (to === 'fail@x.com') return new Response('{"message":"server error"}', { status: 500, headers: json });
+        if (to === 'throw@x.com') throw new TypeError('fetch failed');
+        if (to === 'hang@x.com') {
+          return new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+            const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+          }));
+        }
+      }
+      if (u.includes('/email_suppressions') && u.includes(encodeURIComponent('suppressed@x.com'))) {
+        return new Response('[{"scope":"all"}]', { status: 200, headers: json });
+      }
+      return new Response('[]', { status: 200, headers: json });
+    };
+    const mail = await import(${JSON.stringify(LIB)});
+    const log = await import(${JSON.stringify(NOTIF_LIB)});
+    const out = await (${body})(mail, calls, log);
+    await log.flushNotificationLog();
+    console.log('__RESULT__' + JSON.stringify(out));
+  `;
+  const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
+    env: {
+      ...process.env,
+      RESEND_API_KEY: 're_test_key',
+      EMAIL_FROM: 'WeRewards <hello@we-rewards.com>',
+      EMAIL_REPLY_TO: '',
+      APP_ORIGIN: 'https://we-rewards.test',
+      EMAIL_TIMEOUT_MS: '80',
+    },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const line = stdout.split('\n').find((l) => l.startsWith('__RESULT__'));
+  assert.ok(line, `child produced no result. stdout:\n${stdout}`);
+  return JSON.parse(line.slice('__RESULT__'.length));
+}
+
+test('every return path logs exactly one row, with the right outcome and reason', () => {
+  const out = runMailPaths(`async (mail, calls, log) => {
+    const base = { subject: 'Deals', html: '<p>HTML-MARKER</p>', text: 'TEXT-MARKER' };
+    const sends = [
+      { ...base, to: 'ok@x.com', category: 'marketing', unsubscribeUrl: 'https://we-rewards.test/unsubscribe?u=1&t=UNSUB-TOKEN-MARKER', headers: { 'X-Marker': 'HEADER-MARKER' }, idempotencyKey: 'deals:b1', tags: ['deals'], log: { kind: 'deal', recipientKind: 'student', ref: { batch: 'b1', fallback: true } } },
+      { ...base, to: 'fail@x.com' },
+      { ...base, to: 'hang@x.com' },
+      { ...base, to: 'throw@x.com' },
+      { ...base, to: 'suppressed@x.com' },
+      { ...base, to: 'Not An Address' },
+      { to: 'ok@x.com', subject: '', html: '' },
+    ];
+    const results = [];
+    const rowsPerSend = [];
+    for (const m of sends) {
+      const before = calls.length;
+      results.push(await mail.sendEmail(m));
+      await log.flushNotificationLog();
+      rowsPerSend.push(calls.slice(before).filter((c) => c.method === 'POST' && c.url.includes('/notification_log')).map((c) => c.body));
+    }
+    return { results, rowsPerSend };
+  }`);
+  assert.deepEqual(out.results, [
+    { ok: true, id: 're_123' },
+    { ok: false, reason: 'http', status: 500 },
+    { ok: false, reason: 'timeout' },
+    { ok: false, reason: 'network' },
+    { ok: false, reason: 'suppressed' },
+    { ok: false, reason: 'invalid_to' },
+    { ok: false, reason: 'empty' },
+  ]);
+  for (const [i, bodies] of out.rowsPerSend.entries()) {
+    assert.equal(bodies.length, 1, `send ${i} logged ${bodies.length} rows`);
+  }
+  const rows = out.rowsPerSend.map(([b]) => {
+    const p = JSON.parse(b);
+    return Array.isArray(p) ? p[0] : p;
+  });
+  const summary = rows.map((r) => [r.outcome, r.reason]);
+  assert.deepEqual(summary, [
+    ['sent', null],
+    ['failed', 'http'],
+    ['failed', 'timeout'],
+    ['failed', 'network'],
+    ['refused', 'suppressed'],
+    ['refused', 'invalid_to'],
+    ['refused', 'empty'],
+  ]);
+  assert.equal(rows[0].provider_id, 're_123');
+  assert.equal(rows[0].kind, 'deal');
+  assert.equal(rows[0].template, 'deals');
+  assert.deepEqual(rows[0].ref, { batch: 'b1', fallback: true, idempotencyKey: 'deals:b1' });
+  assert.equal(rows[1].ref.httpStatus, 500);
+  assert.equal(rows[1].provider_id, null);
+  // An invalid address is stored as typed, so the operator can see the typo.
+  assert.equal(rows[5].recipient_email, 'Not An Address');
+  assert.equal(rows[0].recipient_email, 'ok@x.com');
+  for (const b of out.rowsPerSend.flat()) {
+    for (const marker of ['HTML-MARKER', 'TEXT-MARKER', 'UNSUB-TOKEN-MARKER', 'HEADER-MARKER', 'unsubscribe', 'List-Unsubscribe']) {
+      assert.ok(!b.includes(marker), `${marker} reached the log: ${b}`);
+    }
+  }
+});
+
+/* ---------- delivery events onto the log row ---------- */
+
+/**
+ * Drive the real POST /resend handler in a child with RESEND_WEBHOOK_SECRET set
+ * (it is read at import time). Each event is signed here, in the parent, with
+ * the real Svix scheme. `logStatus`/`logThrows` script the notification_log
+ * PATCH; the suppression RPC always succeeds.
+ */
+function runWebhook(events, { logStatus = 204, logThrows = false } = {}) {
+  const signed = events.map((e) => {
+    const raw = JSON.stringify(e);
+    return { raw, headers: sign(raw) };
+  });
+  const src = `
+    const calls = [];
+    console.warn = () => {};
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      calls.push({ url: decodeURIComponent(u), method: init.method || 'GET', body: typeof init.body === 'string' ? init.body : '' });
+      if (u.includes('/notification_log')) {
+        if (${logThrows}) throw new TypeError('fetch failed');
+        const s = ${Number(logStatus)};
+        return new Response(s === 204 ? null : JSON.stringify({ code: s === 404 ? 'PGRST205' : 'XX000', message: 'nope' }), { status: s, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    const router = (await import(${JSON.stringify(WEBHOOK_LIB)})).default;
+    const layer = router.stack.find((l) => l.route && l.route.path === '/resend');
+    const handle = layer.route.stack[0].handle;
+    const results = [];
+    for (const ev of ${JSON.stringify(signed)}) {
+      const before = calls.length;
+      const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+      let nextErr = null;
+      await handle({ body: Buffer.from(ev.raw), headers: ev.headers }, res, (e) => { nextErr = String(e); });
+      results.push({ status: res.statusCode, body: res.body, nextErr, calls: calls.slice(before) });
+    }
+    console.log('__RESULT__' + JSON.stringify(results));
+  `;
+  const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
+    env: { ...process.env, RESEND_WEBHOOK_SECRET: SECRET },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const line = stdout.split('\n').find((l) => l.startsWith('__RESULT__'));
+  assert.ok(line, `child produced no result. stdout:\n${stdout}`);
+  return JSON.parse(line.slice('__RESULT__'.length));
+}
+
+const ev = (type, extra = {}) => ({
+  type,
+  created_at: '2026-10-03T12:00:00.000Z',
+  data: { email_id: 're_abc', to: ['vendor@x.com'], ...extra },
+});
+
+test('deliveryStatusOf keeps three events and drops opens, clicks and delays', () => {
+  assert.equal(deliveryStatusOf('email.delivered'), 'delivered');
+  assert.equal(deliveryStatusOf('email.bounced'), 'bounced');
+  assert.equal(deliveryStatusOf('email.complained'), 'complained');
+  for (const t of ['email.opened', 'email.clicked', 'email.delivery_delayed', 'email.sent', 'toString', '__proto__', undefined, null]) {
+    assert.equal(deliveryStatusOf(t), null, String(t));
+  }
+});
+
+test('the webhook records delivered, bounced and complained by message id', () => {
+  const out = runWebhook([
+    ev('email.delivered'),
+    ev('email.bounced', { bounce: { type: 'Transient' } }),
+    ev('email.bounced', { bounce: { type: 'Permanent' } }),
+    ev('email.complained'),
+  ]);
+  const patches = out.map((r) => r.calls.filter((c) => c.method === 'PATCH' && c.url.includes('/notification_log')));
+  const suppressions = out.map((r) => r.calls.filter((c) => c.url.includes('/rpc/email_suppress')).length);
+  for (const r of out) assert.equal(r.status, 200);
+  assert.deepEqual(patches.map((p) => p.length), [1, 1, 1, 1]);
+  assert.deepEqual(patches.map((p) => JSON.parse(p[0].body).delivery_status), ['delivered', 'bounced', 'bounced', 'complained']);
+  for (const p of patches) {
+    assert.ok(p[0].url.includes('provider_id=eq.re_abc'), p[0].url);
+    assert.equal(JSON.parse(p[0].body).delivery_at, '2026-10-03T12:00:00.000Z');
+  }
+  // Suppression is unchanged: transient bounce no, permanent bounce and
+  // complaint yes, delivered no.
+  assert.deepEqual(suppressions, [0, 0, 1, 1]);
+});
+
+test('opens, clicks and delays are acknowledged and never written', () => {
+  const out = runWebhook([ev('email.opened'), ev('email.clicked'), ev('email.delivery_delayed'), ev('email.sent')]);
+  for (const r of out) {
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.calls, [], `an ignored event touched the database: ${JSON.stringify(r.calls)}`);
+  }
+});
+
+test('a failing log write never changes the webhook response', () => {
+  for (const opts of [{ logStatus: 500 }, { logStatus: 404 }, { logThrows: true }]) {
+    const out = runWebhook([ev('email.complained'), ev('email.delivered')], opts);
+    for (const r of out) {
+      assert.equal(r.status, 200, JSON.stringify(opts));
+      assert.deepEqual(r.body, { ok: true });
+      assert.equal(r.nextErr, null, `the handler errored: ${r.nextErr}`);
+    }
+    // The complaint was still suppressed.
+    assert.equal(out[0].calls.filter((c) => c.url.includes('/rpc/email_suppress')).length, 1);
   }
 });

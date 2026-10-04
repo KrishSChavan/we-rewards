@@ -7,7 +7,14 @@ import { geocode } from '../lib/geocode.js';
 // a subscription stopped billing (see DELETE /vendors/:id). A console line alone
 // is not enough there — nobody tails a dyno log — and the id in that push is the
 // only remaining handle on a card that may still be charged every month.
-import { getVapidPublicKey, notifyAdminEndpoint, notifyAdmins } from '../lib/push.js';
+import { getVapidPublicKey, notifyAdminEndpoint, notifyAdmins, pushEnabled } from '../lib/push.js';
+// The notification log + queue screen (migration-062) reads, never steers, the
+// three send workers: their status, their in-memory backoff lists and their
+// config, so the queue it shows is computed with the numbers the claims use.
+import { NOTIFICATION_KINDS, deviceLabelFromUA, notificationLogState, serviceOf } from '../lib/notification-log.js';
+import { CAMPAIGN_CONFIG, campaignWorkerStatus } from '../lib/campaigns.js';
+import { REMINDER_CONFIG, previewReminder, reminderBackoff, reminderWorkerStatus } from '../lib/reminders.js';
+import { broadcastBackoff, broadcastWorkerStatus } from '../lib/broadcasts.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
 import { rollupRoi } from '../lib/roi.js';
@@ -40,7 +47,7 @@ import {
   CODE_MAX as AMB_CODE_MAX,
   POINTS_MAX as AMB_POINTS_MAX,
 } from '../lib/ambassadors.js';
-import { emitBalance } from '../lib/realtime.js';
+import { emitBalance, visibleUserIds } from '../lib/realtime.js';
 // The one place the "which table holds this vendor's points" rule is written
 // down (migration-044). Re-deriving it inline in a support screen is how the
 // support screen ends up disagreeing with the till.
@@ -1026,6 +1033,19 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
       // request — which reads to the vendor as "the code you sent me is wrong".
       idempotencyKey: `reset:${row?.reset_id ?? ''}`,
       tags: ['vendor-reset'],
+      // The code is in this template's subject AND body. `secrets` scrubs it
+      // from anything the log keeps, and the fixed logSubject means the stored
+      // title never depended on that scrub in the first place.
+      log: {
+        kind: 'vendor_reset',
+        recipientKind: 'vendor',
+        vendorId: vendor.id,
+        recipientUserId: target.user_id,
+        recipientLabel: vendor.name,
+        ref: { resetId: row?.reset_id ?? null, issuedBy: 'admin' },
+        secrets: [code],
+        logSubject: 'Your WeRewards reset code (code hidden)',
+      },
     });
 
     res.json({
@@ -2209,6 +2229,13 @@ router.post('/applications/:id/accept', async (req, res, next) => {
       category: 'transactional',
       idempotencyKey: `accept:${app.id}`,
       tags: ['application-accepted'],
+      log: {
+        kind: 'application_accepted',
+        recipientKind: 'vendor',
+        vendorId: vendor?.id ?? null,
+        recipientLabel: app.business_name,
+        ref: { applicationId: app.id },
+      },
     });
 
     // `vendors` is every location this accept created, so the dashboard can say
@@ -2905,9 +2932,14 @@ router.post('/push/subscribe', async (req, res, next) => {
         || p256dh.length > 300 || auth.length > 100) {
       return res.status(400).json({ error: 'BAD_SUBSCRIPTION', message: 'That push subscription looks invalid.' });
     }
-    const { error } = await supabaseAdmin
-      .from('push_subscriptions')
-      .upsert({ endpoint, p256dh, auth, user_id: req.user.id, role: 'admin' }, { onConflict: 'endpoint' });
+    // device_label ("Windows Chrome") is what the notification log shows for
+    // each device instead of the endpoint (migration-062). On a database
+    // without the column the upsert is retried without it: turning alerts on
+    // must keep working before the operator has pasted 062.
+    const row = { endpoint, p256dh, auth, user_id: req.user.id, role: 'admin' };
+    const upsert = (r) => supabaseAdmin.from('push_subscriptions').upsert(r, { onConflict: 'endpoint' });
+    let { error } = await upsert({ ...row, device_label: deviceLabelFromUA(req.get('user-agent')) });
+    if (error && isMissingColumn(error, 'device_label')) ({ error } = await upsert(row));
     if (error) throw error;
     res.json({ ok: true });
   } catch (err) {
@@ -3149,6 +3181,926 @@ router.post('/broadcasts/:id/cancel', async (req, res, next) => {
     next(err);
   }
 });
+
+/* ---------- notifications: the send log and the queue (migration-062) ----------
+
+   Two questions the operator could not answer before this: "did that student
+   actually get anything?" (the LOG, one notification_log row per push or email
+   attempt) and "is anything waiting to go out, and why is it waiting?" (the
+   QUEUE, computed live by the read-only admin_*_queue functions). Both are view
+   only. Nothing under /notifications writes, claims or sends; the reminder
+   preview runs the worker's composer without its claim.
+
+   Every route here has to keep answering on a database that is missing
+   migrations, because code ships before the operator pastes the SQL and prod
+   carries a backlog. A missing table, column or function is answered 200 with
+   `unavailable: 'migration-0NN'` naming WHICH paste is missing, rather than a
+   500: a 500 here files an error_logs row, which pushes an alert to every
+   operator device, about a screen whose only problem is a known pending step.
+   Anything else still reaches next(err), because that one is a real fault.
+
+   The sub-router is mounted on `router` BELOW router.use(requireAdmin), which
+   is its only gate. It is exported for test/admin-notifications.test.js and
+   must never be mounted anywhere else. */
+
+const NOTIF_PAGE = 50;
+const NOTIF_PAGE_MAX = 200;
+const NOTIF_STUDENT_RECENT = 20;
+// Profiles a log search may expand into. A search term that matches more
+// students than this is too vague to be a lookup, and every id rides in the
+// URL of the log query that follows.
+const NOTIF_Q_PROFILE_CAP = 200;
+const QUEUE_DEALS_LIMIT = 100;
+const QUEUE_BROADCASTS_LIMIT = 100;
+// Reminder candidates are fetched four pages deep and the ones time WILL
+// release are listed first. The function ranks by staleness, so its top rows
+// are mostly students who will never be reminded (opted out, no device), and
+// a plain top-50 buried the few that will go next behind them.
+const QUEUE_REMINDERS_FETCH = 200;
+const QUEUE_REMINDERS_SHOWN = 50;
+// One student's own queued rows (the functions filter by p_user_id before
+// their limit). Far above what a student realistically has queued.
+const QUEUE_STUDENT_LIMIT = 200;
+// Ids per .in() read when resolving names. Each uuid is 37 characters of URL;
+// a 600-id list is a 22KB request line, and the gateway in front of PostgREST
+// is not obliged to accept that. A page usually fits in one chunk.
+const NAME_CHUNK = 100;
+const QUEUE_ACTIVE = ['queued', 'sending'];
+
+const NOTIF_CHANNELS = new Set(['push', 'email']);
+const NOTIF_OUTCOMES = new Set(['sent', 'failed', 'refused', 'allowed']);
+const NOTIF_RECIPIENTS = new Set(['student', 'vendor', 'applicant', 'admin', 'other']);
+const NOTIF_RANGES = new Set(['today', '7d', '30d']);
+
+const NOTIF_SUMMARY_COLS = 'id, created_at, channel, kind, outcome, reason, recipient_kind, student_id, '
+  + 'recipient_email, recipient_label, vendor_id, title, devices_tried, devices_accepted, delivery_status, source';
+const NOTIF_DETAIL_COLS = `${NOTIF_SUMMARY_COLS}, body, url, template, ref, devices, provider_id, delivery_at, dedupe_key`;
+
+// Postgres and PostgREST's ways of saying "that object is not in this
+// database": relation, column, function (by name, or by PostgREST's schema
+// cache), and PostgREST's cache misses for a column or a table.
+const MISSING_OBJECT_CODES = new Set(['42P01', '42703', '42883', 'PGRST202', 'PGRST204', 'PGRST205']);
+const MISSING_FUNCTION_CODES = new Set(['42883', 'PGRST202']);
+
+/** True when `err` means a table, column or function does not exist (yet). */
+export function isMissingObject(err) {
+  return Boolean(err && MISSING_OBJECT_CODES.has(err.code));
+}
+
+/**
+ * Which migration a missing-object error points at, or null for any other
+ * error. A missing FUNCTION is always migration-062's (every function these
+ * routes call is created there). A missing table or column inside one of those
+ * functions is the prerequisite it reads: 061's broadcast tables, 060's
+ * reminder column, 047's email reach. For a plain table read, the caller names
+ * the table's own migration as the prerequisite.
+ */
+export function unavailableFor(err, prerequisite) {
+  if (!isMissingObject(err)) return null;
+  return MISSING_FUNCTION_CODES.has(err.code) ? 'migration-062' : prerequisite;
+}
+
+/**
+ * The column an insert or select named is not there (pre-migration DB). Both
+ * halves are required: the code alone would also match a different missing
+ * column, and the name alone would match any other fault that mentions it
+ * (a constraint on that column, say), which the caller's retry without the
+ * column would then quietly paper over.
+ */
+function isMissingColumn(err, column) {
+  if (!err || (err.code !== '42703' && err.code !== 'PGRST204')) return false;
+  return typeof err.message === 'string' && err.message.includes(column);
+}
+
+/* ----- campus-local time, for "today" and the quiet-hours banner ----- */
+
+/** A timezone Intl accepts, else UTC: a bad env value must not 500 the log. */
+function safeTimezone(tz) {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return tz;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function zonedParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(date);
+  const p = Object.fromEntries(parts.map((x) => [x.type, Number(x.value)]));
+  return { year: p.year, month: p.month, day: p.day, hour: p.hour % 24, minute: p.minute, second: p.second };
+}
+
+/**
+ * The instant a local wall-clock time names in `timeZone`. Two correction
+ * passes because the offset at the first guess can differ from the offset at
+ * the answer when a DST change falls between them.
+ */
+function zonedTimeToUtc({ year, month, day, hour = 0, minute = 0 }, timeZone) {
+  const target = Date.UTC(year, month - 1, day, hour, minute);
+  let guess = target;
+  for (let i = 0; i < 2; i += 1) {
+    const p = zonedParts(new Date(guess), timeZone);
+    const diff = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - target;
+    if (!diff) break;
+    guess -= diff;
+  }
+  return new Date(guess);
+}
+
+/** Start of the campus-local day containing `now`, as a Date. */
+export function localMidnight(now, timeZone) {
+  const tz = safeTimezone(timeZone);
+  const p = zonedParts(now, tz);
+  return zonedTimeToUtc({ year: p.year, month: p.month, day: p.day }, tz);
+}
+
+/**
+ * Whether `now` is inside the campus quiet window, and when it ends. Same
+ * window semantics as the claim functions: [start, end) in local hours,
+ * start === end disables it, start > end wraps midnight.
+ */
+export function quietHoursAt(now, { quietStart, quietEnd, timezone }) {
+  const tz = safeTimezone(timezone);
+  const start = Number(quietStart);
+  const end = Number(quietEnd);
+  const out = { active: false, endsAt: null, start, end, timezone: tz };
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start === end) return out;
+  const p = zonedParts(now, tz);
+  const h = p.hour;
+  const active = start < end ? (h >= start && h < end) : (h >= start || h < end);
+  if (!active) return out;
+  // The next local `end`:00. Before it today means today; otherwise tomorrow
+  // (Date.UTC normalises day + 1 across month and year ends).
+  const day = new Date(Date.UTC(p.year, p.month - 1, p.day + (h < end ? 0 : 1)));
+  const endsAt = zonedTimeToUtc({
+    year: day.getUTCFullYear(), month: day.getUTCMonth() + 1, day: day.getUTCDate(), hour: end,
+  }, tz);
+  return { ...out, active: true, endsAt: endsAt.toISOString() };
+}
+
+/* ----- shaping ----- */
+
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>]+/gi;
+
+/**
+ * DeviceResult[] as stored, cut back to its seven documented keys. The writer
+ * already never stores an endpoint, but a push service's error text is free
+ * text from a third party and can quote the URL it was sent to; the endpoint is
+ * a capability (anyone holding it can push to that phone), so any URL in the
+ * error is blanked here too.
+ */
+function cleanDevices(devices) {
+  if (!Array.isArray(devices)) return [];
+  return devices.filter((d) => d && typeof d === 'object').map((d) => ({
+    subId: typeof d.subId === 'string' ? d.subId : null,
+    service: typeof d.service === 'string' ? d.service : 'other',
+    label: typeof d.label === 'string' ? d.label : null,
+    ok: d.ok === true,
+    status: Number.isFinite(d.status) ? d.status : null,
+    pruned: d.pruned === true,
+    error: typeof d.error === 'string' ? d.error.replace(URL_IN_TEXT, '[url]') : null,
+  }));
+}
+
+function chunks(list, size) {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Names for a response: one profiles read and one vendors read per response
+ * (chunked only past NAME_CHUNK ids), never one per row.
+ *
+ * Fail-soft on purpose. Names decorate rows that already carry a recipient
+ * label and email snapshot; a profiles hiccup should cost the operator the
+ * pretty names, not the whole log.
+ */
+async function resolveNames(studentIds, vendorIds) {
+  const profiles = new Map();
+  const vendors = new Map();
+  const sIds = [...new Set(studentIds.filter(isUuid))];
+  const vIds = [...new Set(vendorIds.filter(isUuid))];
+  const reads = [
+    ...chunks(sIds, NAME_CHUNK).map((ids) => supabaseAdmin.from('profiles').select('user_id, name, email').in('user_id', ids)
+      .then(({ data, error }) => {
+        if (error) throw error;
+        (data ?? []).forEach((p) => profiles.set(p.user_id, { name: p.name ?? null, email: p.email ?? null }));
+      })),
+    ...chunks(vIds, NAME_CHUNK).map((ids) => supabaseAdmin.from('vendors').select('id, name').in('id', ids)
+      .then(({ data, error }) => {
+        if (error) throw error;
+        (data ?? []).forEach((v) => vendors.set(v.id, v.name ?? null));
+      })),
+  ];
+  const results = await Promise.allSettled(reads);
+  const failed = results.find((r) => r.status === 'rejected');
+  if (failed) console.warn(`[admin] notification names unavailable: ${failed.reason?.message ?? failed.reason}`);
+  return { profiles, vendors };
+}
+
+/**
+ * One notification_log row as the list shows it.
+ *
+ * A student is named from their CURRENT profile (the row's label is only a
+ * snapshot). For an email row the address shown is the one the row records,
+ * because that is where the message actually went; a student who has since
+ * changed their address would otherwise appear to have been mailed somewhere
+ * they never were.
+ */
+export function notifSummary(row, names = { profiles: new Map(), vendors: new Map() }) {
+  const p = row.student_id ? names.profiles.get(row.student_id) : null;
+  const emailRow = row.channel === 'email' && row.recipient_email;
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    channel: row.channel,
+    kind: row.kind,
+    outcome: row.outcome,
+    reason: row.reason ?? null,
+    recipientKind: row.recipient_kind,
+    studentId: row.student_id ?? null,
+    recipientName: p?.name ?? row.recipient_label ?? null,
+    recipientEmail: emailRow ? row.recipient_email : (p?.email ?? row.recipient_email ?? null),
+    vendorId: row.vendor_id ?? null,
+    vendorName: row.vendor_id ? (names.vendors.get(row.vendor_id) ?? null) : null,
+    title: row.title ?? null,
+    devicesTried: Number(row.devices_tried ?? 0),
+    devicesAccepted: Number(row.devices_accepted ?? 0),
+    deliveryStatus: row.delivery_status ?? null,
+    source: row.source ?? 'live',
+  };
+}
+
+const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/**
+ * `s` itself when it is a full ISO-8601 instant with a zone, else null.
+ *
+ * Returned verbatim, never re-serialised. The `after` cursor is the newest
+ * row's own created_at, which PostgREST prints to the microsecond
+ * ('...12:00:00.123456+00:00'); a trip through Date keeps milliseconds only,
+ * the row's .123456 then sorts after the cursor's .123, and the "N new" poll
+ * counts a row the operator already has on every tick, forever.
+ *
+ * The calendar check is there because Date.parse rolls Feb 30 over into
+ * March, while Postgres refuses it with an error that would 500 the log.
+ */
+function isoInstant(s) {
+  const m = typeof s === 'string' ? ISO_INSTANT.exec(s) : null;
+  if (!m || !Number.isFinite(Date.parse(s))) return null;
+  const [y, mo, d, h, mi, sec] = m.slice(1, 7).map(Number);
+  const oh = Number(m[7] ?? 0);
+  const om = Number(m[8] ?? 0);
+  const monthDays = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  if (mo < 1 || mo > 12 || d < 1 || d > monthDays || h > 23 || mi > 59 || sec > 59 || oh > 15 || om > 59) return null;
+  return s;
+}
+
+/**
+ * The log's query-string filters, validated. An unknown value is DROPPED
+ * rather than 400ed (same stance as pageParams: a junk filter is a UI bug, and
+ * answering with the unfiltered list keeps the operator looking at data). The
+ * one exception is `student`: dropping a junk id would answer with EVERY
+ * student's rows under a heading that names one, so it is reported back as
+ * `impossible` and the route answers an empty page.
+ */
+export function notifFilters(query, now = new Date(), timeZone = CAMPAIGN_CONFIG.timezone) {
+  const q = query ?? {};
+  const str = (k) => {
+    const v = queryScalar(q[k]);
+    return typeof v === 'string' ? v.trim() : '';
+  };
+  const f = { channel: null, kind: null, outcome: null, recipient: null, since: null, after: null, student: null, q: '', impossible: false };
+  if (NOTIF_CHANNELS.has(str('channel'))) f.channel = str('channel');
+  if (NOTIFICATION_KINDS.includes(str('kind'))) f.kind = str('kind');
+  if (NOTIF_OUTCOMES.has(str('outcome'))) f.outcome = str('outcome');
+  if (NOTIF_RECIPIENTS.has(str('recipient'))) f.recipient = str('recipient');
+  const range = str('range');
+  if (NOTIF_RANGES.has(range)) {
+    f.since = range === 'today'
+      ? localMidnight(now, timeZone).toISOString()
+      : new Date(now.getTime() - (range === '7d' ? 7 : 30) * DAY).toISOString();
+  }
+  f.after = isoInstant(str('after'));
+  const student = str('student');
+  if (student) {
+    if (isUuid(student)) f.student = student;
+    else f.impossible = true;
+  }
+  f.q = safeSearch(q.q);
+  return f;
+}
+
+/** A fresh, unranged log query for pageOf (which may build it twice). */
+function notifLogQuery(opts, f, matchedStudentIds = []) {
+  let qb = supabaseAdmin.from('notification_log').select(NOTIF_SUMMARY_COLS, opts);
+  if (f.channel) qb = qb.eq('channel', f.channel);
+  if (f.kind) qb = qb.eq('kind', f.kind);
+  if (f.outcome) qb = qb.eq('outcome', f.outcome);
+  if (f.recipient) qb = qb.eq('recipient_kind', f.recipient);
+  if (f.student) qb = qb.eq('student_id', f.student);
+  if (f.since) qb = qb.gte('created_at', f.since);
+  if (f.after) qb = qb.gt('created_at', f.after);
+  if (f.q) {
+    const terms = [
+      `recipient_email.ilike.*${f.q}*`,
+      `recipient_label.ilike.*${f.q}*`,
+      `title.ilike.*${f.q}*`,
+    ];
+    if (matchedStudentIds.length) terms.push(`student_id.in.(${matchedStudentIds.join(',')})`);
+    qb = qb.or(terms.join(','));
+  }
+  return qb.order('created_at', { ascending: false }).order('id', { ascending: false });
+}
+
+/**
+ * One queue function, mapped to a section result. Missing objects become
+ * `unavailable` for this section only, so a database without 061 still shows
+ * the deal and reminder queues. Any other error is thrown: that is a fault in
+ * the function, and hiding it behind "not applied" would send the operator off
+ * to paste SQL that is already there.
+ */
+async function runQueueRpc(fn, params, prerequisite) {
+  const { data, error } = await supabaseAdmin.rpc(fn, params);
+  if (error) {
+    const unavailable = unavailableFor(error, prerequisite);
+    if (unavailable) return { available: false, unavailable, data: [] };
+    throw error;
+  }
+  return { available: true, data: Array.isArray(data) ? data : [] };
+}
+
+/** Parameters every queue function shares, from the worker's own config. */
+function queueParams(now) {
+  const c = CAMPAIGN_CONFIG;
+  return {
+    p_cooldown_minutes: c.cooldownMinutes,
+    p_daily_cap: c.dailyCap,
+    p_weekly_cap: c.weeklyCap,
+    p_quiet_start: c.quietStart,
+    p_quiet_end: c.quietEnd,
+    p_timezone: safeTimezone(c.timezone),
+    p_now: now.toISOString(),
+  };
+}
+
+/**
+ * The gate values the queue was computed with, for the blocker copy ("4h
+ * cooldown", "Same spot in last 20h"). Sent rather than hard-coded in the
+ * page, because each one is an env var and copy that disagrees with the gate
+ * that actually ran sends the operator after the wrong cause.
+ */
+function notifyConfig() {
+  const c = CAMPAIGN_CONFIG;
+  return {
+    cooldownMinutes: c.cooldownMinutes,
+    dailyCap: c.dailyCap,
+    weeklyCap: c.weeklyCap,
+    vendorCooldownHours: c.vendorCooldownHours,
+    minIntervalHours: REMINDER_CONFIG.minIntervalHours,
+    quietStart: c.quietStart,
+    quietEnd: c.quietEnd,
+    timezone: safeTimezone(c.timezone),
+  };
+}
+
+const latest = (a, b) => (!a ? b : !b ? a : (Date.parse(a) >= Date.parse(b) ? a : b));
+
+/**
+ * One queue function row as a QueueRow, plus the two blockers only this
+ * process can know: `app_open` (every worker passes over a student whose app
+ * is in the foreground, see visibleUserIds) and `backoff` (the broadcast and
+ * reminder workers skip a student for a while after a failed send). Neither is
+ * visible to SQL, and without them a row would read "nothing blocking" while
+ * the worker skips it every tick.
+ */
+export function queueRow(source, r, index, { names, visible, backoff }) {
+  const studentId = r.user_id ?? null;
+  const p = studentId ? names.profiles.get(studentId) : null;
+  const blockers = Array.isArray(r.blockers) ? [...r.blockers] : [];
+  let nextEligibleAt = r.next_eligible_at ?? null;
+  if (studentId && visible.has(studentId) && !blockers.includes('app_open')) blockers.push('app_open');
+  const until = studentId && source !== 'deal' ? backoff.get(studentId) : null;
+  if (until) {
+    if (!blockers.includes('backoff')) blockers.push('backoff');
+    // Null stays null: it means time alone will not release this row.
+    if (nextEligibleAt) nextEligibleAt = latest(nextEligibleAt, until);
+  }
+  const base = {
+    source,
+    studentId,
+    studentName: p?.name ?? null,
+    studentEmail: p?.email ?? null,
+    nextEligibleAt,
+    blockers,
+  };
+  if (source === 'reminder') {
+    return {
+      ...base,
+      itemId: null,
+      title: null,
+      vendorName: null,
+      status: 'due',
+      queuedAt: null,
+      expiresAt: null,
+      position: Number(r.queue_position ?? index + 1),
+    };
+  }
+  return {
+    ...base,
+    itemId: (source === 'deal' ? r.campaign_id : r.broadcast_id) ?? null,
+    title: r.title ?? null,
+    vendorName: r.vendor_id ? (names.vendors.get(r.vendor_id) ?? null) : null,
+    status: r.status === 'sending' ? 'sending' : 'queued',
+    queuedAt: r.queued_at ?? null,
+    expiresAt: r.expires_at ?? null,
+    position: index + 1,
+  };
+}
+
+function backoffMap(list) {
+  const m = new Map();
+  for (const b of Array.isArray(list) ? list : []) if (b?.userId) m.set(b.userId, b.until ?? null);
+  return m;
+}
+
+/**
+ * True when any worker that SHOULD be running is not doing its job: its loop
+ * is not armed, its claim function is missing, or its last tick failed more
+ * recently than one succeeded. An unconfigured worker (no VAPID keys, no mail
+ * key) is not "down", it is off, and the health strip says that separately.
+ */
+export function anyWorkerDown(statuses) {
+  return statuses.some((s) => {
+    if (!s || !s.configured) return false;
+    if (!s.running || s.rpcMissing) return true;
+    if (!s.lastErrorAt) return false;
+    return !s.lastTickAt || Date.parse(s.lastErrorAt) > Date.parse(s.lastTickAt);
+  });
+}
+
+/**
+ * Is `column` of `table` there? true / false (missing) / null (could not
+ * tell). A GET with a one-row limit, NOT a HEAD: postgrest-js turns a HEAD
+ * that 404s with an empty body into a success with no rows, so a HEAD probe
+ * reports a table that does not exist as present.
+ */
+async function probe(table, column) {
+  try {
+    const { error } = await supabaseAdmin.from(table).select(column).limit(1);
+    if (!error) return true;
+    return isMissingObject(error) ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * An exact count, by GET with a one-row limit for the same reason probe()
+ * avoids HEAD. Throws the PostgREST error so the caller can map it.
+ */
+async function exactCount(build) {
+  const { count, error } = await build().limit(1);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** A student's push devices. Never the endpoint: only its service. */
+async function studentDevices(userId) {
+  const read = (cols) => supabaseAdmin.from('push_subscriptions').select(cols)
+    .eq('user_id', userId).eq('role', 'student').order('created_at', { ascending: false });
+  let { data, error } = await read('id, endpoint, created_at, device_label');
+  if (error && isMissingColumn(error, 'device_label')) ({ data, error } = await read('id, endpoint, created_at'));
+  if (error) throw error;
+  return (data ?? []).map((s) => ({
+    id: s.id,
+    service: serviceOf(s.endpoint),
+    label: s.device_label ?? null,
+    createdAt: s.created_at ?? null,
+  }));
+}
+
+function budgetFrom(row, visible) {
+  if (!row) return null;
+  const blockers = Array.isArray(row.blockers) ? [...row.blockers] : [];
+  if (visible && !blockers.includes('app_open')) blockers.push('app_open');
+  return {
+    userId: row.user_id,
+    hasState: row.has_state === true,
+    pushOptIn: row.push_opt_in ?? null,
+    emailOptIn: row.email_opt_in ?? null,
+    nearbyOptIn: row.nearby_opt_in ?? null,
+    reminderOptIn: row.reminder_opt_in ?? null,
+    lastPushAt: row.last_push_at ?? null,
+    lastEmailAt: row.last_email_at ?? null,
+    lastReminderAt: row.last_reminder_at ?? null,
+    dayCount: Number(row.day_count ?? 0),
+    weekCount: Number(row.week_count ?? 0),
+    dayResetsAt: row.day_resets_at ?? null,
+    weekResetsAt: row.week_resets_at ?? null,
+    cooldownUntil: row.cooldown_until ?? null,
+    inQuietHours: row.in_quiet_hours === true,
+    quietEndsAt: row.quiet_ends_at ?? null,
+    devices: Number(row.devices ?? 0),
+    nextEligibleAt: row.next_eligible_at ?? null,
+    blockers,
+  };
+}
+
+const notificationRoutes = Router();
+
+/**
+ * GET /api/admin/notifications?limit&offset&channel&kind&outcome&recipient&range&q&student&after
+ * One page of the send log, newest first. `after` is the "N new" poll: only
+ * rows newer than the newest one the operator already has.
+ */
+notificationRoutes.get('/', async (req, res, next) => {
+  const page = pageParams(req.query, { def: NOTIF_PAGE, max: NOTIF_PAGE_MAX });
+  const { limit, offset } = page;
+  try {
+    const f = notifFilters(req.query);
+    if (f.impossible) return res.json({ rows: [], total: 0, offset, limit });
+
+    let matched = [];
+    if (f.q) {
+      const { data, error } = await supabaseAdmin.from('profiles').select('user_id')
+        .or(`name.ilike.*${f.q}*,email.ilike.*${f.q}*`).limit(NOTIF_Q_PROFILE_CAP);
+      if (error) throw error;
+      matched = (data ?? []).map((p) => p.user_id).filter(isUuid);
+    }
+
+    const { rows, total } = await pageOf((opts) => notifLogQuery(opts, f, matched), page);
+    const names = await resolveNames(rows.map((r) => r.student_id), rows.map((r) => r.vendor_id));
+    res.json({ rows: rows.map((r) => notifSummary(r, names)), total, offset, limit });
+  } catch (err) {
+    if (unavailableFor(err, 'migration-062')) {
+      return res.json({ unavailable: 'migration-062', rows: [], total: 0, offset, limit });
+    }
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/notifications/summary
+ * The dashboard tile: today's outcomes, what is queued, and whether anything
+ * needs attention.
+ */
+notificationRoutes.get('/summary', async (req, res, next) => {
+  try {
+    const now = new Date();
+    const since = localMidnight(now, CAMPAIGN_CONFIG.timezone).toISOString();
+    const outcomes = ['sent', 'failed', 'refused', 'allowed'];
+
+    const today = { sent: 0, failed: 0, refused: 0, allowed: 0 };
+    let logAvailable = true;
+    try {
+      const counts = await Promise.all(outcomes.map((o) => exactCount(() => supabaseAdmin
+        .from('notification_log').select('id', { count: 'exact' }).eq('outcome', o).gte('created_at', since))));
+      outcomes.forEach((o, i) => { today[o] = counts[i]; });
+    } catch (err) {
+      if (!isMissingObject(err)) throw err;
+      logAvailable = false;
+    }
+
+    const queuedCount = async (table, column) => {
+      try {
+        return await exactCount(() => supabaseAdmin.from(table).select(column, { count: 'exact' }).in('status', QUEUE_ACTIVE));
+      } catch (err) {
+        if (isMissingObject(err)) return null;
+        throw err;
+      }
+    };
+    const [deals, broadcasts] = await Promise.all([
+      queuedCount('campaign_recipients', 'campaign_id'),
+      queuedCount('admin_broadcast_recipients', 'broadcast_id'),
+    ]);
+
+    res.json({
+      logAvailable,
+      today,
+      queued: { deals, broadcasts },
+      workerDown: anyWorkerDown([campaignWorkerStatus(), reminderWorkerStatus(), broadcastWorkerStatus()]),
+      pushConfigured: pushEnabled,
+      emailConfigured: emailEnabled,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/notifications/health
+ * Everything the health strip shows: what is configured, each worker's last
+ * tick, and which of the migrations this feature reads are actually applied.
+ */
+notificationRoutes.get('/health', async (req, res, next) => {
+  try {
+    const PROBES = [
+      ['047', 'campaign_recipients', 'channel'],
+      ['051', 'nearby_notifications', 'user_id'],
+      ['060', 'student_notify_state', 'last_reminder_at'],
+      ['061', 'admin_broadcasts', 'id'],
+      ['062', 'notification_log', 'id'],
+    ];
+    const found = await Promise.all(PROBES.map(([, table, column]) => probe(table, column)));
+    const migrations = Object.fromEntries(PROBES.map(([n], i) => [n, found[i]]));
+    const writer = notificationLogState();
+    res.json({
+      generatedAt: new Date().toISOString(),
+      push: { configured: pushEnabled },
+      email: { configured: emailEnabled },
+      webhook: { configured: Boolean(process.env.RESEND_WEBHOOK_SECRET) },
+      // `available` is whether the table can be READ. `writing` is the
+      // writer's own view (false while it is cooling down after a failed
+      // insert), so "the table exists but nothing is landing in it" is visible.
+      log: { available: migrations['062'], writing: writer.available, lastError: writer.lastError },
+      workers: {
+        campaigns: campaignWorkerStatus(),
+        reminders: reminderWorkerStatus(),
+        broadcasts: broadcastWorkerStatus(),
+      },
+      migrations,
+      visibleStudents: visibleUserIds().length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/notifications/queue
+ * What the three workers would consider next, and what each row is waiting
+ * on. Computed by the queue functions with the workers' own config, so it
+ * answers the question the claim asks rather than a lookalike of it.
+ */
+notificationRoutes.get('/queue', async (req, res, next) => {
+  try {
+    const now = new Date();
+    const common = queueParams(now);
+    const [deals, broadcasts, reminders] = await Promise.all([
+      runQueueRpc('admin_campaign_queue', {
+        ...common,
+        p_limit: QUEUE_DEALS_LIMIT,
+        p_email_enabled: emailEnabled,
+        p_vendor_cooldown_hours: CAMPAIGN_CONFIG.vendorCooldownHours,
+      }, 'migration-047'),
+      runQueueRpc('admin_broadcast_queue', { ...common, p_limit: QUEUE_BROADCASTS_LIMIT }, 'migration-061'),
+      runQueueRpc('admin_reminder_queue', {
+        ...common,
+        p_limit: QUEUE_REMINDERS_FETCH,
+        p_min_interval_hours: REMINDER_CONFIG.minIntervalHours,
+      }, 'migration-060'),
+    ]);
+
+    // Releasable candidates first, by their queue position; the rest after.
+    // Sorting on the function's next_eligible_at is the same split queueRow
+    // makes, because backoff never turns null into a time or a time into null.
+    const releasable = (r) => r.next_eligible_at != null;
+    const reminderPos = (r, i) => Number(r.queue_position ?? i + 1);
+    const ranked = reminders.data.map((r, i) => ({ r, i }))
+      .sort((a, b) => (releasable(b.r) - releasable(a.r)) || (reminderPos(a.r, a.i) - reminderPos(b.r, b.i)));
+    const reminderShown = ranked.slice(0, QUEUE_REMINDERS_SHOWN);
+    const blockedForever = reminders.data.filter((r) => !releasable(r)).length;
+
+    const all = [...deals.data, ...broadcasts.data, ...reminderShown.map(({ r }) => r)];
+    const names = await resolveNames(all.map((r) => r.user_id), deals.data.map((r) => r.vendor_id));
+    const ctx = { names, visible: new Set(visibleUserIds()), backoff: new Map() };
+    const broadcastCtx = { ...ctx, backoff: backoffMap(broadcastBackoff()) };
+    const reminderCtx = { ...ctx, backoff: backoffMap(reminderBackoff()) };
+
+    const section = (result, source, totalKey, c) => {
+      if (!result.available) return { available: false, unavailable: result.unavailable, total: 0, rows: [] };
+      return {
+        available: true,
+        total: Number(result.data[0]?.[totalKey] ?? 0),
+        rows: result.data.map((r, i) => queueRow(source, r, i, c)),
+      };
+    };
+    const reminderSection = reminders.available
+      ? {
+        available: true,
+        total: Number(reminders.data[0]?.total_candidates ?? 0),
+        blockedForever,
+        rows: reminderShown.map(({ r, i }) => queueRow('reminder', r, i, reminderCtx)),
+      }
+      : { available: false, unavailable: reminders.unavailable, total: 0, blockedForever: 0, rows: [] };
+
+    res.json({
+      generatedAt: now.toISOString(),
+      quietHours: quietHoursAt(now, CAMPAIGN_CONFIG),
+      config: notifyConfig(),
+      deals: section(deals, 'deal', 'total_queued', ctx),
+      broadcasts: section(broadcasts, 'broadcast', 'total_queued', broadcastCtx),
+      reminders: reminderSection,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/notifications/student/:id
+ * One student's notification picture: their shared budget, their devices,
+ * what is queued for them and what was sent to them recently.
+ */
+notificationRoutes.get('/student/:id', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (!isUuid(id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'Student not found.' });
+    const { data: profile, error: profErr } = await supabaseAdmin
+      .from('profiles').select('user_id, name, email').eq('user_id', id).maybeSingle();
+    if (profErr) throw profErr;
+    if (!profile) return res.status(404).json({ error: 'NOT_FOUND', message: 'Student not found.' });
+
+    const now = new Date();
+    const common = queueParams(now);
+    const visible = new Set(visibleUserIds());
+
+    const budgetP = supabaseAdmin.rpc('admin_student_notify_budget', { p_user_id: id, ...common })
+      .then(({ data, error }) => {
+        if (error) {
+          const unavailable = unavailableFor(error, 'migration-047');
+          if (unavailable) return { budget: null, budgetUnavailable: unavailable };
+          throw error;
+        }
+        const row = Array.isArray(data) ? data[0] : data;
+        return { budget: budgetFrom(row ?? null, visible.has(id)) };
+      });
+
+    const recentP = supabaseAdmin.from('notification_log').select(NOTIF_SUMMARY_COLS)
+      .eq('student_id', id)
+      .order('created_at', { ascending: false }).order('id', { ascending: false })
+      .limit(NOTIF_STUDENT_RECENT)
+      .then(({ data, error }) => {
+        if (error) {
+          if (unavailableFor(error, 'migration-062')) return { rows: [], recentUnavailable: 'migration-062' };
+          throw error;
+        }
+        return { rows: data ?? [] };
+      });
+
+    // Their own queued rows, with the same blockers the whole-queue view
+    // shows. The functions filter by p_user_id BEFORE their limit: a deep
+    // whole-queue page filtered here instead was silently cut at PostgREST's
+    // max_rows (1000), so a student at position 1200 of a big send showed
+    // nothing queued. A cheap "anything queued at all?" read first, so the
+    // common case (nothing queued) runs no queue function. Best effort: a
+    // queue that cannot be read costs this panel its "queued" list, not the
+    // budget and history beside it.
+    const queuedFor = async (table, column, fn, params, prerequisite) => {
+      try {
+        const { data: hit, error } = await supabaseAdmin.from(table).select(column)
+          .eq('user_id', id).in('status', QUEUE_ACTIVE).limit(1);
+        if (error) {
+          if (isMissingObject(error)) return [];
+          throw error;
+        }
+        if (!hit?.length) return [];
+        const result = await runQueueRpc(fn, { ...params, p_limit: QUEUE_STUDENT_LIMIT, p_user_id: id }, prerequisite);
+        return result.data;
+      } catch (err) {
+        console.warn(`[admin] queued items for one student unavailable (${fn}): ${err?.message ?? err}`);
+        return [];
+      }
+    };
+
+    const [budget, recent, devices, dealRows, broadcastRows] = await Promise.all([
+      budgetP,
+      recentP,
+      studentDevices(id),
+      queuedFor('campaign_recipients', 'campaign_id', 'admin_campaign_queue', {
+        ...common, p_email_enabled: emailEnabled, p_vendor_cooldown_hours: CAMPAIGN_CONFIG.vendorCooldownHours,
+      }, 'migration-047'),
+      queuedFor('admin_broadcast_recipients', 'broadcast_id', 'admin_broadcast_queue', common, 'migration-061'),
+    ]);
+
+    const names = await resolveNames(
+      [id, ...recent.rows.map((r) => r.student_id)],
+      [...recent.rows.map((r) => r.vendor_id), ...dealRows.map((r) => r.vendor_id)],
+    );
+    // The profile was just read; it is the freshest name whatever the chunked
+    // read above managed.
+    names.profiles.set(id, { name: profile.name ?? null, email: profile.email ?? null });
+    const ctx = { names, visible, backoff: new Map() };
+    const bctx = { ...ctx, backoff: backoffMap(broadcastBackoff()) };
+
+    const out = {
+      ...budget,
+      config: notifyConfig(),
+      devices,
+      recent: recent.rows.map((r) => notifSummary(r, names)),
+      queued: [
+        ...dealRows.map((r, i) => queueRow('deal', r, i, ctx)),
+        ...broadcastRows.map((r, i) => queueRow('broadcast', r, i, bctx)),
+      ],
+    };
+    if (recent.recentUnavailable) out.recentUnavailable = recent.recentUnavailable;
+    res.json(out);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/notifications/reminders/preview/:userId
+ * What a reminder to this student would say right now. POST because it does
+ * real work (the same reads the worker does), but it is read-only:
+ * previewReminder never claims, refunds, sends or logs.
+ */
+notificationRoutes.post('/reminders/preview/:userId', async (req, res, next) => {
+  try {
+    const id = req.params.userId;
+    if (!isUuid(id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'Student not found.' });
+    // previewReminder itself reads nothing from migration-060, so it would
+    // happily compose copy on a database the reminder worker cannot run on.
+    // Saying "not applied" is the honest answer there: no reminder will go.
+    if (await probe('student_notify_state', 'last_reminder_at') === false) {
+      return res.json({ unavailable: 'migration-060', candidate: null, composed: null });
+    }
+    const { data: profile, error } = await supabaseAdmin
+      .from('profiles').select('user_id').eq('user_id', id).maybeSingle();
+    if (error) throw error;
+    if (!profile) return res.status(404).json({ error: 'NOT_FOUND', message: 'Student not found.' });
+    const { candidate, composed } = await previewReminder(id);
+    res.json({ candidate: candidate ?? null, composed: composed ?? null });
+  } catch (err) {
+    if (unavailableFor(err, 'migration-060')) return res.json({ unavailable: 'migration-060', candidate: null, composed: null });
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/notifications/:id
+ * One row in full, with the campaigns or broadcast it came from. Registered
+ * LAST: it is the only parameterised GET here, and above the fixed paths it
+ * would read "/queue" as an id.
+ */
+notificationRoutes.get('/:id', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (!isUuid(id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'Notification not found.' });
+    const { data: row, error } = await supabaseAdmin
+      .from('notification_log').select(NOTIF_DETAIL_COLS).eq('id', id).maybeSingle();
+    if (error) {
+      if (unavailableFor(error, 'migration-062')) return res.json({ unavailable: 'migration-062', notification: null });
+      throw error;
+    }
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND', message: 'Notification not found.' });
+
+    const ref = row.ref && typeof row.ref === 'object' && !Array.isArray(row.ref) ? row.ref : {};
+    const campaignIds = (Array.isArray(ref.campaignIds) ? ref.campaignIds : []).filter(isUuid).slice(0, 20);
+    const broadcastId = isUuid(ref.broadcastId) ? ref.broadcastId : null;
+
+    // Linked sources are decoration. Each is read best-effort: the campaign
+    // may have been pruned (30 days after expiry) or the broadcast table may
+    // not exist yet, and either way the row itself is still worth showing.
+    const [campaigns, broadcast] = await Promise.all([
+      campaignIds.length
+        ? supabaseAdmin.from('vendor_campaigns').select('id, title, vendor_id').in('id', campaignIds)
+          .then(({ data, error: e }) => (e ? [] : data ?? []), () => [])
+        : [],
+      broadcastId
+        ? supabaseAdmin.from('admin_broadcasts').select('id, title, audience, status').eq('id', broadcastId).maybeSingle()
+          .then(({ data, error: e }) => (e ? null : data ?? null), () => null)
+        : null,
+    ]);
+
+    const names = await resolveNames([row.student_id], [row.vendor_id, ...campaigns.map((c) => c.vendor_id)]);
+    const linked = {};
+    if (campaigns.length) {
+      linked.campaigns = campaigns.map((c) => ({
+        id: c.id, title: c.title ?? null, vendorName: names.vendors.get(c.vendor_id) ?? null,
+      }));
+    }
+    if (broadcast) {
+      linked.broadcast = { id: broadcast.id, title: broadcast.title ?? null, audience: broadcast.audience ?? null, status: broadcast.status ?? null };
+    }
+
+    res.json({
+      notification: {
+        ...notifSummary(row, names),
+        body: row.body ?? null,
+        url: row.url ?? null,
+        template: row.template ?? null,
+        ref,
+        devices: cleanDevices(row.devices),
+        providerId: row.provider_id ?? null,
+        deliveryAt: row.delivery_at ?? null,
+        dedupeKey: row.dedupe_key ?? null,
+        linked,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.use('/notifications', notificationRoutes);
+export { notificationRoutes };
 
 /* ---------- students ---------- */
 

@@ -40,6 +40,7 @@
 
 import crypto from 'node:crypto';
 import { supabaseAdmin } from './supabase.js';
+import { logNotification, redactSecrets, NOTIFICATION_KINDS } from './notification-log.js';
 
 const API_URL = 'https://api.resend.com/emails';
 
@@ -354,10 +355,93 @@ const SENDER_FIELD_RE = /`from`|"from"|'from'|\bfrom field\b|`reply_to`|\breply[
  * @param {string}  [msg.idempotencyKey]  Resend de-dupes on this for 24h, which
  *   is what makes a retried accept (or a double-clicked button) safe to send.
  * @param {string[]} [msg.tags]   Resend tag values for its own dashboard
+ * @param {object}  [msg.log]     who/why for the notification log (migration-062):
+ *   { kind, recipientKind, studentId?, recipientUserId?, vendorId?,
+ *     recipientLabel?, ref?, template?, secrets?: string[], logSubject?: string }.
+ *   `secrets` are redacted from the logged subject; `logSubject` replaces it.
  * @returns {Promise<{ok: boolean, id?: string, reason?: string, status?: number}>}
  */
 export async function sendEmail(msg) {
   const to = String(msg?.to ?? '').trim().toLowerCase();
+  const result = await deliver(msg, to);
+  // Not awaited: the log is an observer (see notification-log.js), and a slow or
+  // missing table must not hold a vendor's reset request open.
+  logSend(msg, to, result);
+  return result;
+}
+
+const REFUSED_REASONS = new Set(['disabled', 'invalid_to', 'empty', 'suppressed']);
+
+// A last line of defence for a code-bearing subject whose caller forgot to pass
+// `log.secrets`: both code templates read "...code: K7M2-NP94". Applied only
+// when no logSubject was given, because the safe subjects callers pass say
+// "(code hidden)" and would be mangled by it.
+const CODE_IN_SUBJECT_RE = /(\bcode\b\s*[:#]\s*)[A-Za-z0-9][A-Za-z0-9 -]{2,}/gi;
+
+/**
+ * One notification_log row per sendEmail call, on every return path.
+ *
+ * What is NOT stored is the point: html, text, headers and the unsubscribe URL
+ * never reach the row (the URL carries a permanent per-student HMAC token, and
+ * two templates put a live reset or link code in the body and subject). The
+ * subject is stored only after redaction.
+ */
+function logSend(msg, to, result) {
+  try {
+    const log = msg?.log && typeof msg.log === 'object' ? msg.log : null;
+    const tag = Array.isArray(msg?.tags) ? msg.tags[0] : undefined;
+    const kind = log?.kind ?? (NOTIFICATION_KINDS.includes(tag) ? tag : 'other');
+    let outcome = 'sent';
+    if (!result?.ok) outcome = REFUSED_REASONS.has(result?.reason) ? 'refused' : 'failed';
+    const validTo = Boolean(to) && result?.reason !== 'invalid_to';
+    const recipientEmail = validTo ? to : String(msg?.to ?? '').trim().slice(0, 254) || null;
+    // The secrets are scrubbed from every caller-supplied string, not only the
+    // subject: "a code never reaches the log" should not depend on which field a
+    // future caller happens to put it in.
+    const secrets = Array.isArray(log?.secrets) ? log.secrets : [];
+    // Plain objects too, so `ref: { reset: { code } }` is covered. The depth cap
+    // is for a cyclic ref: without it the recursion overflows and the catch below
+    // drops the whole row, not just the cycle (cleanRef then drops the cycle).
+    const scrub = (v, depth = 0) => {
+      if (typeof v === 'string') return redactSecrets(v, secrets);
+      if (depth > 8) return null;
+      if (Array.isArray(v)) return v.map((x) => scrub(x, depth + 1));
+      if (v && typeof v === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(v))) {
+        return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrub(x, depth + 1)]));
+      }
+      return v;
+    };
+    let title = redactSecrets(log?.logSubject ?? msg?.subject ?? null, secrets);
+    if (title !== null && log?.logSubject == null) title = title.replace(CODE_IN_SUBJECT_RE, '$1[redacted]');
+    const ref = {};
+    if (log?.ref && typeof log.ref === 'object') {
+      for (const [k, v] of Object.entries(log.ref)) ref[k] = scrub(v);
+    }
+    if (msg?.idempotencyKey) ref.idempotencyKey = scrub(String(msg.idempotencyKey).slice(0, 256));
+    if (result?.status) ref.httpStatus = result.status;
+    logNotification({
+      channel: 'email',
+      kind,
+      outcome,
+      reason: result?.ok ? null : (result?.reason ?? null),
+      recipientKind: log?.recipientKind ?? 'other',
+      studentId: log?.studentId,
+      recipientUserId: log?.recipientUserId,
+      vendorId: log?.vendorId,
+      recipientLabel: scrub(log?.recipientLabel),
+      recipientEmail,
+      title,
+      body: null,
+      template: log?.template ?? tag ?? null,
+      providerId: result?.ok ? (result.id ?? null) : null,
+      ref,
+    });
+  } catch (err) {
+    console.warn(`[email] could not log a send: ${err?.message ?? err}`);
+  }
+}
+
+async function deliver(msg, to) {
   const marketing = msg?.category === 'marketing';
 
   if (!emailEnabled) return { ok: false, reason: 'disabled' };

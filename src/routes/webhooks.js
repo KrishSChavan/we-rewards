@@ -17,9 +17,26 @@
 //                       never automatically un-suppressed, because a complaint
 //                       is the strongest possible statement that we should stop.
 //
-// Everything else (delivered, opened, clicked, delayed) is acknowledged and
-// dropped. We do not need the analytics, and storing per-message open data
-// about students is a privacy cost with no matching benefit.
+// Separately, three events are written onto the matching notification_log row
+// (migration-062), keyed by the Resend message id sendEmail stored there:
+//   email.delivered   — the receiving server accepted it. This is what lets the
+//                       /admin log say "delivered" rather than only "Resend took
+//                       it", which is the question an operator is actually asking
+//                       when a vendor says the reset code never came.
+//   email.bounced     — ANY bounce, permanent or transient. Suppression still
+//                       only happens on a permanent one (above); the log records
+//                       both, because "it bounced, softly" is exactly what
+//                       explains a reset code that never arrived.
+//   email.complained  — recorded as well as suppressed.
+// Only a status and a time are kept, never the event body. That write is
+// best-effort: a missing table (migration-062 not pasted yet) or a failed
+// update changes nothing about the response.
+//
+// Opened, clicked and delayed are still acknowledged and DROPPED, and must stay
+// that way. Per-message open and click data about students is a privacy cost
+// with no matching benefit; the delivery status above says whether a message
+// arrived, never whether or when anyone read it. Resend only sends
+// email.delivered if it is enabled on the webhook in Resend's dashboard.
 //
 // UNAUTHENTICATED but SIGNED. This is a public URL that can suppress an email
 // address, so a forged request is a denial-of-service against a vendor's
@@ -30,6 +47,7 @@
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import { suppress, maskEmail } from '../lib/email.js';
+import { recordEmailEvent } from '../lib/notification-log.js';
 
 const router = Router();
 
@@ -114,6 +132,21 @@ export function classifyEvent(type, data) {
   return { suppress: false };
 }
 
+const DELIVERY_EVENTS = {
+  'email.delivered': 'delivered',
+  'email.bounced': 'bounced',
+  'email.complained': 'complained',
+};
+
+/**
+ * The notification_log delivery status an event maps to, or null for every
+ * event we do not keep (opened, clicked, delivery_delayed, sent, unknown).
+ * Pure; the allow-list is the privacy rule, so it is tested as a table.
+ */
+export function deliveryStatusOf(type) {
+  return Object.hasOwn(DELIVERY_EVENTS, String(type)) ? DELIVERY_EVENTS[type] : null;
+}
+
 /** POST /api/webhooks/resend — mounted with a raw body parser (see server.js). */
 router.post('/resend', async (req, res, next) => {
   try {
@@ -147,6 +180,19 @@ router.post('/resend', async (req, res, next) => {
       for (const address of recipients) {
         await suppress(address, verdict.reason, verdict.scope);
         console.warn(`[email] suppressed ${maskEmail(address)} (${verdict.reason})`);
+      }
+    }
+
+    // After the suppression, never instead of it: that is the write that
+    // protects the sending domain. recordEmailEvent never throws, and the catch
+    // is here anyway because a 5xx would put the event back into Svix's retry
+    // schedule and replay the suppression above along with it.
+    const status = deliveryStatusOf(event?.type);
+    if (status) {
+      try {
+        await recordEmailEvent(event?.data?.email_id, status, event?.created_at);
+      } catch (err) {
+        console.warn(`[email] could not record ${status} on the notification log: ${err?.message ?? err}`);
       }
     }
 

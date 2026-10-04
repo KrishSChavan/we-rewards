@@ -40,11 +40,12 @@
 // is on a request path.
 
 import { supabaseAdmin } from './supabase.js';
-import { CAMPAIGN_CONFIG } from './campaigns.js';
-import { pushEnabled, sendToSubscriptions, studentSubscriptions } from './push.js';
+import { CAMPAIGN_CONFIG, createWorkerStatus } from './campaigns.js';
+import { pushEnabled, sendToSubscriptionsDetailed, studentSubscriptions } from './push.js';
 import { visibleUserIds } from './realtime.js';
 import { loadVendorCatalogue, loadRecommendedVendorIds } from './cache.js';
 import { readPurses } from './pools.js';
+import { logNotification } from './notification-log.js';
 
 const num = (name, fallback) => {
   const n = Number(process.env[name]);
@@ -475,6 +476,35 @@ function backedOffUserIds(now) {
 }
 
 /**
+ * Who the worker is currently passing over, and until when, for /admin's queue
+ * view (it marks those students "backing off"). A copy: the admin API reads
+ * it, it never steers the worker.
+ * @returns {Array<{userId: string, until: string}>}
+ */
+export function reminderBackoff() {
+  const now = Date.now();
+  backedOffUserIds(now);
+  return [...recentlyFailed].map(([userId, at]) => ({
+    userId,
+    until: new Date(at + FAILED_BACKOFF_MS).toISOString(),
+  }));
+}
+
+const workerStatus = createWorkerStatus();
+
+/** The interval startReminderWorker arms, floor included. */
+const periodSeconds = () => Math.max(REMINDER_CONFIG.tickSeconds, 30);
+
+/** Contract §3.5 status for /admin; see createWorkerStatus in campaigns.js. */
+export function reminderWorkerStatus() {
+  return workerStatus.snapshot({
+    configured: pushEnabled,
+    running: timer !== null,
+    intervalSeconds: periodSeconds(),
+  });
+}
+
+/**
  * Every live, unopened deal for a whole batch of students, as
  * userId -> [{dealId, title, vendorName, expiresAt}].
  *
@@ -496,7 +526,7 @@ async function liveDealsFor(userIds) {
     const nowIso = new Date().toISOString();
     const { data, error } = await supabaseAdmin
       .from('campaign_recipients')
-      .select('user_id, campaign_id, read_at, vendor_campaigns!inner(title, expires_at, vendors!inner(name, active))')
+      .select('user_id, campaign_id, read_at, vendor_campaigns!inner(title, expires_at, vendor_id, vendors!inner(name, active))')
       .in('user_id', userIds)
       .is('read_at', null)
       .gt('vendor_campaigns.expires_at', nowIso)
@@ -518,6 +548,9 @@ async function liveDealsFor(userIds) {
         title: r.vendor_campaigns.title,
         vendorName: r.vendor_campaigns.vendors.name,
         expiresAt: r.vendor_campaigns.expires_at,
+        // Not read by pickReminder (a deal candidate is copy, not ids); kept so
+        // the notification log can link the spot a tier-3 reminder named.
+        vendorId: r.vendor_campaigns.vendor_id ?? null,
       });
       byUser.set(r.user_id, list);
     }
@@ -632,6 +665,90 @@ async function refundReminder(userId) {
 }
 
 /**
+ * The spot a candidate is about, as an id, for the log's vendor link.
+ *
+ * pickReminder strips ids out of the candidate on purpose (it is copy), so the
+ * id is recovered from what it left behind rather than by matching on the
+ * vendor's NAME: names are not unique (chains share one), and a wrong link in
+ * the admin log is worse than none. Tiers 1, 2 and 4 deep-link to ?spot=<id>;
+ * tier 3 links ?deal=<campaignId>, whose vendor is on the deal row.
+ */
+function candidateVendorId(candidate, deals) {
+  const url = String(candidate?.url ?? '');
+  const spot = /^\/\?spot=([^&]+)/.exec(url);
+  if (spot) {
+    try { return decodeURIComponent(spot[1]); } catch { return null; }
+  }
+  const deal = /^\/\?deal=([^&]+)/.exec(url);
+  if (deal) {
+    let id = null;
+    try { id = decodeURIComponent(deal[1]); } catch { return null; }
+    return (deals ?? []).find((d) => d?.dealId === id)?.vendorId ?? null;
+  }
+  return null;
+}
+
+/**
+ * The log row for one claimed student (contract §3.2), written after the
+ * refund so `refunded` reports what refund_reminder_push actually answered,
+ * not what was intended: "refunded" on a row whose refund failed would tell
+ * the operator the student's budget is intact when it is not.
+ */
+function logReminder({ userId, candidate, payload, deals, outcome, reason = null, devices = [], refunded }) {
+  const ref = { tier: candidate?.kind ?? null };
+  if (candidate?.vendorName) ref.vendorName = candidate.vendorName;
+  if (candidate?.rewardTitle) ref.rewardTitle = candidate.rewardTitle;
+  if (refunded !== undefined) ref.refunded = refunded;
+  logNotification({
+    channel: 'push',
+    kind: 'reminder',
+    outcome,
+    reason,
+    recipientKind: 'student',
+    studentId: userId,
+    vendorId: candidateVendorId(candidate, deals),
+    title: payload?.title,
+    body: payload?.body,
+    url: payload?.url,
+    template: payload?.tag ?? null,
+    devices,
+    ref,
+  });
+}
+
+/**
+ * What a reminder to this student would say right now, without sending it.
+ *
+ * For /admin's queue view ("Preview" on a reminder row). The SAME reads, the
+ * same cascade and the same composer the tick runs, so the preview cannot
+ * drift from the real thing; and NOTHING else. It never calls
+ * claim_reminder_pushes (that spends the shared budget), never calls
+ * refund_reminder_push, never sends, never logs, and does not consult
+ * pushEnabled: an operator debugging a server with no VAPID keys still wants
+ * to see what the copy would be.
+ *
+ * @param {string} userId
+ * @returns {Promise<{candidate: object|null, composed: object|null}>}
+ *   both null when there is nothing to say (or no student to say it to)
+ */
+export async function previewReminder(userId) {
+  if (typeof userId !== 'string' || !userId.trim()) return { candidate: null, composed: null };
+  let catalogue = [];
+  let recommendedIds = [];
+  try {
+    [catalogue, recommendedIds] = await Promise.all([loadVendorCatalogue(), loadRecommendedVendorIds()]);
+  } catch (err) {
+    console.warn(`[reminders] preview: catalogue unavailable, cascade degraded: ${err?.message ?? err}`);
+  }
+  const dealsByUser = await liveDealsFor([userId]);
+  const ctx = await buildContext(userId, catalogue, recommendedIds, dealsByUser.get(userId) ?? []);
+  const candidate = pickReminder(ctx);
+  const composed = composeReminder(candidate);
+  if (!composed) return { candidate: null, composed: null };
+  return { candidate, composed };
+}
+
+/**
  * One pass: claim, compose, send, refund what did not land.
  *
  * Exported so a test or an operator can drive a single pass by hand, exactly as
@@ -651,6 +768,17 @@ export async function runReminderTick() {
   // check sits above everything else rather than inside the loop.
   if (!pushEnabled) return { ...ZERO };
 
+  // The tick swallows its own failures (it resolves ZERO), so it reports them
+  // to the status through `t` rather than by throwing.
+  const started = Date.now();
+  const t = { error: null };
+  const result = await reminderTick(t);
+  if (t.error) workerStatus.tickFailed(started, t.error);
+  else workerStatus.tickDone(started, result);
+  return result;
+}
+
+async function reminderTick(t) {
   try {
     const { data: rows, error } = await supabaseAdmin.rpc('claim_reminder_pushes', {
       p_max_users: REMINDER_CONFIG.maxUsers,
@@ -681,8 +809,11 @@ export async function runReminderTick() {
       // symptom, so the log line says which migration to run — the same shape
       // as the migration-051 warning in src/lib/nearby.js.
       console.warn(`[reminders] claim unavailable (run migration-060?): ${error.message}`);
+      workerStatus.claimFailed(error);
+      t.error = error;
       return { ...ZERO };
     }
+    workerStatus.claimOk();
 
     const userIds = [...new Set((rows ?? []).map((r) => r.out_user_id).filter(Boolean))];
     if (!userIds.length) return { ...ZERO };
@@ -725,8 +856,12 @@ export async function runReminderTick() {
       let accepted = 0;
       let candidate = null;
       let payload = null;
+      // For the log row at the foot of this body: what the send did, if it ran.
+      let sendResult = null;
+      let sendThrew = false;
+      const deals = dealsByUser.get(userId) ?? [];
       try {
-        const ctx = await buildContext(userId, catalogue, recommendedIds, dealsByUser.get(userId) ?? []);
+        const ctx = await buildContext(userId, catalogue, recommendedIds, deals);
         candidate = pickReminder(ctx);
         payload = composeReminder(candidate);
       } catch (err) {
@@ -737,7 +872,8 @@ export async function runReminderTick() {
       if (payload) {
         try {
           const subs = await studentSubscriptions(userId);
-          accepted = await sendToSubscriptions(subs, payload);
+          sendResult = await sendToSubscriptionsDetailed(subs, payload);
+          accepted = sendResult.accepted;
           // The claim has ALREADY spent this student's cooldown and both counts,
           // so a silent zero here is four hours of silence that bought nothing.
           // The tier is in the line because it is the one thing the refund
@@ -749,6 +885,7 @@ export async function runReminderTick() {
         } catch (err) {
           console.error(`[reminders] send threw for user=${userId}: ${err?.message ?? err}`);
           accepted = 0;
+          sendThrew = true;
         }
       } else {
         // pickReminder's generic tier means this cannot happen today. It is
@@ -761,12 +898,24 @@ export async function runReminderTick() {
         delivered += 1;
         // Reached them, so whatever went wrong before is over.
         recentlyFailed.delete(userId);
+        logReminder({ userId, candidate, payload, deals, outcome: 'sent', devices: sendResult?.devices ?? [] });
       } else {
         // Before the refund, not after: the refund is what puts them back at the
         // head of the queue, so the thing that keeps them out of the next claim
         // has to be recorded whether or not the refund itself succeeds.
         recentlyFailed.set(userId, Date.now());
-        if (await refundReminder(userId)) refunded += 1;
+        const didRefund = await refundReminder(userId);
+        if (didRefund) refunded += 1;
+        let outcome = 'failed';
+        let reason = 'no_device_accepted';
+        if (!payload) { outcome = 'refused'; reason = 'content_empty'; }
+        else if (sendThrew) reason = 'send_error';
+        else if (!sendResult?.tried) reason = 'no_devices';
+        logReminder({
+          userId, candidate, payload, deals, outcome, reason,
+          devices: sendResult?.devices ?? [],
+          refunded: didRefund,
+        });
       }
     }
     return { claimed: userIds.length, delivered, refunded };
@@ -774,6 +923,7 @@ export async function runReminderTick() {
     // Never throws upward: this is a background sweep with nothing downstream of
     // it, and the next tick retries from scratch. Same posture as claimNearby.
     console.error(`[reminders] tick failed: ${err?.message ?? err}`);
+    t.error = err;
     return { ...ZERO };
   }
 }
@@ -798,7 +948,7 @@ export function startReminderWorker() {
   // A floor, so a mistyped REMINDER_TICK_SECONDS (0, or a negative) cannot turn
   // this into a hot loop against the claim. 30s is already absurdly often for a
   // feature whose interval is three days.
-  const period = Math.max(REMINDER_CONFIG.tickSeconds, 30) * 1000;
+  const period = periodSeconds() * 1000;
   timer = setInterval(async () => {
     if (running) return;
     running = true;

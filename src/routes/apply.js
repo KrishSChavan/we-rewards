@@ -180,6 +180,55 @@ export function validApplication(body) {
   };
 }
 
+/**
+ * Both sides of the handshake, in parallel: the operator hears that work
+ * arrived, the applicant hears that it landed. Neither may fail the request —
+ * the row is already committed, and a 500 here would tell someone their
+ * application did not go through when it did. notifyAdmins and sendEmail both
+ * swallow their own failures for exactly that reason.
+ *
+ * Both carry the application id into the notification log (migration-062), so
+ * /admin can put the operator's push and the applicant's email side by side.
+ *
+ * @param {{ id: string|null, fields: object }} application the committed row's
+ *   id and validApplication()'s fields
+ */
+export async function announceApplication({ id, fields }) {
+  // Say how big it is: a five-location chain is a different review from a
+  // single shop, and the count is the one thing the title can't imply.
+  const count = fields.locations.length + 1;
+  const mail = applicationReceived({
+    businessName: fields.business_name,
+    contactName: fields.contact_name,
+    locationCount: count,
+  });
+  const ref = { applicationId: id };
+  await Promise.all([
+    notifyAdmins({
+      title: 'New vendor application',
+      body: count > 1
+        ? `${fields.business_name} · ${fields.contact_name} · ${count} locations`
+        : `${fields.business_name} · ${fields.contact_name}`,
+      url: '/admin/',
+    }, { ref }),
+    sendEmail({
+      to: fields.email,
+      subject: mail.subject,
+      html: mail.html,
+      text: mail.text,
+      category: 'transactional',
+      idempotencyKey: `apply:${id ?? fields.email}`,
+      tags: ['application-received'],
+      log: {
+        kind: 'application_received',
+        recipientKind: 'applicant',
+        recipientLabel: fields.business_name,
+        ref,
+      },
+    }),
+  ]);
+}
+
 /** POST /api/apply — submit a vendor application. */
 router.post('/', async (req, res, next) => {
   try {
@@ -209,37 +258,7 @@ router.post('/', async (req, res, next) => {
 
     // Wait for the best-effort delivery attempt. Returning while this promise
     // was still loose could abandon an alert when a process stopped after 201.
-    // Say how big it is: a five-location chain is a different review from a
-    // single shop, and the count is the one thing the title can't imply.
-    const count = v.fields.locations.length + 1;
-    // Both sides of the handshake, in parallel: the operator hears that work
-    // arrived, the applicant hears that it landed. Neither may fail the request
-    // — the row is already committed, and a 500 here would tell someone their
-    // application did not go through when it did. notifyAdmins and sendEmail
-    // both swallow their own failures for exactly that reason.
-    const mail = applicationReceived({
-      businessName: v.fields.business_name,
-      contactName: v.fields.contact_name,
-      locationCount: count,
-    });
-    await Promise.all([
-      notifyAdmins({
-        title: 'New vendor application',
-        body: count > 1
-          ? `${v.fields.business_name} · ${v.fields.contact_name} · ${count} locations`
-          : `${v.fields.business_name} · ${v.fields.contact_name}`,
-        url: '/admin/',
-      }),
-      sendEmail({
-        to: v.fields.email,
-        subject: mail.subject,
-        html: mail.html,
-        text: mail.text,
-        category: 'transactional',
-        idempotencyKey: `apply:${row?.id ?? v.fields.email}`,
-        tags: ['application-received'],
-      }),
-    ]);
+    await announceApplication({ id: row?.id ?? null, fields: v.fields });
 
     res.status(201).json({ ok: true });
   } catch (err) {

@@ -15,6 +15,7 @@ import { TERMS_VERSION, TERMS_DOCUMENTS } from '../lib/terms.js';
 import { isUuid } from '../lib/ids.js';
 import { getVapidPublicKey } from '../lib/push.js';
 import { claimNearby } from '../lib/nearby.js';
+import { logNotification, deviceLabelFromUA, notificationLogState } from '../lib/notification-log.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
@@ -2156,6 +2157,54 @@ router.get('/push/public-key', requireConsent, (req, res) => {
   res.json({ publicKey: getVapidPublicKey() });
 });
 
+// How long to stop asking for push_subscriptions.device_label after the
+// database said the column is not there. A window rather than a permanent flag
+// because the operator pastes migration-062 into a RUNNING production database:
+// a flag would leave labels uncaptured until the next dyno restart, while asking
+// on every subscribe would cost a failed write per page load until the paste.
+const DEVICE_LABEL_RETRY_MS = 15 * 60 * 1000;
+let deviceLabelMissingUntil = 0;
+
+function isMissingDeviceLabel(error) {
+  if (!error) return false;
+  const code = String(error.code ?? '');
+  // Both conditions, not either: a missing-column code naming some OTHER
+  // column, or a different failure (a constraint, say) that merely mentions
+  // device_label, is a real error the caller must see, not one to retry away.
+  return (code === '42703' || code === 'PGRST204') && /device_label/i.test(String(error.message ?? ''));
+}
+
+/**
+ * Upsert one student push subscription, labelled "iPhone Safari" etc. from the
+ * user agent so /admin's notification log can say WHICH device a push was
+ * tried on (migration-062). The label is a convenience; the subscription is the
+ * point. A database without the column (migration-062 not applied yet) gets the
+ * pre-062 write instead, because failing here would make turning on alerts fail
+ * for every student, and with no subscription row the campaign worker treats a
+ * student as unreachable.
+ *
+ * Resolves to `{ error }` like a supabase-js call; the caller decides to throw.
+ */
+export async function upsertStudentPushSubscription({ endpoint, p256dh, auth, userId, userAgent }) {
+  const row = { endpoint, p256dh, auth, user_id: userId, role: 'student' };
+  const write = (r) => supabaseAdmin.from('push_subscriptions').upsert(r, { onConflict: 'endpoint' });
+  // No label (no or unrecognised UA) means the column is left out of the
+  // upsert, so a re-subscribe from the same endpoint keeps the label it had
+  // instead of overwriting it with null.
+  const label = deviceLabelFromUA(userAgent);
+  if (!label || Date.now() < deviceLabelMissingUntil) return write(row);
+  const result = await write({ ...row, device_label: label });
+  if (!isMissingDeviceLabel(result?.error)) return result;
+  deviceLabelMissingUntil = Date.now() + DEVICE_LABEL_RETRY_MS;
+  console.warn(`[push] push_subscriptions.device_label is missing (apply migration-062): ${result.error.message}`);
+  return write(row);
+}
+
+/** @internal test seam: forget that device_label was missing. */
+export function _resetDeviceLabelProbeForTests() {
+  deviceLabelMissingUntil = 0;
+}
+
 /**
  * POST /api/me/push/subscribe  { endpoint, keys: { p256dh, auth } }
  * Upserted on endpoint, so re-posting on every load just keeps it fresh.
@@ -2171,9 +2220,9 @@ router.post('/push/subscribe', requireConsent, async (req, res, next) => {
         || p256dh.length > 300 || auth.length > 100) {
       return res.status(400).json({ error: 'BAD_SUBSCRIPTION', message: 'That push subscription looks invalid.' });
     }
-    const { error } = await supabaseAdmin
-      .from('push_subscriptions')
-      .upsert({ endpoint, p256dh, auth, user_id: req.user.id, role: 'student' }, { onConflict: 'endpoint' });
+    const { error } = await upsertStudentPushSubscription({
+      endpoint, p256dh, auth, userId: req.user.id, userAgent: req.get('user-agent'),
+    });
     if (error) throw error;
     // Turning notifications on is also an opt-in: a student who switched deal
     // alerts off and later re-granted permission means it.
@@ -2323,11 +2372,78 @@ router.post('/nearby/claim', requireConsent, async (req, res, next) => {
     // answer several times a day for anyone who walks past the same street
     // twice — and a 4xx here would fill the client error log with normal
     // behaviour and bury the failures that matter.
-    res.json({ allowed: await claimNearby(req.user.id, vendorId) });
+    const { allowed } = await claimNearbyAndLog(req.user.id, vendorId);
+    res.json({ allowed });
   } catch (err) {
     next(err);
   }
 });
+
+/**
+ * claimNearby(), plus the notification log row when it says yes.
+ *
+ * The log write is started, never awaited (`logged` is that promise, for
+ * tests): the log is an observer, and a student standing in the street should
+ * not wait on a vendors read to see the alert.
+ *
+ * Refusals are NOT logged. The claim does not say why it refused, and a row per
+ * refusal would be a second, denser record of where a student walked.
+ *
+ * @returns {Promise<{ allowed: boolean, logged: Promise<void>|null }>}
+ */
+export async function claimNearbyAndLog(userId, vendorId) {
+  const allowed = await claimNearby(userId, vendorId);
+  return { allowed, logged: allowed ? logNearbyAllowed(userId, vendorId) : null };
+}
+
+/**
+ * Record an allowed nearby claim in the notification log (migration-062).
+ *
+ * 'allowed', never 'sent': the server granted permission and the student's own
+ * page renders the notification (see src/lib/nearby.js). Whether it actually
+ * appeared is something only the phone knows.
+ *
+ * The dedupe key matches migration-062's backfill of nearby_notifications, and
+ * the claim is once-ever per (student, spot), so a re-paste of the migration and
+ * a live row can never both land.
+ *
+ * Never rejects. Resolves once the row is handed to logNotification (tests then
+ * flushNotificationLog()).
+ */
+export async function logNearbyAllowed(userId, vendorId) {
+  try {
+    // The table is known to be missing: skip the vendors read too, not just the
+    // write. logNotification would drop the row anyway.
+    const { disabledUntil } = notificationLogState();
+    if (disabledUntil !== null && Date.now() < disabledUntil) return;
+    let vendorName = null;
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('vendors')
+        .select('name')
+        .eq('id', vendorId)
+        .abortSignal(AbortSignal.timeout(5_000))
+        .maybeSingle();
+      if (!error) vendorName = data?.name ?? null;
+    } catch {
+      // The row is still worth having without the name.
+    }
+    logNotification({
+      channel: 'push',
+      kind: 'nearby',
+      outcome: 'allowed',
+      recipientKind: 'student',
+      studentId: userId,
+      vendorId,
+      title: vendorName ? `You're near ${vendorName}` : null,
+      url: `/?spot=${vendorId}`,
+      ref: { shownBy: 'device' },
+      dedupeKey: `nearby:${userId}:${vendorId}`,
+    });
+  } catch (err) {
+    console.warn(`[nearby] could not log an allowed claim: ${err?.message ?? err}`);
+  }
+}
 
 /**
  * GET /api/me/export
@@ -2339,7 +2455,7 @@ router.post('/nearby/claim', requireConsent, async (req, res, next) => {
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby, linkedEmail, merges] = await Promise.all([
+    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby, linkedEmail, merges, notificationLog] = await Promise.all([
       supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at, referral_code, linked_email, linked_email_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
       // The shared purses (migration-044). Points a student holds in a pool are
@@ -2423,6 +2539,9 @@ router.get('/export', async (req, res, next) => {
         .select('loser_email, points_moved, community_moved, punches_moved, duplicate_nights, spots_gained, transactions_moved, created_at')
         .eq('winner_id', uid)
         .order('created_at', { ascending: false }),
+      // Never rejects (an empty list when migration-062 is not applied), so it
+      // cannot fail the download the way the required reads above can.
+      exportNotificationRows(uid),
     ]);
     for (const r of [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby]) {
       if (r.error) throw r.error;
@@ -2459,6 +2578,11 @@ router.get('/export', async (req, res, next) => {
       scores: scores.data,
       deals: deals.data ?? [],
       notifications: notify.data ?? { push_opt_in: true, email_opt_in: true, nearby_opt_in: true, reminder_opt_in: true, last_push_at: null, last_email_at: null, last_reminder_at: null },
+      // Every notification and email we sent this student or tried to (the
+      // last 30 days; migration-062 deletes older rows). A new key rather than
+      // a new meaning for `notifications`, which anyone parsing an older
+      // download already reads as the switches above.
+      notificationLog,
       // Flattened to a spot name for the same reason poolBalances is: a person
       // reading their own data should not be handed a bare uuid and asked to
       // resolve it. Empty for every student who has never had one fire.
@@ -2497,9 +2621,61 @@ router.get('/export', async (req, res, next) => {
 });
 
 /**
+ * The student's own notification_log rows for "Download my data", newest first.
+ *
+ * Everything the Privacy Policy (2.6) says a record holds: what the message
+ * was, why it was not sent, the address it went to (for a link code that can
+ * be an address that appears nowhere else in this file) and what each device's
+ * push service answered. Left out on purpose: the subscription id, provider
+ * message id, dedupe key and ref, which are our pipeline's bookkeeping and
+ * would only hand the student opaque ids to puzzle over.
+ *
+ * Never rejects. Any error, including the table not existing yet, is an empty
+ * list: export is a right the Privacy Policy promises at any time, and one
+ * optional section must not be able to take the whole download down.
+ */
+export async function exportNotificationRows(uid) {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('notification_log')
+      .select('created_at, channel, kind, outcome, reason, title, body, url, recipient_email, delivery_status, devices')
+      .eq('student_id', uid)
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.warn(`[export] notification records unavailable: ${error.message} (migration-062 applied?)`);
+      return [];
+    }
+    return (data ?? []).map((r) => ({
+      createdAt: r.created_at,
+      channel: r.channel,
+      kind: r.kind,
+      outcome: r.outcome,
+      reason: r.reason ?? null,
+      title: r.title ?? null,
+      body: r.body ?? null,
+      url: r.url ?? null,
+      recipientEmail: r.recipient_email ?? null,
+      deliveryStatus: r.delivery_status ?? null,
+      // Picked field by field so whatever else a device result carries (subId,
+      // the push service's error text) never rides along.
+      devices: (Array.isArray(r.devices) ? r.devices : []).map((d) => ({
+        label: d?.label ?? null,
+        service: d?.service ?? null,
+        ok: d?.ok === true,
+        status: d?.status ?? null,
+      })),
+    }));
+  } catch (err) {
+    console.warn(`[export] notification records unavailable: ${err?.message ?? err}`);
+    return [];
+  }
+}
+
+/**
  * POST /api/me/delete
  * Deletes the signed-in student's auth user. `on delete cascade` removes the
- * profile, balances, live codes, and score snapshot; transaction rows are kept
+ * profile, balances, live codes, score snapshot and (through the profile, since
+ * migration-062) their notification_log rows; transaction rows are kept
  * but anonymized (user_id → null, migration-011) so vendors' revenue totals
  * don't silently change. Irreversible.
  *

@@ -105,3 +105,91 @@ test('every consent document the modal links is under /legal/', () => {
     assert.ok(doc.label, `${doc.key} has a label for the checkbox link`);
   }
 });
+
+test('Privacy Policy section numbers are contiguous (append, never insert)', () => {
+  // Sections are hand-numbered and cross-referenced by number ("see Section
+  // 2.12"), so inserting one silently re-points every later reference. A gap or
+  // a repeat here is what an insert-then-renumber, or a half-done one, leaves.
+  const html = readFileSync(new URL('../legal/student-privacy-policy.html', import.meta.url), 'utf8');
+  const h2 = [...html.matchAll(/<h2>(\d+)\./g)].map((m) => Number(m[1]));
+  assert.deepEqual(h2, h2.map((_, i) => i + 1), `top-level sections run 1..n: ${h2}`);
+  const subs = new Map();
+  for (const [, a, b] of html.matchAll(/<h3>(\d+)\.(\d+) /g)) {
+    if (!subs.has(a)) subs.set(a, []);
+    subs.get(a).push(Number(b));
+  }
+  for (const [a, list] of subs) {
+    assert.deepEqual(list, list.map((_, i) => i + 1), `subsections of ${a} run ${a}.1..n: ${list}`);
+  }
+});
+
+test('Privacy Policy discloses the notification log it consents students to (migration-062)', () => {
+  // TERMS_VERSION 2026-10-03 exists because of these sentences; the bump without
+  // them would re-prompt every student to agree to text that says nothing new.
+  const html = readFileSync(new URL('../legal/student-privacy-policy.html', import.meta.url), 'utf8');
+  const s26 = html.slice(html.indexOf('<h3>2.6 '), html.indexOf('<h3>2.7 '));
+  assert.ok(s26.length > 0, '§2.6 found');
+  assert.match(s26, /record of every notification and email we send you, or try to send you/);
+  assert.match(s26, /only the subject line, never the body, and never any code/);
+  assert.match(s26, /type of device and browser/);
+  assert.match(s26, /never record its push address or keys/);
+  assert.match(s26, /administrative screen/);
+  assert.match(s26, /30 days after the message, and immediately if you delete your account/);
+  // The old wording said the counters were kept "purely" for frequency limits;
+  // the admin budget view makes that false.
+  assert.doesNotMatch(s26, /purely/);
+  assert.match(html, /<td>Check and troubleshoot notification delivery \(admin-only\)<\/td>/, '§3 row');
+  assert.match(html, /<td>Notification records \([^<]*\)<\/td><td>About 30 days after the message; deleted immediately if you delete your account<\/td>/, '§5 row');
+  const s71 = html.slice(html.indexOf('<h3>7.1 '), html.indexOf('<h3>7.2 '));
+  assert.match(s71, /your notification records/);
+  assert.doesNotMatch(s71, /deal-notification records/);
+  // A per-subscription id and the push-service family are stored too, so "by
+  // its type only" would be an over-promise.
+  assert.doesNotMatch(s26, /identified only by its type/);
+  assert.match(s26, /which company's push service it uses/);
+  assert.match(s26, /internal reference number/);
+  // The per-student admin view shows the alert switches and live app-open
+  // presence (alerts are held while the app is open), not just the log.
+  assert.match(s26, /notification switches/);
+  assert.match(s26, /app open at that moment/);
+  const row3 = html.match(/<td>Check and troubleshoot notification delivery \(admin-only\)<\/td><td>([^<]*)<\/td>/);
+  assert.ok(row3, '§3 row has a data cell');
+  assert.match(row3[1], /notification switches/);
+  assert.match(row3[1], /app open at that moment/);
+});
+
+test('Privacy Policy §2.9 no longer promises nearby records serve one purpose only (migration-062)', () => {
+  // Each nearby alert is also written to the operator-visible notification log,
+  // so "one purpose only" became false the day that log shipped.
+  const html = readFileSync(new URL('../legal/student-privacy-policy.html', import.meta.url), 'utf8');
+  const s29 = html.slice(html.indexOf('<h3>2.9 '), html.indexOf('<h3>2.10 '));
+  assert.ok(s29.length > 0, '§2.9 found');
+  assert.doesNotMatch(s29, /one purpose only/);
+  assert.match(s29, /notification record described in Section 2\.6/);
+  assert.match(s29, /check that it was delivered/);
+  assert.match(s29, /copy is deleted about 30 days/);
+});
+
+test('Privacy Policy §12 discloses the email log kept for applicants and vendor contacts', () => {
+  // The notification log records operator emails to applicants and vendor
+  // contacts too, and those people are not covered by §2.6.
+  const html = readFileSync(new URL('../legal/student-privacy-policy.html', import.meta.url), 'utf8');
+  const s12 = html.slice(html.indexOf('<h2>12. '));
+  assert.ok(s12.length > 0, '§12 found');
+  assert.match(s12, /record of each email we send an applicant or vendor contact/);
+  assert.match(s12, /subject line/);
+  assert.match(s12, /about 30 days/);
+});
+
+test('Privacy Policy edits for migration-062 add no em dashes', () => {
+  // Admin-visible copy rule; the sentences this change set touched are checked
+  // so older em dashes elsewhere in the policy do not fail this.
+  const html = readFileSync(new URL('../legal/student-privacy-policy.html', import.meta.url), 'utf8');
+  for (const needle of ['notification record described in Section 2.6', 'internal reference number',
+    'app open at that moment', 'record of each email we send an applicant']) {
+    const i = html.indexOf(needle);
+    assert.ok(i >= 0, needle);
+    const line = html.slice(html.lastIndexOf('\n', i), html.indexOf('\n', i));
+    assert.doesNotMatch(line, /—/, `no em dash near "${needle}"`);
+  }
+});

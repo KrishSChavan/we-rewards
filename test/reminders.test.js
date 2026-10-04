@@ -425,6 +425,7 @@ test('the worker arms no timer when there is nothing to deliver with', () => {
 const LIB = pathToFileURL(path.resolve('src/lib/reminders.js')).href;
 const SUPABASE = pathToFileURL(path.resolve('src/lib/supabase.js')).href;
 const CAMPAIGNS = pathToFileURL(path.resolve('src/lib/campaigns.js')).href;
+const NOTIF_LOG = pathToFileURL(path.resolve('src/lib/notification-log.js')).href;
 
 /**
  * A keypair web-push itself accepts. Generated locally (an ECDH P-256 pair out
@@ -451,17 +452,47 @@ const KEYS = webpush.generateVAPIDKeys();
  * test/setup.js has already filled in — the parent could not have imported
  * reminders.js at all otherwise.
  */
-function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null } = {}) {
+function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, subs = null, pushStatus = 201, logError = null, dealRows = null } = {}) {
   const src = `
     // Any socket at all is a failure in these tests, but it must be observable
     // rather than a thrown ECONNREFUSED that reads as an unrelated bug.
+    //
+    // Three routes are scriptable for the notification-log tests (migration-062):
+    // push_subscriptions (so a send can land), campaign_recipients (so tier 3 can
+    // name a deal and its spot) and notification_log (captured, or failed with a
+    // PostgREST error). Everything else, and all three when unset, answers '[]'.
     const fetches = [];
+    const logRows = [];
+    const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'Content-Type': 'application/json' } });
+    const SUBS = ${JSON.stringify(subs)};
+    const DEAL_ROWS = ${JSON.stringify(dealRows)};
+    const LOG_ERROR = ${JSON.stringify(logError)};
     globalThis.fetch = async (input, init = {}) => {
-      fetches.push({
-        url: String(input?.url ?? input),
-        method: String(init.method ?? input?.method ?? 'GET').toUpperCase(),
-      });
+      const url = String(input?.url ?? input);
+      const method = String(init.method ?? input?.method ?? 'GET').toUpperCase();
+      fetches.push({ url, method });
+      if (url.includes('/rest/v1/notification_log')) {
+        for (const r of [].concat(init.body ? JSON.parse(init.body) : [])) logRows.push(r);
+        if (LOG_ERROR) return json(LOG_ERROR, 404);
+        return json([{ id: '00000000-0000-4000-8000-0000000000d1' }], 201);
+      }
+      if (SUBS && url.includes('/rest/v1/push_subscriptions')) {
+        if (method === 'DELETE') return new Response(null, { status: 204 });
+        return json(SUBS);
+      }
+      if (DEAL_ROWS && url.includes('/rest/v1/campaign_recipients')) return json(DEAL_ROWS);
       return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const sent = [];
+    const webpush = (await import('web-push')).default;
+    const PUSH_STATUS = ${JSON.stringify(pushStatus)};
+    webpush.sendNotification = async (sub, b) => {
+      sent.push({ endpoint: sub.endpoint, body: b });
+      if (PUSH_STATUS >= 200 && PUSH_STATUS < 300) return { statusCode: PUSH_STATUS };
+      const err = new Error('push service said no');
+      err.statusCode = PUSH_STATUS;
+      throw err;
     };
 
     const { supabaseAdmin } = await import(${JSON.stringify(SUPABASE)});
@@ -491,7 +522,10 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     globalThis.setInterval = (fn, ms) => { armed.push(ms); return { unref() {} }; };
     globalThis.clearInterval = () => {};
 
-    const out = await (${body})({ reminders, seen, fetches, armed, CAMPAIGN_CONFIG });
+    const { flushNotificationLog } = await import(${JSON.stringify(NOTIF_LOG)});
+    const flush = () => flushNotificationLog();
+
+    const out = await (${body})({ reminders, seen, fetches, armed, CAMPAIGN_CONFIG, logRows, sent, flush, BY_NAME });
     console.log('__RESULT__' + JSON.stringify(out ?? null));
   `;
   const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
@@ -773,4 +807,215 @@ test('every tier sounds pleased to be there', () => {
       );
     }
   }
+});
+
+/* ---------- the notification log, worker status and preview (migration-062) ----------
+
+   Contract 3.2: one log row per claimed student, written WITHOUT changing the
+   claim, the send or the refund. Plus the three read-only views /admin uses:
+   reminderWorkerStatus(), reminderBackoff() and previewReminder(). */
+
+const LOG_VENDOR = '00000000-0000-4000-8000-0000000000f1';
+const LOG_DEAL = '00000000-0000-4000-8000-0000000000c1';
+const LOG_SUB = {
+  id: '00000000-0000-4000-8000-00000000005a',
+  user_id: CLAIMED_ID,
+  endpoint: 'https://web.push.apple.com/ENDPOINT-CAPABILITY-123',
+  p256dh: 'P256DH-SECRET-VALUE',
+  auth: 'AUTH-SECRET-VALUE',
+  device_label: 'iPhone Safari',
+};
+// One live, unopened deal for the claimed student, in the embedded shape
+// liveDealsFor selects, so the cascade lands on tier 3 and names a spot.
+const LIVE_DEAL_ROWS = [{
+  user_id: CLAIMED_ID,
+  campaign_id: LOG_DEAL,
+  read_at: null,
+  vendor_campaigns: {
+    title: 'Half price tacos',
+    expires_at: '2099-01-01T00:00:00Z',
+    vendor_id: LOG_VENDOR,
+    vendors: { name: 'Taco Bar', active: true },
+  },
+}];
+
+const TICK_AND_LOG = `async ({ reminders, seen, logRows, sent, flush }) => {
+  const result = await reminders.runReminderTick();
+  await flush();
+  return { result, rows: logRows, sent: sent.length, names: seen.map((c) => c.name) };
+}`;
+
+test('a delivered reminder is logged as sent, with its tier, spot and devices', () => {
+  const out = runConfigured(TICK_AND_LOG, { ...ONE_CLAIMED, subs: [LOG_SUB], dealRows: LIVE_DEAL_ROWS });
+
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, refunded: 0 });
+  assert.equal(out.sent, 1);
+  assert.ok(!out.names.includes('refund_reminder_push'), 'a delivered reminder was refunded');
+
+  assert.equal(out.rows.length, 1, `expected one log row, got ${JSON.stringify(out.rows)}`);
+  const r = out.rows[0];
+  assert.equal(r.channel, 'push');
+  assert.equal(r.kind, 'reminder');
+  assert.equal(r.outcome, 'sent');
+  assert.equal(r.reason, null);
+  assert.equal(r.recipient_kind, 'student');
+  assert.equal(r.student_id, CLAIMED_ID);
+  assert.equal(r.title, 'Something good is on!');
+  assert.equal(r.url, `/?deal=${LOG_DEAL}`);
+  assert.equal(r.template, 'wr-reminder');
+  // The spot comes from the deal row's vendor_id, never from matching names.
+  assert.equal(r.vendor_id, LOG_VENDOR);
+  assert.deepEqual(r.ref, { tier: 'deal', vendorName: 'Taco Bar' });
+  assert.equal(r.devices_tried, 1);
+  assert.equal(r.devices_accepted, 1);
+  assert.equal(r.devices[0].service, 'apple');
+  assert.equal(r.devices[0].label, 'iPhone Safari');
+  // Reminders carry no dedupe key: nothing else writes a reminder row.
+  assert.equal(r.dedupe_key, null);
+  const raw = JSON.stringify(out.rows);
+  for (const secret of ['ENDPOINT-CAPABILITY', 'P256DH-SECRET-VALUE', 'AUTH-SECRET-VALUE']) {
+    assert.ok(!raw.includes(secret), `the log row carries ${secret}`);
+  }
+});
+
+test('a reminder nobody could receive is logged as failed, no_devices, and refunded', () => {
+  const out = runConfigured(TICK_AND_LOG, ONE_CLAIMED);
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1 });
+  assert.equal(out.rows.length, 1);
+  const r = out.rows[0];
+  assert.equal(r.outcome, 'failed');
+  assert.equal(r.reason, 'no_devices');
+  assert.equal(r.ref.refunded, true);
+  assert.equal(r.ref.tier, 'generic');
+  assert.equal(r.vendor_id, null, 'the generic tier names no spot');
+  // What we would have said is kept, so the operator can see it.
+  assert.equal(r.title, 'Your points are waiting!');
+});
+
+test('a reminder every device refused is logged as no_device_accepted', () => {
+  const out = runConfigured(TICK_AND_LOG, { ...ONE_CLAIMED, subs: [LOG_SUB], pushStatus: 500 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1 });
+  assert.equal(out.rows[0].outcome, 'failed');
+  assert.equal(out.rows[0].reason, 'no_device_accepted');
+  assert.equal(out.rows[0].devices[0].status, 500);
+});
+
+test('refunded on the log row is what the refund actually did', () => {
+  // A refund that fails leaves the student's budget spent; a row saying
+  // "refunded" would send the operator looking in the wrong place.
+  const out = runConfigured(TICK_AND_LOG, {
+    rpcByName: {
+      claim_reminder_pushes: { data: [{ out_user_id: CLAIMED_ID }] },
+      refund_reminder_push: { data: null, error: { message: 'boom' } },
+    },
+  });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 0 });
+  assert.equal(out.rows[0].ref.refunded, false);
+});
+
+test('a missing notification_log table does not change a single reminder outcome', () => {
+  const out = runConfigured(TICK_AND_LOG, {
+    ...ONE_CLAIMED,
+    logError: { code: 'PGRST205', message: "Could not find the table 'public.notification_log' in the schema cache" },
+  });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1 });
+  assert.equal(out.names.filter((n) => n === 'refund_reminder_push').length, 1);
+});
+
+test('worker status records each tick, and rpcMissing follows the claim', () => {
+  const out = runConfigured(`async ({ reminders, BY_NAME, flush }) => {
+    const before = reminders.reminderWorkerStatus();
+    const r1 = await reminders.runReminderTick();
+    const afterOk = reminders.reminderWorkerStatus();
+    BY_NAME.claim_reminder_pushes = { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.claim_reminder_pushes' } };
+    const r2 = await reminders.runReminderTick();
+    const afterMissing = reminders.reminderWorkerStatus();
+    BY_NAME.claim_reminder_pushes = { data: [] };
+    await reminders.runReminderTick();
+    const afterRecovered = reminders.reminderWorkerStatus();
+    await flush();
+    return { before, r1, afterOk, r2, afterMissing, afterRecovered };
+  }`, ONE_CLAIMED);
+
+  assert.equal(out.before.configured, true);
+  assert.equal(out.before.running, false);
+  assert.equal(out.before.ticks, 0);
+  assert.equal(out.before.intervalSeconds, REMINDER_CONFIG.tickSeconds);
+
+  assert.equal(out.afterOk.ticks, 1);
+  assert.deepEqual(out.afterOk.lastResult, out.r1);
+  assert.ok(!Number.isNaN(Date.parse(out.afterOk.lastTickAt)));
+  assert.equal(out.afterOk.rpcMissing, false);
+  assert.equal(out.afterOk.lastError, null);
+
+  // The tick still resolves ZERO (never throws upward); the status is where the
+  // failure shows.
+  assert.deepEqual(out.r2, { claimed: 0, delivered: 0, refunded: 0 });
+  assert.equal(out.afterMissing.ticks, 2);
+  assert.equal(out.afterMissing.rpcMissing, true);
+  assert.match(out.afterMissing.lastError, /claim_reminder_pushes/);
+  assert.ok(out.afterMissing.lastErrorAt);
+  assert.equal(out.afterMissing.lastTickAt, out.afterOk.lastTickAt, 'a failed tick moved lastTickAt');
+
+  assert.equal(out.afterRecovered.rpcMissing, false);
+  assert.equal(out.afterRecovered.ticks, 3);
+});
+
+test('an armed loop reports running', () => {
+  const out = runConfigured('async ({ reminders }) => { reminders.startReminderWorker(); const s = reminders.reminderWorkerStatus(); reminders.stopReminderWorker(); return { s, after: reminders.reminderWorkerStatus() }; }');
+  assert.equal(out.s.running, true);
+  assert.equal(out.after.running, false);
+});
+
+test('reminderBackoff names the student just failed and when they come back', () => {
+  const out = runConfigured(`async ({ reminders, flush }) => {
+    const before = reminders.reminderBackoff();
+    const t0 = Date.now();
+    await reminders.runReminderTick();
+    await flush();
+    return { before, after: reminders.reminderBackoff(), t0 };
+  }`, ONE_CLAIMED);
+  assert.deepEqual(out.before, []);
+  assert.equal(out.after.length, 1);
+  assert.equal(out.after[0].userId, CLAIMED_ID);
+  const until = Date.parse(out.after[0].until);
+  const day = 24 * 60 * 60 * 1000;
+  assert.ok(until >= out.t0 + day && until <= out.t0 + day + 60_000, `until ${out.after[0].until} is not a day out`);
+});
+
+test('previewReminder composes what the tick would send, and touches nothing', () => {
+  // Read-only is the whole contract: claim_reminder_pushes SPENDS the shared
+  // budget and refund_reminder_push moves the queue, so an operator pressing
+  // Preview must never reach either, never send, and never write a log row.
+  const out = runConfigured(`async ({ reminders, seen, logRows, sent, fetches, flush }) => {
+    const preview = await reminders.previewReminder(${JSON.stringify(CLAIMED_ID)});
+    await flush();
+    return {
+      preview,
+      names: seen.map((c) => c.name),
+      sent: sent.length,
+      logRows,
+      writes: fetches.filter((f) => f.method !== 'GET' && f.method !== 'HEAD'),
+    };
+  }`, { ...ONE_CLAIMED, subs: [LOG_SUB], dealRows: LIVE_DEAL_ROWS });
+
+  assert.equal(out.preview.candidate.kind, 'deal');
+  assert.equal(out.preview.candidate.dealTitle, 'Half price tacos');
+  assert.equal(out.preview.composed.title, 'Something good is on!');
+  assert.equal(out.preview.composed.tag, 'wr-reminder');
+  assert.equal(out.preview.composed.url, `/?deal=${LOG_DEAL}`);
+
+  assert.ok(!out.names.includes('claim_reminder_pushes'), 'preview called the claim');
+  assert.ok(!out.names.includes('refund_reminder_push'), 'preview called the refund');
+  assert.equal(out.sent, 0, 'preview sent a push');
+  assert.deepEqual(out.logRows, [], 'preview wrote a notification_log row');
+  assert.deepEqual(out.writes, [], `preview wrote to the database: ${JSON.stringify(out.writes)}`);
+});
+
+test('previewReminder with no student says nothing', async () => {
+  // In-process: previewReminder does not consult pushEnabled, and an empty id
+  // returns before any read.
+  const { previewReminder } = await import('../src/lib/reminders.js');
+  assert.deepEqual(await previewReminder(''), { candidate: null, composed: null });
+  assert.deepEqual(await previewReminder(null), { candidate: null, composed: null });
 });

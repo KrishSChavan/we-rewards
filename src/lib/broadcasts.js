@@ -48,9 +48,10 @@
 // back up. Nothing here is on a request path.
 
 import { supabaseAdmin } from './supabase.js';
-import { CAMPAIGN_CONFIG } from './campaigns.js';
-import { pushEnabled, sendToSubscriptions, studentSubscriptions } from './push.js';
+import { CAMPAIGN_CONFIG, createWorkerStatus } from './campaigns.js';
+import { pushEnabled, sendToSubscriptionsDetailed, studentSubscriptions } from './push.js';
 import { visibleUserIds } from './realtime.js';
+import { logNotification } from './notification-log.js';
 
 const num = (name, fallback) => {
   const n = Number(process.env[name]);
@@ -227,6 +228,61 @@ function backedOffUserIds(now) {
 }
 
 /**
+ * Who the worker is currently passing over, and until when, for /admin's queue
+ * view. A copy: reading it never steers the worker.
+ * @returns {Array<{userId: string, until: string}>}
+ */
+export function broadcastBackoff() {
+  backedOffUserIds(Date.now());
+  return [...recentlyFailed].map(([userId, at]) => ({
+    userId,
+    until: new Date(at + FAILED_BACKOFF_MS).toISOString(),
+  }));
+}
+
+const workerStatus = createWorkerStatus();
+
+/** The interval startBroadcastWorker arms, floor included. */
+const periodSeconds = () => Math.max(BROADCAST_CONFIG.tickSeconds, 10);
+
+/** Contract §3.5 status for /admin; see createWorkerStatus in campaigns.js. */
+export function broadcastWorkerStatus() {
+  return workerStatus.snapshot({
+    configured: pushEnabled,
+    running: timer !== null,
+    intervalSeconds: periodSeconds(),
+  });
+}
+
+/**
+ * The log row for one claimed recipient (contract §3.3), written after the
+ * settle so `refunded` is what finish_admin_broadcast actually did. The words
+ * are the composed payload when there is one (what the phone showed), else the
+ * claim's raw copy (what we would have shown).
+ */
+function logBroadcast({ userId, broadcastId, row, payload, outcome, reason = null, devices = [], refunded }) {
+  const ref = { broadcastId };
+  if (refunded !== undefined) ref.refunded = refunded;
+  logNotification({
+    channel: 'push',
+    kind: 'broadcast',
+    outcome,
+    reason,
+    recipientKind: 'student',
+    studentId: userId,
+    title: payload?.title ?? row?.out_title ?? null,
+    body: payload?.body ?? row?.out_body ?? null,
+    url: payload?.url ?? row?.out_url ?? null,
+    template: payload?.tag ?? null,
+    devices,
+    ref,
+    // Same key migration-062's backfill writes, and only on a sent row: one
+    // recipient is sent a broadcast at most once, but may fail several times.
+    dedupeKey: outcome === 'sent' ? `broadcast:${broadcastId}:${userId}` : undefined,
+  });
+}
+
+/**
  * Settle one claimed recipient, whatever became of the send.
  *
  * EVERY row the claim returns must come through here exactly once. The claim
@@ -304,6 +360,17 @@ export async function runBroadcastTick() {
   // sits above everything else rather than inside the loop.
   if (!pushEnabled) return { ...ZERO };
 
+  // The tick swallows its own failures (it resolves ZERO), so it reports them
+  // to the status through `t` rather than by throwing.
+  const started = Date.now();
+  const t = { error: null };
+  const result = await broadcastTick(t);
+  if (t.error) workerStatus.tickFailed(started, t.error);
+  else workerStatus.tickDone(started, result);
+  return result;
+}
+
+async function broadcastTick(t) {
   // Outside the try so the catch can still read it. Once the claim returns, this
   // many students have had their shared budget spent and their recipient rows
   // moved to 'sending', whatever happens next.
@@ -344,8 +411,11 @@ export async function runBroadcastTick() {
       // as the migration-051 warning in claimNearby (src/lib/nearby.js) and the
       // migration-060 one in reminders.js.
       console.warn(`[broadcasts] claim unavailable (run migration-061?): ${error.message}`);
+      workerStatus.claimFailed(error);
+      t.error = error;
       return { ...ZERO };
     }
+    workerStatus.claimOk();
 
     const claimedRows = (rows ?? []).filter(Boolean);
     claimedCount = claimedRows.length;
@@ -377,6 +447,10 @@ export async function runBroadcastTick() {
       let userId = null;
       let broadcastId = null;
       let accepted = 0;
+      // For the log row: what the send did, if it ran.
+      let payload = null;
+      let sendResult = null;
+      let sendThrew = false;
       // Set immediately BEFORE the settle call rather than after it, so the
       // catch below can tell "we never got that far" from "the database has
       // already been asked". settle() swallows its own failures, so asking and
@@ -407,7 +481,7 @@ export async function runBroadcastTick() {
         // The claim returned the copy along with the ids (migration-061 section
         // 5), so there is no second read here: a broadcast carries its own
         // words, unlike a reminder which has to be worked out per student.
-        const payload = composeBroadcast({
+        payload = composeBroadcast({
           title: row.out_title,
           body: row.out_body,
           url: row.out_url,
@@ -416,7 +490,8 @@ export async function runBroadcastTick() {
         if (payload) {
           try {
             const subs = await studentSubscriptions(userId);
-            accepted = await sendToSubscriptions(subs, payload);
+            sendResult = await sendToSubscriptionsDetailed(subs, payload);
+            accepted = sendResult.accepted;
             if (accepted === 0) {
               // The claim has ALREADY spent this student's cooldown and both
               // counts, so a silent zero here is four hours of silence that
@@ -430,6 +505,7 @@ export async function runBroadcastTick() {
           } catch (err) {
             console.error(`[broadcasts] send threw broadcast=${broadcastId} user=${userId}: ${err?.message ?? err}`);
             accepted = 0;
+            sendThrew = true;
           }
         } else {
           // create_admin_broadcast raises TITLE_REQUIRED and BODY_REQUIRED, so
@@ -449,9 +525,24 @@ export async function runBroadcastTick() {
         else recentlyFailed.set(userId, Date.now());
 
         settleAsked = true;
-        await settle(broadcastId, userId, accepted > 0);
+        const settled = await settle(broadcastId, userId, accepted > 0);
         if (accepted > 0) delivered += 1;
         else failed += 1;
+
+        if (accepted > 0) {
+          logBroadcast({ userId, broadcastId, row, payload, outcome: 'sent', devices: sendResult?.devices ?? [] });
+        } else {
+          let outcome = 'failed';
+          let reason = 'no_device_accepted';
+          if (!payload) { outcome = 'refused'; reason = 'content_empty'; }
+          else if (sendThrew) reason = 'send_error';
+          else if (!sendResult?.tried) reason = 'no_devices';
+          logBroadcast({
+            userId, broadcastId, row, payload, outcome, reason,
+            devices: sendResult?.devices ?? [],
+            refunded: settled,
+          });
+        }
       } catch (err) {
         console.error(`[broadcasts] row failed broadcast=${broadcastId} user=${userId}: ${err?.message ?? err}`);
         failed += 1;
@@ -461,7 +552,10 @@ export async function runBroadcastTick() {
         // the student's slot goes back and the row is picked up next tick.
         // Repeating a settle that already ran is safe -- see settle() -- but
         // the flag keeps the log honest about what happened.
-        if (userId && broadcastId && !settleAsked) await settle(broadcastId, userId, false);
+        if (userId && broadcastId && !settleAsked) {
+          const settled = await settle(broadcastId, userId, false);
+          logBroadcast({ userId, broadcastId, row: null, payload, outcome: 'failed', reason: 'send_error', refunded: settled });
+        }
       }
     }
 
@@ -481,6 +575,7 @@ export async function runBroadcastTick() {
     // opposite of true. The ten-minute 'sending' sweep in the claim recovers
     // those rows; this line is how anyone knows to expect it.
     console.error(`[broadcasts] tick failed after claiming ${claimedCount} row(s): ${err?.message ?? err}`);
+    t.error = err;
     return { ...ZERO };
   }
 }
@@ -508,7 +603,7 @@ export function startBroadcastWorker() {
   // rather than the reminder worker's thirty, because the intended cadence here
   // IS thirty: a floor at the default would leave no room to tune downwards at
   // all, and the claim is cheap when it finds nobody eligible.
-  const period = Math.max(BROADCAST_CONFIG.tickSeconds, 10) * 1000;
+  const period = periodSeconds() * 1000;
   timer = setInterval(async () => {
     if (running) return;
     running = true;

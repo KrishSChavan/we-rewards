@@ -42,7 +42,7 @@ const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now"
 // evaluating — declared below the boot IIFE it would be in its temporal dead
 // zone at that moment, and the throw is swallowed, so the report would quietly
 // arrive missing the context it exists for.
-const VIEWS = ['dashboard', 'roi', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'broadcast', 'students'];
+const VIEWS = ['dashboard', 'roi', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'broadcast', 'notifications', 'students'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -114,6 +114,7 @@ function bootFailed(message) {
   $('bc-audience').addEventListener('click', onBroadcastAudiencePick);
   $('bc-vendor').addEventListener('change', refreshBroadcastReach);
   $('bc-history').addEventListener('click', onBroadcastHistoryTap);
+  wireNotifications();   // the Notifications tab, its popup and the dashboard tile
   $('amb-add-btn').addEventListener('click', () => openAmbModal(null));
   $('amb-form').addEventListener('submit', submitAmbassador);
   $('amb-cancel').addEventListener('click', closeAmbModal);
@@ -194,7 +195,10 @@ function bootFailed(message) {
     if (!$('reset-modal').hidden) closeResetModal();
     if (!$('vendor-modal').hidden) closeVendorModal();
     if (!$('new-vendor-modal').hidden) closeNewVendorModal();
-    if (!$('student-modal').hidden) closeStudentDetail();
+    // The notification popup can sit over the student card (its Notifications
+    // section opens it), so it goes first and alone: one Escape, one layer.
+    if (!$('notif-modal').hidden) closeNotifDetail();
+    else if (!$('student-modal').hidden) closeStudentDetail();
     // The QR dialog is opened FROM the editor's list and can sit over it, so it
     // is closed first — one Escape should peel one layer, not both.
     if (!$('amb-qr-modal').hidden) closeAmbQrModal();
@@ -211,7 +215,7 @@ function bootFailed(message) {
     b.addEventListener('click', () => setErrorSource(b.dataset.src)));
   wireLists();   // the five filter/paging headers, before anything renders
 
-  sb.auth.onAuthStateChange((_e, session) => render(session));
+  sb.auth.onAuthStateChange(onAuthEvent);
   const { data } = await sb.auth.getSession();
   render(data?.session ?? null);
 
@@ -244,6 +248,18 @@ async function signOut() {
   render(null);
 }
 
+// Supabase refreshes the access token about once an hour and reports it as an
+// auth event. The session is the same person with a new token, and authFetch
+// reads the token fresh on every call, so there is nothing to redo. Sending it
+// through render() would hide the dashboard and reload every list, throwing
+// away the Notifications log's extra pages and the operator's scroll. Before
+// the dashboard is up (a refresh racing the first access check) it still goes
+// through, exactly as before.
+function onAuthEvent(event, session) {
+  if (event === 'TOKEN_REFRESHED' && !$('dash').hidden) return;
+  render(session);
+}
+
 // Panels are mutually exclusive: exactly one of #login / #dash is ever visible.
 // Being signed in is NOT proof of admin access — that's decided server-side — so
 // we keep the dashboard hidden until /api/admin/overview returns 200. A
@@ -261,6 +277,12 @@ function render(session) {
     // phone number, and this dashboard sits open on a desk.
     closeAmbModal();
     closeAmbQrModal();
+    // Both hold students' names and full email addresses (the student card
+    // gained a notification history in migration-062), and the Notifications
+    // tab polls the API on a timer that must not outlive the session.
+    closeNotifDetail();
+    closeStudentDetail();
+    stopNotifTimers();
     $('dash').hidden = true;
     $('login').hidden = false;
     return;
@@ -324,6 +346,10 @@ async function loadAll() {
       // the worker drains a queue, so a reload here keeps an operator who left
       // the tab open from reading a stale "0 of 312 sent".
       bcLoaded ? loadBroadcasts() : null,
+      // The Notifications tab, same bargain as the four above. Its dashboard
+      // tile is not lazy: it sits on the screen every sign-in lands on.
+      notifLoaded ? refreshNotifications() : null,
+      loadNotifSummary(),
       // Unauthenticated and tiny, but it belongs to a dialog only an admin can
       // open, so it rides along here rather than firing on the sign-in screen.
       loadCuisineVocab(),
@@ -346,6 +372,9 @@ function setView(view) {
     // button is the way out.
     $(`tab-${v}`)?.classList.toggle('is-active', v === target);
   });
+  // The Notifications tab's auto-refresh runs only while it is the view on
+  // screen, so every view change is a chance to start or stop it.
+  syncNotifTimers();
 }
 
 // "Errors · 24h" tile → the error log. The tile is the alert; this is the detail,
@@ -367,6 +396,10 @@ async function loadOverview() {
   if (res.status === 403) { await denyAccess(); return false; }
   if (!res.ok) return false;
   $('dash').hidden = false; // confirmed admin → reveal the dashboard
+  // render() hid the dashboard without leaving the Notifications view, so this
+  // is the moment its auto-refresh can run again (after a sign-in from another
+  // tab, render(null) had stopped it, and nothing else would restart it).
+  syncNotifTimers();
   renderOverview(await res.json());
   return true;
 }
@@ -4146,6 +4179,7 @@ function closeStudentDetail() {
 }
 
 async function openStudentDetail(s) {
+  cancelStudentNotifSection();
   $('student-detail-title').textContent = s.name || s.email || 'Student';
   $('student-detail-sub').textContent = s.email && s.name ? s.email : '';
   $('student-detail-error').hidden = true;
@@ -4158,6 +4192,10 @@ async function openStudentDetail(s) {
     if (res.status === 403) return denyAccess();
     if (!res.ok) throw new Error(`student ${res.status}`);
     renderStudentDetail(await res.json());
+    // Its own request, after the card has painted: the notification history is
+    // the slow, optional half, and a missing migration-062 must not cost the
+    // operator the rest of the card.
+    loadStudentNotifSection(s.id);
   } catch {
     $('student-detail-error').textContent = 'Couldn’t load this student. Check your connection and try again.';
     $('student-detail-error').hidden = false;
@@ -5957,6 +5995,1120 @@ async function downloadAmbQrPng(btn) {
 function openAmbassadors() {
   setView('ambassadors');
   loadAmbassadors();
+}
+
+/* ---------- notifications (migration-062) ----------
+
+   The operator's window onto everything the platform pushes or emails: a log of
+   what went out (or was tried, or was refused before it was tried) and a view of
+   what is still waiting. It exists because none of the senders say anything
+   when they fail quietly, and "are the notifications even populating?" had no
+   answer short of reading the database by hand.
+
+   Three rules shape everything below.
+
+     1. READ-ONLY. Nothing here sends, retries, cancels or reorders. The queue is
+        a picture of the workers' own state, and the reminder Preview runs the
+        composer without claiming anything (the server guarantees that; this
+        side only ever POSTs to the preview route).
+
+     2. EVERY PANEL DEGRADES ON ITS OWN. The log needs migration-062, the
+        broadcast queue 061, reminders 060, and prod routinely runs a few pastes
+        behind the code. The API answers 200 with `unavailable: 'migration-0NN'`
+        for a missing table instead of a 500, and each panel turns that into a
+        banner naming the migration, so one missing paste never blanks the tab.
+
+     3. UNTRUSTED TEXT EVERYWHERE. Push titles are written by vendors, names and
+        emails come from Google, a worker's lastError can carry anything. Rows are
+        built as HTML strings (one innerHTML per list, which is what keeps a
+        200-row redraw cheap and lets test/admin-notifications-client.test.js
+        render a row without a DOM), so every interpolated value goes through
+        escapeHtml, attributes included. Class names that come from data are
+        whitelisted first, never escaped-and-trusted.
+
+   Timers: there is no auto-refresh anywhere else in this dashboard, and the
+   bargain here is that it runs ONLY while this tab is the one on screen and the
+   page is visible. Leaving the tab, hiding the window and signing out all stop
+   it (syncNotifTimers / stopNotifTimers), so an admin PWA left open in a drawer
+   does not poll the API all night. */
+
+const NOTIF_PAGE = 50;
+const NOTIF_SEARCH_DEBOUNCE = 300;
+const NOTIF_FAST_MS = 15000;   // health strip, plus the queue while it is shown
+const NOTIF_POLL_MS = 30000;   // the log's "N new" count
+
+const NOTIF_KIND_LABEL = {
+  deal: 'Deal',
+  nearby: 'Nearby',
+  reminder: 'Reminder',
+  broadcast: 'Broadcast',
+  admin_alert: 'Admin alert',
+  admin_test: 'Test push',
+  vendor_reset: 'Reset code',
+  application_received: 'Application received',
+  application_accepted: 'Application accepted',
+  student_link_code: 'Link code',
+  other: 'Other',
+};
+const NOTIF_CHANNEL_LABEL = { push: 'Push', email: 'Email' };
+// 'allowed' is nearby only, and the wording is the point: the server said yes,
+// then the student's own phone decided whether to show it. Nothing on our side
+// ever learns whether it appeared, so it must never read as "delivered".
+const NOTIF_OUTCOME_LABEL = {
+  sent: 'Sent',
+  failed: 'Failed',
+  refused: 'Refused',
+  allowed: 'Allowed, shown by device',
+};
+const NOTIF_REASON_LABEL = {
+  push_disabled: 'Push not configured',
+  no_devices: 'No devices',
+  no_device_accepted: 'No device accepted it',
+  send_error: 'Send error',
+  content_empty: 'Nothing to say',
+  disabled: 'Email not configured',
+  invalid_to: 'Invalid address',
+  empty: 'Empty message',
+  suppressed: 'Address suppressed',
+  no_email_address: 'No email on file',
+  http: 'Email provider rejected it',
+  timeout: 'Email provider timed out',
+  network: 'Network error',
+};
+const NOTIF_BLOCKER_LABEL = {
+  quiet_hours: 'Quiet hours',
+  hold: 'Bundling window',
+  daily_cap: 'Daily cap reached',
+  weekly_cap: 'Weekly cap reached',
+  no_channel: 'No device or email',
+  no_device: 'No device',
+  push_opt_out: 'Alerts off',
+  reminder_opt_out: 'Reminders off',
+  expired: 'Expired, clears next tick',
+  cancelled: 'Cancelled',
+  sending: 'Sending now',
+  stuck: 'Stuck sending over 10 min',
+  app_open: 'App open now',
+  backoff: 'Backing off after a failed send',
+  expires_first: 'Expires before it can send',
+  same_spot_queued: 'Another deal from this spot goes first',
+};
+// cooldown, vendor_cooldown and interval are worded in notifBlockerText from
+// the `config` the queue and student routes send, so an operator who changed a
+// limit in the environment does not read the old figure. These are the
+// fallbacks for a reply without one.
+const NOTIF_CONFIG_DEFAULT = { cooldownMinutes: 240, vendorCooldownHours: 20, minIntervalHours: 72 };
+// Blockers time will not fix. Red, because somebody has to act (or accept it);
+// everything else is amber and clears by itself.
+const NOTIF_BLOCKER_HARD = new Set(['expired', 'cancelled', 'push_opt_out', 'reminder_opt_out', 'no_device', 'no_channel', 'stuck', 'expires_first']);
+const NOTIF_DELIVERY_LABEL = { delivered: 'Delivered', bounced: 'Bounced', complained: 'Marked as spam' };
+const NOTIF_SERVICE_LABEL = { apple: 'Apple', google: 'Google', mozilla: 'Mozilla', microsoft: 'Microsoft', other: 'Other' };
+const NOTIF_RECIPIENT_LABEL = { student: 'Student', vendor: 'Vendor', applicant: 'Applicant', admin: 'Admin', other: 'Other' };
+const NOTIF_QSTATUS_LABEL = { queued: 'Queued', sending: 'Sending', due: 'Due' };
+const NOTIF_WORKER_LABEL = { campaigns: 'Deals worker', reminders: 'Reminders worker', broadcasts: 'Broadcast worker' };
+const NOTIF_AUDIENCE_LABEL = { all: 'Everyone', spendable: 'Can redeem now', lapsed: 'Stopped coming', vendor: 'One spot' };
+const NOTIF_MIGRATIONS = ['047', '051', '060', '061', '062'];
+
+let notifLoaded = false;       // false until the tab is first opened; loadAll() refreshes it after
+let notifSub = 'log';          // which of Log / Queue / Student is showing
+let notifFilter = { channel: '', outcome: '', kind: '', range: '7d', q: '' };
+let notifRows = [];
+let notifTotal = 0;
+let notifLogLoaded = false;
+let notifLogUnavailable = null;
+// The instant the "N new" poll counts from: the newest row on screen, or the
+// moment of the load when the list came back empty. Moved only by a reload, so
+// the count keeps growing until the operator asks to see the rows.
+let notifLogSince = null;
+let notifLogSeq = 0;           // a reply that is not the newest request is dropped
+let notifSearchTimer = null;
+let notifFastTimer = null;
+let notifPollTimer = null;
+let notifFastBusy = false;
+let notifPollBusy = false;
+let notifQueueLoaded = false;
+let notifQueueSeq = 0;
+let notifQueueLast = null;     // the last queue payload, redrawn when a preview lands
+let notifQueueKey = '';        // skip the redraw when nothing changed (keeps focus and scroll)
+const notifPreviews = new Map();   // userId -> { state, title, body }; survives queue redraws
+let notifStudentPick = null;   // { id, name, email } chosen on the Student panel
+let notifStudentLast = null;   // the last /notifications/student/:id payload for the pick
+let notifStudentSeq = 0;
+let notifStudentHits = [];
+let notifSSearchTimer = null;
+let notifSSearchSeq = 0;
+let notifDetailSeq = 0;
+let notifSdSeq = 0;            // the Notifications section inside the student card
+const notifSeen = new Map();   // id -> summary, so the popup can paint before its fetch lands
+
+/* ----- copy: every code the API speaks, in words ----- */
+
+function notifKindText(kind) {
+  return NOTIF_KIND_LABEL[kind] || (kind ? String(kind) : 'Other');
+}
+
+function notifReasonText(reason) {
+  if (!reason) return '';
+  return NOTIF_REASON_LABEL[reason] || String(reason);
+}
+
+function notifOutcomeText(outcome, reason) {
+  const base = NOTIF_OUTCOME_LABEL[outcome] || (outcome ? String(outcome) : 'Unknown');
+  const why = notifReasonText(reason);
+  return why ? `${base}: ${why}` : base;
+}
+
+// A limit read off the server's config, or the default when it is missing or
+// not a usable number (a pre-config server, or a typo in the environment).
+function notifConfigNum(config, key) {
+  const v = Number(config?.[key]);
+  return Number.isFinite(v) && v > 0 ? v : NOTIF_CONFIG_DEFAULT[key];
+}
+
+/** 240 -> "4h", 90 -> "90 min". Only a whole hour is worth saying in hours. */
+function notifSpanText(minutes) {
+  const m = Math.round(minutes);
+  return m % 60 === 0 ? `${m / 60}h` : `${m} min`;
+}
+
+function notifBlockerText(code, config) {
+  if (code === 'cooldown') return `${notifSpanText(notifConfigNum(config, 'cooldownMinutes'))} cooldown`;
+  if (code === 'vendor_cooldown') return `Same spot in last ${notifSpanText(notifConfigNum(config, 'vendorCooldownHours') * 60)}`;
+  if (code === 'interval') return `Reminded in last ${notifSpanText(notifConfigNum(config, 'minIntervalHours') * 60)}`;
+  return NOTIF_BLOCKER_LABEL[code] || String(code);
+}
+
+/** 'migration-061' -> "Migration 061 not applied". Anything else is still a readable sentence. */
+function notifUnavailableText(code) {
+  const m = /^migration-(\d+)$/.exec(String(code || ''));
+  return m ? `Migration ${m[1]} not applied` : 'Not available on this database yet';
+}
+
+const notifOnOff = (v) => (v === true ? 'On' : v === false ? 'Off' : 'Unknown');
+
+/**
+ * "just now", "5m ago", "2h 15m ago", "3d ago", and the future forms "in 4h".
+ * `now` is a parameter so a test can pin the clock; '' for a missing or
+ * unparseable instant rather than "NaN ago".
+ */
+function notifRel(iso, now = Date.now()) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const diff = t - now;
+  const abs = Math.abs(diff);
+  if (abs < 45000) return diff > 0 ? 'in under a minute' : 'just now';
+  const mins = Math.round(abs / 60000);
+  let span;
+  if (mins < 60) span = `${mins}m`;
+  else if (mins < 24 * 60) {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    span = m ? `${h}h ${m}m` : `${h}h`;
+  } else span = `${Math.round(mins / 1440)}d`;
+  return diff > 0 ? `in ${span}` : `${span} ago`;
+}
+
+function notifWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '';
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * When a queued item can next go, in words. A null next_eligible_at means time
+ * alone will not release it (opted out, no device, already sending), which is a
+ * different answer from "now" and must not be printed as one.
+ */
+function notifNextText(row, now = Date.now()) {
+  const blockers = row?.blockers || [];
+  if (!row?.nextEligibleAt) {
+    if (blockers.includes('sending')) return 'Sending now';
+    if (blockers.includes('stuck')) return 'Stuck';
+    if (blockers.includes('expires_first')) return 'Never, expires first';
+    return blockers.length ? 'Not on its own' : 'Now';
+  }
+  const t = new Date(row.nextEligibleAt).getTime();
+  if (!Number.isFinite(t)) return '';
+  if (t <= now + 30000) return 'Now, next tick';
+  return notifRel(row.nextEligibleAt, now);
+}
+
+function notifTitleText(n) {
+  const channel = n?.channel === 'email' ? 'email' : n?.channel === 'push' ? 'push' : 'notification';
+  return `${notifKindText(n?.kind)} ${channel}`;
+}
+
+/** The log's query string. Pure, so the filter-to-URL mapping is testable. */
+function notifLogQuery({ offset = 0, limit = NOTIF_PAGE, after = null } = {}, f = notifFilter) {
+  const q = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (f.channel) q.set('channel', f.channel);
+  if (f.outcome) q.set('outcome', f.outcome);
+  if (f.kind) q.set('kind', f.kind);
+  if (f.range) q.set('range', f.range);
+  if (f.q) q.set('q', f.q);
+  if (after) q.set('after', after);
+  return q.toString();
+}
+
+// The budget comes straight off a SQL function's columns, so read either
+// spelling rather than bet on which one the route hands through.
+function notifBudgetVal(b, camel) {
+  if (!b) return undefined;
+  if (b[camel] !== undefined) return b[camel];
+  return b[camel.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)];
+}
+
+/* ----- HTML builders (every value escaped) ----- */
+
+const notifChip = (tone, text, title) => `<span class="notif-chip is-${tone}"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(text)}</span>`;
+
+const notifSdRow = (label, text, cls) => `<div class="sd-row${cls ? ` ${cls}` : ''}"><span class="sd-label">${escapeHtml(label)}</span><span class="sd-value">${escapeHtml(text ?? '')}</span></div>`;
+
+const notifSection = (title, inner) => `<div class="sd-section"><p class="sd-title">${escapeHtml(title)}</p>${inner}</div>`;
+
+const notifBanner = (text, tone = 'bad') => `<p class="notif-banner is-${tone === 'warn' ? 'warn' : 'bad'}">${escapeHtml(text)}</p>`;
+
+function notifBlockersHtml(blockers, config) {
+  if (!(blockers || []).length) return '<span class="muted notif-none">Nothing</span>';
+  return blockers.map((b) => {
+    const tone = NOTIF_BLOCKER_HARD.has(b) ? 'bad' : b === 'app_open' ? 'muted' : 'warn';
+    return notifChip(tone, notifBlockerText(b, config));
+  }).join(' ');
+}
+
+const notifOutcomeClass = (o) => (['sent', 'failed', 'refused', 'allowed'].includes(o) ? o : 'unknown');
+
+/** A student's name as a button into the existing student card. */
+function notifStudentLink(id, name, email) {
+  const label = name || email || 'Student';
+  if (!id) return escapeHtml(label);
+  return `<button type="button" class="notif-link" data-student="${escapeHtml(id)}" data-name="${escapeHtml(name || '')}" data-email="${escapeHtml(email || '')}">${escapeHtml(label)}</button>`;
+}
+
+/** One log row: a button, so the whole row opens the popup. */
+function notifRowHtml(n, now = Date.now()) {
+  const who = n.recipientName || n.recipientEmail || NOTIF_RECIPIENT_LABEL[n.recipientKind] || 'Unknown recipient';
+  const email = n.recipientName && n.recipientEmail ? n.recipientEmail : '';
+  const devices = n.channel === 'push' && Number(n.devicesTried) > 0
+    ? `${num(n.devicesAccepted)}/${num(n.devicesTried)} devices`
+    : '';
+  const delivery = n.deliveryStatus ? (NOTIF_DELIVERY_LABEL[n.deliveryStatus] || n.deliveryStatus) : '';
+  const meta = [NOTIF_CHANNEL_LABEL[n.channel] || n.channel, n.vendorName, devices, delivery].filter(Boolean);
+  return `<button type="button" class="notif-row" data-id="${escapeHtml(n.id)}">`
+    + `<span class="notif-when"><span>${escapeHtml(notifWhen(n.createdAt))}</span><span class="notif-rel">${escapeHtml(notifRel(n.createdAt, now))}</span></span>`
+    + '<span class="notif-main">'
+    + `<span class="notif-line1"><span class="notif-kind">${escapeHtml(notifKindText(n.kind))}</span> <span class="notif-title">${escapeHtml(n.title || '(no title)')}</span></span>`
+    + `<span class="notif-line2">${escapeHtml(who)}${email ? ` · ${escapeHtml(email)}` : ''}</span>`
+    + `<span class="notif-line3">${meta.map((m) => escapeHtml(m)).join(' · ')}${n.source === 'backfill' ? ' <span class="notif-imported">imported</span>' : ''}</span>`
+    + '</span>'
+    + `<span class="notif-outcome is-${notifOutcomeClass(n.outcome)}">${escapeHtml(notifOutcomeText(n.outcome, n.reason))}</span>`
+    + '</button>';
+}
+
+function notifHealthHtml(h, now = Date.now()) {
+  const chips = [];
+  chips.push(h.push?.configured ? notifChip('good', 'Push on') : notifChip('bad', 'Push not configured'));
+  chips.push(h.email?.configured ? notifChip('good', 'Email on') : notifChip('warn', 'Email not configured'));
+  chips.push(h.webhook?.configured
+    ? notifChip('good', 'Resend webhook on')
+    : notifChip('warn', 'Resend webhook not set', 'Without it, delivered, bounced and spam reports never reach the log'));
+  // `available` is "the table can be read"; `writing` is the server's own
+  // writer, which goes false when an insert hits a missing table or column.
+  // Readable but not writing is a real state (PostgREST's schema cache behind a
+  // fresh paste, or 062 pasted minutes ago while the writer is still cooling
+  // down), and it would otherwise read as a green "Log recording".
+  if (h.log?.available === true && h.log?.writing === false) {
+    chips.push(notifChip('bad', 'Log writes failing',
+      `${h.log.lastError || 'The server could not write to the log'}. It retries every 5 minutes.`));
+  } else if (h.log?.available === true) chips.push(notifChip('good', 'Log recording'));
+  else if (h.log?.available === false) chips.push(notifChip('bad', 'Log not recording', 'Migration 062 is not applied, so sends are not being written down'));
+  else chips.push(notifChip('warn', 'Log state unknown'));
+  Object.keys(NOTIF_WORKER_LABEL).forEach((key) => chips.push(notifWorkerChip(key, h.workers?.[key], now)));
+  NOTIF_MIGRATIONS.forEach((m) => {
+    if (h.migrations?.[m] === false) chips.push(notifChip('bad', `Migration ${m} not applied`));
+  });
+  if (Number.isFinite(Number(h.visibleStudents)) && h.visibleStudents != null) {
+    const v = Number(h.visibleStudents);
+    chips.push(notifChip('muted', `${num(v)} student${v === 1 ? '' : 's'} with the app open`,
+      'Pushes to these students wait until they close the app'));
+  }
+  // The error text itself, spelled out under the chips. A chip's title is a
+  // hover tooltip, and this dashboard is mostly read on a phone, where there
+  // is no hover: a red "Deals worker error 2m ago" with no way to read WHICH
+  // error is an alarm with the useful half missing.
+  const errs = Object.keys(NOTIF_WORKER_LABEL)
+    .map((key) => [key, h.workers?.[key]])
+    .filter(([, w]) => w?.configured && w.lastError && notifWorkerTone(w) === 'bad')
+    .map(([key, w]) => `<p class="notif-werr">${escapeHtml(NOTIF_WORKER_LABEL[key])}: ${escapeHtml(w.lastError)}</p>`);
+  return `<div class="notif-chips">${chips.join('')}</div>${errs.join('')}`;
+}
+
+function notifWorkerTone(w) {
+  if (!w) return 'warn';
+  if (!w.configured) return 'muted';
+  if (w.rpcMissing || !w.running) return 'bad';
+  const errAt = Date.parse(w.lastErrorAt || '');
+  const tickAt = Date.parse(w.lastTickAt || '');
+  if (Number.isFinite(errAt) && (!Number.isFinite(tickAt) || errAt > tickAt)) return 'bad';
+  return 'good';
+}
+
+function notifWorkerChip(key, w, now = Date.now()) {
+  const name = NOTIF_WORKER_LABEL[key] || key;
+  if (!w) return notifChip('warn', `${name}: unknown`);
+  if (!w.configured) return notifChip('muted', `${name} off`, 'Not configured on this server');
+  if (w.rpcMissing) return notifChip('bad', `${name}: database function missing`, w.lastError || '');
+  if (!w.running) return notifChip('bad', `${name} stopped`, w.lastError || '');
+  const errAt = Date.parse(w.lastErrorAt || '');
+  const tickAt = Date.parse(w.lastTickAt || '');
+  if (Number.isFinite(errAt) && (!Number.isFinite(tickAt) || errAt > tickAt)) {
+    return notifChip('bad', `${name} error ${notifRel(w.lastErrorAt, now)}`, w.lastError || '');
+  }
+  return notifChip('good', w.lastTickAt ? `${name}, ticked ${notifRel(w.lastTickAt, now)}` : `${name}, no tick yet`);
+}
+
+/**
+ * One queue table (Deals / Broadcasts / Reminders, and a student's own queued
+ * items). `sec` is the API's QueueSection; a missing or unavailable section is a
+ * banner, never an empty table that reads as "nothing waiting".
+ */
+function notifQueueSectionHtml(title, sec, now = Date.now(), { empty = 'Nothing waiting.', config = null } = {}) {
+  const total = Number(sec?.total) || 0;
+  const rows = sec?.rows || [];
+  let count = '';
+  if (sec && sec.available !== false && !sec.unavailable) {
+    count = rows.length < total ? `Showing ${num(rows.length)} of ${num(total)}` : `${num(total)} total`;
+  }
+  let inner;
+  if (!sec) inner = notifBanner('Could not load this part of the queue.');
+  else if (sec.available === false || sec.unavailable) inner = notifBanner(notifUnavailableText(sec.unavailable), 'warn');
+  else if (!rows.length) inner = `<p class="muted">${escapeHtml(empty)}</p>`;
+  else inner = notifQueueTableHtml(rows, now, config);
+  // Reminders only: students at the front of the claim's line whom time alone
+  // will never release (reminders off, no device). The route lists them after
+  // the ones that will go, so say why the order is not the line's order.
+  const forever = Number(sec?.blockedForever) || 0;
+  if (forever > 0 && rows.length) {
+    inner += `<p class="muted notif-note">${escapeHtml(num(forever))} of the students checked cannot be reminded on their own, so they are listed after the ones who can.</p>`;
+  }
+  return `<div class="notif-qhead"><h4>${escapeHtml(title)}</h4><span class="chart-max">${escapeHtml(count)}</span></div>${inner}`;
+}
+
+function notifQueueTableHtml(rows, now = Date.now(), config = null) {
+  const body = rows.map((r) => {
+    let item;
+    if (r.source === 'reminder') {
+      const p = notifPreviews.get(r.studentId);
+      let preview = '';
+      if (p?.state === 'loading') preview = '<p class="notif-preview muted">Composing…</p>';
+      else if (p?.state === 'done') {
+        preview = p.title || p.body
+          ? `<p class="notif-preview"><strong>${escapeHtml(p.title || '')}</strong><br>${escapeHtml(p.body || '')}</p>`
+          : '<p class="notif-preview muted">Nothing to remind them about right now, so nothing would be sent.</p>';
+      } else if (p?.state === 'error') preview = `<p class="notif-preview notif-bad">${escapeHtml(p.text)}</p>`;
+      item = `Reminder${r.position ? `, #${escapeHtml(num(r.position))} in line` : ''}`
+        + (r.studentId ? ` <button type="button" class="vr-save notif-preview-btn" data-user="${escapeHtml(r.studentId)}">Preview</button>` : '')
+        + preview;
+    } else {
+      item = `<span class="notif-qtitle">${escapeHtml(r.title || '(no title)')}</span>`
+        + (r.vendorName ? `<span class="notif-qsub">${escapeHtml(r.vendorName)}</span>` : '');
+    }
+    const who = notifStudentLink(r.studentId, r.studentName, r.studentEmail)
+      + (r.studentName && r.studentEmail ? `<span class="notif-qsub">${escapeHtml(r.studentEmail)}</span>` : '');
+    const queued = r.queuedAt ? ` title="Queued ${escapeHtml(notifWhen(r.queuedAt))}"` : '';
+    return `<tr><td>${who}</td><td>${item}</td>`
+      + `<td${queued}>${escapeHtml(NOTIF_QSTATUS_LABEL[r.status] || r.status || '')}</td>`
+      + `<td class="notif-blockers">${notifBlockersHtml(r.blockers, config)}</td>`
+      + `<td>${escapeHtml(notifNextText(r, now))}</td></tr>`;
+  }).join('');
+  return '<div class="notif-table-wrap"><table class="notif-table"><thead><tr>'
+    + '<th>Student</th><th>Item</th><th>Status</th><th>Waiting on</th><th>Next eligible</th>'
+    + `</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function notifDevicesTableHtml(devices) {
+  const body = devices.map((d) => {
+    let result;
+    if (d.ok) result = notifChip('good', 'Accepted');
+    else if (d.pruned) result = notifChip('warn', 'Expired, removed');
+    else result = notifChip('bad', 'Failed', d.error || '');
+    return `<tr><td>${escapeHtml(NOTIF_SERVICE_LABEL[d.service] || d.service || 'Other')}</td>`
+      + `<td>${escapeHtml(d.label || 'Unknown device')}</td>`
+      + `<td>${escapeHtml(d.status == null ? '' : String(d.status))}</td>`
+      + `<td>${result}${d.error && !d.ok ? `<span class="notif-qsub">${escapeHtml(d.error)}</span>` : ''}</td></tr>`;
+  }).join('');
+  return '<div class="notif-table-wrap"><table class="notif-table"><thead><tr>'
+    + '<th>Service</th><th>Device</th><th>Status</th><th>Result</th>'
+    + `</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+/** The popup body. Works on a bare NotifSummary (painted first) and on the full detail. */
+function notifDetailHtml(n, now = Date.now()) {
+  const out = [];
+  const ref = n.ref && typeof n.ref === 'object' ? n.ref : {};
+
+  // what was said
+  const msg = [];
+  if (n.channel === 'email') {
+    msg.push(notifSdRow('Subject', n.title || '(none)', 'sd-row-wrap'));
+    msg.push('<p class="muted notif-note">Only the subject is kept, with any code taken out. The email body is never stored.</p>');
+    if (n.template) msg.push(notifSdRow('Template', n.template));
+  } else {
+    msg.push(notifSdRow('Title', n.title || '(none)', 'sd-row-wrap'));
+    if (n.body) msg.push(notifSdRow('Body', n.body, 'sd-row-wrap'));
+    if (n.url) msg.push(notifSdRow('Opens', n.url, 'sd-row-wrap'));
+    if (n.template) msg.push(notifSdRow('Tag', n.template));
+  }
+  // The backfill had only the deal or broadcast to go on, not the words that
+  // were composed at send time (a bundle's push, an email's real subject), so
+  // these rows must not pass for a verbatim record of what the student saw.
+  if (n.source === 'backfill') {
+    msg.push('<p class="muted notif-note notif-backfill-note">Imported: this text was rebuilt from the original deal or broadcast and may differ from what was actually shown.</p>');
+  }
+  out.push(notifSection('Message', msg.join('')));
+
+  // who
+  const who = [];
+  const name = n.recipientName || '';
+  const recipient = n.studentId
+    ? notifStudentLink(n.studentId, name, n.recipientEmail)
+    : escapeHtml(name || n.recipientEmail || 'Unknown');
+  who.push(`<div class="sd-row"><span class="sd-label">${escapeHtml(NOTIF_RECIPIENT_LABEL[n.recipientKind] || 'Recipient')}</span><span class="sd-value">${recipient}</span></div>`);
+  if (n.recipientEmail && name) who.push(notifSdRow('Email', n.recipientEmail));
+  if (n.vendorName) who.push(notifSdRow('Spot', n.vendorName));
+  out.push(notifSection('Recipient', who.join('')));
+
+  // what happened
+  const res = [];
+  res.push(`<div class="sd-row"><span class="sd-label">Outcome</span><span class="sd-value"><span class="notif-outcome is-${notifOutcomeClass(n.outcome)}">${escapeHtml(notifOutcomeText(n.outcome, n.reason))}</span></span></div>`);
+  if (n.outcome === 'allowed') {
+    res.push('<p class="muted notif-note">The server allowed it and the student\'s phone shows it itself, so nobody here can see whether it appeared.</p>');
+  }
+  if (n.channel === 'push' && Number(n.devicesTried) > 0) {
+    res.push(notifSdRow('Devices', `Accepted by ${num(n.devicesAccepted)} of ${num(n.devicesTried)}`));
+  }
+  if (n.channel === 'email') {
+    if (n.deliveryStatus) {
+      const at = n.deliveryAt ? ` ${notifWhen(n.deliveryAt)}` : '';
+      res.push(notifSdRow('Delivery', `${NOTIF_DELIVERY_LABEL[n.deliveryStatus] || n.deliveryStatus}${at}`));
+    } else if (n.outcome === 'sent') {
+      res.push(notifSdRow('Delivery', 'No report from the email provider yet'));
+    }
+    if (n.providerId) res.push(notifSdRow('Provider id', n.providerId, 'sd-row-id'));
+  }
+  if (ref.fallback) res.push(notifSdRow('Fallback', 'Sent by email because no push could land'));
+  if (ref.refunded) res.push(notifSdRow('Allowance', 'Given back to the student, so it did not count against their limits'));
+  out.push(notifSection('Result', res.join('')));
+
+  if (Array.isArray(n.devices) && n.devices.length) {
+    out.push(notifSection('Per device', notifDevicesTableHtml(n.devices)));
+  }
+
+  // what it belonged to
+  const linked = [];
+  (n.linked?.campaigns || []).forEach((c) => {
+    linked.push(notifSdRow('Deal', [c.title || '(no title)', c.vendorName].filter(Boolean).join(' · '), 'sd-row-wrap'));
+  });
+  if (n.linked?.broadcast) {
+    const b = n.linked.broadcast;
+    linked.push(notifSdRow('Broadcast', b.title || '(no title)', 'sd-row-wrap'));
+    linked.push(notifSdRow('Audience', NOTIF_AUDIENCE_LABEL[b.audience] || b.audience || '', 'sd-row-sub'));
+    if (b.status) linked.push(notifSdRow('Status', b.status, 'sd-row-sub'));
+  }
+  if (linked.length) out.push(notifSection('Part of', linked.join('')));
+
+  // the extras the senders file in ref
+  const extra = [];
+  if (ref.tier) extra.push(notifSdRow('Reminder type', ref.tier));
+  if (ref.vendorName && !n.vendorName) extra.push(notifSdRow('Spot', ref.vendorName));
+  if (ref.rewardTitle) extra.push(notifSdRow('Reward', ref.rewardTitle));
+  if (ref.reach) extra.push(notifSdRow('Reach', String(ref.reach)));
+  if (Array.isArray(ref.campaignIds) && ref.campaignIds.length > 1) extra.push(notifSdRow('Deals bundled', num(ref.campaignIds.length)));
+  if (ref.issuedBy) extra.push(notifSdRow('Issued by', ref.issuedBy === 'admin' ? 'An admin' : 'The vendor, self-serve'));
+  if (ref.httpStatus) extra.push(notifSdRow('Provider status', String(ref.httpStatus)));
+  if (ref.shownBy === 'device') extra.push(notifSdRow('Shown by', 'The student\'s device'));
+  if (ref.imported || n.source === 'backfill') extra.push(notifSdRow('Source', 'Imported from older records when the log was switched on'));
+  if (extra.length) out.push(notifSection('Details', extra.join('')));
+
+  const rec = [notifSdRow('Id', n.id || '', 'sd-row-id')];
+  if (n.dedupeKey) rec.push(notifSdRow('Dedupe key', n.dedupeKey, 'sd-row-id'));
+  out.push(notifSection('Record', rec.join('')));
+  return out.join('');
+}
+
+/** The Student panel's card: budget, devices, queued, recent. */
+function notifStudentHtml(s, d, now = Date.now()) {
+  const out = [];
+  out.push(`<div class="notif-shead"><h4>${notifStudentLink(s.id, s.name, s.email)}</h4>${s.name && s.email ? `<span class="notif-qsub">${escapeHtml(s.email)}</span>` : ''}</div>`);
+
+  const b = d.budget;
+  if (d.budgetUnavailable) out.push(notifBanner(notifUnavailableText(d.budgetUnavailable), 'warn'));
+  if (b) {
+    const v = (k) => notifBudgetVal(b, k);
+    const rows = [];
+    if (v('hasState') === false) {
+      rows.push('<p class="muted notif-note">Nothing has been sent to this student yet, so the defaults apply: everything on, nothing used.</p>');
+    }
+    rows.push(notifSdRow('Deal alerts', notifOnOff(v('pushOptIn'))));
+    rows.push(notifSdRow('Emails', notifOnOff(v('emailOptIn'))));
+    rows.push(notifSdRow('Nearby alerts', notifOnOff(v('nearbyOptIn'))));
+    rows.push(notifSdRow('Reminders', notifOnOff(v('reminderOptIn'))));
+    rows.push(notifSdRow('Devices', num(v('devices'))));
+    const dayReset = v('dayResetsAt') ? `, resets ${notifRel(v('dayResetsAt'), now)}` : '';
+    const weekReset = v('weekResetsAt') ? `, resets ${notifRel(v('weekResetsAt'), now)}` : '';
+    rows.push(notifSdRow('Sent today', `${num(v('dayCount'))}${dayReset}`));
+    rows.push(notifSdRow('Sent this week', `${num(v('weekCount'))}${weekReset}`));
+    const cd = v('cooldownUntil');
+    rows.push(notifSdRow('Cooldown', cd && Date.parse(cd) > now ? `Until ${notifWhen(cd)} (${notifRel(cd, now)})` : 'None'));
+    rows.push(notifSdRow('Quiet hours', v('inQuietHours') ? `Now, ends ${notifRel(v('quietEndsAt'), now)}` : 'Not now'));
+    if (v('lastPushAt')) rows.push(notifSdRow('Last push', `${notifWhen(v('lastPushAt'))} (${notifRel(v('lastPushAt'), now)})`));
+    if (v('lastEmailAt')) rows.push(notifSdRow('Last email', `${notifWhen(v('lastEmailAt'))} (${notifRel(v('lastEmailAt'), now)})`));
+    if (v('lastReminderAt')) rows.push(notifSdRow('Last reminder', `${notifWhen(v('lastReminderAt'))} (${notifRel(v('lastReminderAt'), now)})`));
+    const blockers = v('blockers') || [];
+    rows.push(notifSdRow('Next eligible', notifNextText({ nextEligibleAt: v('nextEligibleAt'), blockers }, now)));
+    rows.push(`<div class="sd-row sd-row-wrap"><span class="sd-label">Waiting on</span><span class="sd-value notif-blockers">${notifBlockersHtml(blockers, d.config)}</span></div>`);
+    out.push(notifSection('Allowance', rows.join('')));
+  } else if (!d.budgetUnavailable) {
+    out.push(notifSection('Allowance', '<p class="muted">No allowance information.</p>'));
+  }
+
+  const devices = d.devices || [];
+  out.push(notifSection('Devices', devices.length
+    ? devices.map((x) => notifSdRow(
+      `${NOTIF_SERVICE_LABEL[x.service] || x.service || 'Other'} · ${x.label || 'Unknown device'}`,
+      x.createdAt ? `added ${notifWhen(x.createdAt)}` : '')).join('')
+    : '<p class="muted">No devices subscribed, so no push can reach them.</p>'));
+
+  out.push(`<div class="sd-section">${notifQueueSectionHtml('Queued for them', { available: true, total: (d.queued || []).length, rows: d.queued || [] }, now, { empty: 'Nothing queued for this student.', config: d.config })}</div>`);
+
+  let recent;
+  if (d.recentUnavailable) recent = notifBanner(notifUnavailableText(d.recentUnavailable), 'warn');
+  else if (!(d.recent || []).length) recent = '<p class="muted">Nothing sent in the last 30 days.</p>';
+  else recent = `<div class="notif-list">${d.recent.map((n) => notifRowHtml(n, now)).join('')}</div>`;
+  out.push(notifSection('Recent notifications', recent));
+  return out.join('');
+}
+
+/** The short version inside the existing student card. */
+function notifStudentCardHtml(d, now = Date.now()) {
+  const parts = [];
+  const b = d.budget;
+  if (b) {
+    const v = (k) => notifBudgetVal(b, k);
+    const line = [
+      `Alerts ${notifOnOff(v('pushOptIn')).toLowerCase()}`,
+      `${num(v('dayCount'))} sent today`,
+      `${num(v('devices'))} device${Number(v('devices')) === 1 ? '' : 's'}`,
+      `next eligible: ${notifNextText({ nextEligibleAt: v('nextEligibleAt'), blockers: v('blockers') || [] }, now).toLowerCase()}`,
+    ];
+    parts.push(`<p class="muted notif-note">${escapeHtml(line.join(' · '))}</p>`);
+  }
+  if (d.recentUnavailable) parts.push(`<p class="muted">${escapeHtml(notifUnavailableText(d.recentUnavailable))}, so there is no history to show.</p>`);
+  else if (!(d.recent || []).length) parts.push('<p class="muted">Nothing sent in the last 30 days.</p>');
+  else parts.push(`<div class="notif-list">${d.recent.slice(0, 10).map((n) => notifRowHtml(n, now)).join('')}</div>`);
+  return `<p class="sd-title">Notifications</p>${parts.join('')}`;
+}
+
+/* ----- fetching ----- */
+
+// One GET/POST for every panel. 403 is the gate and is handled here, once;
+// anything else non-2xx becomes an error each panel words for itself.
+async function notifApi(path, opts) {
+  const res = await authFetch(path, opts);
+  if (res.status === 403) {
+    await denyAccess();
+    const e = new Error('denied');
+    e.denied = true;
+    throw e;
+  }
+  if (!res.ok) {
+    const e = new Error(`${path} ${res.status}`);
+    e.status = res.status;
+    throw e;
+  }
+  return res.json();
+}
+
+function notifRemember(rows) {
+  (rows || []).forEach((r) => { if (r?.id) notifSeen.set(r.id, r); });
+}
+
+/* ----- the tab ----- */
+
+function openNotifications() {
+  setView('notifications');
+  const first = !notifLoaded;
+  notifLoaded = true;
+  loadNotifHealth();
+  showNotifSub(notifSub, { reopen: !first });
+  // setView() already ran syncNotifTimers, before notifLoaded was true; run it
+  // again so a first open with the page visible starts the clock.
+  syncNotifTimers();
+}
+
+/** The ↻ button (via loadAll) and nothing else: reloads whatever has been opened. */
+function refreshNotifications() {
+  return Promise.all([
+    loadNotifHealth(),
+    notifLogLoaded ? loadNotifLog({ reset: true }) : null,
+    notifQueueLoaded ? loadNotifQueue() : null,
+    notifStudentPick ? loadNotifStudent() : null,
+  ]);
+}
+
+function setNotifSub(sub) {
+  if (!['log', 'queue', 'student'].includes(sub)) return;
+  notifSub = sub;
+  showNotifSub(sub, { reopen: true });
+}
+
+function showNotifSub(sub, { reopen = false } = {}) {
+  [...$('notif-seg').querySelectorAll('[data-sub]')]
+    .forEach((b) => b.classList.toggle('is-active', b.dataset.sub === sub));
+  $('notif-log-panel').hidden = sub !== 'log';
+  $('notif-queue-panel').hidden = sub !== 'queue';
+  $('notif-student-panel').hidden = sub !== 'student';
+  if (sub === 'log') {
+    // Coming back to a log already on screen asks how many are new rather than
+    // reloading it: the operator may be halfway down a page of 150 rows.
+    if (!notifLogLoaded) loadNotifLog({ reset: true });
+    else if (reopen) pollNewNotifications();
+  } else if (sub === 'queue') {
+    loadNotifQueue();   // every time: it drains in the background
+  } else if (sub === 'student') {
+    if (notifStudentPick && reopen) loadNotifStudent();
+    $('notif-sq').focus();
+  }
+}
+
+async function loadNotifHealth() {
+  try {
+    const h = await notifApi('/api/admin/notifications/health');
+    $('notif-health').innerHTML = notifHealthHtml(h);
+    $('notif-health-error').hidden = true;
+    $('notif-updated').textContent = `Updated ${notifWhen(h.generatedAt || new Date().toISOString())}`;
+  } catch (e) {
+    if (e.denied) return;
+    $('notif-health-error').textContent = 'Could not check the notification system. Check your connection; it retries on its own.';
+    $('notif-health-error').hidden = false;
+  }
+}
+
+/* ----- log ----- */
+
+function setNotifFilter(key, value) {
+  if (notifFilter[key] === value) return;
+  notifFilter = { ...notifFilter, [key]: value };
+  const groups = { channel: 'notif-f-channel', outcome: 'notif-f-outcome', range: 'notif-f-range' };
+  if (groups[key]) {
+    [...$(groups[key]).querySelectorAll('[data-v]')]
+      .forEach((b) => b.classList.toggle('is-active', (b.dataset.v || '') === value));
+  }
+  loadNotifLog({ reset: true });   // a different filter is a different list: start from its top
+}
+
+function onNotifSearch() {
+  clearTimeout(notifSearchTimer);
+  notifSearchTimer = setTimeout(() => {
+    const next = $('notif-q').value.trim();
+    $('notif-q-clear').hidden = !next;
+    setNotifFilter('q', next);
+  }, NOTIF_SEARCH_DEBOUNCE);
+}
+
+function clearNotifSearch() {
+  clearTimeout(notifSearchTimer);
+  $('notif-q').value = '';
+  $('notif-q-clear').hidden = true;
+  setNotifFilter('q', '');
+  $('notif-q').focus();
+}
+
+async function loadNotifLog({ reset = false } = {}) {
+  const seq = ++notifLogSeq;
+  const offset = reset ? 0 : notifRows.length;
+  $('notif-log-error').hidden = true;
+  $('notif-log-more').disabled = true;
+  try {
+    const d = await notifApi(`/api/admin/notifications?${notifLogQuery({ offset })}`);
+    if (seq !== notifLogSeq) return;               // a newer filter or reload already won
+    notifLogLoaded = true;
+    notifLogUnavailable = d.unavailable || null;
+    const rows = d.rows || [];
+    notifRemember(rows);
+    notifRows = reset ? rows : appendPage(notifRows, rows);
+    notifTotal = Number(d.total) || notifRows.length;
+    if (reset) {
+      notifLogSince = notifRows[0]?.createdAt || new Date().toISOString();
+      $('notif-new').classList.remove('is-live');
+    }
+    renderNotifLog();
+  } catch (e) {
+    if (e.denied || seq !== notifLogSeq) return;
+    $('notif-log-error').textContent = 'Could not load the notification log. Check your connection and try again.';
+    $('notif-log-error').hidden = false;
+  } finally {
+    // A superseded request must not re-arm the button while the newer one is
+    // still loading: a tap then would page on from the old filter's rows.
+    if (seq === notifLogSeq) $('notif-log-more').disabled = false;
+  }
+}
+
+function renderNotifLog() {
+  const banner = $('notif-log-banner');
+  if (notifLogUnavailable) {
+    banner.textContent = `${notifUnavailableText(notifLogUnavailable)}. Nothing is being recorded until it is pasted into the Supabase SQL Editor, so this list stays empty.`;
+    banner.hidden = false;
+  } else banner.hidden = true;
+
+  const filtered = Boolean(notifFilter.channel || notifFilter.outcome || notifFilter.kind || notifFilter.q);
+  $('notif-log-count').textContent = notifLogUnavailable ? '' : `${num(notifTotal)} ${filtered ? 'matching' : 'total'}`;
+  const now = Date.now();
+  $('notif-log-list').innerHTML = notifRows.length
+    ? notifRows.map((n) => notifRowHtml(n, now)).join('')
+    : (notifLogUnavailable ? '' : `<p class="muted">${filtered ? 'Nothing matches these filters.' : 'Nothing sent in this period.'}</p>`);
+  const left = notifTotal - notifRows.length;
+  $('notif-log-more').hidden = left <= 0;
+  $('notif-log-more').textContent = `Show more (${num(left)} left)`;
+}
+
+/**
+ * The 30-second "N new" check: the same filters, only rows newer than the top
+ * of the list, one row asked for because only the total matters. It never
+ * touches the list itself.
+ */
+async function pollNewNotifications() {
+  if (!notifShouldPoll() || !notifLogLoaded || notifLogUnavailable || !notifLogSince || notifPollBusy) return;
+  notifPollBusy = true;
+  const seq = notifLogSeq;
+  try {
+    const d = await notifApi(`/api/admin/notifications?${notifLogQuery({ limit: 1, after: notifLogSince })}`);
+    if (seq !== notifLogSeq) return;               // the list was reloaded meanwhile
+    const n = Number(d.total) || 0;
+    const btn = $('notif-new');
+    btn.textContent = n === 1 ? '1 new, show' : `${num(n)} new, show`;
+    // A class, not [hidden]: the button keeps its slot in the card head while
+    // invisible, so its appearing never moves the list under the reader.
+    btn.classList.toggle('is-live', n > 0);
+  } catch { /* a missed poll is simply the next one's job */ } finally {
+    notifPollBusy = false;
+  }
+}
+
+/* ----- queue ----- */
+
+async function loadNotifQueue() {
+  const seq = ++notifQueueSeq;
+  notifQueueLoaded = true;
+  try {
+    const d = await notifApi('/api/admin/notifications/queue');
+    if (seq !== notifQueueSeq) return;
+    $('notif-queue-error').hidden = true;
+    notifQueueLast = d;
+    renderNotifQueue(d);
+  } catch (e) {
+    if (e.denied || seq !== notifQueueSeq) return;
+    $('notif-queue-error').textContent = 'Could not load the queue. Check your connection; it retries on its own.';
+    $('notif-queue-error').hidden = false;
+  }
+}
+
+function renderNotifQueue(d, now = Date.now()) {
+  $('notif-queue-updated').textContent = `Updated ${notifWhen(d.generatedAt || new Date(now).toISOString())}`;
+  // A redraw every 15 seconds would throw away the operator's focus and the
+  // tables' sideways scroll. Redraw only when the data moved, or when a minute
+  // has passed and the relative times need to tick over.
+  const { generatedAt, ...rest } = d;
+  const key = JSON.stringify(rest) + Math.floor(now / 60000) + notifPreviewKey();
+  if (key === notifQueueKey) return;
+  notifQueueKey = key;
+
+  const q = d.quietHours;
+  const quiet = $('notif-quiet');
+  if (q?.active) {
+    quiet.textContent = `Quiet hours until ${notifWhen(q.endsAt)} (${notifRel(q.endsAt, now)}). No deal, broadcast or reminder pushes go out before then.`;
+    quiet.hidden = false;
+  } else quiet.hidden = true;
+
+  $('notif-queue-deals').innerHTML = notifQueueSectionHtml('Deals', d.deals, now, { empty: 'No deal pushes waiting.', config: d.config });
+  $('notif-queue-broadcasts').innerHTML = notifQueueSectionHtml('Broadcasts', d.broadcasts, now, { empty: 'No broadcast pushes waiting.', config: d.config });
+  $('notif-queue-reminders').innerHTML = notifQueueSectionHtml('Reminders due next', d.reminders, now, { empty: 'No student is due a reminder.', config: d.config });
+}
+
+const notifPreviewKey = () => [...notifPreviews.entries()].map(([k, v]) => `${k}:${v.state}`).join(',');
+
+async function notifPreviewReminder(userId) {
+  notifPreviews.set(userId, { state: 'loading' });
+  notifRedraw();
+  try {
+    const d = await notifApi(`/api/admin/notifications/reminders/preview/${encodeURIComponent(userId)}`, { method: 'POST' });
+    if (d.unavailable) notifPreviews.set(userId, { state: 'error', text: notifUnavailableText(d.unavailable) });
+    else notifPreviews.set(userId, { state: 'done', title: d.composed?.title || '', body: d.composed?.body || '' });
+  } catch (e) {
+    if (e.denied) return;
+    notifPreviews.set(userId, { state: 'error', text: 'Could not build a preview. Try again.' });
+  }
+  notifRedraw();
+}
+
+// The preview lives inside the queue table, so it is drawn by the same renderer;
+// this just asks for a redraw from whatever the last load returned.
+function notifRedraw() {
+  if (notifQueueLast) renderNotifQueue(notifQueueLast);
+  if (notifStudentPick && notifStudentLast) renderNotifStudent();
+}
+
+/* ----- one student ----- */
+
+
+function onNotifStudentSearch() {
+  clearTimeout(notifSSearchTimer);
+  notifSSearchTimer = setTimeout(searchNotifStudents, NOTIF_SEARCH_DEBOUNCE);
+}
+
+async function searchNotifStudents() {
+  const term = $('notif-sq').value.trim();
+  const seq = ++notifSSearchSeq;
+  const wrap = $('notif-s-results');
+  $('notif-s-error').hidden = true;
+  if (!term) { notifStudentHits = []; wrap.innerHTML = ''; return; }
+  try {
+    // The same roster route the Students drill-in searches, so "no match"
+    // means the same thing on both screens.
+    const d = await notifApi(`/api/admin/students?limit=10&offset=0&q=${encodeURIComponent(term)}`);
+    if (seq !== notifSSearchSeq) return;
+    notifStudentHits = d.students || [];
+    wrap.innerHTML = notifStudentHits.length
+      ? notifStudentHits.map((s) => `<button type="button" class="student-row" data-pick="${escapeHtml(s.id)}">`
+        + `<span class="student-info"><span class="student-name">${escapeHtml(s.name || s.email || 'Unnamed student')}</span>`
+        + `<span class="student-meta">${escapeHtml(s.email || 'No email on file')}</span></span></button>`).join('')
+      : '<p class="muted">No student matches that search.</p>';
+  } catch (e) {
+    if (e.denied || seq !== notifSSearchSeq) return;
+    $('notif-s-error').textContent = 'Could not search students. Check your connection and try again.';
+    $('notif-s-error').hidden = false;
+  }
+}
+
+async function loadNotifStudent() {
+  const s = notifStudentPick;
+  if (!s) return;
+  const seq = ++notifStudentSeq;
+  $('notif-s-error').hidden = true;
+  try {
+    const d = await notifApi(`/api/admin/notifications/student/${encodeURIComponent(s.id)}`);
+    if (seq !== notifStudentSeq) return;
+    notifRemember(d.recent);
+    notifStudentLast = d;
+    renderNotifStudent();
+  } catch (e) {
+    if (e.denied || seq !== notifStudentSeq) return;
+    $('notif-s-error').textContent = e.status === 404
+      ? 'That student no longer exists.'
+      : 'Could not load this student\'s notifications. Check your connection and try again.';
+    $('notif-s-error').hidden = false;
+  }
+}
+
+function renderNotifStudent() {
+  if (!notifStudentPick || !notifStudentLast) return;
+  $('notif-s-detail').innerHTML = notifStudentHtml(notifStudentPick, notifStudentLast);
+}
+
+/* ----- the section inside the existing student card ----- */
+
+// openStudentDetail calls this first, so a slow answer for the student the
+// operator just closed cannot land inside the card of the one they opened next.
+function cancelStudentNotifSection() {
+  notifSdSeq += 1;
+}
+
+async function loadStudentNotifSection(studentId) {
+  const seq = ++notifSdSeq;
+  let html;
+  try {
+    const d = await notifApi(`/api/admin/notifications/student/${encodeURIComponent(studentId)}`);
+    if (seq !== notifSdSeq || $('student-modal').hidden) return;
+    notifRemember(d.recent);
+    html = notifStudentCardHtml(d);
+  } catch (e) {
+    if (e.denied || seq !== notifSdSeq || $('student-modal').hidden) return;
+    html = '<p class="sd-title">Notifications</p><p class="muted">Could not load notification history.</p>';
+  }
+  const box = document.createElement('div');
+  box.className = 'sd-section notif-sd';
+  box.innerHTML = html;
+  $('student-detail-body').appendChild(box);
+}
+
+/* ----- the popup ----- */
+
+function closeNotifDetail() {
+  notifDetailSeq += 1;   // an answer still in flight must not repaint a closed dialog
+  $('notif-modal').hidden = true;
+}
+
+async function openNotifDetail(id) {
+  if (!id) return;
+  const seq = ++notifDetailSeq;
+  const summary = notifSeen.get(id);
+  $('notif-detail-title').textContent = summary ? notifTitleText(summary) : 'Notification';
+  $('notif-detail-sub').textContent = summary
+    ? `${notifWhen(summary.createdAt)} (${notifRel(summary.createdAt)})`
+    : '';
+  $('notif-detail-error').hidden = true;
+  $('notif-detail-body').innerHTML = summary ? notifDetailHtml(summary) : '<p class="muted">Loading…</p>';
+  $('notif-modal').hidden = false;
+  $('notif-detail-close').focus();
+  try {
+    const d = await notifApi(`/api/admin/notifications/${encodeURIComponent(id)}`);
+    if (seq !== notifDetailSeq) return;
+    const n = d.notification || {};
+    $('notif-detail-title').textContent = notifTitleText(n);
+    $('notif-detail-sub').textContent = `${notifWhen(n.createdAt)} (${notifRel(n.createdAt)})`;
+    $('notif-detail-body').innerHTML = notifDetailHtml(n);
+  } catch (e) {
+    if (e.denied || seq !== notifDetailSeq) return;
+    $('notif-detail-error').textContent = e.status === 404
+      ? 'This record is gone. Notifications are kept for 30 days, and a student\'s are deleted with their account.'
+      : 'Could not load the full record. Check your connection and try again.';
+    $('notif-detail-error').hidden = false;
+  }
+}
+
+/* ----- taps: one delegated handler for every list this block draws ----- */
+
+function onNotifTap(e) {
+  const link = e.target.closest('.notif-link');
+  if (link) {
+    // The student card and this popup are both overlays; open one at a time
+    // so Escape and the backdrop always mean the dialog on top.
+    if (!$('notif-modal').hidden) closeNotifDetail();
+    openStudentDetail({ id: link.dataset.student, name: link.dataset.name, email: link.dataset.email });
+    return;
+  }
+  const pv = e.target.closest('.notif-preview-btn');
+  if (pv) { notifPreviewReminder(pv.dataset.user); return; }
+  const row = e.target.closest('.notif-row');
+  if (row) openNotifDetail(row.dataset.id);
+}
+
+function onNotifStudentPick(e) {
+  const btn = e.target.closest('[data-pick]');
+  if (!btn) return;
+  const s = notifStudentHits.find((x) => x.id === btn.dataset.pick);
+  if (!s) return;
+  notifStudentPick = { id: s.id, name: s.name || '', email: s.email || '' };
+  notifStudentLast = null;
+  $('notif-s-results').innerHTML = '';
+  $('notif-s-detail').innerHTML = '<p class="muted">Loading…</p>';
+  loadNotifStudent();
+}
+
+/* ----- auto-refresh ----- */
+
+function notifShouldPoll() {
+  return !$('dash').hidden
+    && !$('view-notifications').hidden
+    && document.visibilityState === 'visible';
+}
+
+/**
+ * Start or stop both timers to match what is on screen. Called by setView()
+ * on every view change, by visibilitychange, by openNotifications(), and by
+ * loadOverview() each time the dashboard is shown again.
+ * `catchUp` is the return from a hidden window: an hour-old picture should not
+ * sit there for another 15 seconds, so the first refresh happens at once.
+ */
+function syncNotifTimers({ catchUp = false } = {}) {
+  if (!notifShouldPoll()) { stopNotifTimers(); return; }
+  const fresh = !notifFastTimer && !notifPollTimer;
+  if (!notifFastTimer) notifFastTimer = setInterval(notifFastTick, NOTIF_FAST_MS);
+  if (!notifPollTimer) notifPollTimer = setInterval(pollNewNotifications, NOTIF_POLL_MS);
+  if (fresh && catchUp && notifLoaded) {
+    notifFastTick();
+    pollNewNotifications();
+  }
+}
+
+function stopNotifTimers() {
+  if (notifFastTimer) clearInterval(notifFastTimer);
+  if (notifPollTimer) clearInterval(notifPollTimer);
+  notifFastTimer = null;
+  notifPollTimer = null;
+}
+
+async function notifFastTick() {
+  // render(session) hides the dashboard for the length of one access check and
+  // then shows it again without a view change. A tick in that window skips
+  // rather than stopping the timers, or the tab would sit stale after it. A
+  // real sign-out stops them in render(null), so nothing polls a login screen.
+  if ($('dash').hidden) return;
+  // Belt and braces: a tick that fires in the gap before a stop lands does
+  // nothing and puts the timers away itself.
+  if (!notifShouldPoll()) { stopNotifTimers(); return; }
+  if (notifFastBusy || !notifLoaded) return;
+  notifFastBusy = true;
+  try {
+    await Promise.all([loadNotifHealth(), notifSub === 'queue' ? loadNotifQueue() : null]);
+  } finally {
+    notifFastBusy = false;
+  }
+}
+
+/* ----- dashboard tile ----- */
+
+async function loadNotifSummary() {
+  const tile = $('notif-tile');
+  try {
+    const d = await notifApi('/api/admin/notifications/summary');
+    const t = d.today || {};
+    const q = d.queued || {};
+    const queued = (Number(q.deals) || 0) + (Number(q.broadcasts) || 0);
+    $('notif-tile-text').textContent = `${num(t.sent)} sent, ${num(t.failed)} failed, ${num(queued)} queued`;
+    const alert = Boolean(d.workerDown) || d.logAvailable === false;
+    $('notif-tile-dot').hidden = !alert;
+    tile.classList.toggle('is-alert', alert);
+    $('notif-tile-sub').textContent = d.logAvailable === false
+      ? 'Not recording: migration 062 not applied'
+      : d.workerDown ? 'A send worker needs attention' : 'Tap for the log and the queue';
+    tile.hidden = false;
+  } catch {
+    tile.hidden = true;   // see the markup: no tile beats a wrong one
+  }
+}
+
+/* ----- wiring (called once from boot) ----- */
+
+function wireNotifications() {
+  $('tab-notifications').addEventListener('click', openNotifications);
+  $('notif-tile').addEventListener('click', openNotifications);
+  $('notif-seg').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sub]');
+    if (b) setNotifSub(b.dataset.sub);
+  });
+  [['notif-f-channel', 'channel'], ['notif-f-outcome', 'outcome'], ['notif-f-range', 'range']].forEach(([id, key]) => {
+    $(id).addEventListener('click', (e) => {
+      const b = e.target.closest('[data-v]');
+      if (b) setNotifFilter(key, b.dataset.v || '');
+    });
+  });
+  $('notif-f-kind').addEventListener('change', (e) => setNotifFilter('kind', e.target.value));
+  $('notif-q').addEventListener('input', onNotifSearch);
+  $('notif-q-clear').addEventListener('click', clearNotifSearch);
+  $('notif-new').addEventListener('click', () => loadNotifLog({ reset: true }));
+  $('notif-log-more').addEventListener('click', () => loadNotifLog());
+  $('notif-sq').addEventListener('input', onNotifStudentSearch);
+  $('notif-s-results').addEventListener('click', onNotifStudentPick);
+  ['notif-log-list', 'notif-queue-panel', 'notif-s-detail', 'notif-detail-body', 'student-detail-body']
+    .forEach((id) => $(id).addEventListener('click', onNotifTap));
+  $('notif-detail-close').addEventListener('click', closeNotifDetail);
+  $('notif-modal').addEventListener('click', (e) => {
+    if (e.target === $('notif-modal')) closeNotifDetail();   // backdrop only, not the card
+  });
+  document.addEventListener('visibilitychange', () => syncNotifTimers({ catchUp: true }));
 }
 
 /* ---------- broadcast: one operator message to students (migration-061) ----------

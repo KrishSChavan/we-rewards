@@ -36,6 +36,9 @@ import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js'
 import { startReferralWorker, stopReferralWorker } from './src/lib/referrals.js';
 import { startReminderWorker, stopReminderWorker } from './src/lib/reminders.js';
 import { startBroadcastWorker, stopBroadcastWorker } from './src/lib/broadcasts.js';
+import {
+  flushNotificationLog, startNotificationLogPruner, stopNotificationLogPruner,
+} from './src/lib/notification-log.js';
 import { publicSignupBonus } from './src/lib/signup-bonus.js';
 import { requireJson } from './src/middleware/require-json.js';
 import { warmOcr } from './src/lib/ocr.js';
@@ -1706,6 +1709,12 @@ if (isMain) {
   // 30s and 300s intervals decide, and either way the student's cap is the cap.
   startBroadcastWorker();
 
+  // Notification-log retention (migration-062). pg_cron is meant to prune it
+  // daily, but a project without pg_cron only got a NOTICE at paste time and
+  // would keep every row forever; this is the fallback. Same posture as the
+  // workers: only when run directly, and quiet until 062 is applied.
+  startNotificationLogPruner();
+
   // Graceful shutdown. Heroku sends SIGTERM on every deploy and cycles dynos
   // ~daily, then SIGKILLs after ~30s. Draining first lets in-flight awards /
   // redeems finish instead of being cut mid-request. io.close() disconnects the
@@ -1713,14 +1722,18 @@ if (isMain) {
   // once existing connections drain; the unref'd timer is a hard backstop if a
   // keep-alive connection never idles out before Heroku's grace period ends.
   let shuttingDown = false;
+  const SHUTDOWN_GRACE_MS = 10_000;
+  const FLUSH_EXIT_MARGIN_MS = 1_000;
   const shutdown = (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    const signalAt = Date.now();
     console.log(`${signal} received — draining connections and shutting down`);
     stopCampaignWorker();   // don't claim a batch we won't live to deliver
     stopReferralWorker();   // the sweep is idempotent; the next boot picks it up
     stopReminderWorker();   // same: an unclaimed student is simply due again next boot
     stopBroadcastWorker();  // a queued recipient is still queued next boot; nothing is lost
+    stopNotificationLogPruner();
     io.close(async () => {
       // Last call for queued analytics. capture() batches in memory to keep a
       // third-party hop off the request path, which means SIGTERM — the one
@@ -1729,17 +1742,37 @@ if (isMain) {
       // drain callback so it runs after connections are done but before exit,
       // and it can neither throw nor hang past its own 5s fetch timeout. The
       // 10s backstop below still wins if anything here misbehaves.
-      if (posthogEnabled) {
-        const flushed = await flushPostHog();
-        if (flushed.sent) console.log('flushed ' + flushed.sent + ' analytics event(s) to PostHog');
-      }
+      //
+      // Notification-log writes are unawaited on their send paths for the same
+      // reason, so a push that went out in the last tick before SIGTERM would
+      // otherwise be missing from /admin's log. Run alongside the PostHog flush,
+      // not after it: each log write carries its own 8s abort, and in series the
+      // two could overrun the backstop. flushNotificationLog never rejects.
+      //
+      // Bounded by what is left of the backstop, less a margin to exit in: the
+      // backstop's clock started at the signal, this one only once io.close has
+      // drained, and a hung database would otherwise turn a clean exit into a
+      // forced one with exit code 1. The writes it gives up on are lost either
+      // way; only writes already on the wire are waited for, not ones a still-
+      // running worker tick keeps adding.
+      await Promise.all([
+        posthogEnabled
+          ? flushPostHog().then((flushed) => {
+            if (flushed.sent) console.log('flushed ' + flushed.sent + ' analytics event(s) to PostHog');
+          })
+          : null,
+        flushNotificationLog({ timeoutMs: SHUTDOWN_GRACE_MS - FLUSH_EXIT_MARGIN_MS - (Date.now() - signalAt) })
+          .then((drained) => {
+            if (!drained) console.warn('[notification-log] gave up waiting on log writes at shutdown');
+          }),
+      ]);
       console.log('server closed cleanly');
       process.exit(0);
     });
     setTimeout(() => {
       console.error('forced shutdown after grace period');
       process.exit(1);
-    }, 10_000).unref();
+    }, SHUTDOWN_GRACE_MS).unref();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

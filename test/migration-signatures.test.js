@@ -33,8 +33,13 @@ import { readFileSync, readdirSync } from 'node:fs';
 
 const DIR = new URL('../supabase/migrations/', import.meta.url);
 
-/** Drop `--` line comments; parameter lists in this repo are heavily commented. */
-const stripComments = (sql) => sql.split('\n').map((l) => l.replace(/--.*$/, '')).join('\n');
+/**
+ * Drop `--` line comments; parameter lists in this repo are heavily commented.
+ * Split on \r?\n, not \n: a Windows checkout (core.autocrlf=true) has CRLF
+ * migrations, `.` does not match \r, so `--.*$` could never reach the end of a
+ * CRLF line and every commented parameter list was parsed as types.
+ */
+const stripComments = (sql) => sql.split(/\r?\n/).map((l) => l.replace(/--.*$/, '')).join('\n');
 
 /** Split on top-level commas, ignoring those inside nested parens. */
 function topLevelSplit(s) {

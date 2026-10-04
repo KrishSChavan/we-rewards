@@ -114,6 +114,49 @@ const SELF_TTL_MINUTES = 30;
 const SELF_COOLDOWN_SECONDS = 120;
 
 /**
+ * Mail a freshly minted self-serve code. Resolves to sendEmail()'s result.
+ *
+ * `row` is vendor_reset_request's row. The code rides in the subject and body,
+ * so the notification log gets a fixed subject and the code as a secret to
+ * scrub from everything else (contract: no reset code ever reaches
+ * notification_log). No vendorId: vendor_reset_request does not return one, and
+ * a second read on this public endpoint only to label a log row is not worth
+ * it; recipientLabel carries the business name.
+ */
+export async function mailSelfServeResetCode({ row, code, terminalUrl }) {
+  const mail = vendorResetCode({
+    businessName: row.reset_vendor_name,
+    code,
+    ttlMinutes: SELF_TTL_MINUTES,
+    terminalUrl,
+    // Changes the copy to name the request and add the "wasn't you?" line —
+    // the operator-minted version is answering a phone call the vendor made,
+    // this one may be arriving unasked.
+    selfServe: true,
+  });
+  return sendEmail({
+    to: row.reset_email,
+    subject: mail.subject,
+    html: mail.html,
+    text: mail.text,
+    category: 'transactional',
+    // Per RESET ROW, not per address: every request that gets this far minted
+    // a NEW code, and de-duplicating two of them would mail the first code in
+    // answer to the second request.
+    idempotencyKey: `reset:${row.reset_id}`,
+    tags: ['vendor-reset'],
+    log: {
+      kind: 'vendor_reset',
+      recipientKind: 'vendor',
+      recipientLabel: row.reset_vendor_name ?? null,
+      ref: { resetId: row.reset_id, issuedBy: 'self-serve' },
+      secrets: [code],
+      logSubject: 'Your WeRewards reset code (code hidden)',
+    },
+  });
+}
+
+/**
  * POST /api/vendor/recover/request  { email }
  *
  * Self-serve half of recovery (migration-047): mint a code and mail it, with no
@@ -168,28 +211,7 @@ router.post('/request', async (req, res, next) => {
       return res.json(ACCEPTED);
     }
 
-    const mail = vendorResetCode({
-      businessName: row.reset_vendor_name,
-      code,
-      ttlMinutes: SELF_TTL_MINUTES,
-      terminalUrl: emailUrl('/terminal/', req),
-      // Changes the copy to name the request and add the "wasn't you?" line —
-      // the operator-minted version is answering a phone call the vendor made,
-      // this one may be arriving unasked.
-      selfServe: true,
-    });
-    const sent = await sendEmail({
-      to: row.reset_email,
-      subject: mail.subject,
-      html: mail.html,
-      text: mail.text,
-      category: 'transactional',
-      // Per RESET ROW, not per address: every request that gets this far minted
-      // a NEW code, and de-duplicating two of them would mail the first code in
-      // answer to the second request.
-      idempotencyKey: `reset:${row.reset_id}`,
-      tags: ['vendor-reset'],
-    });
+    const sent = await mailSelfServeResetCode({ row, code, terminalUrl: emailUrl('/terminal/', req) });
     if (!sent.ok) {
       // The code is live and the caller has been told it is coming. Nothing can
       // be done for them in this response without leaking whether they exist, so

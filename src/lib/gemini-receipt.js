@@ -304,8 +304,9 @@ function recordReaderOutcome(unreadable) {
   // waiting on this response, and pulling push.js -> supabase.js into this
   // module's import graph would make every importer of the receipt reader
   // (scripts/check-gemini.js) need SUPABASE_* in its env. notifyAdmins never
-  // throws and is a silent no-op with no VAPID keys configured, so the
-  // console.error above is the alert that always survives.
+  // throws; with no VAPID keys configured it sends nothing and only writes a
+  // "refused, push not configured" notification_log row, so the console.error
+  // above is the alert that always survives.
   import('./push.js')
     .then(({ notifyAdmins }) => notifyAdmins({
       title: 'Receipt AI: no verdicts',

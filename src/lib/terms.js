@@ -180,7 +180,35 @@
 // migration-061), so "two per day… whatever the reason" stays true with our own
 // reasons included. An exempt broadcast would have been the easy build and
 // would have made that sentence false.
-export const TERMS_VERSION = '2026-10-02';
+// 2026-10-03: the notification log (Policy §2.6, §3, §5, §7.1; migration-062).
+// No new kind of message, and the frequency promise is untouched, so this is
+// NOT the "one more kind of notification" bump the 2026-10-02 entry hoped to be
+// the last of. It is material for a different reason: what we KEEP about the
+// messages changed, and the prior §2.6 described the old records narrowly
+// enough that the new ones contradict it. It said the per-account counters were
+// kept "purely" to enforce the frequency limits — they are now also shown to
+// the operator to explain why a message is waiting — and it named deal and
+// announcement records only. It said nothing of a reminder history, of failure
+// and refusal reasons, of account emails (a reset or link-code email now leaves
+// a row, subject line only), of the device type and push-service answer per
+// alert, or of the operator reading all of it on an admin screen next to the
+// student's name. Each of those is a disclosure about stored personal data, and
+// §2.6 is the section a student would read to find out.
+//
+// The wording is deliberately narrow about what is NOT kept: the subject only,
+// never the body or a code (code-bearing emails log a fixed logSubject, and
+// redactSecrets in src/lib/notification-log.js scrubs the code as a backstop
+// should a subject ever carry one), and the device TYPE
+// only, never the push endpoint. If either of those ever changes, the Policy
+// is wrong again and this needs another bump, not a quiet code change.
+//
+// ⚠ LIKE 2026-10-01, THIS CAN REACH STUDENTS BEFORE THE FEATURE DOES. Nothing
+// is recorded until migration-062 is applied by hand (the log degrades to a
+// no-op without its table), so for a while the Policy discloses records that
+// do not exist yet. Same reasoning as that entry: early costs one prompt, late
+// means having kept something §2.6 did not cover. Revert this line and the
+// Policy's "Last Updated" date together, never one without the other.
+export const TERMS_VERSION = '2026-10-03';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

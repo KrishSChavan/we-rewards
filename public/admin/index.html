@@ -93,6 +93,7 @@
       <button id="tab-pools" class="tab" type="button">Pools</button>
       <button id="tab-ambassadors" class="tab" type="button">Ambassadors</button>
       <button id="tab-broadcast" class="tab" type="button">Broadcast</button>
+      <button id="tab-notifications" class="tab" type="button">Notifications</button>
     </nav>
 
     <main>
@@ -107,6 +108,17 @@
              has to be the way to what broke: it jumps to the error log below. -->
         <button id="tot-errors-card" class="tile tile-btn" type="button" title="Go to the error log"><span id="tot-errors" class="tile-num">0</span><span class="tile-label">Errors · 24h</span><span id="tot-errors-sub" class="tile-sub"></span></button>
       </div>
+
+      <!-- Notifications at a glance (migration-062). Its own full-width row
+           rather than a fifth tile in the grid above, which would strand it
+           alone on a row of four. Ships hidden and stays hidden if the summary
+           cannot be read: a tile reading "0 sent" because the request failed
+           would be a lie about the one thing it exists to show. -->
+      <button id="notif-tile" class="tile tile-btn notif-tile" type="button" title="Open the notification log" hidden>
+        <span class="tile-label">Notifications today <span id="notif-tile-dot" class="notif-dot" aria-hidden="true" hidden></span></span>
+        <span id="notif-tile-text" class="notif-tile-text"></span>
+        <span id="notif-tile-sub" class="tile-sub"></span>
+      </button>
 
       <!-- errors -->
       <!-- First card on the dashboard, directly under the tile that announces it.
@@ -690,6 +702,113 @@
       </div>
     </div>
 
+    <!-- ===== NOTIFICATIONS (migration-062) =====
+         Read-only. Three questions an operator brings here: did it go out
+         (Log), what is still waiting and why (Queue), and what happened to one
+         person (Student). Nothing on this screen sends, cancels or retries
+         anything; the Broadcast tab is the only place that writes to students.
+         Every panel has to survive its migration being missing on prod, so each
+         one carries its own banner slot instead of failing the whole view. -->
+    <div id="view-notifications" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>Notifications</h3>
+          <span id="notif-updated" class="chart-max"></span>
+        </div>
+        <p class="muted">Every push and email the platform sent or tried to send in the last 30 days, and everything still waiting to go out. Tap a row for the details. Refreshes on its own while this tab is open.</p>
+        <p id="notif-health-error" class="field-error" role="alert" hidden></p>
+        <div id="notif-health" class="notif-health" aria-live="polite"></div>
+        <div id="notif-seg" class="bc-chips notif-seg" role="group" aria-label="Notification views">
+          <button class="bc-chip is-active" type="button" data-sub="log">Log</button>
+          <button class="bc-chip" type="button" data-sub="queue">Queue</button>
+          <button class="bc-chip" type="button" data-sub="student">Student</button>
+        </div>
+      </div>
+
+      <!-- Log -->
+      <div id="notif-log-panel" class="card">
+        <div class="card-head">
+          <h3>Log</h3>
+          <!-- "N new, show" lives up here, not above the list, and is always laid
+               out (invisible until admin.js adds .is-live): the list must never
+               move under somebody who is about to tap a row. -->
+          <div class="card-head-actions">
+            <button id="notif-new" class="btn-ghost btn-compact notif-new" type="button">0 new, show</button>
+            <span id="notif-log-count" class="chart-max"></span>
+          </div>
+        </div>
+        <p id="notif-log-banner" class="notif-banner" role="status" hidden></p>
+        <div class="notif-filters">
+          <div id="notif-f-channel" class="notif-fgroup" role="group" aria-label="Channel">
+            <button class="notif-filter is-active" type="button" data-v="">All</button>
+            <button class="notif-filter" type="button" data-v="push">Push</button>
+            <button class="notif-filter" type="button" data-v="email">Email</button>
+          </div>
+          <div id="notif-f-outcome" class="notif-fgroup" role="group" aria-label="Outcome">
+            <button class="notif-filter is-active" type="button" data-v="">All</button>
+            <button class="notif-filter" type="button" data-v="sent">Sent</button>
+            <button class="notif-filter" type="button" data-v="failed">Failed</button>
+            <button class="notif-filter" type="button" data-v="refused">Refused</button>
+            <button class="notif-filter" type="button" data-v="allowed">Allowed</button>
+          </div>
+          <div id="notif-f-range" class="notif-fgroup" role="group" aria-label="Time range">
+            <button class="notif-filter" type="button" data-v="today">Today</button>
+            <button class="notif-filter is-active" type="button" data-v="7d">7 days</button>
+            <button class="notif-filter" type="button" data-v="30d">30 days</button>
+          </div>
+          <select id="notif-f-kind" class="nv-input notif-kind-select" aria-label="Kind">
+            <option value="">All kinds</option>
+            <option value="deal">Deal</option>
+            <option value="nearby">Nearby</option>
+            <option value="reminder">Reminder</option>
+            <option value="broadcast">Broadcast</option>
+            <option value="admin_alert">Admin alert</option>
+            <option value="admin_test">Test push</option>
+            <option value="vendor_reset">Reset code</option>
+            <option value="application_received">Application received</option>
+            <option value="application_accepted">Application accepted</option>
+            <option value="student_link_code">Link code</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="list-tools">
+          <input id="notif-q" class="list-q" type="search" placeholder="Search name, email or title" autocomplete="off" spellcheck="false" aria-label="Search the notification log" />
+          <button id="notif-q-clear" class="btn-ghost btn-compact" type="button" hidden>Clear</button>
+        </div>
+        <p id="notif-log-error" class="field-error" role="alert" hidden></p>
+        <div id="notif-log-list" class="notif-list"></div>
+        <button id="notif-log-more" class="btn-ghost btn-compact list-more" type="button" hidden>Show more</button>
+      </div>
+
+      <!-- Queue -->
+      <div id="notif-queue-panel" class="card" hidden>
+        <div class="card-head">
+          <h3>Queue</h3>
+          <span id="notif-queue-updated" class="chart-max"></span>
+        </div>
+        <p class="muted">What is waiting to be pushed and what is holding each one back. View only: the workers send these on their own as each student's limits allow.</p>
+        <p id="notif-quiet" class="notif-banner is-warn" role="status" hidden></p>
+        <p id="notif-queue-error" class="field-error" role="alert" hidden></p>
+        <div id="notif-queue-deals" class="notif-qsection"></div>
+        <div id="notif-queue-broadcasts" class="notif-qsection"></div>
+        <div id="notif-queue-reminders" class="notif-qsection"></div>
+      </div>
+
+      <!-- Student -->
+      <div id="notif-student-panel" class="card" hidden>
+        <div class="card-head">
+          <h3>One student</h3>
+        </div>
+        <p class="muted">Find a student to see their notification settings, how much of today's allowance is used, their devices, what is queued for them and what they were sent.</p>
+        <div class="list-tools">
+          <input id="notif-sq" class="list-q" type="search" placeholder="Search name or email" autocomplete="off" spellcheck="false" aria-label="Find a student" />
+        </div>
+        <p id="notif-s-error" class="field-error" role="alert" hidden></p>
+        <div id="notif-s-results" class="student-list"></div>
+        <div id="notif-s-detail" class="notif-sdetail"></div>
+      </div>
+    </div>
+
     </main>
   </div>
 
@@ -857,6 +976,23 @@
       <div id="student-detail-body" class="student-detail"></div>
       <div class="push-actions">
         <button id="student-detail-close" class="btn-ghost" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== ONE NOTIFICATION (migration-062) ===== -->
+  <!-- From GET /api/admin/notifications/:id. Read-only, like the student card.
+       After #student-modal in the markup, and a step above it in admin.css,
+       because the student card's own Notifications section opens this one on
+       top of itself and Escape peels this layer first. -->
+  <div id="notif-modal" class="overlay" hidden>
+    <div class="reset-card student-detail-card notif-card" role="dialog" aria-modal="true" aria-labelledby="notif-detail-title">
+      <h2 id="notif-detail-title">Notification</h2>
+      <p id="notif-detail-sub" class="muted"></p>
+      <p id="notif-detail-error" class="field-error" role="alert" hidden></p>
+      <div id="notif-detail-body" class="student-detail"></div>
+      <div class="push-actions">
+        <button id="notif-detail-close" class="btn-ghost" type="button">Close</button>
       </div>
     </div>
   </div>

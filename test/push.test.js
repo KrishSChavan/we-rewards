@@ -35,9 +35,10 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import webpush from 'web-push';
 import {
-  pushEnabled, getVapidPublicKey, sendToSubscriptions,
+  pushEnabled, getVapidPublicKey, sendToSubscriptions, sendToSubscriptionsDetailed,
   notifyAdmins, notifyAdminEndpoint, studentSubscriptions,
 } from '../src/lib/push.js';
+import { flushNotificationLog } from '../src/lib/notification-log.js';
 
 /* ---------- the config gate: what a checkout with no keys does ---------- */
 
@@ -104,13 +105,24 @@ test('every disabled entry point answers rather than throwing', async () => {
   // (src/routes/apply.js) and a Stripe webhook, studentSubscriptions from the
   // campaign worker's tick. A throw there is a 500 on a form a real vendor is
   // filling in, or a tick that abandons the students after the one it threw on.
-  const { result, touched } = await withNoNetwork(async () => [
-    await notifyAdmins({ title: 'WeRewards error: Server', body: 'Boom' }),
-    await notifyAdminEndpoint('admin-1', 'https://fcm.googleapis.com/fcm/send/ccc', { title: 'Test' }),
-    await studentSubscriptions('student-1'),
-  ]);
+  //
+  // The two operator entry points DO make one request each now, and it is the
+  // notification_log insert recording "refused, push not configured"
+  // (migration-062). That row is the point: prod has run without VAPID keys
+  // before, and an empty log is indistinguishable from a healthy quiet one. What
+  // must still never happen is a subscription read or a push attempt.
+  const { result, touched } = await withNoNetwork(async () => {
+    const out = [
+      await notifyAdmins({ title: 'WeRewards error: Server', body: 'Boom' }),
+      await notifyAdminEndpoint('admin-1', 'https://fcm.googleapis.com/fcm/send/ccc', { title: 'Test' }),
+      await studentSubscriptions('student-1'),
+    ];
+    await flushNotificationLog();
+    return out;
+  });
   assert.deepEqual(result, [0, 0, []]);
-  assert.deepEqual(touched, []);
+  assert.equal(touched.length, 2, JSON.stringify(touched));
+  for (const t of touched) assert.match(t, /^POST .*\/rest\/v1\/notification_log\?/);
 });
 
 test('malformed arguments are refused locally, before any transport', async () => {
@@ -143,6 +155,7 @@ test('a disabled student read is gated BEFORE the query, not after it', async ()
 /* ---------- the enabled path, in a child process ---------- */
 
 const LIB = pathToFileURL(path.resolve('src/lib/push.js')).href;
+const LOG_LIB = pathToFileURL(path.resolve('src/lib/notification-log.js')).href;
 
 /**
  * A keypair web-push itself accepts. Generated locally (an ECDH P-256 pair out of
@@ -176,6 +189,12 @@ const KEYS = webpush.generateVAPIDKeys();
  * puts filters in the query string -- which makes the URL the only place where
  * "it filtered on role" and "it filtered the DELETE at all" can be observed.
  *
+ * `route` is the source of a function `(call) => ({ status, body }) | null`
+ * that can answer one request differently (a failing DELETE, a missing column
+ * on the wide select, the notification_log insert); null falls through to
+ * `rows`. Every recorded call carries its request body, and the log writer is
+ * flushed before the child prints, so a test can read the log row it caused.
+ *
  * VAPID_SUBJECT is always set explicitly (to '' for "unset", which is what
  * push.js's `||` fallback reads) so that a developer who happens to export one
  * cannot change what is under test. The Supabase placeholders come from the
@@ -188,6 +207,7 @@ function runWithKeys(body, {
   subject = '',
   publicKey = KEYS.publicKey,
   privateKey = KEYS.privateKey,
+  route = '() => null',
 } = {}) {
   const src = `
     const calls = [];
@@ -198,7 +218,15 @@ function runWithKeys(body, {
       calls.push({
         url: String(input?.url ?? input),
         method: String(init.method ?? input?.method ?? 'GET').toUpperCase(),
+        body: typeof init.body === 'string' ? init.body : null,
       });
+      const routed = (${route})(calls[calls.length - 1]);
+      if (routed) {
+        return new Response(routed.status === 204 ? null : (routed.body ?? '[]'), {
+          status: routed.status ?? 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       return new Response(${JSON.stringify(rows)}, {
         status: ${Number(status)},
         headers: { 'Content-Type': 'application/json' },
@@ -222,11 +250,17 @@ function runWithKeys(body, {
         throw new webpush.WebPushError('push service refused it', Number(dead[1]), {}, 'refused', sub.endpoint);
       }
       if (sub.endpoint.endsWith('/boom')) throw new Error('socket hang up');
+      // A push service whose error body echoes what it was sent, keys and all.
+      if (sub.endpoint.endsWith('/echo')) {
+        throw new webpush.WebPushError('rejected', 400, {}, 'bad ' + sub.endpoint + ' ' + sub.keys.p256dh + ' ' + sub.keys.auth, sub.endpoint);
+      }
       return { statusCode: 201 };
     };
 
     const push = await import(${JSON.stringify(LIB)});
-    const out = await (${body})({ push, calls, warnings, sends, vapid });
+    const { flushNotificationLog: flush } = await import(${JSON.stringify(LOG_LIB)});
+    const out = await (${body})({ push, calls, warnings, sends, vapid, flush });
+    await flush();
     console.log('__RESULT__' + JSON.stringify(out));
   `;
   const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
@@ -531,6 +565,311 @@ test('half-configured keys mean off, not a crash at boot', () => {
     assert.equal(out.sends, 0);
     assert.equal(out.calls, 0);
   }
+});
+
+/* ---------- per-device results and the notification log (migration-062) ---------- */
+
+/** A subscription row as the WIDE select returns it, with an id and a label. */
+const fullSub = (endpoint, i, label = null) => ({
+  id: `sub-${i}`, user_id: 'u', endpoint, p256dh: `pub-${i}`, auth: `auth-${i}`, device_label: label,
+});
+
+/** The notification_log rows a child run inserted, parsed. */
+function logRows(calls) {
+  return calls
+    .filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/notification_log'))
+    .map((c) => {
+      const b = JSON.parse(c.body);
+      return Array.isArray(b) ? b[0] : b;
+    });
+}
+
+test('the detailed send reports each device, and never its endpoint or keys', () => {
+  const subs = [
+    fullSub('https://web.push.apple.com/live', 1, 'iPhone Safari'),
+    fullSub('https://fcm.googleapis.com/fcm/send/dead-410', 2, 'Android Chrome'),
+    fullSub('https://updates.push.services.mozilla.com/wpush/boom', 3),
+    fullSub('https://fcm.googleapis.com/fcm/send/echo', 4),
+    fullSub('https://push.test/dead-500', 5),
+  ];
+  const out = runWithKeys(`async ({ push }) => ({
+    detailed: await push.sendToSubscriptionsDetailed(${JSON.stringify(subs)}, { title: 'x' }),
+    plain: await push.sendToSubscriptions(${JSON.stringify(subs.slice(0, 1))}, { title: 'x' }),
+  })`, { route: `(c) => (c.method === 'DELETE' ? { status: 204 } : null)` });
+
+  // The integer contract is untouched: campaigns.js spends and refunds on it.
+  assert.equal(typeof out.plain, 'number');
+  assert.equal(out.plain, 1);
+
+  const d = out.detailed;
+  assert.equal(d.accepted, 1);
+  assert.equal(d.tried, 5);
+  assert.equal(d.disabled, false);
+  assert.deepEqual(d.devices.map((x) => x.subId), ['sub-1', 'sub-2', 'sub-3', 'sub-4', 'sub-5']);
+  assert.deepEqual(d.devices[0], { subId: 'sub-1', service: 'apple', label: 'iPhone Safari', ok: true, status: 201, pruned: false, error: null });
+  assert.equal(d.devices[1].service, 'google');
+  assert.equal(d.devices[1].status, 410);
+  assert.equal(d.devices[1].pruned, true, 'a successful 410 prune must be reported');
+  assert.equal(d.devices[2].service, 'mozilla');
+  assert.equal(d.devices[2].status, null);
+  assert.equal(d.devices[2].pruned, false);
+  assert.match(d.devices[2].error, /socket hang up/);
+  assert.equal(d.devices[4].status, 500);
+  assert.equal(d.devices[4].pruned, false, 'a 5xx is not a prune');
+  for (const dev of d.devices) {
+    assert.deepEqual(Object.keys(dev).sort(), ['error', 'label', 'ok', 'pruned', 'service', 'status', 'subId']);
+  }
+  // The echoing push service put the endpoint and both keys in its error body.
+  // None of it may survive into a result that is going to be stored and shown.
+  const json = JSON.stringify(d);
+  assert.ok(!json.includes('https://'), `an endpoint leaked: ${json}`);
+  for (let i = 1; i <= 5; i++) {
+    assert.ok(!json.includes(`pub-${i}`) && !json.includes(`auth-${i}`), `a key leaked: ${json}`);
+  }
+  assert.match(d.devices[3].error, /\[redacted\]/);
+});
+
+test('pruned reports what the database did, not what was asked of it', () => {
+  const out = runWithKeys(`async ({ push, warnings }) => ({
+    d: await push.sendToSubscriptionsDetailed(${JSON.stringify([fullSub('https://push.test/dead-404', 1)])}, { title: 'x' }),
+    warnings,
+  })`, { route: `(c) => (c.method === 'DELETE' ? { status: 500, body: JSON.stringify({ code: 'XX000', message: 'nope' }) } : null)` });
+  assert.equal(out.d.devices[0].status, 404);
+  assert.equal(out.d.devices[0].pruned, false);
+  assert.ok(out.warnings.some((w) => w.includes('(404)')), JSON.stringify(out.warnings));
+});
+
+test('a disabled detailed send says so and attempts nothing', async () => {
+  const { result, touched } = await withNoNetwork(() => sendToSubscriptionsDetailed(
+    [{ endpoint: 'https://fcm.googleapis.com/fcm/send/a', p256dh: 'p', auth: 'a' }], { title: 'x' },
+  ));
+  assert.deepEqual(result, { accepted: 0, tried: 0, disabled: true, devices: [] });
+  assert.deepEqual(touched, []);
+});
+
+for (const code of ['42703', 'PGRST204']) {
+  test(`a missing device_label column (${code}) falls back to the old select instead of "no devices"`, () => {
+    // THE CRITICAL ONE. Before migration-062 is pasted, asking for device_label
+    // fails the whole read. If that read answered [], every student would look
+    // unreachable: the campaign worker refunds them and emails instead, and not
+    // one push goes out to anybody until the operator notices.
+    const rows = [sub('https://push.test/phone', 0)];
+    const out = runWithKeys(`async ({ push, calls }) => ({
+      first: await push.studentSubscriptions('student-77'),
+      second: await push.studentSubscriptions('student-77'),
+      reads: calls.filter((c) => c.method === 'GET').map((c) => decodeURIComponent(c.url)),
+    })`, {
+      rows: JSON.stringify(rows),
+      route: `(c) => (c.method === 'GET' && decodeURIComponent(c.url).includes('device_label')
+        ? { status: 400, body: JSON.stringify({ code: '${code}', message: 'column push_subscriptions.device_label does not exist' }) }
+        : null)`,
+    });
+    assert.deepEqual(out.first, rows, 'the fallback returned no devices');
+    assert.deepEqual(out.second, rows);
+    // Wide (refused), narrow, then narrow straight away: the module remembers.
+    assert.equal(out.reads.length, 3, JSON.stringify(out.reads));
+    assert.ok(out.reads[0].includes('device_label'));
+    assert.ok(!out.reads[1].includes('device_label'));
+    assert.ok(!out.reads[2].includes('device_label'), 'it kept asking for a column it knows is missing');
+    for (const r of out.reads) {
+      assert.ok(r.includes('role=eq.student') && r.includes('user_id=eq.student-77'), r);
+    }
+  });
+}
+
+test('a missing device_label column is asked about again after 15 minutes, not never', () => {
+  // The operator pastes 062 into a running deployment: labels should start
+  // showing without a restart, as student.js's writer already does.
+  const rows = [sub('https://push.test/phone', 0)];
+  const out = runWithKeys(`async ({ push, calls }) => {
+    const reads = () => calls.filter((c) => c.method === 'GET').map((c) => decodeURIComponent(c.url).includes('device_label') ? 'wide' : 'narrow');
+    const realNow = Date.now;
+    await push.studentSubscriptions('student-77');            // wide refused, narrow
+    Date.now = () => realNow() + 14 * 60 * 1000;
+    await push.studentSubscriptions('student-77');            // still narrow
+    Date.now = () => realNow() + 16 * 60 * 1000;
+    globalThis.__labelExists = true;
+    const after = await push.studentSubscriptions('student-77'); // wide again, and it works
+    Date.now = realNow;
+    return { reads: reads(), after };
+  }`, {
+    rows: JSON.stringify(rows),
+    route: `(c) => (c.method === 'GET' && !globalThis.__labelExists && decodeURIComponent(c.url).includes('device_label')
+      ? { status: 400, body: JSON.stringify({ code: '42703', message: 'column push_subscriptions.device_label does not exist' }) }
+      : null)`,
+  });
+  assert.deepEqual(out.reads, ['wide', 'narrow', 'narrow', 'wide']);
+  assert.deepEqual(out.after, rows);
+});
+
+test('refused operator pushes are logged once per five minutes per kind and reason', () => {
+  // An error storm with nobody subscribed: every error_logs row pages the
+  // operators, and each page used to write its own identical "refused" row.
+  const out = runWithKeys(`async ({ push, calls, flush }) => {
+    const realNow = Date.now;
+    for (let i = 0; i < 5; i++) await push.notifyAdmins({ title: 'WeRewards error ' + i });
+    await push.notifyAdmins({ title: 'other kind' }, { kind: 'admin_test' });
+    // A row tied to a record (a vendor application) keeps its own row.
+    await push.notifyAdmins({ title: 'New application' }, { ref: { applicationId: 'a1' } });
+    await push.notifyAdmins({ title: 'New application' }, { ref: { applicationId: 'a2' } });
+    // The diagnostic push is asked for by an operator and is never coalesced.
+    await push.notifyAdminEndpoint('admin-1', 'https://push.test/x', { title: 'Test' });
+    await push.notifyAdminEndpoint('admin-1', 'https://push.test/x', { title: 'Test' });
+    Date.now = () => realNow() + 6 * 60 * 1000;
+    await push.notifyAdmins({ title: 'WeRewards error later' });
+    await push.notifyAdmins({ title: 'WeRewards error later 2' });
+    Date.now = realNow;
+    await flush();
+    return { calls };
+  }`, { route: `(c) => (c.method === 'GET' ? { status: 200, body: '[]' } : { status: 201, body: '[]' })` });
+  const logged = logRows(out.calls);
+  assert.deepEqual(logged.map((r) => r.title), [
+    'WeRewards error 0', 'other kind', 'New application', 'New application', 'Test', 'Test', 'WeRewards error later',
+  ]);
+  for (const r of logged) assert.equal(r.reason, 'no_devices');
+});
+
+test('with push unconfigured an error storm writes one row per window, not one per error', () => {
+  const out = runWithKeys(`async ({ push, calls, flush }) => {
+    for (let i = 0; i < 50; i++) await push.notifyAdmins({ title: 'WeRewards error ' + i });
+    await flush();
+    return { calls };
+  }`, { privateKey: '' });
+  const logged = logRows(out.calls);
+  assert.equal(logged.length, 1, JSON.stringify(logged.map((r) => r.title)));
+  assert.equal(logged[0].reason, 'push_disabled');
+});
+
+test('sent and failed operator pushes are never coalesced', () => {
+  const out = runWithKeys(`async ({ push, calls, flush }) => {
+    globalThis.__subs = ${JSON.stringify(JSON.stringify([fullSub('https://push.test/desk', 1)]))};
+    await push.notifyAdmins({ title: 'a' });
+    await push.notifyAdmins({ title: 'b' });
+    globalThis.__subs = ${JSON.stringify(JSON.stringify([fullSub('https://push.test/dead-500', 2)]))};
+    await push.notifyAdmins({ title: 'c' });
+    await push.notifyAdmins({ title: 'd' });
+    await flush();
+    return { calls };
+  }`, { route: `(c) => (c.method === 'GET' ? { status: 200, body: globalThis.__subs } : { status: 201, body: '[]' })` });
+  const logged = logRows(out.calls);
+  assert.deepEqual(logged.map((r) => `${r.title}:${r.outcome}`), ['a:sent', 'b:sent', 'c:failed', 'd:failed']);
+});
+
+test('the wide select asks for the id and the label once the column exists', () => {
+  const out = runWithKeys(`async ({ push, calls }) => ({
+    subs: await push.studentSubscriptions('student-1'),
+    url: decodeURIComponent(calls[0].url),
+  })`, { rows: JSON.stringify([fullSub('https://push.test/a', 1, 'Mac Chrome')]) });
+  assert.match(out.url, /select=id,\s*user_id,\s*endpoint,\s*p256dh,\s*auth,\s*device_label/);
+  assert.equal(out.subs[0].device_label, 'Mac Chrome');
+});
+
+test('notifyAdmins logs exactly one row, with the device results and no endpoint', () => {
+  const rows = [fullSub('https://web.push.apple.com/desk', 1, 'Mac Safari'), fullSub('https://push.test/dead-410', 2)];
+  const out = runWithKeys(`async ({ push, calls, flush }) => {
+    const delivered = await push.notifyAdmins(
+      { title: 'New vendor application', body: 'Sher Halal', url: '/admin/', tag: 'wr-apply' },
+      { ref: { applicationId: 'app-1' } },
+    );
+    await flush();
+    return { delivered, calls };
+  }`, {
+    rows: JSON.stringify(rows),
+    route: `(c) => (c.method === 'DELETE' ? { status: 204 } : null)`,
+  });
+  assert.equal(out.delivered, 1);
+  const logged = logRows(out.calls);
+  assert.equal(logged.length, 1, JSON.stringify(out.calls.map((c) => `${c.method} ${c.url}`)));
+  const row = logged[0];
+  assert.equal(row.channel, 'push');
+  assert.equal(row.kind, 'admin_alert');
+  assert.equal(row.outcome, 'sent');
+  assert.equal(row.reason, null);
+  assert.equal(row.recipient_kind, 'admin');
+  assert.equal(row.recipient_label, 'Admin devices');
+  assert.equal(row.title, 'New vendor application');
+  assert.equal(row.body, 'Sher Halal');
+  assert.equal(row.url, '/admin/');
+  assert.equal(row.template, 'wr-apply');
+  assert.deepEqual(row.ref, { applicationId: 'app-1' });
+  assert.equal(row.devices_tried, 2);
+  assert.equal(row.devices_accepted, 1);
+  assert.equal(row.devices[0].label, 'Mac Safari');
+  assert.equal(row.devices[1].pruned, true);
+  const json = JSON.stringify(row);
+  assert.ok(!json.includes('https://') && !json.includes('pub-') && !json.includes('auth-'), json);
+});
+
+test('an operator push that did not land says why, in the log', () => {
+  const ADMIN = '33333333-4444-4555-8666-777777777777';
+  const cases = [
+    // [what the subscription read returns, expected outcome, expected reason]
+    ['[]', 200, 'refused', 'no_devices'],
+    [JSON.stringify([fullSub('https://push.test/dead-500', 1)]), 200, 'failed', 'no_device_accepted'],
+    // A failed read is NOT "nobody subscribed": that is the distinction the
+    // count alone could never make.
+    [JSON.stringify({ code: 'XX000', message: 'boom' }), 500, 'failed', 'send_error'],
+  ];
+  for (const [subsBody, subsStatus, outcome, reason] of cases) {
+    const out = runWithKeys(`async ({ push, calls, flush }) => {
+      const n = await push.notifyAdmins({ title: 'x' });
+      await flush();
+      return { n, calls };
+    }`, {
+      route: `(c) => (c.method === 'GET' ? { status: ${subsStatus}, body: ${JSON.stringify(subsBody)} } : { status: 201, body: '[]' })`,
+    });
+    assert.equal(out.n, 0);
+    const logged = logRows(out.calls);
+    assert.equal(logged.length, 1);
+    assert.equal(logged[0].outcome, outcome, subsBody);
+    assert.equal(logged[0].reason, reason, subsBody);
+  }
+
+  // The diagnostic push is its own kind and names the operator who asked.
+  const test1 = runWithKeys(`async ({ push, calls, flush }) => {
+    const n = await push.notifyAdminEndpoint('${ADMIN}', 'https://push.test/this-one', { title: 'Test push' });
+    await flush();
+    return { n, calls };
+  }`, { rows: JSON.stringify([fullSub('https://push.test/this-one', 1)]) });
+  assert.equal(test1.n, 1);
+  const [row] = logRows(test1.calls);
+  assert.equal(row.kind, 'admin_test');
+  assert.equal(row.recipient_user_id, ADMIN);
+  assert.equal(row.outcome, 'sent');
+});
+
+test('an unconfigured deployment logs "push not configured" instead of nothing', () => {
+  const out = runWithKeys(`async ({ push, calls, sends, flush }) => {
+    const n = await push.notifyAdmins({ title: 'WeRewards error: Server' });
+    await flush();
+    return { n, calls, sends: sends.length };
+  }`, { privateKey: '' });
+  assert.equal(out.n, 0);
+  assert.equal(out.sends, 0);
+  // The only request is the log row: no subscription read.
+  assert.equal(out.calls.length, 1, JSON.stringify(out.calls.map((c) => c.url)));
+  const [row] = logRows(out.calls);
+  assert.equal(row.outcome, 'refused');
+  assert.equal(row.reason, 'push_disabled');
+  assert.equal(row.devices_tried, 0);
+});
+
+test('a log table that does not exist changes nothing about a send', () => {
+  // migration-062 not pasted yet: the insert is a 404 PGRST205. The push still
+  // goes out, the count is still right, and nothing throws.
+  const out = runWithKeys(`async ({ push, sends, flush, warnings }) => {
+    const n = await push.notifyAdmins({ title: 'x' });
+    await flush();
+    return { n, sends: sends.length, warnings };
+  }`, {
+    rows: JSON.stringify([fullSub('https://push.test/desk', 1)]),
+    route: `(c) => (c.method === 'POST' && c.url.includes('notification_log')
+      ? { status: 404, body: JSON.stringify({ code: 'PGRST205', message: 'Could not find the table' }) }
+      : null)`,
+  });
+  assert.equal(out.n, 1);
+  assert.equal(out.sends, 1);
+  assert.ok(out.warnings.some((w) => w.includes('migration-062')), JSON.stringify(out.warnings));
 });
 
 /* ---------------------------------------------------------------------------

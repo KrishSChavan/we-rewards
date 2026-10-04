@@ -396,6 +396,17 @@ export async function issueLinkCode({ userId, email, norm, signedInAs, willMerge
     // button safe. Keyed on the code row, so a genuinely new code always sends.
     idempotencyKey: `student-link-${row.code_id}`,
     tags: ['student-link'],
+    // The code is in the real subject ("...link code: 482913") and body. The
+    // notification log gets a fixed subject, and the code as a secret scrubbed
+    // from anything else it could ride in on.
+    log: {
+      kind: 'student_link_code',
+      recipientKind: 'student',
+      studentId: userId,
+      secrets: [code],
+      logSubject: 'Your WeRewards link code (code hidden)',
+      ref: { codeId: row.code_id },
+    },
   });
   if (!sent.ok) {
     console.warn(`[student-email] send failed for ${maskEmail(email)}: ${sent.reason ?? 'unknown'}`);

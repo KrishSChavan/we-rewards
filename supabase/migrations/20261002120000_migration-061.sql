@@ -427,6 +427,32 @@ begin
         select 1 from push_subscriptions ps
         where ps.user_id = r2.user_id and ps.role = 'student'
       )
+      -- The shared budget, pre-filtered here as well as re-checked under the lock
+      -- below, for the reason migration-047 and migration-060 give: this scan is
+      -- capped at p_max_users, so a student it selects and the loop then skips
+      -- still spends one of those slots. Without these lines, the students at the
+      -- head of the queue (lowest uuids on the oldest broadcast) who are inside
+      -- their cooldown or capped out are picked every tick, skipped every tick,
+      -- and the broadcast reaches nobody behind them until their windows clear.
+      -- NOT EXISTS, so a student with no student_notify_state row yet (never
+      -- notified by anything) stays eligible, exactly as the loop treats them.
+      -- Same rollover arithmetic as the loop; where the two could ever disagree
+      -- the loop wins, so a disagreement costs a slot, never an extra push.
+      and not exists (
+        select 1 from student_notify_state sn
+        where sn.user_id = r2.user_id
+          and (
+            sn.push_opt_in = false
+            or (sn.last_push_at is not null
+                and sn.last_push_at > now() - make_interval(mins => greatest(p_cooldown_minutes, 0)))
+            or (sn.day_start is not null
+                and sn.day_start > now() - interval '24 hours'
+                and sn.day_count >= p_daily_cap)
+            or (sn.week_start is not null
+                and sn.week_start > now() - interval '7 days'
+                and sn.week_count >= p_weekly_cap)
+          )
+      )
     -- Oldest broadcast first, so two overlapping announcements drain in the
     -- order they were sent rather than interleaving.
     order by b.created_at, r2.user_id

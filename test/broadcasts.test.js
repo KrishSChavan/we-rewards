@@ -290,6 +290,7 @@ test('the worker arms no timer when there is nothing to deliver with', () => {
 const LIB = pathToFileURL(path.resolve('src/lib/broadcasts.js')).href;
 const SUPABASE = pathToFileURL(path.resolve('src/lib/supabase.js')).href;
 const CAMPAIGNS = pathToFileURL(path.resolve('src/lib/campaigns.js')).href;
+const NOTIF_LOG = pathToFileURL(path.resolve('src/lib/notification-log.js')).href;
 
 /**
  * A keypair web-push itself accepts. Generated locally (an ECDH P-256 pair out
@@ -319,19 +320,31 @@ const KEYS = webpush.generateVAPIDKeys();
  * has already filled in — the parent could not have imported broadcasts.js at
  * all otherwise.
  */
-function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, delivering = false } = {}) {
+function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, delivering = false, logError = null } = {}) {
   const src = `
     // Any socket at all is a failure in most of these tests, but it must be
     // observable rather than a thrown ECONNREFUSED that reads as an unrelated
     // bug. '[]' is also what makes the non-empty claim tests work: it is a valid
     // PostgREST answer meaning "this student has no push endpoints", which is
     // precisely the delivery failure finish_admin_broadcast exists for.
+    //
+    // notification_log writes (migration-062) are captured into logRows, or
+    // answered with a PostgREST error when logError is set.
     const fetches = [];
+    const logRows = [];
+    const LOG_ERROR = ${JSON.stringify(logError)};
     globalThis.fetch = async (input, init = {}) => {
+      const url = String(input?.url ?? input);
       fetches.push({
-        url: String(input?.url ?? input),
+        url,
         method: String(init.method ?? input?.method ?? 'GET').toUpperCase(),
       });
+      if (url.includes('/rest/v1/notification_log')) {
+        for (const r of [].concat(init.body ? JSON.parse(init.body) : [])) logRows.push(r);
+        if (LOG_ERROR) {
+          return new Response(JSON.stringify(LOG_ERROR), { status: 404, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
       return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
@@ -381,7 +394,10 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
         eq: () => chain,
         then: (res) => res({ data: [{ endpoint: 'https://push.test/a', p256dh: 'p', auth: 'a' }], error: null }),
       };
-      supabaseAdmin.from = () => chain;
+      // The log write still goes through the real client (and so the fetch stub
+      // above), so a delivered send's row can be asserted on.
+      const realFrom = supabaseAdmin.from.bind(supabaseAdmin);
+      supabaseAdmin.from = (table) => (table === 'notification_log' ? realFrom(table) : chain);
       const webpush = (await import('web-push')).default;
       webpush.sendNotification = async (sub, b) => { sent.push({ endpoint: sub.endpoint, body: b }); return { statusCode: 201 }; };
     }
@@ -395,7 +411,10 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     globalThis.setInterval = (fn, ms) => { armed.push(ms); return { unref() {} }; };
     globalThis.clearInterval = () => {};
 
-    const out = await (${body})({ broadcasts, seen, fetches, armed, CAMPAIGN_CONFIG, supabaseAdmin, sent });
+    const { flushNotificationLog } = await import(${JSON.stringify(NOTIF_LOG)});
+    const flush = () => flushNotificationLog();
+
+    const out = await (${body})({ broadcasts, seen, fetches, armed, CAMPAIGN_CONFIG, supabaseAdmin, sent, logRows, flush, BY_NAME });
     console.log('__RESULT__' + JSON.stringify(out ?? null));
   `;
   const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
@@ -800,4 +819,156 @@ test('a student who was reached is not carried in the skip list', () => {
 
   assert.deepEqual(out.skips[0], []);
   assert.deepEqual(out.skips[1], [], 'a delivered student was treated as a failure');
+});
+
+/* ---------- the notification log, worker status and backoff (migration-062) ----------
+
+   Contract 3.3: one log row per claimed recipient, written after the settle and
+   without changing it. Plus broadcastWorkerStatus() and broadcastBackoff(),
+   which /admin reads and which never steer the worker. */
+
+const TICK_AND_LOG = `async ({ broadcasts, seen, logRows, flush }) => {
+  const result = await broadcasts.runBroadcastTick();
+  await flush();
+  return {
+    result,
+    rows: logRows,
+    finishes: seen.filter((c) => c.name === 'finish_admin_broadcast').map((c) => c.params),
+  };
+}`;
+
+test('a delivered broadcast is logged once, as sent, with the dedupe key the backfill uses', () => {
+  const out = runConfigured(TICK_AND_LOG, { ...ONE_CLAIMED, delivering: true });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0 });
+  assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: true }]);
+
+  assert.equal(out.rows.length, 1, `expected one log row, got ${JSON.stringify(out.rows)}`);
+  const r = out.rows[0];
+  assert.equal(r.channel, 'push');
+  assert.equal(r.kind, 'broadcast');
+  assert.equal(r.outcome, 'sent');
+  assert.equal(r.reason, null);
+  assert.equal(r.recipient_kind, 'student');
+  assert.equal(r.student_id, CLAIMED_USER);
+  assert.equal(r.title, 'Six new spots just joined');
+  assert.equal(r.url, '/?spots=1');
+  assert.equal(r.template, 'wr-broadcast');
+  assert.deepEqual(r.ref, { broadcastId: CLAIMED_BROADCAST });
+  assert.equal(r.dedupe_key, `broadcast:${CLAIMED_BROADCAST}:${CLAIMED_USER}`);
+  assert.equal(r.devices_tried, 1);
+  assert.equal(r.devices_accepted, 1);
+  assert.ok(!JSON.stringify(r).includes('push.test'), 'the endpoint reached the log row');
+});
+
+test('a broadcast nobody could receive is logged as failed and refunded, with no dedupe key', () => {
+  const out = runConfigured(TICK_AND_LOG, ONE_CLAIMED);
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1 });
+  assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: false }]);
+  assert.equal(out.rows.length, 1);
+  const r = out.rows[0];
+  assert.equal(r.outcome, 'failed');
+  assert.equal(r.reason, 'no_devices');
+  assert.deepEqual(r.ref, { broadcastId: CLAIMED_BROADCAST, refunded: true });
+  assert.equal(r.dedupe_key, null);
+});
+
+test('refunded reports what finish_admin_broadcast did, not what was asked', () => {
+  const out = runConfigured(TICK_AND_LOG, {
+    rpcByName: { ...ONE_CLAIMED.rpcByName, finish_admin_broadcast: { data: false } },
+  });
+  assert.equal(out.rows[0].outcome, 'failed');
+  assert.equal(out.rows[0].ref.refunded, false);
+});
+
+test('a row with no words is logged as refused, content_empty, and still settled once', () => {
+  const out = runConfigured(TICK_AND_LOG, {
+    rpcByName: {
+      claim_admin_broadcast_pushes: {
+        data: [{ out_user_id: CLAIMED_USER, out_broadcast_id: CLAIMED_BROADCAST, out_title: '   ', out_body: 'B', out_url: '/' }],
+      },
+      finish_admin_broadcast: { data: true },
+    },
+  });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1 });
+  assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: false }]);
+  assert.equal(out.rows.length, 1);
+  assert.equal(out.rows[0].outcome, 'refused');
+  assert.equal(out.rows[0].reason, 'content_empty');
+  assert.equal(out.rows[0].ref.refunded, true);
+});
+
+test('a thrown send is logged as send_error', () => {
+  const out = runConfigured(`async ({ broadcasts, supabaseAdmin, logRows, flush }) => {
+    const realFrom = supabaseAdmin.from.bind(supabaseAdmin);
+    supabaseAdmin.from = (t) => { if (t === 'notification_log') return realFrom(t); throw new Error('socket hang up'); };
+    const result = await broadcasts.runBroadcastTick();
+    await flush();
+    return { result, rows: logRows };
+  }`, ONE_CLAIMED);
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1 });
+  assert.equal(out.rows.length, 1);
+  assert.equal(out.rows[0].reason, 'send_error');
+});
+
+test('a missing notification_log table does not change a single settlement', () => {
+  const out = runConfigured(TICK_AND_LOG, {
+    ...ONE_CLAIMED,
+    delivering: true,
+    logError: { code: '42P01', message: 'relation "public.notification_log" does not exist' },
+  });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0 });
+  assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: true }]);
+});
+
+test('worker status records each tick, and rpcMissing follows the claim', () => {
+  const out = runConfigured(`async ({ broadcasts, BY_NAME, flush }) => {
+    const before = broadcasts.broadcastWorkerStatus();
+    const r1 = await broadcasts.runBroadcastTick();
+    const afterOk = broadcasts.broadcastWorkerStatus();
+    BY_NAME.claim_admin_broadcast_pushes = { data: null, error: { code: '42P01', message: 'relation "public.admin_broadcast_recipients" does not exist' } };
+    const r2 = await broadcasts.runBroadcastTick();
+    const afterMissing = broadcasts.broadcastWorkerStatus();
+    BY_NAME.claim_admin_broadcast_pushes = { data: [] };
+    await broadcasts.runBroadcastTick();
+    const afterRecovered = broadcasts.broadcastWorkerStatus();
+    broadcasts.startBroadcastWorker();
+    const armed = broadcasts.broadcastWorkerStatus();
+    broadcasts.stopBroadcastWorker();
+    await flush();
+    return { before, r1, afterOk, r2, afterMissing, afterRecovered, armed };
+  }`, ONE_CLAIMED);
+
+  assert.equal(out.before.configured, true);
+  assert.equal(out.before.running, false);
+  assert.equal(out.before.ticks, 0);
+  assert.equal(out.before.intervalSeconds, BROADCAST_CONFIG.tickSeconds);
+
+  assert.equal(out.afterOk.ticks, 1);
+  assert.deepEqual(out.afterOk.lastResult, out.r1);
+  assert.equal(out.afterOk.rpcMissing, false);
+
+  assert.deepEqual(out.r2, { claimed: 0, delivered: 0, failed: 0 });
+  assert.equal(out.afterMissing.rpcMissing, true);
+  assert.match(out.afterMissing.lastError, /admin_broadcast_recipients/);
+  assert.equal(out.afterMissing.lastTickAt, out.afterOk.lastTickAt, 'a failed tick moved lastTickAt');
+
+  assert.equal(out.afterRecovered.rpcMissing, false);
+  assert.equal(out.afterRecovered.ticks, 3);
+  assert.equal(out.armed.running, true);
+});
+
+test('broadcastBackoff names the student just failed and when they come back', () => {
+  const out = runConfigured(`async ({ broadcasts, flush }) => {
+    const before = broadcasts.broadcastBackoff();
+    const t0 = Date.now();
+    await broadcasts.runBroadcastTick();
+    await flush();
+    return { before, after: broadcasts.broadcastBackoff(), t0 };
+  }`, ONE_CLAIMED);
+  assert.deepEqual(out.before, []);
+  assert.equal(out.after.length, 1);
+  assert.equal(out.after[0].userId, CLAIMED_USER);
+  const until = Date.parse(out.after[0].until);
+  const twoHours = 2 * 60 * 60 * 1000;
+  assert.ok(until >= out.t0 + twoHours && until <= out.t0 + twoHours + 60_000, `until ${out.after[0].until} is not two hours out`);
 });
