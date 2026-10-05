@@ -425,6 +425,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('vendor-carousel').addEventListener('click', onVendorTap);
   $('home-reward').addEventListener('click', onHomeRewardTap);
   $('home-email-nudge').addEventListener('click', openLinkSheet);
+  $('home-email-nudge-close').addEventListener('click', dismissEmailNudge);
   $('history-find-spot').addEventListener('click', () => setTab(TAB.spots));
   // Page dots under the carousel. #vendor-carousel and #vendor-dots are stable
   // elements — only their children are replaced — so these bind exactly once.
@@ -4532,20 +4533,48 @@ function renderHomeStart() {
 
 // The green "add your student email" nudge at the top of Home. Same rule as
 // the Account button it shortcuts to: only when the student can link one and
-// has not. The bonus is only named when the server says THIS student would be
-// paid it (bonus is null otherwise, see studentEmailStatus), and it is named
-// as community points, the same words the sheet and the checklist use.
+// has not, and not once this account has closed it with the ✕. The bonus is
+// only named when the server says THIS student would be paid it (bonus is
+// null otherwise, see studentEmailState), and it is named as community points,
+// the same words the sheet and the checklist use.
 function renderHomeEmailNudge() {
-  const btn = $('home-email-nudge');
-  if (!btn) return;
+  const wrap = $('home-email-nudge-wrap');
+  if (!wrap) return;
   const s = studentEmail;
-  const show = Boolean(s?.eligible && !s.linked);
-  btn.hidden = !show;
+  const show = Boolean(s?.eligible && !s.linked) && !emailNudgeDismissed();
+  wrap.hidden = !show;
   if (show) {
     $('home-email-nudge-sub').textContent = s.bonus?.points
       ? `Get ${s.bonus.points} community points to start`
       : 'Bring your spots and points together';
   }
+}
+
+// The nudge's ✕. Not everyone here has a Penn State address (staff, people
+// from town), and a big green card they can never act on is just in the way.
+// Remembered per ACCOUNT, unlike the device-wide deal/nearby opt-in flags: the
+// reason to close it is "this account has no student email", and the app
+// expects more than one account on a phone (sign-in always offers the account
+// chooser), so a friend signing in here must still be offered it. The Account
+// row stays as the way in for anyone who changes their mind.
+const EMAIL_NUDGE_DISMISS_PREFIX = 'wr-email-nudge-dismissed:';
+// renderHomeExtras() runs on every balance push and refetch, so when storage
+// is blocked (it THROWS then, see THEME_KEY) the card would pop straight back.
+// This remembers the close for the rest of the session in that case.
+let emailNudgeClosedFor = null;
+
+function emailNudgeDismissed() {
+  if (!currentUserId) return false;
+  if (emailNudgeClosedFor === currentUserId) return true;
+  try { return localStorage.getItem(EMAIL_NUDGE_DISMISS_PREFIX + currentUserId) === '1'; } catch { return false; }
+}
+
+function dismissEmailNudge() {
+  if (!currentUserId) return;
+  emailNudgeClosedFor = currentUserId;
+  try { localStorage.setItem(EMAIL_NUDGE_DISMISS_PREFIX + currentUserId, '1'); } catch { /* site data blocked: this session only */ }
+  renderHomeEmailNudge();
+  fitCardRewards();           // the card leaving changes how tall the spot cards are
 }
 
 function renderHomeExtras() {

@@ -42,15 +42,29 @@ function fakeEl(id) {
   return el;
 }
 
-function sandbox({ vendors = [], email = null, allTime = true } = {}) {
+// localStorage as the app sees it. `blocked` reproduces site data being off,
+// where every access THROWS rather than returning null.
+function memoryStorage({ blocked = false } = {}) {
+  const map = new Map();
+  const guard = () => { if (blocked) throw new Error('SecurityError: storage blocked'); };
+  return {
+    map,
+    getItem: (k) => { guard(); return map.has(k) ? map.get(k) : null; },
+    setItem: (k, v) => { guard(); map.set(k, String(v)); },
+    removeItem: (k) => { guard(); map.delete(k); },
+  };
+}
+
+function sandbox({ vendors = [], email = null, allTime = true, uid = 'user-a', storage = memoryStorage() } = {}) {
   const els = {};
   const $ = (id) => (els[id] ??= fakeEl(id));
   const calls = { opened: [], itemTaps: [], fits: 0 };
   // eslint-disable-next-line no-new-func
-  const api = new Function('$', 'calls', 'seed', 'email', 'allTime', `
+  const api = new Function('$', 'calls', 'seed', 'email', 'allTime', 'uid', 'localStorage', `
     let allVendors = seed;
     let studentEmail = email;
     let visitedAllTime = allTime;
+    let currentUserId = uid;
     let vendor = null;
     const document = { querySelectorAll: () => [] };
     const vendorMonogram = (n) => String(n).slice(0, 2).toUpperCase();
@@ -59,10 +73,12 @@ function sandbox({ vendors = [], email = null, allTime = true } = {}) {
     ${escapeBlock}
     ${rewardHelpers}
     ${homeBlock}
-    return { renderHomeReward, renderHomeStart, renderHomeEmailNudge, onHomeRewardTap, refreshHomeRewards,
-             setVendors: (v) => { allVendors = v; }, closeVendor: () => { vendor = null; } };
-  `)($, calls, vendors, email, allTime);
-  return { ...api, $, calls };
+    return { renderHomeReward, renderHomeStart, renderHomeEmailNudge, renderHomeExtras, onHomeRewardTap,
+             refreshHomeRewards, dismissEmailNudge,
+             setVendors: (v) => { allVendors = v; }, closeVendor: () => { vendor = null; },
+             signIn: (id) => { currentUserId = id; } };
+  `)($, calls, vendors, email, allTime, uid, storage);
+  return { ...api, $, calls, storage };
 }
 
 const spot = (over = {}) => ({
@@ -231,11 +247,73 @@ describe('first-visit checklist and email nudge', () => {
   test('the nudge names the bonus as community points, and only when there is one', () => {
     const api = sandbox({ email: { eligible: true, linked: false, bonus: { points: 50 } } });
     api.renderHomeEmailNudge();
-    assert.equal(api.$('home-email-nudge').hidden, false);
+    assert.equal(api.$('home-email-nudge-wrap').hidden, false);
     assert.equal(api.$('home-email-nudge-sub').textContent, 'Get 50 community points to start');
 
     const unpaid = sandbox({ email: { eligible: true, linked: false, bonus: null } });
     unpaid.renderHomeEmailNudge();
     assert.equal(unpaid.$('home-email-nudge-sub').textContent, 'Bring your spots and points together');
+  });
+});
+
+/* ---------- the nudge's ✕ ---------- */
+
+describe('closing the student email nudge', () => {
+  const offer = { eligible: true, linked: false, bonus: { points: 50 } };
+
+  test('the ✕ hides it and remembers that under this account', () => {
+    const api = sandbox({ email: offer, uid: 'user-a' });
+    api.renderHomeEmailNudge();
+    assert.equal(api.$('home-email-nudge-wrap').hidden, false);
+    api.dismissEmailNudge();
+    assert.equal(api.$('home-email-nudge-wrap').hidden, true);
+    assert.equal(api.storage.map.get('wr-email-nudge-dismissed:user-a'), '1');
+  });
+
+  test('it stays closed through every repaint and the next app open', () => {
+    const storage = memoryStorage();
+    const first = sandbox({ email: offer, uid: 'user-a', storage });
+    first.renderHomeEmailNudge();
+    first.dismissEmailNudge();
+    first.renderHomeExtras();                   // a balance push repaints Home
+    assert.equal(first.$('home-email-nudge-wrap').hidden, true);
+
+    const reopened = sandbox({ email: offer, uid: 'user-a', storage });   // a fresh page, same phone
+    reopened.renderHomeEmailNudge();
+    assert.equal(reopened.$('home-email-nudge-wrap').hidden, true);
+  });
+
+  test('a different account on the same phone is still offered it', () => {
+    const api = sandbox({ email: offer, uid: 'user-a' });
+    api.dismissEmailNudge();
+    api.signIn('user-b');
+    api.renderHomeEmailNudge();
+    assert.equal(api.$('home-email-nudge-wrap').hidden, false);
+  });
+
+  test('with site data blocked it never throws, and stays closed for the session', () => {
+    const api = sandbox({ email: offer, uid: 'user-a', storage: memoryStorage({ blocked: true }) });
+    api.renderHomeEmailNudge();                 // reading throws: treated as not closed
+    assert.equal(api.$('home-email-nudge-wrap').hidden, false);
+    assert.doesNotThrow(() => api.dismissEmailNudge());
+    api.renderHomeExtras();                     // ...and a repaint must not bring it back
+    assert.equal(api.$('home-email-nudge-wrap').hidden, true);
+  });
+
+  test('signed out, the ✕ does nothing rather than saving under no one', () => {
+    const api = sandbox({ email: offer, uid: null });
+    api.dismissEmailNudge();
+    assert.equal(api.storage.map.size, 0);
+  });
+
+  test('the markup keeps the two buttons as siblings, never nested', () => {
+    const html = readFileSync(fileURLToPath(new URL('../public/student/index.html', import.meta.url)), 'utf8');
+    const from = html.indexOf('id="home-email-nudge-wrap"');
+    const card = html.slice(from, html.indexOf('</div>', from));
+    assert.ok(from > 0, 'wrapper present');
+    const nudgeEnd = card.indexOf('</button>');
+    const close = card.indexOf('id="home-email-nudge-close"');
+    assert.ok(nudgeEnd > 0 && close > nudgeEnd, 'the ✕ starts after the nudge button has closed');
+    assert.match(card.slice(close - 20, close + 200), /aria-label="[^"]+"/, 'the ✕ has a spoken name');
   });
 });

@@ -4051,15 +4051,31 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vc-progress.is-ready .vc-goal span { color: var(--rf-ready); }
 @media (prefers-reduced-motion: reduce) { .vc-track i { transition: none; } }
 
-/* ---------- Home: the student email nudge (green) ---------- */
-.home-email-nudge {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
-  width: 100%; text-align: left;
-  padding: 0.85rem 1rem; border-radius: 1.1rem;
+/* ---------- Home: the student email nudge (green) ----------
+   The wrapper is the card; the nudge itself and its ✕ are sibling buttons in
+   it (a button cannot hold a button). Grid gap, not flex gap, so nothing here
+   goes through the build's margin-synthesis fallback. */
+.home-email-nudge-wrap {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  border-radius: 1.1rem;
   background: var(--rf-ready-bg); color: var(--ink);
   box-shadow: var(--rf-lift);
 }
+.home-email-nudge {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
+  width: 100%; text-align: left; color: inherit;
+  /* right padding is small: the ✕ beside it supplies the card's right edge */
+  padding: 0.85rem 0.35rem 0.85rem 1rem; border-radius: 1.1rem;
+}
 .home-email-nudge:active { transform: scale(0.98); }
+/* 44px tap target, same as the install banner's ✕; --rf-ready on --rf-ready-bg
+   is 5.4:1 light and 6.7:1 dark */
+.hen-close {
+  width: 2.75rem; height: 2.75rem; margin-right: 0.3rem;
+  border-radius: 50%;
+  font-size: 0.85rem; font-weight: 900; color: var(--rf-ready);
+}
+.hen-close:active { transform: scale(0.9); }
 .hen-icon { display: flex; color: var(--rf-ready); }
 .hen-icon svg { width: 1.5rem; height: 1.5rem; display: block; }
 .hen-text { display: grid; gap: 0.1rem; }

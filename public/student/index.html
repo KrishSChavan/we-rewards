@@ -507,9 +507,13 @@
 
               <!-- Add-your-student-email nudge. A shortcut to the same sheet as
                    the Account row (#link-email-btn), shown only while linking is
-                   on offer and not yet done. renderHomeEmailNudge() in app.js
-                   owns [hidden] and the line under the title. -->
-              <button id="home-email-nudge" class="home-email-nudge" type="button" hidden
+                   on offer, not yet done, and not closed with the ✕ by this
+                   account. renderHomeEmailNudge() in app.js owns the wrapper's
+                   [hidden] and the line under the title. The wrapper is the
+                   green card and the two buttons are siblings inside it, because
+                   a button cannot contain another button. -->
+              <div id="home-email-nudge-wrap" class="home-email-nudge-wrap" hidden>
+              <button id="home-email-nudge" class="home-email-nudge" type="button"
                       aria-haspopup="dialog" aria-expanded="false" aria-controls="link-email-modal">
                 <span class="hen-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -522,6 +526,9 @@
                 </span>
                 <span class="hen-go" aria-hidden="true">Add</span>
               </button>
+              <button id="home-email-nudge-close" class="hen-close" type="button"
+                      aria-label="Dismiss the student email suggestion">✕</button>
+              </div>
 
               <!-- Community points — the one balance on this screen that isn't
                    tied to a single spot: 10% of everything earned anywhere lands
