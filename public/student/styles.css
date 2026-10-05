@@ -372,7 +372,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
    .skel is the primitive: a grey block with a sheen sweeping across it. The
    sweep is a transform on a pseudo-element rather than an animated
-   background-position, so it stays on the compositor — the History tab puts a
+   background-position, so it stays on the compositor — the History screen puts a
    dozen of these on screen at once, and a dozen repainting gradients is a
    visible stutter on a cheap phone. --skel-delay staggers a row of them so they
    don't pulse in lockstep, which reads as one flashing block. */
@@ -1890,6 +1890,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* A spot opened up for the first time. Same pill, same place, same two seconds
    — the colour is the only thing that says it is a different kind of news. */
 .points-toast.unlock { background: var(--unlock); }
+/* Not news about points at all: a plain status line (the nav's Map saying why
+   there is no map yet). Inverted ink-on-paper, so it cannot be mistaken for a
+   gain or a loss and stands off the page in both themes. Navy was tried first
+   and all but vanished against dark mode's navy cards. */
+.points-toast.info { background: var(--ink); color: var(--paper); }
 
 /* flex-grow so a short spot (one reward, no punch card) still fills the pane and
    leaves .vendor-map-cta on the bottom edge rather than floating it halfway up
@@ -2220,7 +2225,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* The stylesheet has no focus rules at all, so a brand-new pair of buttons would
    fall back to UA defaults. */
 .btn-redeem:focus-visible, .item-card:focus-visible, .punch-card:focus-visible,
-.vdot:focus-visible, .hfilter:focus-visible, .history-more:focus-visible {
+.vdot:focus-visible, .hfilter:focus-visible, .history-more:focus-visible,
+.history-back:focus-visible {
   outline: 3px solid var(--brand); outline-offset: 2px;
 }
 
@@ -2460,7 +2466,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   background: var(--paper);
 }
 
-/* the three tab pages sit in one row and slide as a unit under the viewport */
+/* the three tab pages (Home / Spots / Account) sit in one row and slide as a
+   unit under the viewport. History is not one of them any more: it is an
+   overlay opened from Account, like the spot screen (see #history-screen). */
 .tab-viewport { flex: 1; overflow: hidden; position: relative; }
 .tab-track {
   display: flex; height: 100%;
@@ -2537,14 +2545,35 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    braces — but it is spelled out here because the rule above is the reason the
    pane now needs the cover at all. */
 #vendor[hidden] { display: none; }
+
+/* ---------- the History screen, the same kind of overlay ----------
+   Opened from Account (it used to be a tab page). Everything said above for
+   #vendor holds for it, for the same reasons: parked off the right edge, z 5
+   under .tabbar so the nav stays usable, pan-y for its own back-swipe. Minus
+   the flex column, which only #vendor's pinned map bar needed. #history inside
+   keeps every rule it had as a tab page; this box only takes over the
+   scrolling .tab-page used to do for it. It comes BEFORE #vendor in the markup
+   so a spot opened over History stacks on top at the same z-index. */
+#history-screen {
+  position: absolute;
+  top: 0; right: 0; bottom: 0; left: 0;   /* longhands, same reason as #vendor */
+  z-index: 5;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--paper);
+  touch-action: pan-y;
+  transform: translateX(100%);
+  will-change: transform;
+}
+#history-screen[hidden] { display: none; }
+
 /* Opened. JS adds .is-open; the transition rides on .is-sliding so that the
    FIRST paint of a freshly-unhidden pane can be positioned without animating. */
-#vendor.is-open { transform: translateX(0); }
-#vendor.is-sliding { transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1); }
+#vendor.is-open, #history-screen.is-open { transform: translateX(0); }
+#vendor.is-sliding, #history-screen.is-sliding { transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1); }
 /* A finger on the pane drives the transform directly — no transition in the way. */
-#vendor.is-dragging { transition: none; }
+#vendor.is-dragging, #history-screen.is-dragging { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  #vendor.is-sliding { transition: none; }
+  #vendor.is-sliding, #history-screen.is-sliding { transition: none; }
 }
 
 /* ---------- bottom nav ---------- */
@@ -3047,6 +3076,25 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .page-head { margin-bottom: 1.2rem; }
 .page-title { font-size: 1.9rem; font-weight: 900; letter-spacing: -0.01em; }
 .page-sub { margin-top: 0.2rem; color: var(--muted); font-weight: 600; font-size: 0.95rem; }
+
+/* History's header: the back arrow, then the title block it always had. The
+   arrow is the spot screen's .pb-back circle in ink on a card, because this one
+   sits on --paper rather than the navy points bar, where the translucent white
+   would vanish. A right margin rather than flex gap, which Safari < 14.1 lacks. */
+.history-head { display: flex; align-items: center; }
+.history-head-text { min-width: 0; }
+.history-back {
+  flex-shrink: 0;
+  width: 2.6rem; height: 2.6rem; border-radius: 50%;
+  margin-right: 0.9rem;
+  background: var(--card); color: var(--ink);
+  box-shadow: var(--rf-lift);
+  font-size: 1.5rem; font-weight: 900; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 120ms ease;
+}
+.history-back:active { transform: scale(0.92); }
+/* Its focus ring is the shared one, beside .hfilter's (search ":focus-visible"). */
 
 .history-list { display: flex; flex-direction: column; gap: 0.55rem; }
 .history-day {

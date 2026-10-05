@@ -10,6 +10,10 @@ if (window.__wrBooted) window.__wrBooted();
 
 let sb = null;
 let allVendors = [];  // every active vendor + this student's balance at each
+// Has /api/me/balances landed for this session? allVendors alone can't say: it
+// is [] while loading, after a failure, and for a deployment with no spots.
+// Only the nav's Map reads it, to say which of those it is (onNavMapTap).
+let vendorsLoaded = false;
 // What the carousel is actually showing: allVendors when the search box is
 // empty, otherwise the matches in rank order. Everything that pages the row —
 // the dots, the snap offsets, the "single" class — counts THIS list, never
@@ -59,8 +63,8 @@ let toastTimer = null;
 let visitedAllTime = false;
 let activeTab = 0;          // index into TABS (see there)
 let vendorOrigin = 0;       // which tab the open vendor screen was entered from
-let historyLoaded = false;  // has the history tab fetched at least once?
-let paneSlide = null;       // the in-flight #home <-> #vendor slide, so it can be cut short
+let historyLoaded = false;  // has the history screen fetched at least once?
+const paneSlides = {};      // pane id -> its in-flight slide (#vendor, #history-screen), so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
 let pendingDealLink = null;       // a ?deal=/?deals= notification tap, held until the app is ready
 let pendingSpotLink = null;       // same, for a ?spot= nearby-notification tap (migration-051)
@@ -115,9 +119,15 @@ const $ = (id) => document.getElementById(id);
    loadHistory(), and both background refreshers are gated on it, so the tab
    would have sat on its skeleton forever with no error and no empty state.
 
-   Keep in step with the .tab-btn order in index.html; the data-tab attributes
-   are asserted against this at boot (see wireTabs). */
-const TABS = ['home', 'spots', 'history', 'account'];
+   Keep in step with the data-tab attributes in index.html and the .tab-page
+   order in #tab-track. Nothing checks this at runtime, so a mismatch fails
+   silently: edit all three together.
+
+   History is no longer in here. Its slot in the nav went to the Map, which is
+   an action (it opens #map-modal) rather than a tab, so it has no index; and
+   History is a screen opened from Account (openHistoryScreen), not a page in
+   the track. */
+const TABS = ['home', 'spots', 'account'];
 const TAB = Object.fromEntries(TABS.map((name, i) => [name, i]));
 
 // Kept for the crash reporter, which wants a name for whatever tab was open.
@@ -127,6 +137,9 @@ function crashContext(extra) {
   const ctx = { ...extra };
   try {
     ctx.tab = TAB_NAMES[activeTab] ?? String(activeTab);
+    // History opens over Account, so the tab alone would file a crash on it as
+    // "account". /admin reads `screen` ahead of `tab`.
+    if (historyScreenOpen()) ctx.screen = 'history';
     // The spot screen the student is standing in, if any. A crash on a vendor
     // screen is about that vendor — their rewards, their logo, their card — and
     // without this the operator gets "Student app · spot" and has to guess which
@@ -392,11 +405,28 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('consent-terms').addEventListener('change', syncConsentButton);
   $('consent-accept').addEventListener('click', acceptConsent);
   $('consent-decline').addEventListener('click', declineConsent);
-  // bottom nav: slide between Home / History / Account
+  // bottom nav: slide between Home / Spots / Account, and open the Map
   $('tabbar').addEventListener('click', (e) => {
     const btn = e.target.closest('.tab-btn');
     if (!btn) return;
+    // The Map is an action, not a tab (see index.html), and it has to be caught
+    // before data-tab is read: Number(undefined) is NaN, and setTab(NaN) would
+    // write an invalid --tab, snapping the track to Home with nothing lit. It
+    // also must not reach the spot-screen teardown below. The map slides up
+    // OVER whatever is showing and closing it hands that screen back, same as
+    // the Map pill on Home.
+    if (btn.dataset.action === 'map') { onNavMapTap(); return; }
     const tab = Number(btn.dataset.tab);
+    // Account while History is up (and no spot over it) is "back": the screen
+    // slides out to reveal Account, the way the back arrow does. Keyed on
+    // [hidden], not is-open, so a second tap while it is already sliding out
+    // lets that slide finish rather than falling through to setTab, whose park
+    // would make the half-slid screen vanish in one frame. Every other case
+    // lands on a tab, and setTab() parks History on the way.
+    if (tab === TAB.account && !$('history-screen').hidden && $('vendor').hidden) {
+      if (historyScreenOpen()) closeHistoryScreen(true);
+      return;
+    }
     // Home tapped while drilled into a spot's redeem screen → return to the
     // carousel with a leftward slide, rather than re-selecting the open tab.
     // Asking for Home explicitly overrides where the spot was opened from: the
@@ -415,9 +445,13 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     setTab(tab);
   });
   wireSpots();      // the Spots tab's search field, rows, and hearts
-  wireHistory();    // …the Activity tab's spot chips and its Load older button
-  wireTabSwipe();   // …and the four tabs by dragging the track itself
-  wireVendorSwipe(); // …and a rightward drag on the vendor screen backs out to Home
+  wireHistory();    // …the History screen's spot chips and its Load older button
+  wireTabSwipe();   // …and the three tabs by dragging the track itself
+  wirePaneSwipe();  // …and a rightward drag on the spot or History screen backs out of it
+  // account → history: a screen over Account, with three ways back out (the
+  // arrow, the Account tab, a rightward drag) plus Esc
+  $('account-history').addEventListener('click', openHistoryScreen);
+  $('history-back').addEventListener('click', () => closeHistoryScreen(true));
   // appearance: dark-mode toggle (the <head> script already applied the theme)
   applyTheme(currentTheme());
   $('dark-toggle').addEventListener('click', () => {
@@ -428,7 +462,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('home-reward').addEventListener('click', onHomeRewardTap);
   $('home-email-nudge').addEventListener('click', openLinkSheet);
   $('home-email-nudge-close').addEventListener('click', dismissEmailNudge);
-  $('history-find-spot').addEventListener('click', () => setTab(TAB.spots));
+  $('history-find-spot').addEventListener('click', () => setTab(TAB.spots));   // setTab parks History first
   // Page dots under the carousel. #vendor-carousel and #vendor-dots are stable
   // elements — only their children are replaced — so these bind exactly once.
   $('vendor-carousel').addEventListener('scroll', onCarouselScroll, { passive: true });
@@ -611,6 +645,13 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     // Before the sheets: the lens menu is the shallowest thing on screen, and a
     // press that closed a sheet *and* this would be one press doing two jobs.
     if (!$('home-lens-menu').hidden) { closeHomeLensMenu(); return; }
+    // History is a screen, not a sheet: Esc backs out of it only when nothing
+    // is open over it, or one press would close a sheet and the screen under it.
+    // Read BEFORE the closes below, which would otherwise make it always true.
+    // A spot screen over it counts too; Esc has never closed that one.
+    const historyCovered = !!document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')
+      || !$('vendor').hidden;
+    if (!historyCovered && historyScreenOpen()) { closeHistoryScreen(true); return; }
     closeEarnSheet();
     closeAmbassadorSheet();
     closeReceiptSheet();
@@ -790,6 +831,7 @@ function render(session) {
     Splash.hide();              // settled: this visitor gets the landing page
     // A drill-in still mid-slide would settle over the landing page behind us.
     closeVendorPane(false);     // park the spot screen instantly — no animation on sign-out
+    closeHistoryScreen(false);  // …and History, or the next student signs in to it (setTab below parks it too; this says so)
     dropSwipe();                // a finger still down would keep writing --tab over the reset
     vendorOrigin = TAB.home;    // …and the return tab, or the next student inherits it
     setTab(TAB.home, false);
@@ -802,6 +844,7 @@ function render(session) {
     showCommunityAmount(false); // …and back behind its placeholder, or the next student reads that 0 as theirs
     resetTier();            // …as is the tier chip on the pill above it
     allVendors = [];
+    vendorsLoaded = false;      // …so the nav's Map says "loading", not "no spots", until theirs land
     resetVendorRow();           // …and unpaint the cards, or the next student reads them
     renderHomeExtras();         // …and the reward / getting-started cards built from them
     resetSpots();               // …and the directory, which carries their saved spots
@@ -856,6 +899,7 @@ function render(session) {
   // screen or their current tab, so only reset when the app was hidden.
   if (wasSignedOut) {
     closeVendorPane(false);    // a fresh sign-in always lands on a tab, never on a spot
+    closeHistoryScreen(false); // …and never on History
     vendorOrigin = TAB.home;   // never inherit the previous user's return tab
     setTab(TAB.home, false);
     // App just opened for this user: key install suppression to them + count the
@@ -1314,9 +1358,15 @@ async function confirmDelete() {
 function setTab(i, animate = true) {
   activeTab = i;
   // The hub belongs to Home. It overlays the tab track and the bottom nav sits
-  // above it, so leaving it open while History slides in underneath would read
-  // as the panel having escaped its screen.
+  // above it, so leaving it open while another tab slides in underneath would
+  // read as the panel having escaped its screen.
   closeHub();
+  // History belongs to Account the same way, and it overlays the track too, so
+  // landing on any tab parks it — instantly, like the spot screen on a tab tap.
+  // That covers every way to a tab at once: the nav, "Find a spot", sign-in and
+  // sign-out. The one exception, Account tapped while History is up, slides it
+  // out in the nav's handler and never gets here.
+  closeHistoryScreen(false);
   const track = $('tab-track');
   if (!animate) track.style.transition = 'none';
   track.style.setProperty('--tab', i);
@@ -1326,13 +1376,14 @@ function setTab(i, animate = true) {
   // different numbering schemes over the same buttons: the nav's click handler
   // has always dispatched on data-tab, so painting by index meant a markup
   // reorder lit the wrong button while taps still went to the right page.
-  document.querySelectorAll('.tab-btn').forEach((btn) => {
+  // [data-tab] skips the Map button, which is an action with no page to be on.
+  document.querySelectorAll('.tab-btn[data-tab]').forEach((btn) => {
     const on = Number(btn.dataset.tab) === i;
     btn.classList.toggle('is-active', on);
     btn.setAttribute('aria-current', on ? 'page' : 'false');
   });
-
-  if (i === TAB.history) loadHistory();   // refresh activity whenever the History tab opens
+  // No loadHistory() here any more: History is not a tab. openHistoryScreen()
+  // does the refetch-on-arrival this line used to.
 }
 
 /* ---------- bottom nav: swipe between tabs ----------
@@ -1386,8 +1437,8 @@ function trackPos() {
 }
 
 // Paint only — deliberately not setTab(). A drag that snapped back hasn't
-// changed tab, and setTab re-fires loadHistory() every time it lands on 1, so
-// routing snap-backs through it would refetch the list on every thumb wiggle.
+// changed tab, and setTab does a tab's arrival work (closing the hub and
+// History), which a snap-back must not repeat on every thumb wiggle.
 function paintTab(pos) {
   $('tab-track').style.setProperty('--tab', pos);
 }
@@ -1428,17 +1479,21 @@ function dropSwipe() {
   $('tab-track').classList.remove('is-dragging');
 }
 
-// Does anything under the finger still want this horizontal drag? Only the
-// vendor carousel can (it's the one overflow-x in the stylesheet), and only
-// while it hasn't already hit the end it's being dragged toward — otherwise the
-// last card would swallow every swipe off Home. The walk stops at the .tab-page
-// because nothing above it pans sideways: .tab-viewport is overflow: hidden.
+// Does anything under the finger still want this horizontal drag? A sideways
+// scroller can (the vendor carousel on Home, the spot chips on History), but
+// only while it hasn't already hit the end it's being dragged toward —
+// otherwise the last card would swallow every swipe off Home. The walk stops at
+// the .tab-page, or at the overlay screen the touch is on (the pane back-swipe
+// asks this too), because nothing above those pans sideways: .tab-viewport is
+// overflow: hidden.
 function scrollerInWay(target, dx) {
   let el = target && target.nodeType === 1 ? target : null;   // touches land on <path> inside the card SVGs
   while (el) {
-    // First, before any overflow test: a .tab-page only authors overflow-y, and
-    // a lone overflow-y makes overflow-x compute to `auto` rather than visible.
-    if (el.classList.contains('tab-page')) return false;
+    // First, before any overflow test: a .tab-page and both overlay screens
+    // (#vendor, #history-screen: the children of .tab-viewport) only author
+    // overflow-y, and a lone overflow-y makes overflow-x compute to `auto`
+    // rather than visible.
+    if (el.classList.contains('tab-page') || el.parentElement?.classList.contains('tab-viewport')) return false;
     // 2px of slop rather than an exact compare — scrollWidth/clientWidth are
     // rounded to integers while scrollLeft is fractional, and scroll-snap parks
     // the carousel on layout-derived fractions.
@@ -1522,7 +1577,7 @@ function onSwipeMove(e) {
   swipe.x = t.clientX;
 
   // One tab per gesture, the way a paged scroller works: however far the drag
-  // runs it can't fly past History straight into Account.
+  // runs it can't fly past Spots straight into Account.
   swipe.pos = Math.min(swipe.from + 1, Math.max(swipe.from - 1, swipe.base - dx / swipe.width));
   paintSwipe(swipe.pos, swipe.last);
 }
@@ -1555,8 +1610,8 @@ function onSwipeEnd(e) {
   }
   target = Math.max(0, Math.min(s.last, target));   // the ends don't wrap
 
-  // setTab only on a real arrival — it's what calls loadHistory(), and a drag
-  // that snapped back onto Activity must not refetch the list.
+  // setTab only on a real arrival — a drag that snapped back hasn't arrived
+  // anywhere, so it gets the paint and none of the arrival work (see paintTab).
   if (target === activeTab) paintTab(activeTab);
   else setTab(target);
 
@@ -1584,143 +1639,165 @@ function eatNextClick(el = $('tab-track')) {
   timer = setTimeout(() => el.removeEventListener('click', eat, true), 400);
 }
 
-/* ---------- vendor screen: swipe right to back out to Home ----------
+/* ---------- spot + History screens: swipe right to back out ----------
    Same axis-lock / fling / commit-by-distance feel as the tab swipe above,
-   but scoped to #vendor and to one direction — a leftward drag there means
-   nothing of its own, so it's left for the tab swipe to claim as normal (see
-   the `closest('#vendor')` check in onSwipeMove, which steps aside for the
-   rightward case so the two gestures never fight over the same touch). */
+   but scoped to the two overlay screens on .tab-viewport (#vendor and
+   #history-screen) and to one direction: a rightward drag backs out of
+   whichever one the finger is on. A leftward drag there means nothing, and
+   neither screen is inside #tab-track, so the tab swipe never sees these
+   touches at all and the two gestures cannot fight over one. */
 
-let vswipe = null;   // the vendor back-gesture in flight, or null
+let pswipe = null;   // the back-gesture in flight, or null; pswipe.pane is the screen it is on
 
-function wireVendorSwipe() {
-  // Bound to #vendor itself now. It used to be bound to #tab-home, because the
-  // pane was only as tall as its content and a vendor with few rewards left a
-  // strip of bare page below it where a touch never reached this listener — the
-  // tab swipe took the drag instead, so the back-swipe appeared to work on some
-  // spots and not others. As an overlay the pane is inset:0 against
-  // .tab-viewport, so it always fills the screen and that gap cannot exist.
+function wirePaneSwipe() {
+  // Bound to each screen itself. The spot screen's used to be bound to
+  // #tab-home, because the pane was only as tall as its content and a vendor
+  // with few rewards left a strip of bare page below it where a touch never
+  // reached this listener — the tab swipe took the drag instead, so the
+  // back-swipe appeared to work on some spots and not others. As overlays both
+  // screens are inset:0 against .tab-viewport, so they always fill the screen
+  // and that gap cannot exist.
   //
-  // It also means a touch on the spot screen never reaches the TAB swipe, which
-  // is bound to #tab-track — the pane is outside the track entirely. The
-  // explicit "is the vendor open?" guard that used to sit in onSwipeMove is gone
-  // with it; the DOM position is the guard now.
-  const el = $('vendor');
-  el.addEventListener('touchstart', onVendorSwipeStart, { passive: true });
-  el.addEventListener('touchmove', onVendorSwipeMove, { passive: false });   // non-passive to preventDefault
-  window.addEventListener('touchend', onVendorSwipeEnd, { passive: true });
-  window.addEventListener('touchcancel', onVendorSwipeEnd, { passive: true });
-  window.addEventListener('resize', onVendorSwipeResize);
+  // It also means a touch on either screen never reaches the TAB swipe, which
+  // is bound to #tab-track — both are outside the track entirely. The explicit
+  // "is the vendor open?" guard that used to sit in onSwipeMove is gone with
+  // it; the DOM position is the guard now.
+  ['vendor', 'history-screen'].forEach((id) => {
+    $(id).addEventListener('touchstart', onPaneSwipeStart, { passive: true });
+    $(id).addEventListener('touchmove', onPaneSwipeMove, { passive: false });   // non-passive to preventDefault
+  });
+  window.addEventListener('touchend', onPaneSwipeEnd, { passive: true });
+  window.addEventListener('touchcancel', onPaneSwipeEnd, { passive: true });
+  window.addEventListener('resize', onPaneSwipeResize);
 }
 
 // Hand the pane over to the finger: no transition in the way, so it tracks 1:1.
-function beginVendorBackDrag() {
-  $('vendor').classList.add('is-dragging');
-  paintVendorDrag(0);
+function beginPaneBackDrag(pane) {
+  pane.classList.add('is-dragging');
+  paintPaneDrag(pane, 0);
 }
 
-// pos 0 = the spot screen fully covering (drag start), pos 1 = fully dismissed.
-// Only the one element moves now; the tab underneath is a real page that was
+// pos 0 = the screen fully covering (drag start), pos 1 = fully dismissed.
+// Only the one element moves; the tab underneath is a real page that was
 // never hidden, so there is no second pane to counter-animate.
-function paintVendorDrag(pos) {
-  $('vendor').style.transform = `translateX(${pos * 100}%)`;
+function paintPaneDrag(pane, pos) {
+  pane.style.transform = `translateX(${pos * 100}%)`;
 }
 
-// Give the gesture back without navigating: the vendor screen eases back into
-// place from wherever the finger left it.
-function abortVendorSwipe() {
-  if (!vswipe) return;
-  const wasOurs = vswipe.axis === 'x';
-  vswipe = null;
-  if (wasOurs) settleVendorDrag(false);
+// One page wide, read off the screen being dragged. Both screens are inset:0
+// against .tab-viewport, so this is the same box the tab swipe measures.
+function paneWidth(pane) {
+  return pane.clientWidth || window.innerWidth;
 }
 
-function onVendorSwipeStart(e) {
-  if (vswipe) abortVendorSwipe();               // a stale gesture whose touchend never landed
+// Give the gesture back without navigating: the screen eases back into place
+// from wherever the finger left it.
+function abortPaneSwipe() {
+  if (!pswipe) return;
+  const { pane, axis } = pswipe;
+  pswipe = null;
+  if (axis === 'x') settlePaneDrag(pane, false);
+}
+
+function onPaneSwipeStart(e) {
+  if (pswipe) abortPaneSwipe();                  // a stale gesture whose touchend never landed
   if (e.touches.length !== 1) return;            // a second finger is a pinch, never a back-swipe
-  if ($('vendor').hidden) return;                // on the carousel, not drilled in — nothing to back out of
-  if ($('vendor').classList.contains('is-sliding')) return;       // a slide already owns the axis
+  const pane = e.currentTarget;
+  if (pane.hidden) return;                       // not open — nothing to back out of
+  if (pane.classList.contains('is-sliding')) return;              // a slide already owns the axis
   if (document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden])')) return;
   const t = e.touches[0];
-  vswipe = {
+  pswipe = {
+    pane,
     id: t.identifier,
+    target: t.target,
     x0: t.clientX, y0: t.clientY,
     x: t.clientX, xPrev: t.clientX, tPrev: e.timeStamp,
     v: null,                    // px/ms, smoothed; null until there's a sample
     axis: null,                 // null = undecided, 'x' = ours, 'off' = someone else's
-    width: $('tab-home').clientWidth || window.innerWidth,
+    width: paneWidth(pane),
   };
 }
 
-function onVendorSwipeMove(e) {
-  if (!vswipe || vswipe.axis === 'off') return;
-  if (e.touches.length !== 1) { abortVendorSwipe(); return; }
+function onPaneSwipeMove(e) {
+  if (!pswipe || pswipe.axis === 'off') return;
+  if (e.touches.length !== 1) { abortPaneSwipe(); return; }
   const t = e.touches[0];
-  if (t.identifier !== vswipe.id) return;
-  const dx = t.clientX - vswipe.x0;
-  const dy = t.clientY - vswipe.y0;
+  if (t.identifier !== pswipe.id) return;
+  const dx = t.clientX - pswipe.x0;
+  const dy = t.clientY - pswipe.y0;
 
-  if (vswipe.axis === null) {
+  if (pswipe.axis === null) {
     if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_SLOP) return;
-    // Leftward (or too vertical) isn't the back gesture — the tab swipe owns that.
-    if (dx <= 0 || dx < Math.abs(dy) * SWIPE_RATIO) { vswipe.axis = 'off'; return; }
-    if (!e.cancelable) { vswipe.axis = 'off'; return; }
-    vswipe.axis = 'x';
-    beginVendorBackDrag();
+    // Leftward (or too vertical) isn't the back gesture, and nothing else here wants it.
+    if (dx <= 0 || dx < Math.abs(dy) * SWIPE_RATIO) { pswipe.axis = 'off'; return; }
+    if (!e.cancelable) { pswipe.axis = 'off'; return; }
+    // History's spot chips are a sideways scroller: a rightward drag on them
+    // scrolls them back toward All while they have room to, and only past
+    // that does it become the back gesture.
+    if (scrollerInWay(pswipe.target, dx)) { pswipe.axis = 'off'; return; }
+    pswipe.axis = 'x';
+    beginPaneBackDrag(pswipe.pane);
   }
 
   if (e.cancelable) e.preventDefault();
 
-  const dt = e.timeStamp - vswipe.tPrev;
+  const dt = e.timeStamp - pswipe.tPrev;
   if (dt > 0) {
-    const v = (t.clientX - vswipe.xPrev) / dt;
-    vswipe.v = vswipe.v === null ? v : vswipe.v * 0.4 + v * 0.6;   // one jittery sample shouldn't read as a fling
-    vswipe.xPrev = t.clientX;
-    vswipe.tPrev = e.timeStamp;
+    const v = (t.clientX - pswipe.xPrev) / dt;
+    pswipe.v = pswipe.v === null ? v : pswipe.v * 0.4 + v * 0.6;   // one jittery sample shouldn't read as a fling
+    pswipe.xPrev = t.clientX;
+    pswipe.tPrev = e.timeStamp;
   }
-  vswipe.x = t.clientX;
+  pswipe.x = t.clientX;
 
-  paintVendorDrag(Math.max(0, Math.min(1, dx / vswipe.width)));
+  paintPaneDrag(pswipe.pane, Math.max(0, Math.min(1, dx / pswipe.width)));
 }
 
-function onVendorSwipeEnd(e) {
-  if (!vswipe) return;
-  const s = vswipe;
-  vswipe = null;
-  if (s.axis !== 'x') return;   // the tab swipe (or nothing) took this one
+function onPaneSwipeEnd(e) {
+  if (!pswipe) return;
+  const s = pswipe;
+  pswipe = null;
+  if (s.axis !== 'x') return;   // the page (or nothing) took this one
 
   const idle = e.timeStamp - s.tPrev;
   const v = (e.type === 'touchcancel' || idle > SWIPE_IDLE_MS) ? 0 : (s.v ?? 0);
   const dx = s.x - s.x0;
 
-  settleVendorDrag(v >= SWIPE_FLING || dx >= s.width * SWIPE_COMMIT);
+  settlePaneDrag(s.pane, v >= SWIPE_FLING || dx >= s.width * SWIPE_COMMIT);
 
   // The browser can still fire a click on whatever was under the finger when it
-  // went down — a reward card or the back button. Scoped to the page for the
-  // same reason the listeners are: a drag can start outside the pane's own box.
-  if (Math.abs(dx) > SWIPE_SLOP) eatNextClick($('tab-home'));
+  // went down — a reward card, a History chip, the back button. Scoped to the
+  // screen the drag was on: that is where the click would land. (The spot
+  // screen's used to be scoped to #tab-home, from when the pane lived inside
+  // it; as an overlay its clicks never reached there.)
+  if (Math.abs(dx) > SWIPE_SLOP) eatNextClick(s.pane);
 }
 
-function onVendorSwipeResize() {
-  if (!vswipe || ($('tab-home').clientWidth || window.innerWidth) === vswipe.width) return;
-  abortVendorSwipe();
+function onPaneSwipeResize() {
+  if (!pswipe || paneWidth(pswipe.pane) === pswipe.width) return;
+  abortPaneSwipe();
 }
 
 // Finish the drag from wherever the finger left it: `commit` slides the rest
-// of the way home, same as tapping the back button; otherwise the vendor
-// screen springs back into place. Populates `paneSlide` exactly like
-// openVendorPane() does, so an interrupting nav can still cut it short.
-function settleVendorDrag(commit) {
-  const pane = $('vendor');
+// of the way out, same as tapping the screen's back arrow; otherwise the
+// screen springs back into place. Records its slide in paneSlides exactly
+// like slidePaneIn() does, so an interrupting nav can still cut it short.
+function settlePaneDrag(pane, commit) {
   pane.classList.remove('is-dragging');
 
   if (commit) {
-    // backToHome(true) does the rest: clears the spot, refreshes balances, and
-    // animates the pane the remaining distance off the right edge. The inline
-    // transform the drag left behind is cleared inside closeVendorPane, so the
-    // class-driven translateX(100%) is what the transition runs to.
-    vendorOrigin = TAB.home;
-    backToHome(true);
+    // The screen's own way out does the rest and animates the pane the
+    // remaining distance off the right edge: the inline transform the drag
+    // left behind is cleared inside slidePaneOut, so the class-driven
+    // translateX(100%) is what the transition runs to. For a spot,
+    // backToHome(true) also clears the spot and refreshes balances.
+    if (pane.id === 'history-screen') {
+      closeHistoryScreen(true);
+    } else {
+      vendorOrigin = TAB.home;
+      backToHome(true);
+    }
     return;
   }
 
@@ -1733,13 +1810,47 @@ function settleVendorDrag(commit) {
 
   const settle = (e) => {
     if (e && e.target !== pane) return;
-    endPaneSlide();
+    endPaneSlide(pane);
   };
-  paneSlide = { settle, timer: setTimeout(settle, 420) };
+  paneSlides[pane.id] = { settle, timer: setTimeout(settle, 420) };
   pane.addEventListener('transitionend', settle);
 }
 
-/* ---------- history tab ---------- */
+/* ---------- history screen ----------
+   Opened from Account (#account-history), over it. See index.html for why it
+   is an overlay on .tab-viewport and not a page in the track. Everything below
+   the open/close is what the History TAB ran, unchanged. */
+
+function historyScreenOpen() {
+  return $('history-screen').classList.contains('is-open');
+}
+
+// Slide History in over Account, and refetch it every time: the refresh that
+// landing on the old History tab did (in setTab). The fetch is also what turns
+// the live updates on. historyLoaded is only ever set inside loadHistory(), and
+// the socket pushes that repaint the list are gated on it, so a screen opened
+// without this call would sit on its skeleton forever with no error.
+function openHistoryScreen(e) {
+  slidePaneIn($('history-screen'));
+  loadHistory();
+  // Focus moves in only for a keyboard open (detail 0: Enter/Space, not a tap),
+  // the hub's rule: a tap that moved focus would flash a ring on a phone.
+  if (e && e.detail === 0) $('history-back').focus({ preventScroll: true });
+}
+
+// `animate` slides it out to the right, revealing Account; without it the
+// screen is parked instantly (a tab change, sign-out). When it reveals Account,
+// focus left inside goes back to the row that opened it, or it would sit on an
+// element that is about to be display:none. Not on a park: that is a tab
+// change, and the row would be on a page sliding off the screen.
+function closeHistoryScreen(animate = true) {
+  const screen = $('history-screen');
+  if (screen.hidden) return;        // setTab calls this on every tab change
+  const hadFocus = animate && screen.contains(document.activeElement);
+  slidePaneOut(screen, animate);
+  if (hadFocus) $('account-history').focus({ preventScroll: true });
+}
+
 
 // Must match the route's own default and ceiling (src/routes/student.js).
 const HISTORY_DAYS = 30;
@@ -3659,7 +3770,7 @@ async function submitMove() {
    Nothing here is a notification: it is a pill that appears for two seconds on
    a page they are already looking at. If the app is backgrounded the queue
    drains unseen, same as before, and that is correct — the durable record of
-   all of this is the History tab. */
+   all of this is History (Account → History). */
 const TOAST_MS = 2200;          // how long a pill stays up
 const TOAST_FADE_MS = 300;      // must match the transition in styles.css
 // Two is the realistic burst (points + unlock). The cap is a backstop against a
@@ -3672,7 +3783,8 @@ let toastShowing = false;
 /**
  * Show a pill. `kind` picks the colour (see .points-toast in styles.css):
  * 'gain' for something arriving, 'lose' for something spent, 'unlock' for a
- * spot the student has just opened up.
+ * spot the student has just opened up, 'info' for a plain status line that is
+ * none of those (the nav's Map explaining why there is no map yet).
  */
 function showToast(text, kind = 'gain', ms = TOAST_MS) {
   if (toastQueue.length >= TOAST_QUEUE_MAX) return;
@@ -3721,6 +3833,7 @@ async function loadVendors() {
     const res = await authFetch('/api/me/balances');
     if (!res.ok) throw new Error();
     allVendors = await res.json();
+    vendorsLoaded = true;
     // Same on every row, so the first one answers for the payload. `=== true`
     // rather than a truthiness test: an older server sends no such field, and
     // undefined has to mean "assume not" (see visitedAllTime).
@@ -3892,16 +4005,40 @@ function vendorMapHtml(lat, lng) {
 }
 
 // Open the platform's own maps app with directions to `address` (keyless deep
-// links): iOS → Apple Maps, Android → the OS map chooser, else → Google Maps web.
+// links): iOS → Apple Maps, Android → whichever app handles geo: (the
+// student's default, or the OS chooser), else → Google Maps in a new tab.
+//
+// ONE navigation, and on a phone never a new window. This used to window.open()
+// on every platform, and that is what left an empty white page in the app after
+// the maps app had opened. An installed app (an iOS home-screen app, an Android
+// WebAPK) has no tabs to put a new window in, so it opens an in-app browser
+// (SafariViewController, a Custom Tab) just to carry the URL; the maps app takes
+// over from it, and the student comes back to a blank sheet they have to close.
+// On iOS the https://maps.apple.com link did it even without window.open: it is
+// out of the app's scope, so navigating to it opens that same in-app browser.
+// And with 'noopener', window.open() returns null by spec, so the "blocked"
+// fallback that used to follow it ran on every tap: two navigations each time,
+// and on a desktop the app's own tab went to Google Maps along with the new one.
+//
+// A custom scheme assigned to location.href never unloads the page: the browser
+// hands it to the OS and stays exactly where it was. Hence maps:// on iOS, the
+// URL scheme Apple Maps registers, rather than its https form.
 function openMaps(address) {
   const q = encodeURIComponent(address);
   const ua = navigator.userAgent || '';
-  let url;
-  if (/iphone|ipad|ipod/i.test(ua)) url = `https://maps.apple.com/?daddr=${q}`;
-  else if (/android/i.test(ua)) url = `geo:0,0?q=${q}`;
-  else url = `https://www.google.com/maps/dir/?api=1&destination=${q}`;
-  const win = window.open(url, '_blank', 'noopener');
-  if (!win) location.href = url;   // popup blocked / custom scheme → navigate directly
+  // iPadOS 13+ asks for desktop sites and says "Macintosh"; a Mac has no touch points.
+  const iOS = /iphone|ipad|ipod/i.test(ua)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (iOS) { location.href = `maps://?daddr=${q}`; return; }
+  if (/android/i.test(ua)) { location.href = `geo:0,0?q=${q}`; return; }
+  // A desktop has real tabs, so a new one is right there. A detached anchor
+  // rather than window.open(): it opens the tab and nothing else, and there is
+  // no return value to misread.
+  const a = document.createElement('a');
+  a.href = `https://www.google.com/maps/dir/?api=1&destination=${q}`;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.click();
 }
 
 // Every spot on here is in downtown State College, so "State College, PA 16801"
@@ -6861,6 +6998,39 @@ function onShowVendorInMap() {
   if (vendor) openMapScreen(vendor.vendorId);
 }
 
+// The bottom nav's Map: the whole set, nothing selected, the same screen the
+// Home pill opens. Unlike that pill it is on screen from the first paint
+// (index.html says why), so it can be tapped while openMapScreen() has nothing
+// to draw, and openMapScreen() returns silently then, which from a nav button
+// reads as broken. So each of those cases says what it is instead.
+function onNavMapTap() {
+  if (typeof L === 'undefined') { mapNavToast('The map didn’t load'); return; }
+  if (mappableVendors().length) { openMapScreen(null); return; }
+  if (!vendorsLoaded) {
+    mapNavToast('Loading your spots…');
+    loadVendors();       // the retry after a failed load; a harmless duplicate while the first is still out
+    return;
+  }
+  mapNavToast(allVendors.length ? 'No spots on the map yet' : 'No spots yet');
+}
+
+// The points pill, in its neutral colour. One copy at a time: a thumb tapping
+// Map again while the first is still up would otherwise queue the same words
+// for another two seconds per tap.
+//
+// The pill is not a live region (every points pill would talk over a screen
+// reader if it were), so the words also go to #nav-map-status, or the button,
+// announced as opening a dialog, would do nothing audible at all. Emptied
+// first and set a beat later, so a second tap repeats the message.
+function mapNavToast(text) {
+  const sr = $('nav-map-status');
+  sr.textContent = '';
+  setTimeout(() => { sr.textContent = text; }, 50);
+  if (toastShowing && $('points-toast').textContent === text) return;
+  if (toastQueue.some((t) => t.text === text)) return;
+  showToast(text, 'info');
+}
+
 function onMapPinDirections() {
   const v = mapPinId && allVendors.find((x) => String(x.vendorId) === mapPinId);
   if (v?.address) openMaps(v.address);
@@ -7014,24 +7184,27 @@ function backToHome(animate = false) {
   dotsFromScroll();
 }
 
-/* ---------- the spot screen's slide ----------
+/* ---------- the spot and History screens' slide ----------
    #vendor is an overlay on .tab-viewport now, not one of a pair of panes inside
    #tab-home, so this is a single element moving between translateX(100%) and 0.
    The old slidePanes/endPaneSlide pair drove two panes against a .home-sliding
    layout and is gone with them: it could only ever animate over the Home tab,
-   because both panes lived on it.
+   because both panes lived on it. #history-screen is the same kind of overlay
+   and slides through the same two functions (slidePaneIn / slidePaneOut).
 
-   paneSlide holds the in-flight settle so an interrupting navigation can cancel
-   it rather than letting it fire against a pane it no longer describes. */
+   paneSlides holds each pane's in-flight settle, keyed by its id, so an
+   interrupting navigation can cancel it rather than letting it fire against a
+   pane it no longer describes. One per pane, because both can be moving at
+   once: a spot opened from the map while History is still sliding in. */
 
-/** Cut any in-flight slide short. Leaves the pane wherever the caller puts it. */
-function endPaneSlide() {
-  if (!paneSlide) return;
-  const { settle, timer } = paneSlide;
-  paneSlide = null;                     // first, so a re-entrant call is a no-op
-  clearTimeout(timer);
-  $('vendor').removeEventListener('transitionend', settle);
-  $('vendor').classList.remove('is-sliding');
+/** Cut any in-flight slide on `pane` short. Leaves it wherever the caller puts it. */
+function endPaneSlide(pane) {
+  const slide = paneSlides[pane.id];
+  if (!slide) return;
+  delete paneSlides[pane.id];           // first, so a re-entrant call is a no-op
+  clearTimeout(slide.timer);
+  pane.removeEventListener('transitionend', slide.settle);
+  pane.classList.remove('is-sliding');
 }
 
 /** True when the device asks for less motion (or can't be asked). */
@@ -7187,8 +7360,17 @@ function collapseAway(el, done) {
 
 /** Slide the spot screen in from the right over whatever tab is showing. */
 function openVendorPane() {
-  const pane = $('vendor');
-  endPaneSlide();
+  slidePaneIn($('vendor'));
+}
+
+/** Slide it back out to the right, or park it instantly. */
+function closeVendorPane(animate = true) {
+  slidePaneOut($('vendor'), animate);
+}
+
+/** Slide an overlay screen (#vendor, #history-screen) in from the right. */
+function slidePaneIn(pane) {
+  endPaneSlide(pane);
   pane.hidden = false;
   pane.scrollTop = 0;
 
@@ -7196,7 +7378,7 @@ function openVendorPane() {
   // spot, open the map on its pin, tap View rewards — openVendor runs against a
   // pane that never left. Re-running the slide would park it off the right edge
   // for a frame and drag it back in, which reads as a flicker behind the map
-  // sliding down. The content swap above is the whole job here.
+  // sliding down. The content swap the caller did is the whole job here.
   if (pane.classList.contains('is-open')) return;
 
   if (reducedMotion()) { pane.classList.add('is-open'); return; }
@@ -7211,16 +7393,15 @@ function openVendorPane() {
 
   const settle = (e) => {
     if (e && e.target !== pane) return;   // ignore transitions bubbling from children
-    endPaneSlide();
+    endPaneSlide(pane);
   };
-  paneSlide = { settle, timer: setTimeout(settle, 420) };  // timer: if transitionend never fires
+  paneSlides[pane.id] = { settle, timer: setTimeout(settle, 420) };  // timer: if transitionend never fires
   pane.addEventListener('transitionend', settle);
 }
 
-/** Slide it back out to the right, or park it instantly. */
-function closeVendorPane(animate = true) {
-  const pane = $('vendor');
-  endPaneSlide();
+/** Slide an overlay screen back out to the right, or park it instantly. */
+function slidePaneOut(pane, animate = true) {
+  endPaneSlide(pane);
   pane.classList.remove('is-dragging');
 
   if (!animate || reducedMotion()) {
@@ -7238,10 +7419,10 @@ function closeVendorPane(animate = true) {
 
   const settle = (e) => {
     if (e && e.target !== pane) return;
-    endPaneSlide();
+    endPaneSlide(pane);
     pane.hidden = true;                   // only once it is actually off-screen
   };
-  paneSlide = { settle, timer: setTimeout(settle, 420) };
+  paneSlides[pane.id] = { settle, timer: setTimeout(settle, 420) };
   pane.addEventListener('transitionend', settle);
 }
 

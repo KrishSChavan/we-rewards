@@ -333,10 +333,93 @@
   <!-- ================= SIGNED-IN APP (sliding tabs + bottom nav) ================= -->
   <div id="app" hidden>
 
-    <!-- The viewport clips the 4-wide track (Home / Spots / History / Account),
-         which slides horizontally per tab. It also hosts the spot screen as an
-         overlay — see the block directly below. -->
+    <!-- The viewport clips the 3-wide track (Home / Spots / Account), which
+         slides horizontally per tab. It also hosts two screens as overlays:
+         History (opened from Account) and the spot screen. See the blocks
+         directly below. -->
     <div class="tab-viewport">
+      <!-- ---------- HISTORY SCREEN (overlay, opened from Account) ----------
+           History used to be a tab page in #tab-track with its own button in
+           the bottom nav. That slot went to the Map, and History is now a row
+           in Account (#account-history) that slides this screen in over it.
+           The #history markup inside is unchanged, so every id app.js writes
+           and every #history / .history-* rule in styles.css still applies.
+
+           Same kind of overlay as the spot screen below, for the same reasons
+           (see there): .tab-viewport is already the exact box above the nav and
+           already clips, so a pane parked at translateX(100%) is hidden for
+           free, and the bottom nav stays lit and usable over it. It must NOT
+           go back inside #tab-track: the tab swipe counts the track's children
+           to find its last page, so a page with no nav button would be
+           swiped onto. It sits BEFORE #vendor because both are z-index 5 and
+           the later one paints on top: a spot opened while History is up
+           (a notification, the Map) has to land over it, not under it. -->
+      <section id="history-screen" class="history-screen" aria-label="Activity" hidden>
+        <div id="history">
+          <!-- The back arrow is the one thing this header gained when History
+               stopped being a tab: a screen that slides in needs a way back out
+               that is not the nav. Title and strapline keep their stack in a
+               block of their own beside it. -->
+          <header class="page-head history-head">
+            <button id="history-back" class="history-back" type="button" aria-label="Back to Account">←</button>
+            <div class="history-head-text">
+              <h1 class="page-title">Activity</h1>
+              <!-- Rewritten by renderHistory: "Load older" widens the window, and
+                   a strapline still saying 30 would be the only thing on screen
+                   claiming the list is shorter than it is. -->
+              <p id="history-sub" class="page-sub">Your last 30 days</p>
+            </div>
+          </header>
+          <!-- Filter by spot. Filled from the rows that actually arrived (see
+               historySpots), so it stays hidden for a student with activity at
+               one spot, and it is a SIBLING of the list rather than a child
+               because renderHistory replaces the list's contents wholesale on
+               every socket push. -->
+          <div id="history-filters" class="history-filters" role="group" aria-label="Filter activity by spot" hidden></div>
+          <div id="history-list" class="history-list"></div>
+          <!-- Still #history-loading, so every hidden flag app.js already sets
+               on the old "Loading…" line keeps working — it just has a shape
+               now. Day divider included: the real list is grouped under one,
+               and without it every row would shift down when the fetch lands. -->
+          <div id="history-loading" class="history-skel" aria-hidden="true">
+            <span class="skel hskel-day"></span>
+            <div class="hskel-row">
+              <span class="skel hskel-icon"></span>
+              <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+              <span class="skel hskel-pts"></span>
+            </div>
+            <div class="hskel-row">
+              <span class="skel hskel-icon"></span>
+              <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+              <span class="skel hskel-pts"></span>
+            </div>
+            <div class="hskel-row">
+              <span class="skel hskel-icon"></span>
+              <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+              <span class="skel hskel-pts"></span>
+            </div>
+            <div class="hskel-row">
+              <span class="skel hskel-icon"></span>
+              <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+              <span class="skel hskel-pts"></span>
+            </div>
+            <div class="hskel-row">
+              <span class="skel hskel-icon"></span>
+              <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
+              <span class="skel hskel-pts"></span>
+            </div>
+          </div>
+          <p id="history-empty" class="empty-state" hidden>No visits yet. Every time you earn or spend points, it shows up here.</p>
+          <!-- Shown by renderHistory() only when the whole window is empty
+               (not when a spot filter emptied it). Goes to the Spots tab. -->
+          <button id="history-find-spot" class="history-find-spot" type="button" hidden>Find a spot</button>
+          <!-- One more window's worth per tap, server-side (the route clamps at
+               360 days). Stays hidden until the server has said there is
+               something older to reach — see hasMore. -->
+          <button id="history-more" class="history-more" type="button" hidden>Load older</button>
+        </div>
+      </section>
+
       <!-- ---------- SPOT SCREEN (overlay, NOT a tab page) ----------
            Lives here, as an absolutely-positioned child of .tab-viewport,
            rather than inside #tab-home where it used to sit. Two reasons, and
@@ -1006,66 +1089,6 @@
           </div>
         </section>
 
-        <!-- ---------- HISTORY TAB (last 30 days) ---------- -->
-        <section class="tab-page" id="tab-history" aria-label="History">
-          <div id="history">
-            <header class="page-head">
-              <h1 class="page-title">Activity</h1>
-              <!-- Rewritten by renderHistory: "Load older" widens the window, and
-                   a strapline still saying 30 would be the only thing on screen
-                   claiming the list is shorter than it is. -->
-              <p id="history-sub" class="page-sub">Your last 30 days</p>
-            </header>
-            <!-- Filter by spot. Filled from the rows that actually arrived (see
-                 historySpots), so it stays hidden for a student with activity at
-                 one spot, and it is a SIBLING of the list rather than a child
-                 because renderHistory replaces the list's contents wholesale on
-                 every socket push. -->
-            <div id="history-filters" class="history-filters" role="group" aria-label="Filter activity by spot" hidden></div>
-            <div id="history-list" class="history-list"></div>
-            <!-- Still #history-loading, so every hidden flag app.js already sets
-                 on the old "Loading…" line keeps working — it just has a shape
-                 now. Day divider included: the real list is grouped under one,
-                 and without it every row would shift down when the fetch lands. -->
-            <div id="history-loading" class="history-skel" aria-hidden="true">
-              <span class="skel hskel-day"></span>
-              <div class="hskel-row">
-                <span class="skel hskel-icon"></span>
-                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
-                <span class="skel hskel-pts"></span>
-              </div>
-              <div class="hskel-row">
-                <span class="skel hskel-icon"></span>
-                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
-                <span class="skel hskel-pts"></span>
-              </div>
-              <div class="hskel-row">
-                <span class="skel hskel-icon"></span>
-                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
-                <span class="skel hskel-pts"></span>
-              </div>
-              <div class="hskel-row">
-                <span class="skel hskel-icon"></span>
-                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
-                <span class="skel hskel-pts"></span>
-              </div>
-              <div class="hskel-row">
-                <span class="skel hskel-icon"></span>
-                <span class="hskel-body"><span class="skel hskel-title"></span><span class="skel hskel-sub"></span></span>
-                <span class="skel hskel-pts"></span>
-              </div>
-            </div>
-            <p id="history-empty" class="empty-state" hidden>No visits yet. Every time you earn or spend points, it shows up here.</p>
-            <!-- Shown by renderHistory() only when the whole window is empty
-                 (not when a spot filter emptied it). Goes to the Spots tab. -->
-            <button id="history-find-spot" class="history-find-spot" type="button" hidden>Find a spot</button>
-            <!-- One more window's worth per tap, server-side (the route clamps at
-                 360 days). Stays hidden until the server has said there is
-                 something older to reach — see hasMore. -->
-            <button id="history-more" class="history-more" type="button" hidden>Load older</button>
-          </div>
-        </section>
-
         <!-- ---------- ACCOUNT TAB (placeholder for now) ---------- -->
         <section class="tab-page" id="tab-account" aria-label="Account">
           <div id="account">
@@ -1158,6 +1181,25 @@
                        line under it. The markup's copy is the no-program case,
                        which is a real sentence rather than a placeholder. -->
                   <span class="data-btn-desc" id="link-email-desc" data-ph-mask>Bring your spots and points together in one account</span>
+                </span>
+                <span class="data-btn-chevron" aria-hidden="true">→</span>
+              </button>
+
+              <!-- ---------- History ----------
+                   Was a tab of its own until its slot in the bottom nav went to
+                   the Map. Opens #history-screen (in .tab-viewport) over this
+                   page rather than a sheet, so the list keeps the full height it
+                   had as a tab, and openHistoryScreen() refetches it on every
+                   open exactly as landing on the tab used to.
+
+                   Always shown: every account has a history, even an empty one,
+                   and above Help because it is the one row here a student opens
+                   again and again rather than setting once. -->
+              <h2 class="account-section-title">Activity</h2>
+              <button id="account-history" class="data-btn" type="button" aria-controls="history-screen">
+                <span class="data-btn-label">
+                  <span class="data-btn-name">History</span>
+                  <span class="data-btn-desc">Every point you’ve earned and spent</span>
                 </span>
                 <span class="data-btn-chevron" aria-hidden="true">→</span>
               </button>
@@ -1517,20 +1559,32 @@
       </button>
       <!-- data-tab is the ONLY numbering that counts: app.js dispatches taps on
            it and paints the active state from it. Keep these in the same order
-           as TABS in app.js, and as the .tab-page order in #tab-track. -->
+           as TABS in app.js, and as the .tab-page order in #tab-track. The Map
+           button is not a tab and has no data-tab (see there). -->
       <button class="tab-btn" data-tab="1" type="button" aria-current="false" aria-label="Spots">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M12 21s7-5.7 7-11a7 7 0 1 0-14 0c0 5.3 7 11 7 11z" /><circle cx="12" cy="10" r="2.6" />
         </svg>
         <span>Spots</span>
       </button>
-      <button class="tab-btn" data-tab="2" type="button" aria-current="false" aria-label="History">
+      <!-- Map: an ACTION, not a tab. It opens #map-modal, the same full-screen
+           map as the Map pill on Home, over whatever is showing, and closing it
+           lands back on that same page. So it has no data-tab and no page in
+           #tab-track, and never takes the active highlight: the map covers this
+           bar while it is up, and the tab underneath is still the current one.
+           app.js reads data-action before it reads data-tab. It took the slot
+           History had; History now opens from Account. Always shown, even
+           before any spot has coordinates (the Home pill hides until then),
+           because a bar that grew a fourth button when balances landed would
+           shift the other three sideways under the student's thumb. -->
+      <button id="nav-map" class="tab-btn" data-action="map" type="button" aria-label="Map"
+              aria-haspopup="dialog" aria-controls="map-modal">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7.5V12l3.5 2" />
+          <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z" /><path d="M9 4v14M15 6v14" />
         </svg>
-        <span>History</span>
+        <span>Map</span>
       </button>
-      <button class="tab-btn" data-tab="3" type="button" aria-current="false" aria-label="Account">
+      <button class="tab-btn" data-tab="2" type="button" aria-current="false" aria-label="Account">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" />
         </svg>
@@ -1545,6 +1599,10 @@
 
   <!-- live points notification (award / redeem) -->
   <div id="points-toast" class="points-toast" hidden></div>
+  <!-- What the nav's Map says when there is no map to open yet, for a screen
+       reader. The pill above shows it visually but is deliberately not live.
+       Body level so it is heard whichever tab is showing. -->
+  <p id="nav-map-status" class="sr-only" role="status" aria-live="polite"></p>
 
   <!-- delete-account confirmation sheet -->
   <!-- Consent gate. Shown right after a Google account is chosen, when the
