@@ -69,6 +69,9 @@ function sandbox({ vendors = [], email = null, allTime = true, uid = 'user-a', s
     const document = { querySelectorAll: () => [] };
     const vendorMonogram = (n) => String(n).slice(0, 2).toUpperCase();
     function openVendor(id) { calls.opened.push(id); vendor = allVendors.find((x) => String(x.vendorId) === String(id)) ?? null; }
+    // The fold itself is covered by collapse-away-client.test.js; here it is
+    // the instant version, because these tests are about WHAT is remembered.
+    function collapseAway(el, done) { calls.collapsed = (calls.collapsed ?? 0) + 1; el.hidden = true; if (done) done(); }
     function onItemTap(e) { calls.itemTaps.push(e.target.dataset.id); }
     ${escapeBlock}
     ${rewardHelpers}
@@ -298,6 +301,27 @@ describe('closing the student email nudge', () => {
     assert.doesNotThrow(() => api.dismissEmailNudge());
     api.renderHomeExtras();                     // ...and a repaint must not bring it back
     assert.equal(api.$('home-email-nudge-wrap').hidden, true);
+  });
+
+  test('the ✕ hands the card to the fold rather than flipping hidden itself', () => {
+    const api = sandbox({ email: offer, uid: 'user-a' });
+    api.renderHomeEmailNudge();
+    api.dismissEmailNudge();
+    assert.equal(api.calls.collapsed, 1);
+  });
+
+  test('a repaint mid-fold leaves the card alone, so the fade is not cut off', () => {
+    const api = sandbox({ email: offer, uid: 'user-a' });
+    api.renderHomeEmailNudge();
+    const wrap = api.$('home-email-nudge-wrap');
+    assert.equal(wrap.hidden, false);
+    api.storage.setItem('wr-email-nudge-dismissed:user-a', '1');   // closed, so a repaint WOULD hide it...
+    wrap.dataset.collapsing = '1';                                 // ...but it is mid-fold (collapseAway)
+    api.renderHomeExtras();                     // a balance push repainting Home
+    assert.equal(wrap.hidden, false, 'left to the fold, which hides it when it is done');
+    delete wrap.dataset.collapsing;             // the fold finished
+    api.renderHomeExtras();
+    assert.equal(wrap.hidden, true, 'and the same repaint hides it once the fold is over');
   });
 
   test('signed out, the ✕ does nothing rather than saving under no one', () => {

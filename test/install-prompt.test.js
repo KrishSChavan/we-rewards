@@ -429,6 +429,30 @@ test('the card and the row come back the moment Chrome offers a prompt', () => {
   assert.ok(s.shown('install-banner'));
 });
 
+test("with app.js's fold injected, the card X hands the banner to it and is-open comes off after", () => {
+  // app.js passes collapseAway as init's `collapse` (fade, then fold the height
+  // and the gap, so Home's cards slide up rather than jump). Stand-in here: it
+  // hides at once and calls back, which is all this file needs to know.
+  const s = sandbox();
+  const folded = [];
+  s.api.init({
+    track: (e, p) => s.calls.events.push([e, p]),
+    collapse: (el, done) => { folded.push([el.id, el.classList.contains('is-open')]); el.hidden = true; done(); },
+  });
+  s.capture();
+  s.api.setUser('u1');
+  s.api.syncCard();
+  assert.ok(s.shown('install-banner'));
+
+  s.press('install-banner-close');
+  assert.deepEqual(folded, [['install-banner', true]], 'folded while still drawn open, so it fades from where it is');
+  assert.equal(s.shown('install-banner'), false);
+  assert.equal(s.el('install-banner').classList.contains('is-open'), false, 'reset, so the next showCard fades in again');
+
+  s.api.syncCard();
+  assert.equal(s.shown('install-banner'), false, 'and it stays down across renders');
+});
+
 test('the card X puts it away for a fortnight and calls off the auto prompt too', () => {
   const s = sandbox();
   s.api.init({ track: (e, p) => s.calls.events.push([e, p]) });

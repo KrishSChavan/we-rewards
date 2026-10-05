@@ -43,6 +43,7 @@
   var userId = null;           // current signed-in user (suppression is keyed per-user)
   var track = function () {};  // analytics sink, injected by init()
   var onChange = function () {};   // 'what we can offer just changed', injected by init()
+  var collapse = null;         // app.js's collapseAway(el, done): fade + fold a closed card, injected by init()
   var pending = null;          // { name, priority, timer } — the queued/showing prompt
   var eligibleFired = false;   // install_eligible is once per session
   var dom = null;              // cached #install-modal elements (lazily wired)
@@ -522,6 +523,14 @@
   function hideCard() {
     var d = dom;
     if (!d || !d.banner || d.banner.hidden) return;
+    if (collapse) {
+      // app.js's fold: the card fades, then its height and the gap it held fold
+      // to zero, so Home's cards slide up instead of jumping when it goes. It
+      // sets `hidden` itself; is-open comes off after, so a later showCard()
+      // starts from the closed state and fades in as it always has.
+      collapse(d.banner, function () { d.banner.classList.remove('is-open'); remeasureHome(); });
+      return;
+    }
     d.banner.classList.remove('is-open');
     setTimeout(function () { d.banner.hidden = true; remeasureHome(); }, 300);
   }
@@ -652,6 +661,7 @@
     init: function (opts) {
       if (opts && typeof opts.track === 'function') track = opts.track;
       if (opts && typeof opts.onChange === 'function') onChange = opts.onChange;
+      if (opts && typeof opts.collapse === 'function') collapse = opts.collapse;
       if (isStandalone()) { markInstalled(); track('pwa_launched', {}); }
     },
 

@@ -316,7 +316,9 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // onChange: Chrome hands over the deferred prompt whenever it likes, often
   // after first paint, and that is the moment a dead "Add to Home Screen" row
   // turns into a live one-tap install. Re-ask rather than render it once at boot.
-  InstallPrompt.init({ track, onChange: syncInstallRow });
+  // collapseAway is a hoisted function declaration, so it exists this early;
+  // it is only CALLED later, when the banner's ✕ is pressed.
+  InstallPrompt.init({ track, onChange: syncInstallRow, collapse: collapseAway });
   const pub = await loadPublicConfig();
   // Student + vendor apps share this origin and Supabase project, so they MUST
   // use separate auth storage keys — otherwise signing into the vendor terminal
@@ -4540,6 +4542,10 @@ function renderHomeStart() {
 function renderHomeEmailNudge() {
   const wrap = $('home-email-nudge-wrap');
   if (!wrap) return;
+  // Mid-fold after its ✕ (collapseAway): a balance push repaints Home, and
+  // writing `hidden` now would cut the fade off. The fold's own callback
+  // calls back in here once it is done.
+  if (wrap.dataset.collapsing) return;
   const s = studentEmail;
   const show = Boolean(s?.eligible && !s.linked) && !emailNudgeDismissed();
   wrap.hidden = !show;
@@ -4573,8 +4579,11 @@ function dismissEmailNudge() {
   if (!currentUserId) return;
   emailNudgeClosedFor = currentUserId;
   try { localStorage.setItem(EMAIL_NUDGE_DISMISS_PREFIX + currentUserId, '1'); } catch { /* site data blocked: this session only */ }
-  renderHomeEmailNudge();
-  fitCardRewards();           // the card leaving changes how tall the spot cards are
+  // Saved first, animated second: closing the app mid-fade still counts.
+  collapseAway($('home-email-nudge-wrap'), () => {
+    renderHomeEmailNudge();   // settles it: hidden for good
+    fitCardRewards();         // the stack is shorter, so the spot cards are taller
+  });
 }
 
 function renderHomeExtras() {
@@ -7028,6 +7037,107 @@ function endPaneSlide() {
 /** True when the device asks for less motion (or can't be asked). */
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 
+/* ---------- closing a card: fade, then fold it away ----------
+   Every card a student can close in place goes through here: Home's student
+   email nudge, the install banner (install-prompt.js, handed this at init),
+   the nearby opt-in, and the deal-alerts opt-in in the hub. Flipping `hidden`
+   made everything below jump up in a single frame. Now the card fades, then
+   its height AND the space it was holding fold to zero, so what is below
+   slides up into the gap, and only then is it really hidden. Its inline styles
+   are put back afterwards, so it looks the way the stylesheet says if it ever
+   comes back.
+
+   The fold's distance is MEASURED, not assumed: the card is hidden for one
+   synchronous layout to see where the next thing on the page will settle, and
+   restored before anything paints. That covers flex gap, the no-flex-gap
+   margin fallback (boot-guard.js), the card's own margins and a follower in a
+   different container, with no special cases, and it is why the end of the
+   fold and the real `hidden` land on the same pixel. So redraw anything else
+   that changes in the same breath BEFORE calling this (syncDealAlertUi does
+   its card last for that reason), and have any code that writes the card's
+   `hidden` on its own leave it alone while `dataset.collapsing` is set, or it
+   cuts the fade short.
+
+   With reduced motion, or when the card is not on screen at all (a closed
+   hub, a hidden app shell), it just hides, as it always did. The durations
+   are local, not module constants: install-prompt.js is handed this during
+   boot, before the rest of this file has run. */
+function collapseAway(el, done) {
+  const FADE_MS = 240;
+  const FOLD_MS = 320;
+  const end = () => { if (typeof done === 'function') done(); };
+  if (!el || el.hidden) { end(); return; }
+  if (el.dataset.collapsing) return;            // a second tap mid-fold: the first one finishes the job
+  if (!el.getClientRects().length || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    el.hidden = true;
+    end();
+    return;
+  }
+  el.dataset.collapsing = '1';
+
+  // The first thing after the card in the page flow that is laid out and
+  // in flow: its top is what moves. Overlays and sheets are skipped, since they
+  // never move and would make the fold cancel itself out.
+  let follower = null;
+  for (let node = el; node && node !== document.body && !follower; node = node.parentElement) {
+    for (let sib = node.nextElementSibling; sib; sib = sib.nextElementSibling) {
+      const pos = getComputedStyle(sib).position;
+      if (pos !== 'absolute' && pos !== 'fixed' && sib.getClientRects().length) { follower = sib; break; }
+    }
+  }
+  const height = el.getBoundingClientRect().height;
+  let travel = height;                          // with nothing after it, only the card's own height goes
+  if (follower) {
+    const before = follower.getBoundingClientRect().top;
+    el.hidden = true;                           // the layout it will leave behind...
+    travel = before - follower.getBoundingClientRect().top;
+    el.hidden = false;                          // ...and back, before the browser paints a frame
+  }
+  // What goes with the card besides its height: the gap and margins it held.
+  const extra = travel - height;
+
+  // The props this touches, as they were, so they can be put back exactly.
+  const PROPS = ['transition', 'opacity', 'transform', 'overflow', 'height', 'minHeight',
+    'paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth', 'marginBottom'];
+  const saved = PROPS.map((p) => el.style[p]);
+  const finish = () => {
+    el.hidden = true;
+    PROPS.forEach((p, i) => { el.style[p] = saved[i]; });
+    delete el.dataset.collapsing;
+    end();
+  };
+
+  // 1. Fade, with a slight shrink so it reads as going away, not blinking out.
+  void el.offsetWidth;                          // the un-hide above must not be what the fade starts from
+  el.style.transition = `opacity ${FADE_MS}ms ease, transform ${FADE_MS}ms ease`;
+  el.style.opacity = '0';
+  el.style.transform = 'scale(0.97)';
+
+  // 2. Fold: pin the current height, then take it, the padding, the border and
+  // the space it held to zero together, so the content below glides up.
+  setTimeout(() => {
+    if (el.hidden) { finish(); return; }        // something else already took it down
+    const marginBottom = parseFloat(getComputedStyle(el).marginBottom) || 0;
+    el.style.overflow = 'hidden';
+    el.style.minHeight = '0px';
+    el.style.height = `${height}px`;
+    el.style.marginBottom = `${marginBottom}px`;
+    void el.offsetWidth;
+    el.style.transition = [
+      `opacity ${FADE_MS}ms ease`, `transform ${FADE_MS}ms ease`,
+      `height ${FOLD_MS}ms ease`, `padding ${FOLD_MS}ms ease`,
+      `border-width ${FOLD_MS}ms ease`, `margin-bottom ${FOLD_MS}ms ease`,
+    ].join(', ');
+    el.style.height = '0px';
+    el.style.paddingTop = '0px';
+    el.style.paddingBottom = '0px';
+    el.style.borderTopWidth = '0px';
+    el.style.borderBottomWidth = '0px';
+    el.style.marginBottom = `${marginBottom - extra}px`;
+    setTimeout(finish, FOLD_MS);
+  }, FADE_MS);
+}
+
 /** Slide the spot screen in from the right over whatever tab is showing. */
 function openVendorPane() {
   const pane = $('vendor');
@@ -8554,7 +8664,6 @@ function syncDealAlertUi() {
 
   state.textContent = label;
   state.hidden = !label;
-  optin.hidden = !showOptin;
   fix.hidden = !showFix;
   // The repair line carries the actual reason when we have one. Without it the
   // student sees the same "not registered yet" whether their browser refused the
@@ -8562,6 +8671,13 @@ function syncDealAlertUi() {
   // different problems with three different next steps.
   $('deals-alert-why').textContent = pushFailNote;
   $('deals-alert-why').hidden = !(showFix && pushFailNote);
+  // The opt-in card LAST: when it is no longer wanted (Not now, or alerts just
+  // turned on) it folds away rather than blinking out (collapseAway), and the
+  // fold measures the layout it lands in, so everything above must already be
+  // drawn. Left alone while a fold is running, which would otherwise be cut off.
+  if (optin.dataset.collapsing) return;
+  if (showOptin) optin.hidden = false;
+  else collapseAway(optin);
 }
 
 /**
@@ -8709,8 +8825,9 @@ async function enableDealAlerts() {
     console.warn('[push] enable failed:', err?.message ?? err);
   }
   btn.disabled = false;
-  $('deals-optin').hidden = true;
   setDealsToggle(dealAlertsOn);
+  // Folds the card away if alerts are now on or need repair; keeps it if the
+  // browser's prompt was dismissed and the question is still open (see its end).
   syncDealAlertUi();
 }
 
@@ -8746,8 +8863,7 @@ async function retryPushSubscribe() {
 
 function dismissDealOptin() {
   try { localStorage.setItem(DEAL_OPTIN_DISMISS_KEY, '1'); } catch { /* private mode */ }
-  $('deals-optin').hidden = true;
-  syncDealAlertUi();          // the block now reads "alerts off" instead of going blank
+  syncDealAlertUi();          // reads "alerts off" now, and folds the card away (see its end)
 }
 
 // navigator.serviceWorker.ready has no failure mode: if registration failed
@@ -9233,8 +9349,10 @@ function showNearbyOptin() {
 }
 
 function dismissNearbyOptin() {
-  $('nearby-optin').hidden = true;
   try { localStorage.setItem(NEARBY_OPTIN_DISMISS_KEY, '1'); } catch { /* private mode */ }
+  // Faded and folded, not flipped (see collapseAway); the spot cards below
+  // get the room, so their reward rows are re-fitted once it has gone.
+  collapseAway($('nearby-optin'), fitCardRewards);
 }
 
 /**
