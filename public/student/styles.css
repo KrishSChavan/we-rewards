@@ -4021,7 +4021,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    cardProgressHtml). Layout uses grid `gap`, never flex `gap`, so none of it
    goes through the build's margin-synthesis fallback. */
 
-:root { --rf-ready-bg: #e4f5ea; --rf-ready: #15703f; --rf-ready-fill: #2fb36d; --rf-ready-ink: #ffffff; }
+/* Light fill is #198348, not the brighter #2fb36d: white 900-weight text at
+   0.9rem on #2fb36d measured 2.7:1 (needs 4.5); #198348 is 4.79:1 and still
+   4.2:1 against --rf-ready-bg, so the button keeps its edge on the card. */
+:root { --rf-ready-bg: #e4f5ea; --rf-ready: #15703f; --rf-ready-fill: #198348; --rf-ready-ink: #ffffff; }
 :root[data-theme="dark"] { --rf-ready-bg: #1f3b2e; --rf-ready: #5bd69a; --rf-ready-fill: #5bd69a; --rf-ready-ink: #0e1a2f; }
 
 /* the bar on each spot card, under the rate. Coloured by the card's --spot. */
@@ -4064,53 +4067,62 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .hen-sub { font-weight: 600; font-size: 0.8rem; color: var(--rf-ready); }
 .hen-go { font-weight: 900; font-size: 0.9rem; color: var(--rf-ready); }
 
-/* ---------- Home: rewards ready (green) / closest reward (amber) ---------- */
+/* ---------- Home: rewards ready (green) / closest reward (amber) ----------
+   Every .hr-* rule below is scoped to .home-reward ON PURPOSE. History rows
+   already use .hr-icon / .hr-title / .hr-sub (renderHistory in app.js, styled
+   further up), and these card rules come later in the file, so unscoped they
+   won the cascade on every History row: titles hard-clipped mid-letter, sub
+   lines forced onto one line, the icon re-coloured. */
 .home-reward { border-radius: 1.2rem; box-shadow: var(--rf-lift); }
 .home-reward.is-ready {
   display: grid; gap: 0.15rem;
   padding: 0.9rem 0.9rem 0.6rem;
   background: var(--rf-ready-bg);
 }
-.hr-title {
+.home-reward .hr-title {
   display: flex; align-items: center;
+  /* History's .hr-title (further up, unscoped) still matches this h2 and makes
+     it nowrap + overflow:hidden; as a flex container the ellipsis never shows,
+     so "Rewards ready at 12 spots" would be cut mid-word on a narrow phone. */
+  white-space: normal; overflow: visible; line-height: 1.25;
   font-size: 1.05rem; font-weight: 900; color: var(--ink);
   margin-bottom: 0.35rem;
 }
-.hr-title svg { width: 1.25rem; height: 1.25rem; margin-right: 0.45rem; color: var(--rf-ready); flex: 0 0 auto; }
-.hr-row {
+.home-reward .hr-title svg { width: 1.25rem; height: 1.25rem; margin-right: 0.45rem; color: var(--rf-ready); flex: 0 0 auto; }
+.home-reward .hr-row {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
   width: 100%; text-align: left; padding: 0.45rem 0;
   border-top: 1px solid rgba(21, 112, 63, 0.15);
 }
-.hr-row:first-of-type { border-top: 0; }
-.hr-mark {
+.home-reward .hr-row:first-of-type { border-top: 0; }
+.home-reward .hr-mark {
   width: 2.6rem; height: 2.6rem; border-radius: 0.6rem; overflow: hidden;
   display: block; background: var(--plate);
 }
-.hr-text { display: grid; gap: 0.05rem; min-width: 0; }
-.hr-name { font-weight: 900; font-size: 0.95rem; color: var(--ink); overflow-wrap: anywhere; }
-.hr-sub { font-weight: 600; font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hr-go {
+.home-reward .hr-text { display: grid; gap: 0.05rem; min-width: 0; }
+.home-reward .hr-name { font-weight: 900; font-size: 0.95rem; color: var(--ink); overflow-wrap: anywhere; }
+.home-reward .hr-sub { font-weight: 600; font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home-reward .hr-go {
   display: flex; align-items: center; min-height: 2.75rem; padding: 0 1rem;
   border-radius: 0.8rem; font-weight: 900; font-size: 0.9rem;
   background: var(--rf-ready-fill); color: var(--rf-ready-ink);
 }
-.hr-row:active .hr-go { transform: scale(0.96); }
-.hr-more { font-size: 0.8rem; font-weight: 700; color: var(--rf-ready); padding: 0.2rem 0 0.2rem; }
+.home-reward .hr-row:active .hr-go { transform: scale(0.96); }
+.home-reward .hr-more { font-size: 0.8rem; font-weight: 700; color: var(--rf-ready); padding: 0.2rem 0 0.2rem; }
 
 .home-reward.is-close { background: var(--rf-amber-bg); }
-.hr-close {
+.home-reward .hr-close {
   display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.85rem; align-items: center;
   width: 100%; text-align: left; padding: 0.95rem 1rem;
 }
-.hr-close:active { transform: scale(0.98); }
-.hr-icon {
+.home-reward .hr-close:active { transform: scale(0.98); }
+.home-reward .hr-icon {
   width: 3rem; height: 3rem; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   background: #ffb86b; color: #1a0f0b;
 }
-.hr-icon svg { width: 1.5rem; height: 1.5rem; display: block; }
-.hr-kicker { font-weight: 800; font-size: 0.78rem; color: var(--rf-amber); }
+.home-reward .hr-icon svg { width: 1.5rem; height: 1.5rem; display: block; }
+.home-reward .hr-kicker { font-weight: 800; font-size: 0.78rem; color: var(--rf-amber); }
 .home-reward.is-close .hr-name { font-size: 1.05rem; }
 
 /* ---------- Home: the first-visit checklist ---------- */
@@ -4142,7 +4154,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   font-weight: 900; font-size: 1rem;
 }
 .history-find-spot:active { transform: scale(0.97); }
-.hr-mark .vc-mono { color: var(--brand); }
+.home-reward .hr-mark .vc-mono { color: var(--brand); }   /* scoped like the rest of .hr-* (see the card's rules) */
 
 /* ---------- Refresh, part 4: spots as wide rectangles, still sideways ----------
    The carousel itself is untouched (scroll-snap, page dots, measureDotSnaps
@@ -4190,7 +4202,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vc-rate { grid-area: rate; justify-self: end; align-self: start; font-size: 0.72rem; white-space: nowrap; }
 .vc-address {
   grid-area: addr; align-self: start; margin-top: 0;
-  font-size: 0.8rem; text-decoration: none;
+  font-size: 0.8rem;   /* keeps the base rule's underline: tapping it opens directions, not the spot */
   -webkit-line-clamp: 1; line-clamp: 1;
 }
 .vc-pool { grid-area: pool; margin-top: 0.4rem; }

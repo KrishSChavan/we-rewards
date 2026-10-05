@@ -510,7 +510,7 @@
                    on offer and not yet done. renderHomeEmailNudge() in app.js
                    owns [hidden] and the line under the title. -->
               <button id="home-email-nudge" class="home-email-nudge" type="button" hidden
-                      aria-haspopup="dialog" aria-controls="link-email-modal">
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="link-email-modal">
                 <span class="hen-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" />
@@ -679,7 +679,7 @@
                    spot. renderHomeStart() fills the list and owns [hidden]. -->
               <section id="home-start" class="home-start" aria-labelledby="home-start-title" hidden>
                 <h2 id="home-start-title" class="hs-head">Get your first free item</h2>
-                <p class="hs-lead">Three steps, takes a minute.</p>
+                <p id="home-start-lead" class="hs-lead">Three steps, takes a minute.</p>
                 <ol id="home-start-list" class="hs-list"></ol>
               </section>
 

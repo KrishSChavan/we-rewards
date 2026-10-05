@@ -377,6 +377,7 @@ describe('the socket handlers', () => {
       // covered above, what matters here is THAT the handler asks for it.
       function applyVisitLocally(id) { calls.visits.push(id); calls.renders++; }
       function patchVendorCard() {}
+      function refreshHomeRewards() {}   // Home's reward card; see home-redesign-client.test.js
       function applyBalance() {}
       function loadTier() {}
       function loadCommunity() {}

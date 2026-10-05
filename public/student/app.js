@@ -1948,6 +1948,7 @@ function dropHistory() {
   $('history-list').innerHTML = '';
   $('history-loading').hidden = false;
   $('history-empty').hidden = true;
+  $('history-find-spot').hidden = true;   // only renderHistory decides, per student, if it shows
   // The chips name the spots this student goes to, which is the one part of the
   // tab that would still be readable during the next student's fetch — and a
   // stale window would quietly widen theirs too.
@@ -2629,11 +2630,13 @@ function renderTier(t) {
 
   const mult = `${t.multiplier}x`;
   $('tier-earning-mult').textContent = mult;
-  // Says what the next tier is worth, not just how far off it is: "1.5x" alone
-  // is a number, "1.5x points at every spot" is a reason.
+  // Says what the next tier is worth, not how far off it is in numbers: the
+  // distance is engagement SCORE, and printing it as "40 pts" beside "1.5x
+  // points" used "pts" for two different things in one sentence. The panel
+  // itself still shows the score for anyone who wants the number.
   $('tier-hint').textContent =
     t.nextTierScore != null
-      ? `${t.nextTierScore - t.score} pts to ${t.nextMultiplier}x, then you earn ${t.nextMultiplier}x points at every spot`
+      ? `Keep visiting to unlock ${t.nextMultiplier}x points at every spot`
       : 'Max multiplier ✓';
 
   // The same chip in two places: the collapsed pill and the panel's own header.
@@ -3066,6 +3069,7 @@ function renderStudentEmailButton() {
     dropLinkSheet();
     renderHomeEmailNudge();
     renderHomeStart();
+    fitCardRewards();         // either one coming or going changes the cards' height
     return;
   }
 
@@ -3088,6 +3092,7 @@ function renderStudentEmailButton() {
   // Home's nudge and checklist step read the same state.
   renderHomeEmailNudge();
   renderHomeStart();
+  fitCardRewards();           // either one coming or going changes the cards' height
 }
 
 function showLinkView(id) {
@@ -3104,7 +3109,7 @@ function setLinkStatus(id, text, kind = '') {
   el.className = kind ? `detail-status ${kind}` : 'detail-status';
 }
 
-function openLinkSheet() {
+function openLinkSheet(e) {
   const ov = $('link-email-modal');
   // Guard on is-open, not on hidden: hidden stays false through the close
   // animation, and reopening inside that window has to catch the sheet on its
@@ -3144,14 +3149,21 @@ function openLinkSheet() {
   ov.hidden = false;
   void ov.offsetWidth;                      // reflow so the slide-up runs
   ov.classList.add('is-open');
-  $('link-email-btn').setAttribute('aria-expanded', 'true');
+  // Two buttons open this sheet, the Account row and Home's nudge (both pass
+  // their click event). The one that was pressed is the one now expanded.
+  (e?.currentTarget ?? $('link-email-btn')).setAttribute('aria-expanded', 'true');
+}
+
+// Both openers collapse together, whichever one opened the sheet.
+function collapseLinkOpeners() {
+  ['link-email-btn', 'home-email-nudge'].forEach((id) => $(id)?.setAttribute('aria-expanded', 'false'));
 }
 
 function closeLinkSheet() {
   const ov = $('link-email-modal');
   if (ov.hidden || !ov.classList.contains('is-open')) return;
   ov.classList.remove('is-open');
-  $('link-email-btn').setAttribute('aria-expanded', 'false');
+  collapseLinkOpeners();
   setTimeout(() => { ov.hidden = true; }, 360);   // wait out the slide-down
 }
 
@@ -3161,8 +3173,7 @@ function dropLinkSheet() {
   if (!ov) return;
   ov.classList.remove('is-open');
   ov.hidden = true;
-  const btn = $('link-email-btn');
-  if (btn) btn.setAttribute('aria-expanded', 'false');
+  collapseLinkOpeners();
 }
 
 async function sendLinkCode() {
@@ -3615,6 +3626,7 @@ async function submitMove() {
         patchVendorCard(x.vendorId, landed);
         if (vendor && vendor.vendorId === x.vendorId) applyBalance(landed);
       });
+    refreshHomeRewards();             // a move can make a reward ready (see the balance push)
     if (historyLoaded) loadHistory();
     closeMoveSheet();
     moveToast(amount, v.name);
@@ -4372,15 +4384,17 @@ function paintVendorRow() {
    Three cards that only ever show one at a time, in this order of priority:
 
      1. Rewards ready: every spot where the balance already covers a reward,
-        each with its own Redeem (which opens that spot's screen, where
-        redeeming actually happens).
+        each with its own Redeem, which opens that spot's screen AND the
+        named reward's redeem sheet on top of it (onHomeRewardTap).
      2. Closest reward: nothing is ready yet, so name the one reward the
-        student is nearest to, and where.
-     3. Getting started: a student who has never been anywhere gets the three
+        student is nearest to, and where. Tapping it opens the spot only.
+     3. Getting started: a student who has never been anywhere gets the
         steps instead (#home-start), since there is no balance to talk about.
 
-   All of it is drawn from allVendors, so it repaints with renderVendors() on
-   every socket push and costs no request of its own. */
+   All of it is drawn from allVendors and costs no request of its own. It
+   repaints with renderVendors() on a refetch, and through refreshHomeRewards()
+   on a balance push or a community move, which change balances WITHOUT a
+   renderVendors(). */
 
 const HOME_READY_CAP = 3;   // more than this and the card outgrows the screen
 
@@ -4407,9 +4421,11 @@ function renderHomeReward() {
 
   const ready = onePerPool(byRecency.filter((v) => spotRewardState(v)?.best));
   if (ready.length) {
+    // data-reward is the reward the row names, so Redeem can open that
+    // reward's own sheet (onHomeRewardTap) instead of the spot's whole list.
     const rows = ready.slice(0, HOME_READY_CAP).map((v) => {
       const st = spotRewardState(v);
-      return `<button class="hr-row" type="button" data-vendor="${escapeHtml(String(v.vendorId))}">
+      return `<button class="hr-row" type="button" data-vendor="${escapeHtml(String(v.vendorId))}" data-reward="${escapeHtml(String(st.best.id))}">
         <span class="hr-mark" aria-hidden="true">${vendorMarkHtml(v)}</span>
         <span class="hr-text">
           <span class="hr-name">${escapeHtml(st.best.title)}</span>
@@ -4419,12 +4435,13 @@ function renderHomeReward() {
       </button>`;
     }).join('');
     const more = ready.length - HOME_READY_CAP;
-    el.className = 'home-reward is-ready';
-    el.innerHTML = `
-      <h2 class="hr-title">${GIFT_SVG}${ready.length === 1 ? 'Reward ready' : `${ready.length} rewards ready`}</h2>
+    // Counts SPOTS, and says so: there is one row per spot (per pool), each
+    // naming only the dearest reward its balance covers, so "6 rewards ready"
+    // over two rows would be a number the card never shows.
+    paintHomeReward(el, 'home-reward is-ready', `
+      <h2 class="hr-title">${GIFT_SVG}${ready.length === 1 ? 'Reward ready' : `Rewards ready at ${ready.length} spots`}</h2>
       ${rows}
-      ${more > 0 ? `<p class="hr-more">+${more} more on the Spots tab</p>` : ''}`;
-    el.hidden = false;
+      ${more > 0 ? `<p class="hr-more">+${more} more on the Spots tab</p>` : ''}`);
     return;
   }
 
@@ -4438,8 +4455,7 @@ function renderHomeReward() {
     if (!best || gap < best.gap) best = { v, r: st.next, gap };
   });
   if (best) {
-    el.className = 'home-reward is-close';
-    el.innerHTML = `
+    paintHomeReward(el, 'home-reward is-close', `
       <button class="hr-close" type="button" data-vendor="${escapeHtml(String(best.v.vendorId))}">
         <span class="hr-icon" aria-hidden="true">${GIFT_SVG}</span>
         <span class="hr-text">
@@ -4447,13 +4463,34 @@ function renderHomeReward() {
           <span class="hr-name">${best.gap} pts to ${escapeHtml(best.r.title)}</span>
           <span class="hr-sub">${escapeHtml(best.v.name)}</span>
         </span>
-      </button>`;
-    el.hidden = false;
+      </button>`);
     return;
   }
 
-  el.hidden = true;
-  el.innerHTML = '';
+  paintHomeReward(el, 'home-reward', '');
+}
+
+// Writes the card only when what it says actually changed. #home-reward is
+// aria-live, and renderVendors() and every balance push re-run renderHomeReward,
+// so rewriting identical markup would have a screen reader read the card out
+// again on each one. Empty markup means nothing to show: hidden.
+let homeRewardShown = null;
+function paintHomeReward(el, cls, html) {
+  const key = `${cls}\n${html}`;
+  if (key === homeRewardShown) return;
+  homeRewardShown = key;
+  el.className = cls;
+  el.innerHTML = html;
+  el.hidden = !html;
+}
+
+// A balance moved WITHOUT a full renderVendors() (a socket push, a community
+// move): patchVendorCard has already repainted each card's number and bars, so
+// bring Home's reward card along, then re-fit the bars, since repainting them
+// un-hides every row and the reward card can change the cards' height.
+function refreshHomeRewards() {
+  renderHomeReward();
+  fitCardRewards();
 }
 
 // The first-visit checklist. Only for a student the server says has never
@@ -4478,6 +4515,10 @@ function renderHomeStart() {
   steps.push({ done: false, title: 'Show your code at the counter', sub: 'Points land in your account right away' });
   steps.push({ done: false, title: 'Trade points for free food', sub: 'Each spot sets its own rewards' });
 
+  // The lead counts the steps actually listed: the email step is only there
+  // where linking is on offer, so "Three steps" over a two-item list was wrong
+  // for every student who signed in with their student address.
+  $('home-start-lead').textContent = `${steps.length === 2 ? 'Two' : 'Three'} steps, takes a minute.`;
   $('home-start-list').innerHTML = steps.map((st, i) => `
     <li class="hs-step${st.done ? ' is-done' : ''}">
       <span class="hs-num" aria-hidden="true">${st.done ? '✓' : i + 1}</span>
@@ -4491,7 +4532,9 @@ function renderHomeStart() {
 
 // The green "add your student email" nudge at the top of Home. Same rule as
 // the Account button it shortcuts to: only when the student can link one and
-// has not, and the bonus is only named when a program is paying it.
+// has not. The bonus is only named when the server says THIS student would be
+// paid it (bonus is null otherwise, see studentEmailStatus), and it is named
+// as community points, the same words the sheet and the checklist use.
 function renderHomeEmailNudge() {
   const btn = $('home-email-nudge');
   if (!btn) return;
@@ -4500,7 +4543,7 @@ function renderHomeEmailNudge() {
   btn.hidden = !show;
   if (show) {
     $('home-email-nudge-sub').textContent = s.bonus?.points
-      ? `Get ${s.bonus.points} free points to start`
+      ? `Get ${s.bonus.points} community points to start`
       : 'Bring your spots and points together';
   }
 }
@@ -4513,7 +4556,19 @@ function renderHomeExtras() {
 
 function onHomeRewardTap(e) {
   const hit = e.target.closest('[data-vendor]');
-  if (hit) openVendor(hit.dataset.vendor);
+  if (!hit) return;
+  openVendor(hit.dataset.vendor);
+  // A ready row's "Redeem" promises THAT reward, so open its sheet on top of
+  // the spot screen rather than leaving the student to find it in the list.
+  // openVendor() renders the item cards synchronously, so the card is already
+  // there, and going through onItemTap keeps one code path (affordability,
+  // sheet state, the funnel event) for both ways in. The "Closest reward" row
+  // carries no data-reward and stops at the spot screen, as does a reward that
+  // has gone since the card was drawn.
+  const rid = hit.dataset.reward;
+  if (!rid || !vendor || String(vendor.vendorId) !== hit.dataset.vendor) return;
+  const card = [...$('items').querySelectorAll('.item-card.live')].find((c) => c.dataset.id === rid);
+  if (card) onItemTap({ target: card });
 }
 
 /* ============================================================
@@ -5861,6 +5916,7 @@ function pickHomeLens(lens) {
   homeLens = lens;
   closeHomeLensMenu(true);
   applyVendorFilter(true);          // a different list — start at card 1
+  fitCardRewards();                 // cards just mounted for this lens were never fitted
   // Written ONLY here. The cards swap silently, and this is the one moment a
   // student asked for that to happen, so it is the one moment worth saying it
   // out loud; on every other repaint the region stays quiet.
@@ -6246,8 +6302,16 @@ function onDotTap(e) {
 // search is still that student's card, and it has to be right the moment the
 // query is cleared — not a loadVendors() later.
 function patchVendorCard(vendorId, next) {
-  const num = vendorCards.get(String(vendorId))?.querySelector('.vc-num');
+  const card = vendorCards.get(String(vendorId));
+  const num = card?.querySelector('.vc-num');
   if (num) num.textContent = next;
+  // The reward bars under the number read the same balance, and without this
+  // they sat at whatever the card was built with until the next /balances.
+  // Both callers write the new balance into allVendors BEFORE calling here, so
+  // the row is already current. They follow with refreshHomeRewards(), which
+  // re-fits the rows this un-hides.
+  const row = card && allVendors.find((x) => x.vendorId === vendorId);
+  if (row) paintCardProgress(card, row);
 }
 
 /* ==================== the spots map ====================
@@ -7099,6 +7163,12 @@ function connectSocket() {
         if (vendor && vendor.vendorId === id) hitOpen = true;
       });
       if (hitOpen) applyBalance(next);                               // and the open meter
+      // ...and Home's reward card, which reads the balances just written. A
+      // regular's earn is the common case here and does NOT reach
+      // renderVendors() (applyVisitLocally below returns early when nothing
+      // about their visits changed), so without this "Closest reward: 20 pts
+      // to Free Coffee" stayed up after they had earned it.
+      refreshHomeRewards();
       // ...and the Recent row, when this event was the student turning up
       // somewhere. `visit` is the server's own word for that (see emitBalance
       // in src/lib/realtime.js) — a community-points move fires this same event
