@@ -509,9 +509,10 @@
                    the Account row (#link-email-btn), shown only while linking is
                    on offer, not yet done, and not closed with the ✕ by this
                    account. renderHomeEmailNudge() in app.js owns the wrapper's
-                   [hidden] and the line under the title. The wrapper is the
-                   green card and the two buttons are siblings inside it, because
-                   a button cannot contain another button. -->
+                   [hidden] and the line under the title. The nudge button is the
+                   green card; the ✕ is a small bubble on its top-right corner,
+                   a sibling rather than a child because a button cannot contain
+                   another button. The wrapper only positions the bubble. -->
               <div id="home-email-nudge-wrap" class="home-email-nudge-wrap" hidden>
               <button id="home-email-nudge" class="home-email-nudge" type="button"
                       aria-haspopup="dialog" aria-expanded="false" aria-controls="link-email-modal">

@@ -4052,29 +4052,36 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 @media (prefers-reduced-motion: reduce) { .vc-track i { transition: none; } }
 
 /* ---------- Home: the student email nudge (green) ----------
-   The wrapper is the card; the nudge itself and its ✕ are sibling buttons in
-   it (a button cannot hold a button). Grid gap, not flex gap, so nothing here
-   goes through the build's margin-synthesis fallback. */
-.home-email-nudge-wrap {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
-  border-radius: 1.1rem;
+   The button is the card, exactly as before it could be closed. Its ✕ is a
+   small bubble on the card's top-right corner rather than a column inside it:
+   as a column it took ~48px from the text, which wrapped the title and the
+   subtitle on 360-375px phones and grew the card from 59px to 89px. The
+   wrapper exists only to position the bubble (a button cannot hold a button). */
+.home-email-nudge-wrap { position: relative; }
+.home-email-nudge {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
+  width: 100%; text-align: left;
+  padding: 0.85rem 1rem; border-radius: 1.1rem;
   background: var(--rf-ready-bg); color: var(--ink);
   box-shadow: var(--rf-lift);
 }
-.home-email-nudge {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
-  width: 100%; text-align: left; color: inherit;
-  /* right padding is small: the ✕ beside it supplies the card's right edge */
-  padding: 0.85rem 0.35rem 0.85rem 1rem; border-radius: 1.1rem;
-}
 .home-email-nudge:active { transform: scale(0.98); }
-/* 44px tap target, same as the install banner's ✕; --rf-ready on --rf-ready-bg
-   is 5.4:1 light and 6.7:1 dark */
+/* The bubble: 24px, neutral so it adds no more attention than it removes.
+   --muted on --card is 5.8:1 light and 5.5:1 dark. The ring and shadow are what
+   separate a white bubble from the pale green card in the light theme. */
 .hen-close {
-  width: 2.75rem; height: 2.75rem; margin-right: 0.3rem;
-  border-radius: 50%;
-  font-size: 0.85rem; font-weight: 900; color: var(--rf-ready);
+  position: absolute; top: -0.5rem; right: -0.5rem; z-index: 1;
+  width: 1.5rem; height: 1.5rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.65rem; font-weight: 900; line-height: 1;
+  background: var(--card); color: var(--muted);
+  border: 1.5px solid rgba(127, 140, 160, 0.45);
+  box-shadow: 0 1px 4px rgba(16, 29, 51, 0.25);
 }
+/* A 36px tap area around the 24px bubble. Not 44: any bigger and it reaches
+   the "Add" label below-left (a tap meant for Add would close the card) or
+   the header above, which sits only 16px over the card. */
+.hen-close::before { content: ''; position: absolute; inset: -0.375rem; border-radius: 50%; }
 .hen-close:active { transform: scale(0.9); }
 .hen-icon { display: flex; color: var(--rf-ready); }
 .hen-icon svg { width: 1.5rem; height: 1.5rem; display: block; }
