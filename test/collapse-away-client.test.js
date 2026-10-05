@@ -20,11 +20,19 @@ const px = (v, sheet) => (v === undefined || v === '' ? sheet : parseFloat(v));
 
 // A node with just the layout a fold reads. `top`/`bottom` are functions, so
 // the follower can answer from the card's current state and inline styles.
-function node(name, { top = () => 0, bottom = () => 0, height = () => 0, position = 'static', marginBottom = '0px', rendered = true } = {}) {
+function node(name, { top = () => 0, bottom = () => 0, height = () => 0, position = 'static', marginBottom = '0px', rendered = true, box = {} } = {}) {
+  const styleLog = [];
   const n = {
-    name, hidden: false, dataset: {}, style: {}, offsetWidth: 1,
-    parentElement: null, nextElementSibling: null, rendered,
-    cs: { position, marginBottom },
+    name, hidden: false, dataset: {}, offsetWidth: 1,
+    parentElement: null, nextElementSibling: null, rendered, styleLog,
+    // Every inline write is logged, so a value that is set and then folded
+    // away within one callback can still be checked.
+    style: new Proxy({}, { set(t, k, v) { styleLog.push([k, v]); t[k] = v; return true; } }),
+    cs: { position, marginBottom, ...box },
+    listeners: new Map(),
+    addEventListener(type, fn) { (n.listeners.get(type) ?? n.listeners.set(type, new Set()).get(type)).add(fn); },
+    removeEventListener(type, fn) { n.listeners.get(type)?.delete(fn); },
+    fire(type, props) { for (const fn of [...(n.listeners.get(type) ?? [])]) fn({ type, target: n, ...props }); },
   };
   n.getClientRects = () => (n.hidden || !n.rendered ? [] : [{}]);
   n.getBoundingClientRect = () => ({ top: top(), bottom: bottom(), height: height() });
@@ -32,8 +40,8 @@ function node(name, { top = () => 0, bottom = () => 0, height = () => 0, positio
 }
 
 // A card: 50px tall and 4px of bottom margin per the stylesheet.
-function cardNode(h = 50, mb = 4) {
-  const c = node('card', { marginBottom: `${mb}px` });
+function cardNode(h = 50, mb = 4, box = {}) {
+  const c = node('card', { marginBottom: `${mb}px`, box });
   c.getBoundingClientRect = () => ({ top: 0, bottom: 0, height: px(c.style.height, h) });
   c.h = () => px(c.style.height, h);
   c.mb = () => px(c.style.marginBottom, mb);
@@ -98,14 +106,49 @@ test('it fades first, then folds onto exactly where the page will settle, then h
   // 64px of travel = 50 of card + 14 of margin and gap: the 4px margin goes to -10.
   assert.equal(card.style.marginBottom, '-10px');
   assert.equal(follower.getBoundingClientRect().top, 100, 'the folded card leaves the follower where it will stay');
+  assert.equal(card.hidden, false, 'not hidden on a timer: it waits for the height to arrive');
 
-  assert.equal(env.run(), 320, 'the fold');
+  card.fire('transitionend', { propertyName: 'height' });   // the fold has really finished
   assert.equal(card.hidden, true);
   assert.equal(follower.getBoundingClientRect().top, 100, 'and hiding it moves nothing');
   assert.equal(done, 1);
   assert.equal(card.dataset.collapsing, undefined);
   for (const p of FOLD_PROPS) assert.equal(card.style[p] ?? '', '', `${p} put back`);
+
+  assert.equal(env.run(), 420, 'the fallback timer is still queued...');
+  assert.equal(done, 1, '...and finishing twice is not possible');
   assert.equal(env.timers.length, 0);
+});
+
+test('borders are traded for padding before the fold, so no sub-pixel border snapping leaves it short', () => {
+  const env = load();
+  const { card } = scene(env);
+  card.cs.paddingTop = '14.4px'; card.cs.paddingBottom = '14.4px';
+  card.cs.borderTopWidth = '3px'; card.cs.borderBottomWidth = '3px';
+  env.collapseAway(card);
+  card.styleLog.length = 0;                     // only the fold's own writes
+  env.run();
+  const writes = (p) => card.styleLog.filter(([k]) => k === p).map(([, v]) => v);
+  assert.deepEqual(writes('paddingTop'), ['17.4px', '0px'], 'border added to the padding, then the padding folds');
+  assert.deepEqual(writes('paddingBottom'), ['17.4px', '0px']);
+  assert.deepEqual(writes('borderTopWidth'), ['0px'], 'the border goes at once, while the card is invisible');
+  assert.doesNotMatch(card.style.transition, /border/, 'and is never animated');
+});
+
+test('only the card\'s own height transition finishes it; anything else waits for the fallback', () => {
+  const env = load();
+  const { card } = scene(env);
+  let done = 0;
+  env.collapseAway(card, () => { done++; });
+  env.run();
+  card.fire('transitionend', { propertyName: 'padding-top' });
+  const child = { name: 'child' };
+  for (const fn of [...card.listeners.get('transitionend')]) fn({ type: 'transitionend', target: child, propertyName: 'height' });
+  assert.equal(card.hidden, false, 'a padding end, or a child\'s height end, is not the fold ending');
+  assert.equal(env.run(), 420);
+  assert.equal(card.hidden, true, 'the fallback still finishes it');
+  assert.equal(done, 1);
+  assert.equal(card.listeners.get('transitionend').size, 0, 'and the listener is removed');
 });
 
 test('a layout that bends the arithmetic (margin collapsing) still lands exactly: the end is measured', () => {

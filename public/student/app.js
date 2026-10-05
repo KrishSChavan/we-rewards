@@ -7139,27 +7139,49 @@ function collapseAway(el, done) {
   el.style.opacity = '0';
   el.style.transform = 'scale(0.97)';
 
-  // 2. Fold: pin the current height, then take it, the padding, the border and
-  // the space it held to zero together, so the content below glides up.
+  // 2. Fold: pin the current height, then take it, the padding and the space
+  // it held to zero together, so the content below glides up.
   setTimeout(() => {
     if (el.hidden) { finish(); return; }        // something else already took it down
+    const cs = getComputedStyle(el);
+    const px = (v) => parseFloat(v) || 0;
     el.style.overflow = 'hidden';
     el.style.minHeight = '0px';
     el.style.height = `${height}px`;
     el.style.marginBottom = `${marginBottom}px`;
+    // Borders do not fold smoothly: Chrome draws any width between 0 and 1px as
+    // a whole pixel, so a 3px border animating to 0 parks at 1px until the last
+    // frame (measured: the nearby opt-in sat 2px short, its height floored at
+    // its two borders, then jumped when hidden). The card is invisible by now,
+    // so trade its top and bottom borders for the same padding, which leaves
+    // its size alone, and fold the padding instead.
+    el.style.paddingTop = `${px(cs.paddingTop) + px(cs.borderTopWidth)}px`;
+    el.style.paddingBottom = `${px(cs.paddingBottom) + px(cs.borderBottomWidth)}px`;
+    el.style.borderTopWidth = '0px';
+    el.style.borderBottomWidth = '0px';
     void el.offsetWidth;
     el.style.transition = [
       `opacity ${FADE_MS}ms ease`, `transform ${FADE_MS}ms ease`,
-      `height ${FOLD_MS}ms ease`, `padding ${FOLD_MS}ms ease`,
-      `border-width ${FOLD_MS}ms ease`, `margin-bottom ${FOLD_MS}ms ease`,
+      `height ${FOLD_MS}ms ease`, `padding ${FOLD_MS}ms ease`, `margin-bottom ${FOLD_MS}ms ease`,
     ].join(', ');
     el.style.height = '0px';
     el.style.paddingTop = '0px';
     el.style.paddingBottom = '0px';
-    el.style.borderTopWidth = '0px';
-    el.style.borderBottomWidth = '0px';
     el.style.marginBottom = `${endMargin}px`;
-    setTimeout(finish, FOLD_MS);
+    // Hidden when the height has actually arrived, not when a timer guesses it
+    // has: the transition starts a frame after the style change, so a bare
+    // FOLD_MS timer fired with the last sliver still to go. The timer stays as
+    // the fallback, for when no transitionend comes (a backgrounded tab).
+    let settled = false;
+    const onEnd = (e) => { if (e.target === el && e.propertyName === 'height') settle(); };
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener('transitionend', onEnd);
+      finish();
+    };
+    el.addEventListener('transitionend', onEnd);
+    setTimeout(settle, FOLD_MS + 100);
   }, FADE_MS);
 }
 
