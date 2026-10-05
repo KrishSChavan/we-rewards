@@ -183,6 +183,20 @@ export async function studentEmailState(user, profile) {
     program = null;
   }
 
+  // The bonus line is a PROMISE on three screens (Home's nudge, the Account
+  // row, the sheet), so it is only made to a student linking would actually
+  // pay. "A program is live" alone promised 50 points to students who had
+  // already been paid once, or after the budget ran out. Unanswerable (a read
+  // error) means no promise: a plain invitation is wrong in no case.
+  let payable = false;
+  if (program) {
+    try {
+      payable = await signupBonusPayable(user?.id, program);
+    } catch {
+      payable = false;
+    }
+  }
+
   return {
     // A linked address stays visible even to someone no longer "eligible", so
     // the screen can never show a fact with no explanation attached.
@@ -198,10 +212,51 @@ export async function studentEmailState(user, profile) {
       canUnlink: !claim?.merged_from,
       bonusPaid: claim?.bonus_points ?? 0,
     },
-    // Marketing copy, not the ledger: points only, never budget or spend. Same
-    // line publicSignupBonus() draws.
-    bonus: program ? { points: { ...SIGNUP_DEFAULTS, ...(program.config ?? {}) }.points } : null,
+    // Points only, never budget or spend; null unless linking would pay THIS
+    // student (signupBonusPayable). publicSignupBonus() draws the signed-out
+    // version of this line and still only asks whether a program is live.
+    bonus: payable ? { points: { ...SIGNUP_DEFAULTS, ...(program.config ?? {}) }.points } : null,
   };
+}
+
+/**
+ * Would linking a student email pay THIS student the live program's bonus?
+ *
+ * studentEmailState() turns a yes into "Get N community points", so this
+ * answers every part of payLinkBonus()'s rules that does not need the address
+ * (rule 1 does; an address this account was paid for is caught here anyway,
+ * because that payment left a grant on the account):
+ *   - no live signup bonus on the account (payLinkBonus rule 2, voided grants
+ *     excluded the same way), AND no grant ever made under this student's
+ *     idempotency key. idx_community_grants_once is UNIQUE (ref_id, kind) with
+ *     no voided_at clause (migration-039), so even a clawed-back grant makes
+ *     grant_community_points refuse GRANT_ALREADY_PAID;
+ *   - budget for one more payout: grant_community_points' own test,
+ *     budget_points is null or spent_points + points <= budget_points.
+ * The program's window and active flag are activeSignupProgram()'s job.
+ *
+ * Kept beside payLinkBonus and NOT shared with it on purpose: that function
+ * pays, and its checks stay exactly as they were. If you change a rule there,
+ * change it here, or the app will promise what the payout refuses.
+ *
+ * @throws on a read error; the caller treats that as "do not promise".
+ */
+export async function signupBonusPayable(userId, program) {
+  // The id is spliced into a PostgREST or() filter below, so nothing but a
+  // UUID gets that far (it is always one: req.user.id from a verified token).
+  if (!program || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(userId ?? ''))) return false;
+  const cfg = { ...SIGNUP_DEFAULTS, ...(program.config ?? {}) };
+  if (!(cfg.points > 0)) return false;
+  if (program.budget_points != null && (program.spent_points ?? 0) + cfg.points > program.budget_points) {
+    return false;
+  }
+  const { count, error } = await supabaseAdmin
+    .from('community_grants')
+    .select('id', { count: 'exact', head: true })
+    .eq('kind', 'signup_domain')
+    .or(`and(user_id.eq.${userId},voided_at.is.null),ref_id.eq.${userId}`);
+  if (error) throw error;
+  return !count;
 }
 
 /**
