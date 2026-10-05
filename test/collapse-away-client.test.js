@@ -2,7 +2,7 @@
 // page. It fades, then its height and the space it held fold to zero so what
 // is below slides up, and only then is it hidden. Slices the real function out
 // of app.js (same pattern as recent-spots-client.test.js) and runs it against
-// a few fake nodes whose layout answers depend on what is hidden, with the
+// a few fake nodes whose layout follows the card's inline styles, with the
 // timers held in a queue so each phase can be inspected.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,22 +15,34 @@ const to = src.indexOf('/** Slide the spot screen in from the right', from);
 assert.ok(from > 0 && to > from, 'landmark moved in public/student/app.js — re-anchor this test');
 const collapseBlock = src.slice(from, to);
 
-// A node with just the layout a fold reads. `top` may be a function, so a
-// follower can answer differently while the card is (briefly) hidden.
-function node(name, { top = 0, height = 0, position = 'static', marginBottom = '0px', rendered = true } = {}) {
+// An inline style when one is set, else the stylesheet's value.
+const px = (v, sheet) => (v === undefined || v === '' ? sheet : parseFloat(v));
+
+// A node with just the layout a fold reads. `top`/`bottom` are functions, so
+// the follower can answer from the card's current state and inline styles.
+function node(name, { top = () => 0, bottom = () => 0, height = () => 0, position = 'static', marginBottom = '0px', rendered = true } = {}) {
   const n = {
     name, hidden: false, dataset: {}, style: {}, offsetWidth: 1,
     parentElement: null, nextElementSibling: null, rendered,
     cs: { position, marginBottom },
   };
   n.getClientRects = () => (n.hidden || !n.rendered ? [] : [{}]);
-  n.getBoundingClientRect = () => ({ top: typeof top === 'function' ? top() : top, height });
+  n.getBoundingClientRect = () => ({ top: top(), bottom: bottom(), height: height() });
   return n;
+}
+
+// A card: 50px tall and 4px of bottom margin per the stylesheet.
+function cardNode(h = 50, mb = 4) {
+  const c = node('card', { marginBottom: `${mb}px` });
+  c.getBoundingClientRect = () => ({ top: 0, bottom: 0, height: px(c.style.height, h) });
+  c.h = () => px(c.style.height, h);
+  c.mb = () => px(c.style.marginBottom, mb);
+  return c;
 }
 
 function load({ reduced = false } = {}) {
   const timers = [];
-  const body = { name: 'body' };
+  const body = { name: 'body', cs: { position: 'static' } };
   // eslint-disable-next-line no-new-func
   const collapseAway = new Function('deps', `
     const { timers, body, reduced } = deps;
@@ -45,13 +57,16 @@ function load({ reduced = false } = {}) {
   return { collapseAway, timers, body, run };
 }
 
-// stack > [card, follower]; the follower is 100px down once the card has gone,
-// 164px down while it is there: the card is 50px tall and takes 14px of gap
-// and margin with it.
-function scene(env, { cardMargin = '4px' } = {}) {
+// stack > [card, follower]. The follower sits at 100 once the card is gone;
+// with it, it sits below the card's height, its bottom margin and a 10px gap.
+// `bend` adds a fixed error once the margin goes negative, which is what block
+// margin collapsing does to the arithmetic in the real page.
+function scene(env, { bend = 0 } = {}) {
   const stack = node('stack'); stack.parentElement = env.body;
-  const card = node('card', { height: 50, marginBottom: cardMargin });
-  const follower = node('follower', { top: () => (card.hidden ? 100 : 164) });
+  const card = cardNode(50, 4);
+  const follower = node('follower', {
+    top: () => (card.hidden ? 100 : 100 + card.h() + card.mb() + 10 + (card.mb() < 0 ? bend : 0)),
+  });
   card.parentElement = stack; follower.parentElement = stack;
   card.nextElementSibling = follower;
   return { stack, card, follower };
@@ -60,9 +75,9 @@ function scene(env, { cardMargin = '4px' } = {}) {
 const FOLD_PROPS = ['transition', 'opacity', 'transform', 'overflow', 'height', 'minHeight',
   'paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth', 'marginBottom'];
 
-test('it fades first, then folds by exactly what the page will move, then hides', () => {
+test('it fades first, then folds onto exactly where the page will settle, then hides', () => {
   const env = load();
-  const { card } = scene(env);
+  const { card, follower } = scene(env);
   let done = 0;
   env.collapseAway(card, () => { done++; });
 
@@ -70,6 +85,9 @@ test('it fades first, then folds by exactly what the page will move, then hides'
   assert.equal(card.dataset.collapsing, '1');
   assert.equal(card.style.opacity, '0');
   assert.equal(card.style.transform, 'scale(0.97)');
+  for (const p of ['height', 'overflow', 'marginBottom', 'paddingTop']) {
+    assert.equal(card.style[p] ?? '', '', `${p}: the dry run of the end state left nothing behind`);
+  }
   assert.equal(done, 0);
 
   assert.equal(env.run(), 240, 'the fade');
@@ -77,28 +95,39 @@ test('it fades first, then folds by exactly what the page will move, then hides'
   assert.equal(card.style.height, '0px');
   assert.equal(card.style.paddingTop, '0px');
   assert.equal(card.style.borderBottomWidth, '0px');
-  // 64px of travel = 50 of card + 14 of space; the card's own 4px bottom margin
-  // goes to 4 - 14, so the follower ends where it will sit once it is hidden.
+  // 64px of travel = 50 of card + 14 of margin and gap: the 4px margin goes to -10.
   assert.equal(card.style.marginBottom, '-10px');
-  assert.equal(card.hidden, false);
+  assert.equal(follower.getBoundingClientRect().top, 100, 'the folded card leaves the follower where it will stay');
 
   assert.equal(env.run(), 320, 'the fold');
   assert.equal(card.hidden, true);
+  assert.equal(follower.getBoundingClientRect().top, 100, 'and hiding it moves nothing');
   assert.equal(done, 1);
   assert.equal(card.dataset.collapsing, undefined);
   for (const p of FOLD_PROPS) assert.equal(card.style[p] ?? '', '', `${p} put back`);
   assert.equal(env.timers.length, 0);
 });
 
+test('a layout that bends the arithmetic (margin collapsing) still lands exactly: the end is measured', () => {
+  const env = load();
+  const { card, follower } = scene(env, { bend: 2 });
+  env.collapseAway(card);
+  env.run();
+  // The arithmetic alone says -10 and would stop 2px short (the real nearby
+  // opt-in did, then jumped 2px when it was hidden); the check corrects it.
+  assert.equal(card.style.marginBottom, '-12px');
+  assert.equal(follower.getBoundingClientRect().top, 100);
+});
+
 test('inline styles the card had before are put back exactly', () => {
   const env = load();
   const { card } = scene(env);
   card.style.transition = 'color 1s';
-  card.style.marginBottom = '2px';
+  card.style.marginBottom = '4px';
   env.collapseAway(card);
   env.run(); env.run();
   assert.equal(card.style.transition, 'color 1s');
-  assert.equal(card.style.marginBottom, '2px');
+  assert.equal(card.style.marginBottom, '4px');
 });
 
 test('with reduced motion it just hides, at once', () => {
@@ -149,25 +178,42 @@ test('an already hidden card just reports done', () => {
 test('overlays after the card are skipped; the next thing in flow, even outside its container, is what is measured', () => {
   const env = load();
   const stack = node('stack'); stack.parentElement = env.body;
-  const card = node('card', { height: 50, marginBottom: '0px' });
-  const sheet = node('sheet', { top: 0, position: 'fixed' });          // never moves
-  const spots = node('spots', { top: () => (card.hidden ? 200 : 261) }); // the block after the stack
+  const card = cardNode(50, 0);
+  const sheet = node('sheet', { top: () => 0, position: 'fixed' });          // never moves
+  const spots = node('spots', { top: () => (card.hidden ? 200 : 200 + card.h() + card.mb() + 11) });
   card.parentElement = stack; sheet.parentElement = stack;
   card.nextElementSibling = sheet; stack.nextElementSibling = spots; spots.parentElement = env.body;
   env.collapseAway(card);
   env.run();
   assert.equal(card.style.marginBottom, '-11px', '61px of travel: 50 of card, 11 of gap');
+  assert.equal(spots.getBoundingClientRect().top, 200);
 });
 
-test('with nothing after it, only its own height folds', () => {
+test('with nothing after it, its container\'s bottom edge is what folds', () => {
   const env = load();
   const stack = node('stack'); stack.parentElement = env.body;
-  const card = node('card', { height: 50, marginBottom: '6px' });
+  const card = cardNode(50, 6);
   card.parentElement = stack;
+  stack.getBoundingClientRect = () => ({ top: 0, bottom: card.hidden ? 0 : card.h() + card.mb(), height: 0 });
   env.collapseAway(card);
   env.run();
   assert.equal(card.style.height, '0px');
-  assert.equal(card.style.marginBottom, '6px');
+  assert.equal(card.style.marginBottom, '0px', 'its 6px margin goes too: the container ends where it will end');
+});
+
+test('never looks past an overlay: a card at the foot of the hub folds against its own block, not the tab bar outside', () => {
+  const env = load();
+  const hub = node('hub', { position: 'fixed' }); hub.parentElement = env.body;
+  const deals = node('deals'); deals.parentElement = hub;
+  const card = cardNode(40, 8); card.parentElement = deals;
+  const tabbar = node('tabbar', { top: () => 800 }); tabbar.parentElement = env.body;
+  hub.nextElementSibling = tabbar;
+  deals.getBoundingClientRect = () => ({ top: 300, bottom: 300 + (card.hidden ? 0 : card.h() + card.mb() + 12), height: 0 });
+  env.collapseAway(card);
+  env.run();
+  // Against the tab bar (which never moves) it would keep its space: +48px.
+  assert.equal(card.style.marginBottom, '-12px');
+  assert.equal(deals.getBoundingClientRect().bottom, 300);
 });
 
 test('if something else hides it mid-fade, it settles without folding', () => {

@@ -7075,37 +7075,63 @@ function collapseAway(el, done) {
   }
   el.dataset.collapsing = '1';
 
-  // The first thing after the card in the page flow that is laid out and
-  // in flow: its top is what moves. Overlays and sheets are skipped, since they
-  // never move and would make the fold cancel itself out.
+  // Where the card's leaving shows: the top of the next thing in flow after
+  // it, or, when it is the last thing in its container, that container's
+  // bottom edge. Never looked for past an overlay (a fixed or absolute
+  // ancestor, like the hub): nothing outside one moves when something inside
+  // it does. Overlays among the siblings are skipped for the same reason.
   let follower = null;
   for (let node = el; node && node !== document.body && !follower; node = node.parentElement) {
     for (let sib = node.nextElementSibling; sib; sib = sib.nextElementSibling) {
       const pos = getComputedStyle(sib).position;
       if (pos !== 'absolute' && pos !== 'fixed' && sib.getClientRects().length) { follower = sib; break; }
     }
+    const up = node.parentElement;
+    if (!follower && (!up || /^(absolute|fixed)$/.test(getComputedStyle(up).position))) break;
   }
-  const height = el.getBoundingClientRect().height;
-  let travel = height;                          // with nothing after it, only the card's own height goes
-  if (follower) {
-    const before = follower.getBoundingClientRect().top;
-    el.hidden = true;                           // the layout it will leave behind...
-    travel = before - follower.getBoundingClientRect().top;
-    el.hidden = false;                          // ...and back, before the browser paints a frame
-  }
-  // What goes with the card besides its height: the gap and margins it held.
-  const extra = travel - height;
+  const anchor = follower ?? el.parentElement;
+  const read = () => (anchor ? anchor.getBoundingClientRect()[follower ? 'top' : 'bottom'] : 0);
 
   // The props this touches, as they were, so they can be put back exactly.
   const PROPS = ['transition', 'opacity', 'transform', 'overflow', 'height', 'minHeight',
     'paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth', 'marginBottom'];
   const saved = PROPS.map((p) => el.style[p]);
+  const restore = () => { PROPS.forEach((p, i) => { el.style[p] = saved[i]; }); };
   const finish = () => {
     el.hidden = true;
-    PROPS.forEach((p, i) => { el.style[p] = saved[i]; });
+    restore();
     delete el.dataset.collapsing;
     end();
   };
+
+  // Solve the fold's end state before anything paints. `goal` is where the
+  // anchor settles once the card is really gone; then the folded state is
+  // applied for real and its bottom margin corrected until the anchor lands
+  // there too. Measured, not computed, because block layout collapses a card's
+  // margins with its neighbours' and that bends the arithmetic: the nearby
+  // opt-in folded 2px short on the arithmetic alone and then jumped. Covers
+  // flex gap and the no-flex-gap margin fallback (boot-guard.js) the same way.
+  const height = el.getBoundingClientRect().height;
+  const marginBottom = parseFloat(getComputedStyle(el).marginBottom) || 0;
+  const start = read();
+  el.hidden = true;
+  const goal = read();
+  el.hidden = false;
+  el.style.overflow = 'hidden';
+  el.style.minHeight = '0px';
+  el.style.height = '0px';
+  el.style.paddingTop = '0px';
+  el.style.paddingBottom = '0px';
+  el.style.borderTopWidth = '0px';
+  el.style.borderBottomWidth = '0px';
+  let endMargin = marginBottom - (start - goal - height);       // the arithmetic's guess...
+  for (let i = 0; i < 2; i++) {                                 // ...then checked and corrected
+    el.style.marginBottom = `${endMargin}px`;
+    const miss = read() - goal;
+    if (Math.abs(miss) < 0.25) break;
+    endMargin -= miss;
+  }
+  restore();                                    // back to exactly as it was; nothing has painted
 
   // 1. Fade, with a slight shrink so it reads as going away, not blinking out.
   void el.offsetWidth;                          // the un-hide above must not be what the fade starts from
@@ -7117,7 +7143,6 @@ function collapseAway(el, done) {
   // the space it held to zero together, so the content below glides up.
   setTimeout(() => {
     if (el.hidden) { finish(); return; }        // something else already took it down
-    const marginBottom = parseFloat(getComputedStyle(el).marginBottom) || 0;
     el.style.overflow = 'hidden';
     el.style.minHeight = '0px';
     el.style.height = `${height}px`;
@@ -7133,7 +7158,7 @@ function collapseAway(el, done) {
     el.style.paddingBottom = '0px';
     el.style.borderTopWidth = '0px';
     el.style.borderBottomWidth = '0px';
-    el.style.marginBottom = `${marginBottom - extra}px`;
+    el.style.marginBottom = `${endMargin}px`;
     setTimeout(finish, FOLD_MS);
   }, FADE_MS);
 }
