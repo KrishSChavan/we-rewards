@@ -4189,20 +4189,69 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .home-reward .hr-row:active .hr-go { transform: scale(0.96); }
 .home-reward .hr-more { font-size: 0.8rem; font-weight: 700; color: var(--rf-ready); padding: 0.2rem 0 0.2rem; }
 
-.home-reward.is-close { background: var(--rf-amber-bg); }
+/* Closest reward: one page per spot (up to five), and with more than one an
+   arrow on the right that pages through them (.has-more; showNextClosest in
+   app.js). The arrow's 30px column is paid for by a slightly smaller gift
+   circle (3rem → 2.75rem), gap and name (1.05rem → 1rem): a reward name is
+   no likelier to wrap onto a second line than it was before the arrow
+   (measured at 320-414px), and a one-line card comes out 2px shorter. */
+.home-reward.is-close {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  background: var(--rf-amber-bg);
+}
+/* Every page sits in the SAME cell, so the card is always as tall as its
+   tallest page and paging never moves the rest of Home under the student's
+   thumb. Hidden with visibility, not display: a page that is not shown must
+   still hold the height, and stays out of the tab order and the a11y tree. */
+.home-reward .hr-slides { display: grid; min-width: 0; }
+.home-reward .hr-slides > .hr-close { grid-area: 1 / 1; }
+.home-reward .hr-slides > .hr-close:not(.is-active) { visibility: hidden; }
 .home-reward .hr-close {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.85rem; align-items: center;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.75rem; align-items: center;
   width: 100%; text-align: left; padding: 0.95rem 1rem;
 }
+.home-reward.has-more .hr-close { padding-right: 0; }   /* the arrow's column is the right inset */
 .home-reward .hr-close:active { transform: scale(0.98); }
 .home-reward .hr-icon {
-  width: 3rem; height: 3rem; border-radius: 50%;
+  width: 2.75rem; height: 2.75rem; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   background: #ffb86b; color: #1a0f0b;
 }
 .home-reward .hr-icon svg { width: 1.5rem; height: 1.5rem; display: block; }
-.home-reward .hr-kicker { font-weight: 800; font-size: 0.78rem; color: var(--rf-amber); }
-.home-reward.is-close .hr-name { font-size: 1.05rem; }
+.home-reward .hr-kicker {
+  display: flex; align-items: center;
+  font-weight: 800; font-size: 0.78rem; color: var(--rf-amber);
+}
+.home-reward.is-close .hr-name { font-size: 1rem; }
+/* The page dots ride on the kicker's line, which has room to spare, so they
+   cost the card no height. Margins, not flex gap (Safari 14.1). Inactive dots
+   only count the pages; the pill is the one that has to be seen. */
+.home-reward .hr-dots { display: flex; align-items: center; margin-left: 0.5rem; }
+.home-reward .hr-dots i {
+  display: block; width: 0.3rem; height: 0.3rem; border-radius: 0.15rem;
+  margin-left: 0.25rem; background: currentColor; opacity: 0.35;
+}
+.home-reward .hr-dots i:first-child { margin-left: 0; }
+.home-reward .hr-dots i.is-active { width: 0.8rem; opacity: 1; }
+/* The arrow: a full-height column on the right, so the target is the whole
+   edge of the card (30px by the card's height) while the glyph stays small. */
+.home-reward .hr-next {
+  display: flex; align-items: center; justify-content: center;
+  width: 1.85rem; padding-right: 0.3rem;
+  color: var(--rf-amber);
+}
+.home-reward .hr-next svg { width: 1.3rem; height: 1.3rem; display: block; transition: transform 120ms ease; }
+.home-reward .hr-next:active svg { transform: translateX(0.15rem); }
+/* A press slides the new reward in from the arrow's side. The kicker and dots
+   stay put: they are the frame, not the content. */
+@keyframes hr-arrive { from { opacity: 0; transform: translateX(0.75rem); } }
+.home-reward .hr-close.is-arriving .hr-name,
+.home-reward .hr-close.is-arriving .hr-sub { animation: hr-arrive 220ms cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .home-reward .hr-next svg { transition: none; }
+  .home-reward .hr-close.is-arriving .hr-name,
+  .home-reward .hr-close.is-arriving .hr-sub { animation: none; }
+}
 
 /* ---------- Home: the first-visit checklist ---------- */
 .home-start {

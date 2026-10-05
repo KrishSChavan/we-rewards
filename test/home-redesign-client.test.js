@@ -38,6 +38,9 @@ function fakeEl(id) {
     set innerHTML(v) { html = v; el.writes++; },
     setAttribute(k, v) { el.attrs[k] = String(v); },
     querySelectorAll() { return el.cards; },
+    // Strings, not nodes: a lookup inside the markup finds nothing unless a
+    // test supplies it (see the arrow's focus test).
+    querySelector(sel) { return el.found?.[sel] ?? null; },
   };
   return el;
 }
@@ -59,14 +62,14 @@ function sandbox({ vendors = [], email = null, allTime = true, uid = 'user-a', s
   const els = {};
   const $ = (id) => (els[id] ??= fakeEl(id));
   const calls = { opened: [], itemTaps: [], fits: 0 };
+  const doc = { querySelectorAll: () => [], activeElement: null };
   // eslint-disable-next-line no-new-func
-  const api = new Function('$', 'calls', 'seed', 'email', 'allTime', 'uid', 'localStorage', `
+  const api = new Function('$', 'calls', 'seed', 'email', 'allTime', 'uid', 'localStorage', 'document', `
     let allVendors = seed;
     let studentEmail = email;
     let visitedAllTime = allTime;
     let currentUserId = uid;
     let vendor = null;
-    const document = { querySelectorAll: () => [] };
     const vendorMonogram = (n) => String(n).slice(0, 2).toUpperCase();
     function openVendor(id) { calls.opened.push(id); vendor = allVendors.find((x) => String(x.vendorId) === String(id)) ?? null; }
     // The fold itself is covered by collapse-away-client.test.js; here it is
@@ -80,8 +83,8 @@ function sandbox({ vendors = [], email = null, allTime = true, uid = 'user-a', s
              refreshHomeRewards, dismissEmailNudge,
              setVendors: (v) => { allVendors = v; }, closeVendor: () => { vendor = null; },
              signIn: (id) => { currentUserId = id; } };
-  `)($, calls, vendors, email, allTime, uid, storage);
-  return { ...api, $, calls, storage };
+  `)($, calls, vendors, email, allTime, uid, storage, doc);
+  return { ...api, $, calls, storage, doc };
 }
 
 const spot = (over = {}) => ({
@@ -90,14 +93,37 @@ const spot = (over = {}) => ({
   ...over,
 });
 
-// A tap on an element inside the card: closest() finds the row we built.
+// A tap on an element inside the card: closest() finds the row we built, and
+// only for the selector that would find it in a real DOM. Matched on the first
+// class, so a page's is-active does not hide it; when the card has several
+// pages, the one on show is the one under the finger.
 function tapRow(api, selector) {
   const html = api.$('home-reward').innerHTML;
-  const m = new RegExp(`<button class="${selector}"[^>]*>`).exec(html);
-  assert.ok(m, `no ${selector} in the card`);
+  const tags = [...html.matchAll(new RegExp(`<button class="${selector}(?: [^"]*)?"[^>]*>`, 'g'))].map((m) => m[0]);
+  const tag = tags.find((t) => / is-active"/.test(t)) ?? tags[0];
+  assert.ok(tag, `no ${selector} in the card`);
   const dataset = {};
-  for (const [, k, v] of m[0].matchAll(/data-([a-z]+)="([^"]*)"/g)) dataset[k] = v;
-  return { target: { closest: () => ({ dataset }) } };
+  for (const [, k, v] of tag.matchAll(/data-([a-z]+)="([^"]*)"/g)) dataset[k] = v;
+  return { target: { closest: (sel) => (sel === '[data-vendor]' ? { dataset } : null) } };
+}
+
+// A tap on the "Closest reward" card's arrow.
+function tapNext(api) {
+  assert.match(api.$('home-reward').innerHTML, /<button class="hr-next"/, 'no arrow on the card');
+  return { target: { closest: (sel) => (sel === '.hr-next' ? {} : null) } };
+}
+
+// The page on show: its spot, and the position its kicker reads out.
+function shownPage(api) {
+  const pages = api.$('home-reward').innerHTML.split('<button class="hr-close').slice(1);
+  const on = pages.filter((p) => p.startsWith(' is-active"'));
+  assert.equal(on.length, 1, 'exactly one page on show');
+  return {
+    vendor: /data-vendor="([^"]*)"/.exec(on[0])[1],
+    pos: /<span class="sr-only">, (\d+ of \d+)<\/span>/.exec(on[0])?.[1] ?? null,
+    name: /<span class="hr-name">([^<]*)</.exec(on[0])[1],
+    pages: pages.length,
+  };
 }
 
 /* ---------- the History row regression ---------- */
@@ -191,6 +217,145 @@ describe('Redeem on Home opens that reward', () => {
     api.onHomeRewardTap(tapRow(api, 'hr-row'));
     assert.deepEqual(api.calls.opened, ['v1']);
     assert.deepEqual(api.calls.itemTaps, []);
+  });
+});
+
+/* ---------- the Closest reward card's arrow ---------- */
+
+// A spot the student has points at, `gap` short of its one reward.
+const nearSpot = (id, gap, { balance = 10, ...over } = {}) => spot({
+  vendorId: id, name: `Spot ${id}`, balance,
+  rewards: [{ id: `r-${id}`, title: `Reward ${id}`, cost_in_points: balance + gap }],
+  ...over,
+});
+
+describe('the Closest reward card pages through the nearest spots', () => {
+  test('one page per spot, closest first, at most five, with an arrow and a dot per page', () => {
+    const gaps = { a: 40, b: 10, c: 70, d: 25, e: 55, f: 90, g: 5 };
+    const api = sandbox({ vendors: Object.entries(gaps).map(([id, gap]) => nearSpot(id, gap)) });
+    api.renderHomeReward();
+    const el = api.$('home-reward');
+    assert.equal(el.className, 'home-reward is-close has-more');
+    const order = [...el.innerHTML.matchAll(/<button class="hr-close[^"]*" type="button" data-vendor="([^"]*)"/g)].map((m) => m[1]);
+    assert.deepEqual(order, ['g', 'b', 'd', 'a', 'e'], 'nearest first, the two furthest left out');
+    assert.deepEqual(shownPage(api), { vendor: 'g', pos: '1 of 5', name: '5 pts to Reward g', pages: 5 });
+    assert.match(el.innerHTML, /<span class="hr-kicker">Closest rewards<span class="hr-dots"/);
+    assert.match(el.innerHTML, /<button class="hr-next" type="button" aria-label="[^"]+">/);
+    const dots = /<span class="hr-dots" aria-hidden="true">(.*?)<\/span>/.exec(el.innerHTML)[1];
+    assert.equal((dots.match(/<i/g) ?? []).length, 5);
+    assert.equal((dots.match(/<i class="is-active">/g) ?? []).length, 1);
+  });
+
+  test('the arrow steps to the next spot, and after the last wraps back to the closest', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 30), nearSpot('b', 10), nearSpot('c', 20)] });
+    api.renderHomeReward();
+    const seen = [shownPage(api)];
+    for (let k = 0; k < 3; k++) { api.onHomeRewardTap(tapNext(api)); seen.push(shownPage(api)); }
+    assert.deepEqual(seen.map((p) => `${p.vendor} ${p.pos}`), ['b 1 of 3', 'c 2 of 3', 'a 3 of 3', 'b 1 of 3']);
+    assert.deepEqual(api.calls.opened, [], 'the arrow never opens a spot');
+  });
+
+  test('tapping the card opens the spot on show, not the closest', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 30), nearSpot('b', 10)] });
+    api.renderHomeReward();
+    api.onHomeRewardTap(tapNext(api));
+    api.onHomeRewardTap(tapRow(api, 'hr-close'));
+    assert.deepEqual(api.calls.opened, ['a']);
+    assert.deepEqual(api.calls.itemTaps, [], 'and stops at the spot screen, like the single card');
+  });
+
+  test('one business, one page: pooled branches share a balance and a menu', () => {
+    const api = sandbox({ vendors: [nearSpot('a1', 20, { poolId: 'p' }), nearSpot('a2', 20, { poolId: 'p' }), nearSpot('b', 40)] });
+    api.renderHomeReward();
+    assert.deepEqual(shownPage(api), { vendor: 'a1', pos: '1 of 2', name: '20 pts to Reward a1', pages: 2 });
+  });
+
+  test('one spot in reach: the card as it always was, no arrow and no dots', () => {
+    // b would be nearer, but a spot with no points yet is never a page.
+    const api = sandbox({ vendors: [nearSpot('a', 20), nearSpot('b', 5, { balance: 0 })] });
+    api.renderHomeReward();
+    const el = api.$('home-reward');
+    assert.equal(el.className, 'home-reward is-close');
+    assert.match(el.innerHTML, /<span class="hr-kicker">Closest reward<\/span>/);
+    assert.doesNotMatch(el.innerHTML, /hr-next|hr-dots|sr-only/);
+    assert.deepEqual(shownPage(api), { vendor: 'a', pos: null, name: '20 pts to Reward a', pages: 1 });
+  });
+
+  test('a balance push that reorders the list keeps the reward on show', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 10), nearSpot('b', 20), nearSpot('c', 30)] });
+    api.renderHomeReward();
+    api.onHomeRewardTap(tapNext(api));
+    assert.equal(shownPage(api).vendor, 'b');
+    api.setVendors([nearSpot('a', 10), nearSpot('b', 5, { balance: 25 }), nearSpot('c', 30)]);   // b earned 15
+    api.refreshHomeRewards();
+    assert.deepEqual(shownPage(api), { vendor: 'b', pos: '1 of 3', name: '5 pts to Reward b', pages: 3 }, 'still b, now the closest');
+  });
+
+  test('when the spot on show drops out of reach, the card goes back to the closest', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 10), nearSpot('b', 20), nearSpot('c', 30)] });
+    api.renderHomeReward();
+    api.onHomeRewardTap(tapNext(api));
+    api.setVendors([nearSpot('a', 10), nearSpot('b', 30, { balance: 0 }), nearSpot('c', 30)]);   // b's points spent
+    api.refreshHomeRewards();
+    assert.deepEqual(shownPage(api), { vendor: 'a', pos: '1 of 2', name: '10 pts to Reward a', pages: 2 });
+  });
+
+  test('once a reward has come ready and been redeemed, paging starts at the closest again', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 10), nearSpot('b', 20)] });
+    api.renderHomeReward();
+    api.onHomeRewardTap(tapNext(api));
+    api.setVendors([nearSpot('a', 10), nearSpot('b', -10, { balance: 40 })]);   // b's reward is ready
+    api.refreshHomeRewards();
+    assert.match(api.$('home-reward').innerHTML, />Reward ready</);
+    api.setVendors([nearSpot('a', 10), nearSpot('b', 20)]);                    // ...and redeemed
+    api.refreshHomeRewards();
+    assert.equal(shownPage(api).vendor, 'a');
+  });
+
+  test('only a change rewrites the card: a press does, a push with nothing new does not', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 10), nearSpot('b', 20)] });
+    const el = api.$('home-reward');
+    api.renderHomeReward();
+    api.renderHomeReward();
+    assert.equal(el.writes, 1);
+    api.onHomeRewardTap(tapNext(api));
+    assert.equal(el.writes, 2);
+    api.refreshHomeRewards();
+    assert.equal(el.writes, 2);
+    assert.equal(shownPage(api).vendor, 'b', 'and the page on show survives the push');
+  });
+
+  test('pressing the arrow keeps keyboard focus on it, though the repaint replaced it', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 10), nearSpot('b', 20)] });
+    api.renderHomeReward();
+    let focused = 0;
+    api.$('home-reward').found = { '.hr-next': { focus: () => { focused++; } } };
+    api.doc.activeElement = { classList: { contains: (c) => c === 'hr-next' } };   // a keyboard press
+    api.onHomeRewardTap(tapNext(api));
+    assert.equal(focused, 1);
+    api.doc.activeElement = null;                    // iOS never focuses a tapped button
+    api.onHomeRewardTap(tapNext(api));
+    assert.equal(focused, 1, 'nothing to restore, so focus is left alone');
+  });
+
+  test('a press slides the new page in; a repaint from new balances does not', () => {
+    const api = sandbox({ vendors: [nearSpot('a', 10), nearSpot('b', 20)] });
+    api.renderHomeReward();
+    const added = [];
+    api.$('home-reward').found = { '.hr-close.is-active': { classList: { add: (c) => added.push(c) } } };
+    api.setVendors([nearSpot('a', 9), nearSpot('b', 20)]);
+    api.refreshHomeRewards();
+    assert.deepEqual(added, []);
+    api.onHomeRewardTap(tapNext(api));
+    assert.deepEqual(added, ['is-arriving']);
+  });
+
+  test('pages share one cell and hide with visibility, so the card holds its tallest page\'s height', () => {
+    // display:none would let the card's height follow the page on show, and
+    // every press would move the rest of Home.
+    const css = readFileSync(CSS, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(css, /\.home-reward \.hr-slides > \.hr-close \{ grid-area: 1 \/ 1; \}/);
+    assert.match(css, /\.home-reward \.hr-slides > \.hr-close:not\(\.is-active\) \{ visibility: hidden; \}/);
   });
 });
 

@@ -4526,8 +4526,10 @@ function paintVendorRow() {
      1. Rewards ready: every spot where the balance already covers a reward,
         each with its own Redeem, which opens that spot's screen AND the
         named reward's redeem sheet on top of it (onHomeRewardTap).
-     2. Closest reward: nothing is ready yet, so name the one reward the
-        student is nearest to, and where. Tapping it opens the spot only.
+     2. Closest reward: nothing is ready yet, so name the reward the student
+        is nearest to, and where. Tapping it opens the spot only. With more
+        than one spot in reach, its arrow pages on to the next nearest, one
+        spot at a time, up to HOME_CLOSE_CAP (showNextClosest).
      3. Getting started: a student who has never been anywhere gets the
         steps instead (#home-start), since there is no balance to talk about.
 
@@ -4537,12 +4539,15 @@ function paintVendorRow() {
    renderVendors(). */
 
 const HOME_READY_CAP = 3;   // more than this and the card outgrows the screen
+const HOME_CLOSE_CAP = 5;   // spots the "Closest reward" arrow pages through
 
 // One row per business, not per branch: pooled spots share one balance, so
 // their identical rewards would otherwise be listed once for every counter.
-function onePerPool(list) {
+// spotOf picks the spot out of each entry, for lists that wrap one.
+function onePerPool(list, spotOf = (x) => x) {
   const seen = new Set();
-  return list.filter((v) => {
+  return list.filter((x) => {
+    const v = spotOf(x);
     const key = v.poolId ? `p:${v.poolId}` : `v:${v.vendorId}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -4551,6 +4556,15 @@ function onePerPool(list) {
 }
 
 const GIFT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M12 8v13M3 12h18M12 8c-2-4-6-4-6-1s6 1 6 1 6 2 6-1-4-3-6 1"/></svg>`;
+const NEXT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 5.5l6.5 6.5-6.5 6.5"/></svg>`;
+
+// The "Closest reward" card's pages, in order, as vendor ids, and the one on
+// show. Remembered by spot, not by position: a balance push can reorder the
+// list, and the student should stay on the reward they were reading (the dots
+// follow it). In memory only, like spotsFilter: a fresh open starts at the
+// closest again.
+let homeCloseIds = [];
+let homeCloseShown = null;
 
 function renderHomeReward() {
   const el = $('home-reward');
@@ -4561,6 +4575,7 @@ function renderHomeReward() {
 
   const ready = onePerPool(byRecency.filter((v) => spotRewardState(v)?.best));
   if (ready.length) {
+    homeCloseShown = null;   // when the Closest reward card comes back, it starts at the closest
     // data-reward is the reward the row names, so Redeem can open that
     // reward's own sheet (onHomeRewardTap) instead of the spot's whole list.
     const rows = ready.slice(0, HOME_READY_CAP).map((v) => {
@@ -4585,29 +4600,73 @@ function renderHomeReward() {
     return;
   }
 
-  // Nearest by points still to earn. Only spots with a balance: "200 pts to a
-  // free drink" at a place they have never been is an advert, not progress.
-  let best = null;
+  // Nearest by points still to earn, one per business. Only spots with a
+  // balance: "200 pts to a free drink" at a place they have never been is an
+  // advert, not progress. sort() is stable, so a tie keeps allVendors' order
+  // and the first page is the spot this card always named.
+  const near = [];
   allVendors.forEach((v) => {
     const st = spotRewardState(v);
-    if (!st?.next || st.bal <= 0) return;
-    const gap = st.next.cost_in_points - st.bal;
-    if (!best || gap < best.gap) best = { v, r: st.next, gap };
+    if (st?.next && st.bal > 0) near.push({ v, r: st.next, gap: st.next.cost_in_points - st.bal });
   });
-  if (best) {
-    paintHomeReward(el, 'home-reward is-close', `
-      <button class="hr-close" type="button" data-vendor="${escapeHtml(String(best.v.vendorId))}">
+  near.sort((a, b) => a.gap - b.gap);
+  const close = onePerPool(near, (x) => x.v).slice(0, HOME_CLOSE_CAP);
+  homeCloseIds = close.map((x) => String(x.v.vendorId));
+  if (close.length) {
+    // The spot on show, or the closest when it has dropped out of the list
+    // (its points were spent, or five others are nearer now).
+    const at = Math.max(0, homeCloseIds.indexOf(homeCloseShown));
+    homeCloseShown = homeCloseIds[at];
+    const n = close.length;
+    // Every page is in the markup, stacked in one grid cell, so the card is
+    // always as tall as its tallest page and paging never moves the rest of
+    // Home. Only .is-active is visible (styles.css → .hr-slides). Each page is
+    // a whole button that opens its own spot, as the single card always did.
+    const pages = close.map((x, k) => `<button class="hr-close${k === at ? ' is-active' : ''}" type="button" data-vendor="${escapeHtml(String(x.v.vendorId))}">
         <span class="hr-icon" aria-hidden="true">${GIFT_SVG}</span>
         <span class="hr-text">
-          <span class="hr-kicker">Closest reward</span>
-          <span class="hr-name">${best.gap} pts to ${escapeHtml(best.r.title)}</span>
-          <span class="hr-sub">${escapeHtml(best.v.name)}</span>
+          <span class="hr-kicker">${n > 1 ? `Closest rewards${homeCloseDots(n, k)}<span class="sr-only">, ${k + 1} of ${n}</span>` : 'Closest reward'}</span>
+          <span class="hr-name">${x.gap} pts to ${escapeHtml(x.r.title)}</span>
+          <span class="hr-sub">${escapeHtml(x.v.name)}</span>
         </span>
-      </button>`);
+      </button>`).join('');
+    // The arrow is a sibling of the pages, never inside one: a button cannot
+    // hold a button.
+    paintHomeReward(el, `home-reward is-close${n > 1 ? ' has-more' : ''}`, `
+      <div class="hr-slides">${pages}</div>
+      ${n > 1 ? `<button class="hr-next" type="button" aria-label="Next closest reward">${NEXT_SVG}</button>` : ''}`);
     return;
   }
 
+  homeCloseShown = null;
   paintHomeReward(el, 'home-reward', '');
+}
+
+// The page dots, inline after the kicker so they cost the card no height: one
+// per page, the current one drawn as a pill. Seen, not heard; the kicker says
+// "2 of 5" to a screen reader instead.
+function homeCloseDots(n, at) {
+  let dots = '';
+  for (let k = 0; k < n; k++) dots += `<i${k === at ? ' class="is-active"' : ''}></i>`;
+  return `<span class="hr-dots" aria-hidden="true">${dots}</span>`;
+}
+
+// The arrow on the "Closest reward" card: the next nearest spot, in place.
+// After the last it wraps to the closest, so it never dead-ends; there is no
+// back arrow to undo with.
+function showNextClosest() {
+  if (homeCloseIds.length < 2) return;
+  const el = $('home-reward');
+  // The repaint replaces the arrow along with the rest of the card, which
+  // would drop a keyboard user's focus to <body> on every press.
+  const hadFocus = Boolean(document.activeElement?.classList?.contains('hr-next'));
+  const i = homeCloseIds.indexOf(homeCloseShown);
+  homeCloseShown = homeCloseIds[(i + 1) % homeCloseIds.length];
+  renderHomeReward();
+  // Slides the new reward in from the arrow's side. Only on a press: a
+  // repaint from new balances writes markup without the class.
+  el.querySelector('.hr-close.is-active')?.classList.add('is-arriving');
+  if (hadFocus) el.querySelector('.hr-next')?.focus();
 }
 
 // Writes the card only when what it says actually changed. #home-reward is
@@ -4730,6 +4789,7 @@ function renderHomeExtras() {
 }
 
 function onHomeRewardTap(e) {
+  if (e.target.closest('.hr-next')) { showNextClosest(); return; }
   const hit = e.target.closest('[data-vendor]');
   if (!hit) return;
   openVendor(hit.dataset.vendor);
