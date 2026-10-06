@@ -54,6 +54,7 @@ import {
 import { robotsTxt, sitemapXml, STATIC_SITEMAP_PATHS } from './src/lib/seo.js';
 import { spotsIndexHtml, spotPageHtml, publicSpots, publicSpot, isIndexable } from './src/lib/spots-page.js';
 import { howItWorksHtml, faqHtml } from './src/lib/content-pages.js';
+import { supportHtml } from './src/lib/support-page.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -892,6 +893,21 @@ app.get(['/how-it-works', '/how-it-works/'], (_req, res) => {
 app.get(['/faq', '/faq/'], (_req, res) => {
   res.set('Cache-Control', 'public, max-age=3600');
   res.type('html').send(faqHtml());
+});
+
+// ---- Support (src/lib/support-page.js) ----
+// Required by App Store Connect, which will not accept a build whose support URL
+// 404s, and the URL is opened by a human reviewer with no session. So it sits
+// HERE, above the shells and the static mirror, for the same reason /faq does:
+// the mount at '/' would otherwise hand a navigation to the student app shell.
+//
+// The student service worker is the other half of that. Its scope is the whole
+// origin and its offline fallback for a navigation is caches.match('/'), so
+// '/support' is in that worker's FOREIGN list (public/student/sw.js) and an
+// installed PWA passes this URL straight through to the server.
+app.get(['/support', '/support/'], (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.type('html').send(supportHtml());
 });
 
 // ---- Public, crawlable spot pages (src/lib/spots-page.js) ----
