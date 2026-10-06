@@ -32,7 +32,7 @@
        that ignore this and what covers them. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>WeRewards | Penn State student rewards app, State College PA</title>
-  <meta name="description" content="WeRewards (We Rewards) is the free student rewards app for Penn State. Earn points at local State College spots and redeem them for free food. No download needed." />
+  <meta name="description" content="WeRewards (We Rewards) is the free student rewards app for Penn State. Earn points at local State College spots and redeem them for free food. Free to join." />
   <!-- `index, follow` is the default and inert; the other two are the point.
        max-image-preview:large is what lets the share card appear as a large
        thumbnail on a phone result instead of a 60px square, and max-snippet:-1
@@ -61,8 +61,11 @@
           is the single most useful thing this file can tell Google, because the
           brand is written as one word everywhere and searched for as two.
 
-       4. The WebApplication node says what this thing IS: a free web app, no
-          install. It is what makes an "is there an app" query answerable.
+       4. The WebApplication node says what this thing IS: a free app that
+          runs in the browser. It is what makes an "is there an app" query
+          answerable. It no longer says "no install": the student side is also
+          wrapped as a native iOS build (capacitor.config.json), so nothing
+          public may claim an app does not exist.
 
        The ld+json blocks are DATA, never executed, so helmet's
        `script-src 'self'` does not block them (verified against the live policy,
@@ -72,7 +75,7 @@
   <meta property="og:site_name" content="WeRewards" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="WeRewards | Penn State student rewards app, State College PA" />
-  <meta property="og:description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
+  <meta property="og:description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students." />
   <meta property="og:url" content="https://we-rewards.com/" />
   <meta property="og:image" content="https://we-rewards.com/icons/og-image.png" />
   <meta property="og:image:width" content="1200" />
@@ -81,7 +84,7 @@
   <meta property="og:locale" content="en_US" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="WeRewards | Penn State student rewards app, State College PA" />
-  <meta name="twitter:description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students, no app download." />
+  <meta name="twitter:description" content="Earn points at your favorite local spots around Penn State and redeem them for free food. Free for students." />
   <meta name="twitter:image" content="https://we-rewards.com/icons/og-image.png" />
   <meta name="twitter:image:alt" content="We Rewards: eat local, earn points, eat free." />
   <script type="application/ld+json">
@@ -122,7 +125,7 @@
         "url": "https://we-rewards.com/",
         "applicationCategory": "LifestyleApplication",
         "operatingSystem": "Any device with a web browser",
-        "browserRequirements": "Runs in the browser. No download required.",
+        "browserRequirements": "Works in any modern web browser.",
         "publisher": { "@id": "https://we-rewards.com/#organization" },
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
       }
@@ -218,7 +221,7 @@
           <h1>EAT LOCAL.<br />EARN POINTS.<br /><span class="hl">EAT FREE.</span></h1>
           <p class="hero-sub">
             Collect points every time you grab food at local spots around Penn State,
-            then trade them in for free stuff. No app to download, nothing to keep track of.
+            then trade them in for free stuff. Nothing to keep track of.
           </p>
           <!-- Camera-scanned punch link waiting to be claimed: app.js unhides
                this so the student knows signing in finishes the punch. -->
@@ -1669,7 +1672,7 @@
       <h2 id="install-title" class="detail-title">Add WeRewards to your phone</h2>
       <p id="install-desc" class="detail-desc">
         Pop it on your home screen and it opens like a real app: full screen, and
-        your code is one tap away. No app store, no download.
+        your code is one tap away.
       </p>
 
       <!-- menu steps, filled by install-prompt.js. Up on open: the tap that

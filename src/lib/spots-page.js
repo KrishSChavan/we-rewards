@@ -203,7 +203,7 @@ export function spotsIndexHtml(spots) {
 
   const body = count
     ? `    <h1>Spots that reward you in State College</h1>
-    <p class="lede">These are the local restaurants, cafes and food spots around Penn State where your We Rewards points add up. Earning is free, and there is no app to download.</p>
+    <p class="lede">These are the local restaurants, cafes and food spots around Penn State where your We Rewards points add up. Earning is free.</p>
     <ul class="grid">
 ${spots.map(spotCard).join('\n')}
     </ul>
@@ -280,7 +280,7 @@ ${spot.rewards
 
   const body = `    <p class="crumbs"><a href="/">Home</a> / <a href="/spots">Spots</a></p>
     <h1>${escapeHtml(spot.name)}</h1>
-    <p class="lede">Earn points every time you buy at ${escapeHtml(spot.name)} in State College, then trade them for free food. Free for Penn State students, with no app to download.</p>
+    <p class="lede">Earn points every time you buy at ${escapeHtml(spot.name)} in State College, then trade them for free food. Free for Penn State students.</p>
     <p><strong>Address:</strong> ${escapeHtml(where)}</p>
     ${cuisines.length ? `<ul class="tags">${cuisines.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>` : ''}
 ${rewards}

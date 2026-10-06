@@ -12,8 +12,11 @@
  *
  * THE ANSWERS MUST STAY TRUE TO THE PRODUCT. Everything asserted here is
  * checked against how the app actually behaves. Two in particular:
- *   • "no app to download" is true because the student side is a PWA served at
- *     `/` and signed into with Google (public/student/index.html).
+ *   • the copy stays app-NEUTRAL. The student side is a PWA served at `/` and
+ *     signed into with Google (public/student/index.html), AND it is wrapped as
+ *     a native iOS build (capacitor.config.json). So nothing here may claim
+ *     there is no app or no App Store listing. Once the iOS build is approved,
+ *     these strings are where the download link goes.
  *   • points are per vendor (`point_balances` is keyed on user AND vendor), with
  *     a shared community pool as the exception (migration-044), so the answer
  *     about where points can be spent says exactly that and not more.
@@ -33,7 +36,7 @@ import {
 const STEPS = [
   {
     title: 'Sign in once, on your phone',
-    body: 'Open we-rewards.com and continue with your Google account. That is the whole setup. There is no app to download from the App Store or Google Play, and nothing to install unless you want to add the site to your home screen.',
+    body: 'Open we-rewards.com and continue with your Google account. That is the whole setup. Nothing needs installing, though you can add the site to your home screen if you want it to open full screen.',
   },
   {
     title: 'Show your code when you pay',
@@ -66,7 +69,7 @@ ${STEPS.map((s) => `      <li><strong>${escapeHtml(s.title)}</strong>${escapeHtm
     <p>Points are earned and spent at the spot that gave them, so your balance at one cafe is separate from your balance at another. Some spots also take part in a shared community pool, and those are marked in the app. You can see every partner spot, its address and what its points buy on the <a href="/spots">spots page</a>.</p>
 
     <h2>Do you need to download anything?</h2>
-    <p>No. WeRewards runs in your browser. If you want it to feel like an app you can add it to your home screen from Safari or Chrome, but that is optional and it works the same either way.</p>
+    <p>WeRewards runs in your browser, so you can start earning the moment you sign in. If you want it to feel like an app you can add it to your home screen from Safari or Chrome, and it works the same either way.</p>
 
     <h2>Run a spot near campus?</h2>
     <p>Local businesses join WeRewards to bring students back more often, and setup takes one application. Read the pitch and apply on the <a href="/join">partner page</a>.</p>
@@ -76,7 +79,7 @@ ${STEPS.map((s) => `      <li><strong>${escapeHtml(s.title)}</strong>${escapeHtm
     path: '/how-it-works',
     title: 'How WeRewards works | Earn points at Penn State spots',
     description:
-      'How to earn and redeem WeRewards points at local spots around Penn State. Sign in with Google, show your QR code when you pay, and trade points for free food. Free for students, no app download.',
+      'How to earn and redeem WeRewards points at local spots around Penn State. Sign in with Google, show your QR code when you pay, and trade points for free food. Free for students.',
     body,
     jsonLd: [
       organizationJsonLd(),
@@ -126,7 +129,7 @@ const FAQ = [
   },
   {
     q: 'Do I have to download an app?',
-    a: 'No. WeRewards runs in your phone browser at we-rewards.com. Sign in with Google and your code is on screen. You can add it to your home screen if you want it to open like an app, but nothing needs installing from the App Store or Google Play.',
+    a: 'WeRewards runs in your phone browser at we-rewards.com, so you can start without installing anything. Sign in with Google and your code is on screen. You can also add it to your home screen so it opens full screen like an app.',
   },
   {
     q: 'How do I earn points?',
