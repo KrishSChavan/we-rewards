@@ -239,6 +239,23 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .google-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
 
+/* Sign in with Apple (App Store Review 4.8, see index.html). Same geometry as
+   .google-btn so neither button reads as the lesser option, but filled black
+   rather than card-white: that is the mark Apple publishes, and students
+   recognise it faster than a bordered variant. margin-top is smaller than
+   .google-btn's because these two are a pair, not two unrelated choices. */
+.apple-btn {
+  margin-top: 0.7rem;
+  display: inline-flex; align-items: center; gap: 0.8rem;
+  background: #000; color: #fff;
+  font-size: 1.15rem; font-weight: 700;
+  padding: 1rem 1.6rem; border-radius: 0.9rem;
+  border: 3px solid #000;
+  box-shadow: 0 4px 0 var(--edge);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.apple-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--edge); }
+
 .auth-error { margin-top: 0.9rem; color: #a93226; font-weight: 700; }
 .fine { margin-top: 0.9rem; color: var(--muted); font-size: 0.92rem; font-weight: 500; }
 

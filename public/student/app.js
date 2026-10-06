@@ -355,6 +355,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   void securePendingPunchHold();
 
   document.querySelectorAll('[data-signin]').forEach((b) => b.addEventListener('click', signInWithGoogle));
+  document.querySelectorAll('[data-signin-apple]').forEach((b) => b.addEventListener('click', signInWithApple));
   // Vendor path: same auth pool, password credentials (the terminal login).
   $('vendor-signin-toggle').addEventListener('click', () => {
     const form = $('vendor-signin');
@@ -776,6 +777,33 @@ async function signInWithGoogle() {
       // an action they perform about twice a term.
       queryParams: { prompt: 'select_account' },
     },
+  });
+  if (error) {
+    $('auth-error').textContent = 'Couldn’t start sign-in. Try again in a moment.';
+    $('auth-error').hidden = false;
+  }
+}
+
+// Sign in with Apple. Required by App Store Review 4.8 once the iOS wrap ships:
+// Google is the only way a student can create an account, and 4.8 says a social
+// login used for primary account setup must sit beside an equivalent that takes
+// only name and email and can hide the address. Apple's is that equivalent, and
+// its private relay address is exactly the "hide" case, so an account here may
+// carry an @privaterelay.appleid.com address that forwards. Nothing downstream
+// may assume a reachable personal domain.
+//
+// No `prompt: select_account` twin: Apple has no such parameter, and its sheet
+// already names the Apple ID and offers to switch.
+//
+// Reaching appleid.apple.com at all depends on `allowNavigation` in
+// capacitor.config.json. Without it Capacitor treats the hop off we-rewards.com
+// as an external link and hands the whole flow to Safari, where the session is
+// written to a storage jar this webview cannot read. Verified in the simulator.
+async function signInWithApple() {
+  $('auth-error').hidden = true;
+  const { error } = await sb.auth.signInWithOAuth({
+    provider: 'apple',
+    options: { redirectTo: window.location.origin },
   });
   if (error) {
     $('auth-error').textContent = 'Couldn’t start sign-in. Try again in a moment.';

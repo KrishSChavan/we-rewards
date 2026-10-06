@@ -4,6 +4,12 @@
   "webDir": ".build/student",
   "server": {
     "url": "https://we-rewards.com",
-    "cleartext": false
+    "cleartext": false,
+    "allowNavigation": [
+      "kfevnjbtgizcotexjjsp.supabase.co",
+      "accounts.google.com",
+      "*.google.com",
+      "appleid.apple.com"
+    ]
   }
 }
