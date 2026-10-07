@@ -129,8 +129,20 @@
     return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
       || window.navigator.standalone === true;   // iOS Safari's own flag
   }
+  // The native iOS shell is the most installed a student can get, but it looks
+  // like neither branch of isStandalone(): a WKWebView reports display-mode
+  // 'browser', and navigator.standalone is Safari's own flag, absent here. So
+  // without this the App Store build nags you to install the app you are
+  // already inside — and worse, an App Store reviewer reads "download the app"
+  // in an app they downloaded as being pointed somewhere other than the store.
+  function isNativeShell() {
+    try {
+      var C = window.Capacitor;
+      return !!(C && typeof C.isNativePlatform === 'function' && C.isNativePlatform());
+    } catch (e) { return false; }
+  }
   function isInstalled() {
-    if (installedLatch || isStandalone()) return true;
+    if (installedLatch || isNativeShell() || isStandalone()) return true;
     return load().installed === true;             // persisted latch from a prior appinstalled
   }
 
