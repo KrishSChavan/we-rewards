@@ -343,9 +343,21 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // environment — they are the two numbers most likely to need adjusting once
   // the feature meets a real street.
   applyNearbyConfig(pub.nearby);
+  // PKCE on the native shell ONLY. The web keeps the implicit flow it has
+  // always used, because switching it would invalidate every session currently
+  // held in a student's browser.
+  //
+  // Native needs PKCE because its OAuth no longer finishes in this WebView: it
+  // finishes in a system browser sheet that hands back a one-time code through
+  // a deep link (see startOAuth). exchangeCodeForSession then trades that code
+  // for a session using a verifier only this page holds, which is the whole
+  // point — the code is useless to anything that intercepts the deep link.
   sb = window.supabase.createClient(pub.supabaseUrl, pub.supabaseAnonKey, {
-    auth: { storageKey: 'psu-student-auth' },
+    auth: nativePlugins()
+      ? { storageKey: 'psu-student-auth', flowType: 'pkce' }
+      : { storageKey: 'psu-student-auth' },
   });
+  wireNativeOAuthCallback();
 
   // A camera-scanned punch link dies in ~90s, but sign-in takes minutes — swap
   // the token for a 10-minute hold right away (no auth needed), then claim it
@@ -756,27 +768,130 @@ function captureDealLink() {
   } catch { return null; }
 }
 
+/* ============================================================
+ * OAuth, and why the native shell cannot use the WebView for it
+ *
+ * Google REFUSES credential entry inside an embedded WebView. Not a warning, a
+ * hard 400 from accounts.google.com the moment a password is submitted. It is
+ * an anti-phishing measure and it is correct: an app that hosts Google's login
+ * form in its own WebView can read what is typed into it.
+ *
+ * This was measured, because the failure is easy to misread. On a simulator
+ * that had already signed into Google in Safari, signing in through the app
+ * SUCCEEDED, because the account chooser re-authenticates from existing cookies
+ * and no password is typed. On an ERASED simulator the same tap failed with the
+ * 400 every time. So the path that works is the one no new install ever has:
+ * every first-time student, and every App Store reviewer, would hit the 400.
+ *
+ * The fix is to stop hosting the login at all. On native the OAuth URL opens in
+ * ASWebAuthenticationSession (@capacitor/browser), a system browser sheet this
+ * app cannot read, which is exactly what Google asks for and what makes a
+ * student's existing Safari session usable instead of retyped. The sheet hands
+ * back a code on the com.werewards.app:// scheme registered in Info.plist, and
+ * appUrlOpen below trades it for a session.
+ *
+ * NOT done by spoofing the WebView's user agent to look like Safari. That is
+ * the popular workaround, it defeats a protection built for the user's benefit,
+ * and it breaks whenever Google tightens detection.
+ *
+ * Everything here is gated on the native bridge being present, so the web path
+ * is untouched.
+ * ============================================================ */
+
+// The native shell injects window.Capacitor into this remotely-loaded page.
+// Absent in every browser, which is what gates the whole native path. Returns
+// the plugin registry or null, never throws, so a shell built without these
+// plugins degrades to the ordinary web flow rather than breaking sign-in.
+function nativePlugins() {
+  try {
+    const C = window.Capacitor;
+    if (!C || typeof C.isNativePlatform !== 'function' || !C.isNativePlatform()) return null;
+    return C.Plugins || null;
+  } catch { return null; }
+}
+
+// Must match CFBundleURLSchemes in ios/App/App/Info.plist AND the redirect
+// allow-list in Supabase auth settings. All three have to agree or the sheet
+// completes and then strands the student on a dead page.
+const NATIVE_OAUTH_REDIRECT = 'com.werewards.app://auth-callback';
+
+/**
+ * One entry point for both providers. On the web this is exactly the call that
+ * was here before. On native it asks supabase-js for the URL instead of
+ * following it (skipBrowserRedirect) and opens that in the system sheet.
+ */
+async function startOAuth(provider, queryParams) {
+  const plugins = nativePlugins();
+  if (!plugins?.Browser) {
+    return sb.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: window.location.origin, queryParams },
+    });
+  }
+  const { data, error } = await sb.auth.signInWithOAuth({
+    provider,
+    options: { redirectTo: NATIVE_OAUTH_REDIRECT, skipBrowserRedirect: true, queryParams },
+  });
+  if (error) return { error };
+  if (!data?.url) return { error: new Error('OAUTH_URL_MISSING') };
+  await plugins.Browser.open({ url: data.url });
+  return { error: null };
+}
+
+/**
+ * Receives com.werewards.app://auth-callback?code=... from the system sheet.
+ *
+ * Registered once at boot rather than per sign-in press: iOS can deliver the
+ * deep link after the WebView has been evicted and rebuilt, in which case no
+ * per-press listener exists any more.
+ */
+function wireNativeOAuthCallback() {
+  const plugins = nativePlugins();
+  if (!plugins?.App?.addListener) return;
+  plugins.App.addListener('appUrlOpen', async (event) => {
+    const url = String(event?.url || '');
+    if (!url.startsWith(NATIVE_OAUTH_REDIRECT)) return;   // deep links we did not start
+    // Close first. Leaving the sheet up over a now-signed-in app reads as a hang.
+    try { await plugins.Browser?.close(); } catch { /* already dismissed */ }
+
+    // Custom schemes are not guaranteed to parse through URL in every WebKit,
+    // so fall back to reading the query string directly.
+    let params;
+    try { params = new URL(url).searchParams; }
+    catch { params = new URLSearchParams(url.slice(url.indexOf('?') + 1)); }
+
+    // The student cancelled the sheet, or the provider refused. Not an error
+    // worth shouting about: they are looking at the sign-in screen already.
+    if (params.get('error')) return;
+
+    const code = params.get('code');
+    if (!code) return;
+    const { error } = await sb.auth.exchangeCodeForSession(code);
+    if (error) {
+      $('auth-error').textContent = 'Couldn’t finish sign-in. Try again in a moment.';
+      $('auth-error').hidden = false;
+    }
+    // No success branch: onAuthStateChange SIGNED_IN already drives the UI.
+  });
+}
+
 async function signInWithGoogle() {
   $('auth-error').hidden = true;
-  const { error } = await sb.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo: window.location.origin,
-      // ALWAYS show Google's account chooser. Signing out of WeRewards ends OUR
-      // session; it does nothing to Google's, so without this Google sees one
-      // active account and silently re-authenticates into it — the Sign in
-      // button appears to do nothing except put you back where you were, with
-      // no way to reach a second account on the same device.
-      //
-      // That is worst for exactly the people this app now asks to hold two
-      // accounts: a student with a personal address and a university one, and a
-      // vendor whose terminal login is a third. Same reasoning and same line as
-      // /admin (public/admin/admin.js), which has always done this.
-      //
-      // The cost is one extra tap for someone with a single Google account, on
-      // an action they perform about twice a term.
-      queryParams: { prompt: 'select_account' },
-    },
+  const { error } = await startOAuth('google', {
+    // ALWAYS show Google's account chooser. Signing out of WeRewards ends OUR
+    // session; it does nothing to Google's, so without this Google sees one
+    // active account and silently re-authenticates into it — the Sign in
+    // button appears to do nothing except put you back where you were, with
+    // no way to reach a second account on the same device.
+    //
+    // That is worst for exactly the people this app now asks to hold two
+    // accounts: a student with a personal address and a university one, and a
+    // vendor whose terminal login is a third. Same reasoning and same line as
+    // /admin (public/admin/admin.js), which has always done this.
+    //
+    // The cost is one extra tap for someone with a single Google account, on
+    // an action they perform about twice a term.
+    prompt: 'select_account',
   });
   if (error) {
     $('auth-error').textContent = 'Couldn’t start sign-in. Try again in a moment.';
@@ -801,10 +916,11 @@ async function signInWithGoogle() {
 // written to a storage jar this webview cannot read. Verified in the simulator.
 async function signInWithApple() {
   $('auth-error').hidden = true;
-  const { error } = await sb.auth.signInWithOAuth({
-    provider: 'apple',
-    options: { redirectTo: window.location.origin },
-  });
+  // Routed through startOAuth like Google. Apple does not block embedded
+  // WebViews the way Google does, so this would have worked in place, but a
+  // second sign-in path with different mechanics is a second thing to debug at
+  // 2am. The system sheet is also where a student's Apple ID already is.
+  const { error } = await startOAuth('apple');
   if (error) {
     $('auth-error').textContent = 'Couldn’t start sign-in. Try again in a moment.';
     $('auth-error').hidden = false;
@@ -7557,24 +7673,24 @@ function connectSocket() {
       //   • the ACCOUNT MERGE, POST /api/me/student-email/merge
       //     (src/routes/student.js) — { community: N, refresh: true }. The odd
       //     one out, handled below.
-      //
+    //
       // This has to run BEFORE the vendorId guard, and until it did, every one
       // of those pushes was dropped on the floor: the points were in the
       // database, but the counter on Home sat at its old number until the next
       // reconnect or home load, so a student who told a friend to use their
       // code watched nothing happen.
-      //
+    //
       // Repaint the same way the vendor-scoped path below does — straight into
       // setCommunityPoints, which tickers the Home card and needs no
       // screen check (see its own note: that card is the one place this number
       // appears, and it is on-screen whenever points land). A push that somehow
       // arrives without the number still means "your pool changed", so fall
       // back to a re-read rather than ignoring it.
-      //
+    //
       // An event carrying no payload at all is the one shape that still leaves
       // without doing anything: there is nothing to paint and nothing to
       // re-read, and it must not cost a fetch.
-      //
+    //
       // refresh: true means "a number is not enough". Only the merge sends it,
       // and a merge moved far more than the community pool: per-spot balances
       // were SUMMED, punches and transactions were reparented and the tier

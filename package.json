@@ -29,6 +29,8 @@
   },
   "_comment:capacitor-deps": "The capacitor split across dependencies/devDependencies is load-bearing, not tidiness. server.js calls buildClientAssets() AT IMPORT, so the production dyno runs the client build at boot, and Heroku installs no devDependencies there — that is exactly why esbuild is a real dependency. scripts/build-client.js never bundles (it only ever calls esbuild.transformSync), so it cannot resolve a bare import; instead it copies browser bundles straight out of node_modules by path, see SUPABASE_SRC and POSTHOG_SRC in that file. @capacitor/core ships precisely such a bundle (dist/capacitor.js, its `unpkg` entry), so the camera/push work will be wired in the same way and will need it present at boot; demoting it would break the dyno build the day that lands, so it STAYS in dependencies even though nothing imports it yet. @capacitor/ios by contrast ships no JavaScript at all — its `files` list is Swift/Obj-C sources plus podspecs — and only @capacitor/cli and CocoaPods ever read it, on a developer machine running `npx cap sync` against webDir .build/student. Nothing can ever import it, so it moved to devDependencies. Verified: `npm ci --dry-run` still reports package.json and package-lock.json in sync after the move (lockfileVersion 3 takes the root dependency split from package.json), and `npm ci --omit=dev` — what the dyno runs — then drops @capacitor/ios while still installing @capacitor/core and esbuild.",
   "dependencies": {
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
     "@capacitor/core": "^8.5.2",
     "@supabase/supabase-js": "^2.45.0",
     "@tesseract.js-data/eng": "^1.0.0",
