@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- What `xcodebuild -exportArchive` needs to turn the archive into an
+	     App Store build and hand it to App Store Connect.
+
+	     `app-store-connect` is the modern spelling of what used to be
+	     `app-store`; both still parse, but the old one is deprecated and
+	     warns.
+
+	     uploadSymbols yes: without the dSYMs, every crash report in
+	     Organizer and App Store Connect comes back as raw addresses. There
+	     is nothing sensitive in them for this app, and the first real crash
+	     is exactly when they are wanted.
+
+	     manageAppVersionAndBuildNumber NO on purpose. Left on, Xcode
+	     silently rewrites CFBundleVersion at export, so the number that
+	     reaches App Store Connect is not the one in the project and the
+	     next upload collides with it. Bump MARKETING_VERSION and
+	     CURRENT_PROJECT_VERSION in the project instead, where the change is
+	     reviewable. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>UXXL68D688</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+	<key>destination</key>
+	<string>upload</string>
+</dict>
+</plist>
