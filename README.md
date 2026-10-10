@@ -746,6 +746,102 @@ guard** — an ambassador who deletes their account and signs up again through
 their own code is a genuinely new account inside that window, and without the
 check that would be a renewable payout.
 
+## Double points weekend (migration-063)
+
+**/admin → Incentives → Double points weekend.** The operator picks a start and
+an end and a multiplier; while it runs, every award at every active spot is
+multiplied — at the counter and on scanned receipts alike — and a student's own
+tier multiplier still stacks on top, up to a cap.
+
+It is **incentive kind #3**, and the whole of it is one new value in
+`incentives_kind_check` plus an evaluator (`src/lib/bonus-window.js`), exactly
+the shape migration-040 established. `award_points` is **not touched**: both
+earn paths already compute `floor(basePoints × multiplier)` in JavaScript and
+hand an integer to the RPC, so a bonus window is a change to one multiplication
+in two places. The 10% community mint scales along with it for free, the same
+way it already does for a tier multiplier.
+
+### ⚠ This is the one kind that spends the VENDORS' points
+
+Every other incentive pays out of the community pool, and migration-039's header
+says exactly why: community points are "the only balance the **platform** can
+hand out without a vendor giving away product for a promise they never made."
+A bonus window does the thing that sentence rules out. It scales the balance a
+student spends **at the shop**, at **every active shop**, and **no vendor opts
+in**. That was a deliberate product call — it is the promotion students
+recognise — and the guard rails are thin, so they are worth knowing:
+
+- the window is created **switched off**, like every incentive; going live is a
+  second deliberate act, and its confirm names the multiplier, the dates and
+  whose points they are;
+- **both dates are required** (`validIncentive`, refused with a 400). This is the
+  important one: an open-ended window is a permanent platform-wide discount
+  reachable by leaving a field blank, and both dates are *optional* on the other
+  two forms, so habit points the wrong way;
+- **`config.maxMultiplier` caps the combined multiplier**, so a tier-3 student on
+  a 2× weekend earns 3×, not 4×;
+- **`bonus_window_credits`** is the per-award record of what the promotion added,
+  with a per-vendor breakdown — because a vendor *will* ask what it cost them.
+
+Per-vendor opt-in is a later migration if they push back: a join table on
+`(incentive_id, vendor_id)` and one extra condition in the evaluator. Nothing
+forecloses it.
+
+### No budget, and the field is refused rather than ignored
+
+`incentives.budget_points` / `.spent_points` are a **community-point rail** —
+only `grant_community_points` moves `spent_points`, and nothing in this kind
+calls it. So a budget typed into this form would be a cap that can never fire
+sitting next to a spend of `0` that never moves. The route refuses it and says
+where the real number is. The same asymmetry is why "can this be deleted?" is a
+server-computed `locked` flag now instead of the dashboard's old
+`spent_points > 0` test: that test would have offered **Delete** on a window
+that had multiplied every sale on campus for a weekend.
+
+### Half steps only, and that is a float bug not a style rule
+
+The multiplier is restricted to multiples of `0.5` between 1.5 and 5. Both award
+paths finish with `Math.floor(basePoints * applied)`, which `src/lib/tiers.js`
+gets away with *only* because 1, 1.5 and 2 are exact in binary — it says so. A
+window multiplier of 1.1 would end that: the product would land fractionally low
+on some amounts and the floor would pay the customer one point less than the
+rate they were promised, at the counter. `test/bonus-window.test.js` asserts the
+exactness over every allowed multiplier × tier × cap combination rather than
+trusting the argument.
+
+### The cap flattens the top tiers, on purpose
+
+`min(tier × window, cap)`. At 2× capped to 3×, a tier-2 student (1.5×) and a
+tier-3 student (2×) both land on exactly 3×, and the tier-3 student's extra
+loyalty buys nothing that weekend. That is inherent to capping a product, which
+is why the admin panel **draws** the effective multiplier for all three tiers
+beside the form instead of leaving the operator to work it out.
+
+### Nothing is sent to students automatically
+
+Turning a window on changes what points are worth and tells nobody. The panel
+says so and hands off to the **Broadcast** tab (migration-061) with the copy
+pre-filled — so the push goes out through the rail that already respects
+`push_opt_in`, quiet hours and the shared two-a-day cap that Privacy Policy §7.4
+promises. The student side shows it without a push either way: a banner at the
+top of Home, and the tier row's "N× at every spot" switches to the **combined**
+multiplier (the chips keep showing the tier, because they are labelled "tier"
+and a weekend does not change anybody's tier).
+
+### `bonus_window_credits` is a report, not a ledger
+
+The points were already moved atomically by `award_points`, and `transactions`
+is their record. This table is written **afterwards and best-effort**, because
+the alternative is a cashier's award failing for the sake of a reporting row —
+and 039's rule is that nothing a cashier does can ever fail because of the
+incentives system. **So if that insert fails, the report undercounts**, and it is
+deliberately not the number anything reconciles against.
+
+It still carries a unique index on `(vendor_id, client_token)`, because the risk
+is not a lost write but a **double count**: a terminal that retries an award
+reuses its token, `award_points` returns early crediting nothing, and the server
+cannot tell the retry from the original.
+
 ## Vendor deals (campaigns)
 
 The terminal's **DEALS** tab lets a vendor write an offer and send it to their
@@ -1191,6 +1287,8 @@ powershell -File test/sql/run.ps1 -Migration migration-051.sql `
            -Seed seed-051.sql -Behavior behavior-051.sql # nearby spot alerts
 powershell -File test/sql/run.ps1 -Migration migration-053.sql `
            -Seed seed-053.sql -Behavior behavior-053.sql # ambassadors
+powershell -File test/sql/run.ps1 -Migration migration-063.sql `
+           -Seed seed-063.sql -Behavior behavior-063.sql # double points weekend
 ```
 
 Each migration brings its own `-Seed` / `-Behavior` pair, because a seed written

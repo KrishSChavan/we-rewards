@@ -45,7 +45,15 @@ var vendorId = null;           // the store this screen is ringing up for, sent 
                                // X-Vendor-Id on every /api/vendor/* call
 var storeSwitching = false;    // a store switch is mid-flight (guards double-taps)
 var currentEarnCode = null;    // customer's 6-digit earn code on the award pad
-var currentMultiplier = 1;     // scanned customer's tier multiplier (1x/1.5x/2x)
+// What the server will MULTIPLY THIS SALE BY — the customer's tier multiplier
+// on an ordinary day, and tier × bonus window (capped) during one. Applied and
+// not the tier's own on purpose: every preview below is computed from it, so
+// reading the tier here during a 2x weekend would print half the real award.
+var currentMultiplier = 1;
+// The tier alone (1x/1.5x/2x), for the chip beside the customer's name.
+var currentTierMultiplier = 1;
+// The live bonus window's name, or null. Labels the preview only.
+var currentWindowName = null;
 var pendingRedeemCode = null;  // 4-digit redeem code awaiting vendor confirmation
 var pendingRedeemKind = 'reward'; // 'reward' (redeem_codes) | 'punch' (visits)
 var padValue = '';             // exact-amount entry string
@@ -1209,13 +1217,20 @@ async function submitEarnCode(code) {
     var data = await res.json();
     if (!res.ok) return flood('error', 'CODE EXPIRED', data.message || 'Ask the customer to refresh their code.', enterScan);
     currentEarnCode = code;
-    currentMultiplier = data.multiplier ?? 1;
+    currentTierMultiplier = data.multiplier ?? 1;
+    // appliedMultiplier is what POST /api/vendor/award will actually use. An
+    // older server does not send it, which falls through to the tier — the
+    // behaviour this line had before bonus windows existed.
+    currentMultiplier = data.appliedMultiplier ?? data.multiplier ?? 1;
+    currentWindowName = data.windowName ?? null;
     $('customer-name').textContent = data.name;
     $('customer-balance').textContent = data.balance;
     // Pooled store: that figure is the chain’s purse, so say so beside it.
     paintSharedChip('customer-shared');
-    $('customer-tier').textContent = currentMultiplier + 'x';
-    $('customer-tier').classList.toggle('is-boosted', currentMultiplier > 1);
+    // The TIER, not the applied multiplier: this chip means "what sort of
+    // member is this", which a weekend does not change.
+    $('customer-tier').textContent = currentTierMultiplier + 'x';
+    $('customer-tier').classList.toggle('is-boosted', currentTierMultiplier > 1);
     padValue = '';
     renderQuickAwards();
     setupExactEntry();
@@ -1265,7 +1280,11 @@ function renderPad() {
   // no stray cents left for the double to mangle.
   $('pad-points').textContent = Math.floor(base * currentMultiplier);
   $('pad-mult').hidden = currentMultiplier <= 1;
-  $('pad-mult').textContent = currentMultiplier > 1 ? ('(' + base + ' × ' + currentMultiplier + 'x member)') : '';
+  // "member" was accurate while the only multiplier was the tier. During a
+  // bonus window the figure includes it, so the label says which.
+  $('pad-mult').textContent = currentMultiplier > 1
+    ? ('(' + base + ' × ' + currentMultiplier + 'x ' + (currentWindowName ? 'incl. bonus' : 'member') + ')')
+    : '';
   $('pad-award').disabled = amt <= 0;
 }
 
@@ -1343,8 +1362,13 @@ async function awardAmount(dollarAmount) {
     if (!res.ok) {
       return flood('error', 'DIDN’T GO THROUGH', data.message, enterScan);
     }
+    // bonusPoints has always been everything above the spot's own rate; during
+    // a bonus window that is the tier AND the window together, so the bracket
+    // carries the APPLIED multiplier and the label stops saying "tier".
+    var applied = data.appliedMultiplier ?? data.multiplier;
+    var bonusLabel = data.windowName ? 'bonus' : 'tier bonus';
     var detail = data.bonusPoints > 0
-      ? (data.customerName + ' · ' + data.basePoints + ' base + ' + data.bonusPoints + ' tier bonus (' + data.multiplier + 'x) · new balance ' + data.newBalance)
+      ? (data.customerName + ' · ' + data.basePoints + ' base + ' + data.bonusPoints + ' ' + bonusLabel + ' (' + applied + 'x) · new balance ' + data.newBalance)
       : (data.customerName + ' · new balance ' + data.newBalance);
     flood('success', '+' + data.awarded + ' PTS', detail, function () {
       refreshLastActivity();

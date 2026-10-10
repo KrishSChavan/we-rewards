@@ -146,6 +146,15 @@ function bootFailed(message) {
   $('sb-form').addEventListener('submit', saveSignup);
   $('sb-toggle').addEventListener('click', toggleSignup);
   $('sb-delete').addEventListener('click', deleteSignupIncentive);
+  $('bw-form').addEventListener('submit', saveBonusWindow);
+  $('bw-toggle').addEventListener('click', toggleBonusWindow);
+  $('bw-delete').addEventListener('click', deleteBonusWindow);
+  $('bw-push-btn').addEventListener('click', composeBonusWindowPush);
+  // The per-tier preview is the only thing in this tab that answers a question
+  // the operator has BEFORE they save ("what does a cap of 3 actually do?"), so
+  // it repaints as they change the knobs rather than after a round trip.
+  $('bw-multiplier').addEventListener('change', renderBonusPreview);
+  $('bw-cap').addEventListener('change', renderBonusPreview);
   $('ref-settle-btn').addEventListener('click', settleReferrals);
   $('grant-form').addEventListener('submit', giveGrant);
   $('push-btn').addEventListener('click', handlePushButton);
@@ -3228,15 +3237,23 @@ function paintProgram(prefix, program) {
   toggle.classList.toggle('btn-primary', !running);
   toggle.classList.toggle('btn-ghost', running);
 
-  // A program that has paid points out is the record of why they moved, so it
-  // can only be turned off. The server refuses the delete either way; hiding
-  // the button means an operator is never offered an action that will fail.
-  $(`${prefix}-delete`).hidden = !program || program.spent_points > 0;
+  // A program that has moved points is the record of why they moved, so it can
+  // only be turned off. The server refuses the delete either way; hiding the
+  // button means an operator is never offered an action that will fail.
+  //
+  // `locked` COMES FROM THE SERVER and is not `spent_points > 0` any more. A
+  // bonus window spends vendor points, which never touch spent_points — it
+  // stays 0 for the life of the row — so the old test would have offered Delete
+  // on a window that had multiplied every sale on campus for a weekend. The
+  // fallback keeps this working against an older payload.
+  $(`${prefix}-delete`).hidden = !program
+    || (program.locked ?? program.spent_points > 0);
 }
 
 function renderIncentives() {
   renderReferralPanel();
   renderSignupPanel();
+  renderBonusWindowPanel();
   renderPastIncentives();
 }
 
@@ -3323,15 +3340,228 @@ function signupBody() {
   };
 }
 
+/* ---------- panel 3: the bonus window (migration-063) ----------
+   The one kind here that does NOT pay community points. It multiplies the
+   VENDOR balance — the points a student spends at the shop — at every active
+   spot, with no vendor opt-in, which is why this panel leads with a warning and
+   ends with a per-vendor bill. See the header of src/lib/bonus-window.js.
+
+   No budget field, deliberately and not by omission: budget_points is a
+   community-point rail that nothing in this kind feeds, so the server REFUSES a
+   budget for a bonus window rather than showing a cap that could never fire. */
+
+// Mirrors BONUS_WINDOW_DEFAULTS and TIER_MULTIPLIERS in src/lib/bonus-window.js.
+// Pre-fill and preview only; the server is the authority on both.
+const BONUS_WINDOW_DEFAULTS = { multiplier: 2, maxMultiplier: 3 };
+const TIER_MULTIPLIERS = [1, 1.5, 2];
+
+/** Trim a multiplier for display: 2 not 2.00, 1.5 not 1.50. */
+const mult = (n) => `${Number(n)}×`;
+
+function renderBonusWindowPanel() {
+  const p = currentIncentive('bonus_window');
+  const cfg = { ...BONUS_WINDOW_DEFAULTS, ...(p?.config ?? {}) };
+
+  $('bw-name').value = p?.name ?? 'Double points weekend';
+  $('bw-multiplier').value = String(Number(cfg.multiplier));
+  $('bw-cap').value = String(Number(cfg.maxMultiplier));
+  $('bw-starts').value = toLocalInput(p?.starts_at);
+  $('bw-ends').value = toLocalInput(p?.ends_at);
+
+  paintProgram('bw', p);
+  renderBonusPreview();
+  renderBonusReport(p);
+
+  // The push handoff only makes sense once there is something to announce.
+  $('bw-push').hidden = !p;
+
+  const note = $('bw-note');
+  if (p) {
+    note.textContent = bonusWindowStatus(p);
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+}
+
+/**
+ * Where this window is in its life, in words. A window differs from the other
+ * two kinds in that `active` is NOT the same question as "is it multiplying
+ * anything right now" — the dates decide that, and the evaluator applies them
+ * (src/lib/bonus-window.js) while the row stays active and says so. An operator
+ * looking at a "Running" chip on a window that finished on Sunday needs this
+ * line to tell them the difference.
+ */
+function bonusWindowStatus(p) {
+  const starts = p.starts_at ? new Date(p.starts_at) : null;
+  const ends = p.ends_at ? new Date(p.ends_at) : null;
+  const now = Date.now();
+  if (!p.active) return 'Switched off. The dates below do nothing until you turn it on.';
+  if (starts && starts.getTime() > now) return `On, but not started — points start multiplying ${starts.toLocaleString()}.`;
+  if (ends && ends.getTime() <= now) return `Finished ${ends.toLocaleString()}. It is still switched on but no longer multiplying anything — turn it off to tidy up.`;
+  return `Live now. Ends ${ends ? ends.toLocaleString() : 'never (this should be impossible)'}.`;
+}
+
+/**
+ * The effective multiplier per tier. Mirrors effectiveMultiplier() in
+ * src/lib/bonus-window.js — min(tier × window, cap) — and exists to make the
+ * CAP'S FLATTENING VISIBLE: at 2× capped to 3×, a 1.5× tier and a 2× tier both
+ * land on 3× and the loyal student's edge disappears for the weekend. That is
+ * inherent to capping a product, and an operator should meet it here rather
+ * than in a support ticket.
+ */
+function renderBonusPreview() {
+  const windowMult = Number($('bw-multiplier').value);
+  const cap = Number($('bw-cap').value);
+  const wrap = $('bw-preview');
+  wrap.innerHTML = '';
+
+  TIER_MULTIPLIERS.forEach((tier, i) => {
+    const applied = Math.min(tier * windowMult, cap);
+    const capped = applied < tier * windowMult;
+
+    const row = document.createElement('div');
+    row.className = 'bw-preview-row';
+
+    const label = document.createElement('span');
+    label.className = 'bw-preview-tier';
+    label.textContent = `Tier ${i + 1} (${mult(tier)} normally)`;
+
+    const value = document.createElement('span');
+    value.className = 'bw-preview-value';
+    value.textContent = mult(applied);
+    if (capped) value.classList.add('is-capped');
+
+    row.append(label, value);
+
+    if (capped) {
+      const why = document.createElement('span');
+      why.className = 'app-meta';
+      why.textContent = `capped from ${mult(tier * windowMult)}`;
+      row.appendChild(why);
+    }
+    wrap.appendChild(row);
+  });
+}
+
+/**
+ * What the window has actually cost, from bonus_window_report (migration-063).
+ *
+ * Built with DOM APIs rather than innerHTML because the rows carry VENDOR NAMES,
+ * which are operator- and vendor-controlled text — the same rule renderVendors
+ * and this tab's other lists follow.
+ */
+function renderBonusReport(p) {
+  const r = p?.report;
+  const wrap = $('bw-report');
+  if (!r || !(r.awards > 0)) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+
+  // bonusPoints is the MARGINAL cost — points above what each student's tier
+  // alone would have paid — which is the number a vendor is actually asking
+  // about. basePoints is there to size it against.
+  $('bw-report-sum').textContent =
+    `${num(r.bonusPoints)} extra points across ${num(r.awards)} purchase${r.awards === 1 ? '' : 's'} `
+    + `by ${num(r.students)} student${r.students === 1 ? '' : 's'}. `
+    + `Those purchases would have earned ${num(r.basePoints)} points at the spots' own rates before any multiplier.`;
+
+  const list = $('bw-report-vendors');
+  list.innerHTML = '';
+  (r.vendors ?? []).forEach((v) => {
+    const row = document.createElement('div');
+    row.className = 'inc-past-row';
+
+    const info = document.createElement('div');
+    info.className = 'inc-past-info';
+    const name = document.createElement('span');
+    name.className = 'inc-past-name';
+    // Null when the spot has been deleted — the row survives on purpose so the
+    // breakdown still adds up towards the total above.
+    name.textContent = v.name ?? 'Deleted spot';
+    const meta = document.createElement('span');
+    meta.className = 'app-meta';
+    meta.textContent = `${num(v.awards)} purchase${v.awards === 1 ? '' : 's'}`;
+    info.append(name, meta);
+
+    const cost = document.createElement('span');
+    cost.className = 'bw-report-cost';
+    cost.textContent = `+${num(v.bonusPoints)} pts`;
+
+    row.append(info, cost);
+    list.appendChild(row);
+  });
+
+  // The RPC caps the breakdown at 50 vendors. Say so rather than let a big
+  // campus quietly read as if the list were complete — the totals above are
+  // over everything, so only this table is short.
+  const foot = $('bw-report-foot');
+  const shown = r.vendorsShown ?? (r.vendors ?? []).length;
+  foot.hidden = shown < 50;
+  foot.textContent = 'Showing the 50 spots that gave the most away. The totals above cover every spot.';
+}
+
+function bonusWindowBody() {
+  const val = (id) => $(id).value.trim();
+  return {
+    kind: 'bonus_window',
+    name: val('bw-name'),
+    // NOT SENT: budgetPoints. The server refuses a budget for this kind, so
+    // sending a blank one would be harmless and sending a number would be a
+    // 400 — leaving the field out entirely is what says "this kind has none".
+    startsAt: val('bw-starts'),
+    endsAt: val('bw-ends'),
+    config: { multiplier: val('bw-multiplier'), maxMultiplier: val('bw-cap') },
+  };
+}
+
+/**
+ * Prefill the Broadcast composer with this window and switch to it. The push is
+ * a SEPARATE, DELIBERATE act — turning a window on changes what points are
+ * worth and tells nobody — so this is a handoff, not an automation: the
+ * operator still reads the copy and presses Send on the tab that owns sending.
+ */
+function composeBonusWindowPush() {
+  const p = currentIncentive('bonus_window');
+  if (!p) return;
+  const cfg = { ...BONUS_WINDOW_DEFAULTS, ...(p.config ?? {}) };
+  const ends = p.ends_at ? new Date(p.ends_at) : null;
+  // The headline number is the WINDOW's multiplier, not any one student's
+  // effective one: the audience is everybody, their tiers differ, and the app
+  // shows each of them what they personally earn.
+  const until = ends
+    ? ends.toLocaleString(undefined, { weekday: 'long', hour: 'numeric', minute: '2-digit' })
+    : null;
+
+  $('bc-title').value = `${Number(cfg.multiplier)}× points${until ? ` until ${until}` : ''}`.slice(0, 60);
+  $('bc-body').value = `${p.name} is on. Every purchase at every spot earns ${Number(cfg.multiplier)}× points right now — your tier multiplier still stacks on top.`.slice(0, 140);
+  $('bc-url').value = '/';
+  // The counters under both fields are driven by input events, which setting
+  // .value does not fire.
+  $('bc-title').dispatchEvent(new Event('input'));
+  $('bc-body').dispatchEvent(new Event('input'));
+  setView('broadcast');
+}
+
 /* ---------- previous programs (both kinds) ---------- */
 
 function renderPastIncentives() {
-  const past = [...pastIncentives('referral'), ...pastIncentives('signup_domain')];
+  const past = [
+    ...pastIncentives('referral'),
+    ...pastIncentives('signup_domain'),
+    ...pastIncentives('bonus_window'),
+  ];
   const wrap = $('inc-past-list');
   $('inc-past').hidden = past.length === 0;
   wrap.innerHTML = '';
 
-  const KIND_LABEL = { referral: 'Refer a friend', signup_domain: 'Signup bonus' };
+  const KIND_LABEL = {
+    referral: 'Refer a friend',
+    signup_domain: 'Signup bonus',
+    bonus_window: 'Double points weekend',
+  };
 
   past.forEach((p) => {
     const row = document.createElement('div');
@@ -3344,18 +3574,34 @@ function renderPastIncentives() {
     name.textContent = p.name;
     const meta = document.createElement('span');
     meta.className = 'app-meta';
-    meta.textContent = `${KIND_LABEL[p.kind] ?? p.kind} · ${num(p.spent_points)} points paid · ${num(p.payouts ?? 0)} students`;
+    // Per kind, because spent_points is a COMMUNITY-point counter and a bonus
+    // window never touches it — "0 points paid" on a window that doubled a
+    // whole weekend would be a flat untruth. Its numbers come from `report`.
+    const r = p.report;
+    meta.textContent = p.kind === 'bonus_window'
+      ? `${KIND_LABEL[p.kind]} · ${num(r?.bonusPoints ?? 0)} extra points · ${num(r?.students ?? 0)} students`
+      : `${KIND_LABEL[p.kind] ?? p.kind} · ${num(p.spent_points)} points paid · ${num(p.payouts ?? 0)} students`;
     info.append(name, meta);
 
-    const on = document.createElement('button');
-    on.className = 'app-accept';
-    on.type = 'button';
-    on.textContent = 'Turn on';
-    on.addEventListener('click', () => patchIncentive(p.id, { active: true }));
+    row.appendChild(info);
 
-    row.append(info, on);
+    // A finished bonus window cannot be restarted by switching it on: the
+    // evaluator applies the dates, so it would read "Running" while multiplying
+    // nothing (see bonusWindowStatus). Offering the button would be offering an
+    // action that silently does nothing — copy the dates into the live panel
+    // instead. The other kinds have no end-date semantics like this.
+    const finished = p.kind === 'bonus_window'
+      && p.ends_at && new Date(p.ends_at).getTime() <= Date.now();
+    if (!finished) {
+      const on = document.createElement('button');
+      on.className = 'app-accept';
+      on.type = 'button';
+      on.textContent = 'Turn on';
+      on.addEventListener('click', () => patchIncentive(p.id, { active: true }));
+      row.appendChild(on);
+    }
 
-    if (p.spent_points === 0) {
+    if (!(p.locked ?? p.spent_points > 0)) {
       const del = document.createElement('button');
       del.className = 'app-reject';
       del.type = 'button';
@@ -3400,6 +3646,7 @@ async function saveProgram(prefix, kind, body) {
 
 function saveIncentive(e) { e.preventDefault(); saveProgram('inc', 'referral', incentiveBody()); }
 function saveSignup(e) { e.preventDefault(); saveProgram('sb', 'signup_domain', signupBody()); }
+function saveBonusWindow(e) { e.preventDefault(); saveProgram('bw', 'bonus_window', bonusWindowBody()); }
 
 async function patchIncentive(id, patch, prefix = 'inc') {
   $(`${prefix}-error`).hidden = true;
@@ -3454,8 +3701,35 @@ function deleteCurrent(prefix, kind) {
   removeIncentive(p.id, prefix);
 }
 
+/**
+ * ⚠ THE ONLY CONFIRM IN THIS TAB THAT NAMES WHOSE MONEY IT IS. Turning this on
+ * starts giving away the vendors' product, at every active spot, from whenever
+ * the start date says — so the confirm states the multiplier, the window and
+ * the funding, because this is the last point at which a mistake is cheap.
+ */
+function toggleBonusWindow() {
+  const p = currentIncentive('bonus_window');
+  if (!p) return;
+  const cfg = { ...BONUS_WINDOW_DEFAULTS, ...(p.config ?? {}) };
+  if (!p.active) {
+    const from = p.starts_at ? new Date(p.starts_at).toLocaleString() : 'immediately';
+    const to = p.ends_at ? new Date(p.ends_at).toLocaleString() : 'never';
+    if (!confirm(
+      `Turn on “${p.name}”?\n\n`
+      + `Every purchase at every active spot earns ${Number(cfg.multiplier)}× points `
+      + `from ${from} until ${to}, capped at ${Number(cfg.maxMultiplier)}× combined with a student's tier.\n\n`
+      + 'These points come out of the spots, not out of community points, and no vendor has opted in. '
+      + 'Nothing is sent to students — use Broadcast for that.'
+    )) return;
+    return patchIncentive(p.id, { active: true }, 'bw');
+  }
+  if (!confirm(`Turn off “${p.name}”?\n\nPoints go back to normal rates within about 30 seconds. Purchases already made keep what they earned.`)) return;
+  patchIncentive(p.id, { active: false }, 'bw');
+}
+
 function deleteIncentive() { deleteCurrent('inc', 'referral'); }
 function deleteSignupIncentive() { deleteCurrent('sb', 'signup_domain'); }
+function deleteBonusWindow() { deleteCurrent('bw', 'bonus_window'); }
 
 function deletePastIncentive(p) {
   if (!confirm(`Delete “${p.name}”?\n\nThis can’t be undone.`)) return;

@@ -24,6 +24,7 @@ import { applicationAccepted, vendorResetCode } from '../lib/email-templates.js'
 import { validReward, validRatio, validStarterItems, starterItemToReward } from '../lib/rewards.js';
 import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
 import { validSignupConfig } from '../lib/signup-bonus.js';
+import { validBonusWindowConfig, invalidateBonusWindow } from '../lib/bonus-window.js';
 import {
   getPoster, putPoster, deletePoster, readPoster, decodePosterBody,
   POSTER_MAX_BYTES, POSTER_EXTENSIONS,
@@ -2305,7 +2306,21 @@ function optionalBudget(raw) {
 const INCENTIVE_CONFIG_VALIDATORS = {
   referral: validReferralConfig,
   signup_domain: validSignupConfig,
+  bonus_window: validBonusWindowConfig,
 };
+
+/**
+ * Kinds whose payout is NOT community points, and which therefore have no
+ * budget rail at all.
+ *
+ * incentives.budget_points and .spent_points are only ever moved by
+ * grant_community_points (migration-039), and a bonus window never calls it —
+ * it scales a VENDOR balance inside award_points instead. So a budget typed
+ * into that form would be a cap that can never fire, sitting next to a spend of
+ * 0 that never moves. Refusing the field is the honest version of that: see the
+ * message in validIncentive, which says where the real number is.
+ */
+const KINDS_WITHOUT_BUDGET = new Set(['bonus_window']);
 
 /**
  * Validate the whole incentive body.
@@ -2315,7 +2330,12 @@ const INCENTIVE_CONFIG_VALIDATORS = {
  * an edit validates against what the row already is rather than trusting a
  * field the form may not even send.
  */
-function validIncentive(body, { existingKind = null } = {}) {
+// Exported for test/bonus-window.test.js, the same way validVendorName and
+// validNewVendor are: these rules decide before any query runs, so they are
+// unit-testable, and the bonus-window ones (both dates required, no budget) are
+// the only thing standing between an operator and a permanent platform-wide
+// discount.
+export function validIncentive(body, { existingKind = null } = {}) {
   const kind = existingKind ?? body?.kind;
   const validateConfig = INCENTIVE_CONFIG_VALIDATORS[kind];
   if (!validateConfig) return { error: 'Pick a valid incentive type.' };
@@ -2341,8 +2361,29 @@ function validIncentive(body, { existingKind = null } = {}) {
     return { error: 'A signup bonus needs a start date: it only pays students who sign up after it.' };
   }
 
+  // ⚠ A BONUS WINDOW MUST BE BOUNDED AT BOTH ENDS, and this is the single most
+  // important check in this function. The other two kinds pay a fixed amount per
+  // student out of a community-point budget that stops them; a bonus window
+  // multiplies EVERY award at EVERY active vendor and has no budget rail to hit
+  // (see KINDS_WITHOUT_BUDGET). Left open-ended it is a permanent platform-wide
+  // discount on every vendor's product, created by leaving a field blank — the
+  // catastrophic misconfiguration for this kind, and the one an operator would
+  // reach by habit, since both dates are optional on the other two forms.
+  if (kind === 'bonus_window') {
+    if (!starts.value || !ends.value) {
+      return { error: 'A bonus window needs both a start and an end: it multiplies every award at every spot while it runs, and nothing else stops it.' };
+    }
+  }
+
   const budget = optionalBudget(body?.budgetPoints);
   if (budget.error) return { error: budget.error };
+  if (budget.value != null && KINDS_WITHOUT_BUDGET.has(kind)) {
+    return {
+      error: 'A bonus window has no points budget — it multiplies the points each spot pays, '
+        + 'so the spend lands on the vendors, not on a community-point pot. '
+        + 'The dates and the cap are what bound it; the panel reports what it has cost so far.',
+    };
+  }
 
   const cfg = validateConfig(body?.config);
   if (cfg.error) return { error: cfg.error };
@@ -2396,6 +2437,30 @@ router.get('/incentives', async (req, res, next) => {
 
     const incentives = rows ?? [];
     const tallies = await Promise.all(incentives.map(async (row) => {
+      // A bonus window has no referrals and no community grants — by
+      // construction, since it never calls grant_community_points — so the four
+      // counts below would all be 0 and cost four queries to say so. Its
+      // exposure comes from one RPC that sums bonus_window_credits in the
+      // database (migration-063), for the same no-truncation reason this
+      // route's header gives for using counts instead of reads.
+      if (row.kind === 'bonus_window') {
+        const { data, error } = await supabaseAdmin.rpc('bonus_window_report', {
+          p_incentive_id: row.id,
+        });
+        if (error) throw error;
+        const report = data ?? {};
+        return {
+          referrals: { pending: 0, paid: 0, void: 0 },
+          payouts: 0,
+          report,
+          // Deleting a window that has already multiplied awards would throw
+          // away the record of WHY those points moved, which is the same reason
+          // a spent program can only be turned off. spent_points stays 0 for
+          // this kind forever, so the usual `spent_points > 0` test would have
+          // offered Delete on a window that had boosted thousands of sales.
+          locked: (report.awards ?? 0) > 0,
+        };
+      }
       const results = await Promise.all([
         ...REFERRAL_STATUSES.map((status) => supabaseAdmin
           .from('referrals')
@@ -2423,6 +2488,12 @@ router.get('/incentives', async (req, res, next) => {
           REFERRAL_STATUSES.map((status, i) => [status, results[i].count ?? 0]),
         ),
         payouts: payouts.count ?? 0,
+        report: null,
+        // The server decides this, not the dashboard, so the rule lives in one
+        // place as kinds are added. For the two community-point kinds it is the
+        // test the panel always made: a program that has paid can only be
+        // turned off, never deleted.
+        locked: (row.spent_points ?? 0) > 0,
       };
     }));
 
@@ -2455,7 +2526,15 @@ router.post('/incentives', async (req, res, next) => {
       .select(INCENTIVE_COLS)
       .single();
     if (error) throw error;
-    res.status(201).json({ ...data, referrals: { pending: 0, paid: 0, void: 0 }, payouts: 0 });
+    // Deliberately coarse, the same call invalidateVendorCaches makes: a create
+    // lands switched off and so cannot change which window is live, but every
+    // write to this table dropping the cache is one rule instead of three, and
+    // cache.js's header is explicit that the write path that forgets is the one
+    // that gets added later.
+    invalidateBonusWindow();
+    res.status(201).json({
+      ...data, referrals: { pending: 0, paid: 0, void: 0 }, payouts: 0, report: null, locked: false,
+    });
   } catch (err) {
     next(err);
   }
@@ -2520,6 +2599,11 @@ router.patch('/incentives/:id', async (req, res, next) => {
       throw error;
     }
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
+    // THE ONE THAT MATTERS. This is the turn-on and the turn-off, and the award
+    // path reads the live window out of a 30-second cache — so without this an
+    // operator who ends a weekend early would watch awards keep doubling for
+    // another half minute, and the stale-on-error window can hold it longer.
+    invalidateBonusWindow();
     res.json(data);
   } catch (err) {
     next(err);
@@ -2538,12 +2622,24 @@ router.delete('/incentives/:id', async (req, res, next) => {
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
     }
-    const { count, error: cErr } = await supabaseAdmin
-      .from('community_grants')
-      .select('id', { count: 'exact', head: true })
-      .eq('incentive_id', req.params.id);
+    // BOTH histories, because there are now two ways a program can have moved
+    // points. A bonus window writes no community_grants at all — it multiplies
+    // a vendor balance inside award_points — so checking only that table would
+    // have happily deleted a window that had boosted every sale on campus for a
+    // weekend, taking the record of why those points moved with it.
+    const [{ count, error: cErr }, { count: credits, error: bErr }] = await Promise.all([
+      supabaseAdmin
+        .from('community_grants')
+        .select('id', { count: 'exact', head: true })
+        .eq('incentive_id', req.params.id),
+      supabaseAdmin
+        .from('bonus_window_credits')
+        .select('id', { count: 'exact', head: true })
+        .eq('incentive_id', req.params.id),
+    ]);
     if (cErr) throw cErr;
-    if ((count ?? 0) > 0) {
+    if (bErr) throw bErr;
+    if ((count ?? 0) > 0 || (credits ?? 0) > 0) {
       return res.status(409).json({
         error: 'INCENTIVE_HAS_PAYOUTS',
         message: 'This program has already paid points out, so it can’t be deleted. Turn it off instead.',
@@ -2558,6 +2654,7 @@ router.delete('/incentives/:id', async (req, res, next) => {
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Incentive not found.' });
+    invalidateBonusWindow();   // the deleted row may have been the live window
     res.json({ ok: true, id: data.id });
   } catch (err) {
     next(err);

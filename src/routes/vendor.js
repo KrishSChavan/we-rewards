@@ -19,6 +19,12 @@ import { rollupVendorAnalytics } from '../lib/analytics.js';
 import { validReward, validRatio, pointsFor } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
+// The bonus window (migration-063). bonusBoost REPLACES reading
+// tierProfile.multiplier on the award path: it returns the tier's multiplier on
+// an ordinary day and the capped combination during a live window, and it never
+// throws, so a window that cannot be read pays the base rate rather than
+// failing a sale. See the header of src/lib/bonus-window.js.
+import { bonusBoost, logBonusWindowCredit } from '../lib/bonus-window.js';
 import { validLogo } from '../lib/logo.js';
 // Billing (migration-055). Only the two redirect-makers and the price read are
 // used here — every WRITE of a plan happens in routes/stripe-webhook.js.
@@ -405,6 +411,9 @@ router.post('/scan', async (req, res, next) => {
       balanceFor(userId, req.vendor),
       computeTierProfile(userId), // read-only: scan just displays the tier
     ]);
+    // The preview has to agree with the award a second later, so it resolves the
+    // bonus window the same way POST /award does. Cheap: the same 30s cache.
+    const boost = await bonusBoost(tierProfile.multiplier);
     res.json({
       userId,
       name: profile?.name ?? 'Customer',
@@ -414,6 +423,11 @@ router.post('/scan', async (req, res, next) => {
       shared: isPooled(req.vendor),
       tier: tierProfile.tier,
       multiplier: tierProfile.multiplier,
+      // Same additive contract as POST /award: `multiplier` stays the tier's,
+      // and a terminal that knows about windows reads these instead.
+      appliedMultiplier: boost.applied,
+      windowMultiplier: boost.windowMultiplier,
+      windowName: boost.window?.name ?? null,
     });
   } catch (err) {
     next(err);
@@ -466,9 +480,17 @@ router.post('/award', async (req, res, next) => {
     // required (never trust a multiplier sent by the terminal).
     const tierProfile = await computeTierProfile(userId);
     const { tier, multiplier } = tierProfile;
+    // A live bonus window (migration-063) multiplies ON TOP of the tier, capped.
+    // `boost.applied` IS the tier's own multiplier when no window is running, so
+    // this line is the only place the two cases differ and there is no branch
+    // below it. Cached per dyno for 30s, so an ordinary sale adds no round trip.
+    const boost = await bonusBoost(multiplier);
     // Floor to whole points: multipliers can be fractional (e.g. 1.5x) but
     // points/balances are integer columns and award_points takes an integer.
-    const points = Math.floor(basePoints * multiplier);
+    // Still a plain float multiply, and still safe: every value `applied` can
+    // take is a multiple of 0.25 and exact in binary (see MULTIPLIER_STEP in
+    // src/lib/bonus-window.js, which exists to keep that true).
+    const points = Math.floor(basePoints * boost.applied);
 
     const { data, error } = await supabaseAdmin.rpc('award_points', {
       p_user_id: userId,
@@ -500,14 +522,35 @@ router.post('/award', async (req, res, next) => {
     }); // live push
     // Snapshot the score for analytics — off the critical path, non-fatal.
     persistTierSnapshot(userId, tierProfile).catch(() => {});
+    // What the window cost, for the operator's report. Same treatment as the
+    // snapshot above and for the same reason: it is a reporting row, the points
+    // it describes are already committed in `transactions`, and this is the one
+    // request in the system a human is standing at a counter waiting for. NOT
+    // awaited — a bonus window is exactly the busy weekend where an extra round
+    // trip per sale would be felt, and idx_bonus_credits_once dedupes a retried
+    // award whether or not anything waits for it. The .catch is belt and braces;
+    // logBonusWindowCredit already swallows everything itself.
+    logBonusWindowCredit({
+      boost, userId, vendorId: req.vendor.id, basePoints, awarded: points,
+      source: 'counter', clientToken,
+    }).catch(() => {});
 
     const { data: profile } = await supabaseAdmin.from('profiles').select('name').eq('user_id', userId).maybeSingle();
     res.json({
       awarded: points,
       basePoints,
+      // Everything above the vendor's own rate, tier and window together. This
+      // is what the terminal already prints as the bonus line, so it keeps
+      // meaning the same thing during a window.
       bonusPoints: points - basePoints,
       tier,
       multiplier,
+      // Additive, and an older terminal ignores all three: `multiplier` above
+      // is still the TIER's, so nothing that already reads it changes meaning.
+      // `appliedMultiplier` is what this award actually used.
+      appliedMultiplier: boost.applied,
+      windowMultiplier: boost.windowMultiplier,
+      windowName: boost.window?.name ?? null,
       newBalance,
       customerName: profile?.name ?? 'Customer',
     });

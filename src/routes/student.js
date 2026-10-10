@@ -18,6 +18,11 @@ import { claimNearby } from '../lib/nearby.js';
 import { logNotification, deviceLabelFromUA, notificationLogState } from '../lib/notification-log.js';
 import { verifyPunchToken, punchBindingHash, punchTimezone, PUNCH_BINDING_COOKIE } from '../lib/punch.js';
 import { attributeReferral, activeReferralProgram, REFERRAL_DEFAULTS } from '../lib/referrals.js';
+// The bonus window (migration-063). A receipt claim ends in award_points just
+// as a counter award does, so it has to multiply by the same thing — a window
+// that applied at the till and not to the paper receipt for the same purchase
+// is the kind of inconsistency a student notices and reports.
+import { bonusBoost, logBonusWindowCredit, studentBonusWindow } from '../lib/bonus-window.js';
 import { maybeAwardSignupBonus } from '../lib/signup-bonus.js';
 import { emailEnabled } from '../lib/email.js';
 import {
@@ -1013,11 +1018,18 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
     const basePoints = pointsFor(total, hit.vendor.points_per_dollar);
     if (basePoints < 1) throw new Error('RECEIPT_TOTAL_MISSING');
     const tierProfile = await computeTierProfile(req.user.id);
+    // A live bonus window multiplies on top of the tier, capped — and
+    // `boost.applied` is the tier's own multiplier when none is running, so
+    // this path has no branch in it either. Same call, same order, as
+    // POST /api/vendor/award.
+    const boost = await bonusBoost(tierProfile.multiplier);
     // Still a plain float multiply, exactly as routes/vendor.js does it, and that
     // is safe rather than an oversight: basePoints is already a whole number and
     // every multiplier in src/lib/tiers.js is 1, 1.5 or 2 — all exact in binary,
-    // so there is no dust for the floor to eat.
-    const points = Math.floor(basePoints * tierProfile.multiplier);
+    // so there is no dust for the floor to eat. A window multiplier is held to
+    // half steps for precisely this reason (see MULTIPLIER_STEP in
+    // src/lib/bonus-window.js), so the product stays exact too.
+    const points = Math.floor(basePoints * boost.applied);
 
     const pad = (n) => String(n).padStart(2, '0');
     const receiptLocal = `${dt.y}-${pad(dt.m)}-${pad(dt.d)} ${pad(dt.hh)}:${pad(dt.mm)}:00`;
@@ -1050,6 +1062,14 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
       visit: true,
     });
     persistTierSnapshot(req.user.id, tierProfile).catch(() => {});
+    // What the window cost, for the operator's report — off the critical path
+    // and non-fatal, exactly as on the counter award. No client token on this
+    // path: a receipt is already once-per-receipt by the UNIQUE insert inside
+    // claim_receipt, so there is no retry for the index to catch.
+    logBonusWindowCredit({
+      boost, userId: req.user.id, vendorId: hit.vendor.id, basePoints, awarded: points,
+      source: 'receipt',
+    }).catch(() => {});
 
     res.json({
       awarded: points,
@@ -1057,6 +1077,10 @@ router.post('/receipt', requireConsent, async (req, res, next) => {
       bonusPoints: points - basePoints,
       tier: tierProfile.tier,
       multiplier: tierProfile.multiplier,
+      // Additive, same contract as the award route's.
+      appliedMultiplier: boost.applied,
+      windowMultiplier: boost.windowMultiplier,
+      windowName: boost.window?.name ?? null,
       vendorId: hit.vendor.id,
       vendorName: hit.vendor.name,
       total,
@@ -1199,10 +1223,24 @@ router.post('/redeem-code', requireConsent, async (req, res, next) => {
 /**
  * GET /api/me/tier
  * 30-day engagement score + current earn multiplier for the home tier bar.
+ *
+ * `bonusWindow` rides along (migration-063) rather than getting an endpoint of
+ * its own: the home screen already polls this for the multiplier chip, and the
+ * two numbers have to be painted together or the chip and the banner disagree
+ * about what the student earns. Same reasoning as publicSignupBonus on
+ * /api/public-config — one field on a call that was already being made.
+ *
+ * It is computed against THIS student's tier, so `bonusWindow.multiplier` is
+ * what they personally earn right now, cap already applied.
  */
 router.get('/tier', requireConsent, async (req, res, next) => {
   try {
-    res.json(await computeTierProfile(req.user.id));
+    const tierProfile = await computeTierProfile(req.user.id);
+    // Never fails this response: studentBonusWindow resolves to null on any
+    // read failure (see src/lib/bonus-window.js), and a missing banner is
+    // survivable where a 500 on the home screen is not.
+    const bonusWindow = await studentBonusWindow(tierProfile.multiplier);
+    res.json({ ...tierProfile, bonusWindow });
   } catch (err) {
     next(err);
   }

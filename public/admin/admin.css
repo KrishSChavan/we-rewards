@@ -627,6 +627,42 @@ h1, h3 { margin: 0; }
 .inc-past-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
 .inc-past-name { font-weight: 800; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- bonus window (migration-063) ---------- */
+/* The one program here that spends the VENDORS' points rather than community
+   points, so its panel is the only one that carries a standing warning. --warn
+   rather than --bad: this is a thing an operator does on purpose and needs to
+   weigh, not an error state. */
+.bw-warn {
+  padding: 0.6rem 0.7rem; border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warn);
+  color: var(--ink); font-size: 0.82rem;
+}
+/* What each tier actually earns under the current knobs. Three rows, drawn so
+   the cap's flattening of the top tiers is impossible to miss. */
+.bw-preview { display: grid; gap: 0.35rem; }
+.bw-preview-row {
+  display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+}
+.bw-preview-tier { flex: 1; min-width: 0; font-size: 0.82rem; color: var(--muted); }
+.bw-preview-value { font-weight: 800; font-size: 0.95rem; color: var(--good); }
+/* A capped tier is not an error either — it is the cap working — so it is
+   warn-coloured and labelled "capped from Nx" beside it, never red. */
+.bw-preview-value.is-capped { color: var(--warn); }
+
+.bw-push {
+  margin-top: 1rem; padding: 0.7rem 0.75rem; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+}
+.bw-push p { flex: 1; min-width: 12rem; margin: 0; font-size: 0.82rem; }
+.bw-push .btn-ghost { margin-top: 0; width: auto; }
+
+.bw-report { margin-top: 1.4rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.bw-report-vendors { margin-top: 0.3rem; }
+.bw-report-cost { font-weight: 800; font-size: 0.9rem; color: var(--warn); white-space: nowrap; }
+
 /* ---------- referrals + the payout ledger ---------- */
 .referral-list, .grant-list { display: grid; gap: 0.5rem; margin-top: 0.85rem; }
 .referral-row, .grant-row {

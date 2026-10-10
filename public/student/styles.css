@@ -730,6 +730,10 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tier-earning b { color: var(--accent); font-weight: 900; }
+/* Shown only while a bonus window is live, when the number beside it is the
+   COMBINED multiplier rather than this student's tier (see renderTier). Without
+   it the row reads "2x at every spot" under a meter sitting on the 1x node. */
+.tier-earning-note { font-weight: 800; opacity: 0.75; }
 
 .tier-hint {
   margin-top: 0.6rem; text-align: center;
@@ -3879,6 +3883,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   --rf-wave-fill: #eef2fd;
   --rf-wave-line: #6f86d6;
   --rf-wave-ink: #24325c;
+  /* The bonus window banner (migration-063). Amber, which is the one warm
+     colour this palette has not spent: --success is the points pill, --unlock
+     the new-spot pill, --rf-community purple the community card. A limited-time
+     multiplier landing in any of those three would read as one of them. */
+  --rf-bonus-bg: #fff4e0;
+  --rf-bonus-ink: #8a4b06;
+  --rf-bonus-line: #e9b765;
 }
 :root[data-theme="dark"] {
   --rf-lift: none;
@@ -3888,6 +3899,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   --rf-wave-fill: #1b2440;
   --rf-wave-line: #9daef0;
   --rf-wave-ink: #dce4ff;
+  --rf-bonus-bg: #3a2a12;
+  --rf-bonus-ink: #ffc96b;
+  --rf-bonus-line: #7a5a24;
 }
 
 /* ---------- surfaces: no outline, no hard shadow ---------- */
@@ -4123,6 +4137,37 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    subtitle on 360-375px phones and grew the card from 59px to 89px. The
    wrapper exists only to position the bubble (a button cannot hold a button). */
 .home-email-nudge-wrap { position: relative; }
+/* ---------- bonus window banner (migration-063) ----------
+   "2x points right now", first in the home stack because it is the only thing
+   in there that expires. Same card geometry as .home-email-nudge below it — the
+   radius, padding and lift all match, so a temporary banner reads as part of
+   the stack rather than as something that has crashed into it.
+
+   NOT a button, so no :active transform and no tap affordance: the multiplier
+   it announces is already applied to every award and there is nothing behind it
+   to open. The border is what carries the urgency instead of a shadow or an
+   animation — this thing is on screen for a whole weekend, and anything that
+   pulses would be unbearable by Saturday. */
+.bonus-window {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.7rem; align-items: center;
+  padding: 0.8rem 1rem; border-radius: 1.1rem;
+  background: var(--rf-bonus-bg); color: var(--rf-bonus-ink);
+  border: 2px solid var(--rf-bonus-line);
+  box-shadow: var(--rf-lift);
+}
+.bw-bolt { font-size: 1.35rem; line-height: 1; }
+.bw-text { min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.bw-head { font-weight: 800; font-size: 0.95rem; }
+/* 900 and a size bump on the number itself: it is the whole message, and at
+   0.95rem beside it the "×" was doing more work than the digit. */
+.bw-head b { font-weight: 900; font-size: 1.15rem; }
+/* The operator's program name plus the deadline. Ellipsised rather than wrapped
+   so a long program name cannot push the stack taller mid-weekend. */
+.bw-sub {
+  font-size: 0.76rem; font-weight: 700; opacity: 0.85;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 .home-email-nudge {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;
   width: 100%; text-align: left;

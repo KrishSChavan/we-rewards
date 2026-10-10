@@ -380,6 +380,112 @@
         </form>
       </div>
 
+      <!-- bonus window (migration-063) -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Double points weekend</h3>
+          <span id="bw-state" class="inc-state"></span>
+        </div>
+        <p class="muted">Pick a start and an end. While it runs, <strong>everything earned at every spot</strong> is multiplied — at the counter and on scanned receipts alike. A student's own tier multiplier still applies on top, up to the cap.</p>
+        <p class="muted bw-warn"><strong>⚠ These points come out of the spots, not out of community points.</strong> Every other program here pays from the cross-vendor pool, so WeRewards funds it. This one multiplies the balance a student spends <em>at the shop</em>, at every active spot, and no vendor opts in. Keep it short, watch the cap, and expect to be asked what it cost — the figures are at the bottom of this panel.</p>
+
+        <form id="bw-form" class="inc-form" novalidate>
+          <div class="inc-field inc-field-wide">
+            <label class="vendor-edit-label" for="bw-name">Program name</label>
+            <input id="bw-name" class="nv-input" type="text" maxlength="80" autocomplete="off" required />
+            <span class="vendor-edit-hint">Students see this on the banner in the app, so make it read like a promotion.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="bw-multiplier">Multiplier</label>
+            <select id="bw-multiplier" class="nv-input">
+              <option value="1.5">1.5× points</option>
+              <option value="2">2× points</option>
+              <option value="2.5">2.5× points</option>
+              <option value="3">3× points</option>
+              <option value="3.5">3.5× points</option>
+              <option value="4">4× points</option>
+              <option value="4.5">4.5× points</option>
+              <option value="5">5× points</option>
+            </select>
+            <span class="vendor-edit-hint">Half steps only — anything finer loses a point to rounding on some amounts.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="bw-cap">Cap (combined)</label>
+            <!-- Every value validBonusWindowConfig accepts, and no others:
+                 1.5 to 10 in half steps. A gap here would be a saved cap that
+                 matches no option, which a <select> renders as blank and
+                 renderBonusPreview reads as Number('') === 0 — a panel showing
+                 "0×" for a window that is paying 3×. 10 is the practical "no
+                 cap": the multiplier stops at 5 and the top tier at 2, so 10 is
+                 the largest product that can exist. -->
+            <select id="bw-cap" class="nv-input">
+              <option value="1.5">1.5× max</option>
+              <option value="2">2× max</option>
+              <option value="2.5">2.5× max</option>
+              <option value="3">3× max</option>
+              <option value="3.5">3.5× max</option>
+              <option value="4">4× max</option>
+              <option value="4.5">4.5× max</option>
+              <option value="5">5× max</option>
+              <option value="5.5">5.5× max</option>
+              <option value="6">6× max</option>
+              <option value="6.5">6.5× max</option>
+              <option value="7">7× max</option>
+              <option value="7.5">7.5× max</option>
+              <option value="8">8× max</option>
+              <option value="8.5">8.5× max</option>
+              <option value="9">9× max</option>
+              <option value="9.5">9.5× max</option>
+              <option value="10">10× max (no cap)</option>
+            </select>
+            <span class="vendor-edit-hint">The ceiling on tier × weekend together. Without it a 2× tier student on a 2× weekend earns 4×.</span>
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="bw-starts">Starts <em class="nv-opt">(required)</em></label>
+            <input id="bw-starts" class="nv-input" type="datetime-local" required />
+          </div>
+
+          <div class="inc-field">
+            <label class="vendor-edit-label" for="bw-ends">Ends <em class="nv-opt">(required)</em></label>
+            <input id="bw-ends" class="nv-input" type="datetime-local" required />
+            <span class="vendor-edit-hint">Both are required. There is no budget to stop this one, so the end date is the stop.</span>
+          </div>
+
+          <!-- What the knobs above actually pay, per tier. Drawn rather than
+               explained because the cap FLATTENS the top tiers and an operator
+               should see that before they turn it on, not after. -->
+          <div class="inc-field inc-field-wide">
+            <span class="vendor-edit-label">What each student earns</span>
+            <div id="bw-preview" class="bw-preview"></div>
+          </div>
+
+          <p id="bw-error" class="field-error" role="alert" hidden></p>
+          <p id="bw-note" class="inc-note" hidden></p>
+
+          <div class="inc-actions">
+            <button id="bw-save" class="btn-primary" type="submit">Create program</button>
+            <button id="bw-toggle" class="btn-ghost" type="button" hidden>Turn on</button>
+            <button id="bw-delete" class="btn-ghost inc-danger" type="button" hidden>Delete</button>
+          </div>
+        </form>
+
+        <!-- Students are NOT told automatically. This is the handoff. -->
+        <div id="bw-push" class="bw-push" hidden>
+          <p class="muted"><strong>Nobody has been told yet.</strong> Turning a window on changes what points are worth; it sends nothing. Use Broadcast to push it — it respects quiet hours and the two-a-day cap like everything else.</p>
+          <button id="bw-push-btn" class="btn-ghost btn-compact" type="button">Write the push →</button>
+        </div>
+
+        <div id="bw-report" class="bw-report" hidden>
+          <p class="vendor-edit-label">What it has cost so far</p>
+          <p id="bw-report-sum" class="inc-note"></p>
+          <div id="bw-report-vendors" class="bw-report-vendors"></div>
+          <p id="bw-report-foot" class="app-meta" hidden></p>
+        </div>
+      </div>
+
       <!-- referrals -->
       <div class="card">
         <div class="card-head">

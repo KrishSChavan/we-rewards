@@ -358,8 +358,41 @@ export function loadRecommendedVendorIds() {
   });
 }
 
+/**
+ * The one live bonus window (migration-063), or null — the same row for every
+ * student, which is the only reason it can be cached at all.
+ *
+ * THIS ONE IS ON THE AWARD PATH, which none of the others are, and that is why
+ * it exists. A cashier's award already does a tier recompute and an RPC; adding
+ * an unconditional `incentives` read to every sale at every till — to answer a
+ * question whose answer is "no" on all but a couple of weekends a year — is a
+ * round trip bought for nothing. The cache turns it into one read per 30
+ * seconds for the whole dyno.
+ *
+ * 30s, matching the catalogue, because that is the lag on a window going live
+ * or stopping. The admin write path invalidates it (see src/routes/admin.js) so
+ * an operator's turn-on is immediate; the TTL is what makes a MISSED
+ * invalidation self-heal in seconds rather than at the next deploy — exactly
+ * the reasoning in this file's header, and it matters more here because the two
+ * dynos a deploy overlaps do not share this cache and only one of them served
+ * the request that invalidated.
+ *
+ * The long stale window is deliberate and asymmetric: serving a slightly-stale
+ * "there is a 2x weekend on" for a few minutes past the end of a Supabase
+ * outage is a handful of over-generous awards, while propagating the error
+ * would be a failed sale at a counter. src/lib/bonus-window.js never lets this
+ * throw that far anyway — see the catch in activeBonusWindow.
+ */
+export const bonusWindowCache = createCache({
+  name: 'bonus-window',
+  ttlMs: 30_000,
+  staleMs: 10 * 60_000,
+});
+
 /** Every cache, for a stats endpoint or a test's afterEach. */
-export const allCaches = [vendorCatalogueCache, vendorLogoCache, recommendedVendorsCache];
+export const allCaches = [
+  vendorCatalogueCache, vendorLogoCache, recommendedVendorsCache, bonusWindowCache,
+];
 
 /** Wipe everything. Tests, and nothing else. */
 export function resetAllCaches() {

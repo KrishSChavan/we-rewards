@@ -2886,8 +2886,19 @@ function renderTier(t) {
       i === cur ? 'Current tier' : i === 0 ? 'Base tier' : i === n - 1 ? 'Max tier' : '';
   });
 
+  // A live bonus window (migration-063) is already folded into what the student
+  // earns, so it is painted before the lines that quote a multiplier — and the
+  // two lines quote DIFFERENT multipliers on purpose, see below.
+  const boosted = renderBonusWindow(t);
+
   const mult = `${t.multiplier}x`;
-  $('tier-earning-mult').textContent = mult;
+  // ⚠ THIS LINE IS NOT THE CHIP. "<b>2x</b> at every spot" is a claim about what
+  // a purchase pays right now, so during a window it has to show the COMBINED
+  // multiplier or it contradicts the banner three inches above it. The chips
+  // below keep showing the TIER's own multiplier, because they are labelled
+  // "tier" and a weekend does not change what tier anybody is.
+  $('tier-earning-mult').textContent = boosted ? `${boosted.multiplier}x` : mult;
+  $('tier-earning-note').hidden = !boosted;
   // Says what the next tier is worth, not how far off it is in numbers: the
   // distance is engagement SCORE, and printing it as "40 pts" beside "1.5x
   // points" used "pts" for two different things in one sentence. The panel
@@ -2910,6 +2921,44 @@ function renderTier(t) {
 
   $('tier-bar').hidden = false;
   renderLevers(t);
+}
+
+/* ---------- the bonus window banner (migration-063) ----------
+   An operator-created "2x points this weekend", read off /api/me/tier beside
+   the multiplier it changes. Returns the window it painted, or null, so
+   renderTier can decide which multiplier its own lines should quote.
+
+   THE NUMBER IS ALREADY THIS STUDENT'S. src/lib/bonus-window.js combines their
+   tier with the window and applies the operator's cap server-side, so nothing
+   here multiplies anything — a second copy of that arithmetic in the client is
+   exactly how the banner and the award end up disagreeing. */
+
+function renderBonusWindow(t) {
+  const el = $('bonus-window');
+  const w = t?.bonusWindow;
+  // An older server sends no `bonusWindow` key at all, which lands here as
+  // undefined and reads as "no window" — the right answer, and the reason this
+  // is a truthiness check rather than a `in` test.
+  if (!w || !(Number(w.multiplier) > 1)) {
+    el.hidden = true;
+    return null;
+  }
+
+  $('bonus-window-mult').textContent = `${Number(w.multiplier)}×`;
+
+  // The name is OPERATOR-WRITTEN TEXT, so it goes in through textContent like
+  // every vendor name in this file. The deadline matters more than the name,
+  // so it leads: "until Sunday 11:59 PM" is the actionable half.
+  const ends = w.endsAt ? new Date(w.endsAt) : null;
+  const when = ends && !Number.isNaN(ends.getTime())
+    ? ends.toLocaleString(undefined, { weekday: 'long', hour: 'numeric', minute: '2-digit' })
+    : null;
+  $('bonus-window-sub').textContent = when
+    ? `${w.name} — until ${when}`
+    : w.name;
+
+  el.hidden = false;
+  return w;
 }
 
 /* ---------- hub: "how you climb" (the three score levers) ----------
@@ -2982,6 +3031,11 @@ function resetTier() {
   $('hub-tier').hidden = true;
   $('hub-tier-panel').hidden = true;
   $('hub-tier-skel').hidden = false;   // back to first-load state, like dropHistory()
+  // The banner is global rather than per-student, so leaving it up would not
+  // leak anything — but it quotes the LAST student's combined multiplier, which
+  // the next one may not get. Down with everything else it was painted beside.
+  $('bonus-window').hidden = true;
+  $('tier-earning-note').hidden = true;
 }
 
 /* ---------- shared info popovers (tier meter + community points) ----------

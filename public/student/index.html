@@ -611,6 +611,36 @@
                    whole thing moves as a unit when the screen is short. -->
               <div class="home-stack">
 
+              <!-- ---------- bonus window banner (migration-063) ----------
+                   "2× points this weekend." Operator-created in /admin, read off
+                   GET /api/me/tier (the call this screen already makes for the
+                   multiplier chip) and painted by renderBonusWindow().
+
+                   FIRST IN THE STACK because it expires: everything below it is
+                   true all month, and this is true until Sunday. It is also
+                   INSIDE .home-stack rather than above it so it rides the same
+                   pair of auto margins as the rest of the block — .home-main's
+                   gap arithmetic is tuned to fit this screen exactly once, and a
+                   banner outside the stack would add a second thing for it to
+                   balance.
+
+                   Not a button. There is nothing behind it to open — the number
+                   it is announcing is already applied to every award — and a tap
+                   target that leads nowhere is worse than plain text. role=status
+                   so a screen reader hears it when it appears mid-session.
+
+                   The multiplier shown is THIS student's own: the server has
+                   already combined their tier with the window and applied the
+                   cap, so a tier-2 student and a new one see different numbers,
+                   each correct for them. -->
+              <div id="bonus-window" class="bonus-window" role="status" hidden>
+                <span class="bw-bolt" aria-hidden="true">⚡</span>
+                <span class="bw-text">
+                  <span class="bw-head"><b id="bonus-window-mult">2×</b> points right now</span>
+                  <span id="bonus-window-sub" class="bw-sub"></span>
+                </span>
+              </div>
+
               <!-- Add-your-student-email nudge. A shortcut to the same sheet as
                    the Account row (#link-email-btn), shown only while linking is
                    on offer, not yet done, and not closed with the ✕ by this
@@ -1457,7 +1487,13 @@
                       aria-label="How the tier score works"
                       aria-haspopup="dialog" aria-expanded="false" aria-controls="tier-info">i</button>
             </span>
-            <span class="tier-earning"><b id="tier-earning-mult">1x</b> at every spot</span>
+            <!-- During a bonus window this number is the COMBINED multiplier
+                 (tier × weekend, capped), not the tier's own — it is a claim
+                 about what a purchase pays right now, and it would contradict
+                 the banner on Home otherwise. The note explains the difference
+                 and is [hidden] the rest of the time. See renderTier. -->
+            <span class="tier-earning"><b id="tier-earning-mult">1x</b> at every spot<span
+                  id="tier-earning-note" class="tier-earning-note" hidden> incl. bonus</span></span>
           </div>
 
           <div class="tier-meter">

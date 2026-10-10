@@ -36,7 +36,18 @@ let rewards = [];          // vendor's rewards from /api/vendor/rewards
 let mode = 'scan';         // 'scan' | 'punch' | 'manage' | 'deals' | 'stats' | 'settings'
 let pinTarget = null;      // where the PIN gate leads on success
 let currentEarnCode = null;    // customer's 6-digit earn code on the award pad
-let currentMultiplier = 1;     // scanned customer's tier multiplier (1x/1.5x/2x)
+// What the server will MULTIPLY THIS SALE BY — the customer's tier multiplier
+// on an ordinary day, and tier × bonus window (capped) during one. It is the
+// applied figure and not the tier's own on purpose: every preview on the keypad
+// and every quick-award button is computed from it, so reading the tier here
+// during a 2x weekend would print "100 pts" on a button that awards 200.
+let currentMultiplier = 1;
+// The tier alone (1x/1.5x/2x), for the chip beside the customer's name — that
+// chip is labelled by the tier and a weekend does not change anybody's tier.
+let currentTierMultiplier = 1;
+// The live bonus window's name, or null. Only used to label the preview, so a
+// cashier can answer "why is it double?" without opening anything.
+let currentWindowName = null;
 let pendingRedeemCode = null;  // 4-digit redeem code awaiting vendor confirmation
 let pendingRedeemKind = 'reward'; // 'reward' (redeem_codes) | 'punch' (punch_redeem_codes)
 let padValue = '';         // exact-amount entry string
@@ -1908,7 +1919,12 @@ async function submitEarnCode(code) {
     const data = await res.json();
     if (!res.ok) return flood('error', 'CODE EXPIRED', data.message || 'Ask the customer to refresh their code.', enterScan);
     currentEarnCode = code;
-    currentMultiplier = data.multiplier ?? 1;
+    currentTierMultiplier = data.multiplier ?? 1;
+    // appliedMultiplier is what POST /api/vendor/award will actually use. An
+    // older server does not send it, which falls through to the tier and is the
+    // behaviour this line had before bonus windows existed.
+    currentMultiplier = data.appliedMultiplier ?? data.multiplier ?? 1;
+    currentWindowName = data.windowName ?? null;
     $('customer-name').textContent = data.name;
     $('customer-balance').textContent = data.balance;
     // Where this spot shares a purse that figure is the CHAIN's, not what the
@@ -1916,8 +1932,11 @@ async function submitEarnCode(code) {
     // number going stale on this screen: awarding only ever adds, so a sibling
     // till moving the balance mid-sale cannot make this transaction fail.
     paintSharedTag($('customer-shared'), data.shared);
-    $('customer-tier').textContent = `${currentMultiplier}x`;
-    $('customer-tier').classList.toggle('is-boosted', currentMultiplier > 1);
+    // The TIER, not the applied multiplier: this chip sits beside the
+    // customer's name and means "what sort of member is this", which a weekend
+    // does not change. The applied figure is on the keypad, next to the points.
+    $('customer-tier').textContent = `${currentTierMultiplier}x`;
+    $('customer-tier').classList.toggle('is-boosted', currentTierMultiplier > 1);
     padValue = '';
     renderQuickAwards();
     setupExactEntry();
@@ -1965,7 +1984,12 @@ function renderPad() {
   // no stray cents left for the double to mangle.
   $('pad-points').textContent = Math.floor(base * currentMultiplier);
   $('pad-mult').hidden = currentMultiplier <= 1;
-  $('pad-mult').textContent = currentMultiplier > 1 ? `(${base} × ${currentMultiplier}x member)` : '';
+  // "member" was accurate while the only multiplier was the customer's tier.
+  // During a bonus window the figure includes it, so the label has to say which
+  // — a cashier asked "why is it double?" has the answer on screen.
+  $('pad-mult').textContent = currentMultiplier > 1
+    ? `(${base} × ${currentMultiplier}x ${currentWindowName ? 'incl. bonus' : 'member'})`
+    : '';
   $('pad-award').disabled = amt <= 0;
 }
 
@@ -2063,8 +2087,15 @@ async function awardAmount(dollarAmount) {
     if (!res.ok) {
       return flood('error', 'DIDN\u2019T GO THROUGH', data.message, enterScan);
     }
+    // bonusPoints has always been everything above the spot's own rate; during a
+    // bonus window that is the tier AND the window together, so the figure in
+    // brackets is the APPLIED multiplier and the label stops saying "tier".
+    // Falls back to data.multiplier against an older server, which is exactly
+    // what this line said before.
+    const applied = data.appliedMultiplier ?? data.multiplier;
+    const label = data.windowName ? 'bonus' : 'tier bonus';
     const detail = data.bonusPoints > 0
-      ? `${data.customerName} · ${data.basePoints} base + ${data.bonusPoints} tier bonus (${data.multiplier}x) · new balance ${data.newBalance}${sharedNote()}`
+      ? `${data.customerName} · ${data.basePoints} base + ${data.bonusPoints} ${label} (${applied}x) · new balance ${data.newBalance}${sharedNote()}`
       : `${data.customerName} · new balance ${data.newBalance}${sharedNote()}`;
     flood('success', `+${data.awarded} PTS`, detail, () => {
       refreshLastActivity();
