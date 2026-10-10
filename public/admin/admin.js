@@ -3352,7 +3352,7 @@ function signupBody() {
 
 // Mirrors BONUS_WINDOW_DEFAULTS and TIER_MULTIPLIERS in src/lib/bonus-window.js.
 // Pre-fill and preview only; the server is the authority on both.
-const BONUS_WINDOW_DEFAULTS = { multiplier: 2, maxMultiplier: 3 };
+const BONUS_WINDOW_DEFAULTS = { multiplier: 2, maxMultiplier: 3, announce: true };
 const TIER_MULTIPLIERS = [1, 1.5, 2];
 
 /** Trim a multiplier for display: 2 not 2.00, 1.5 not 1.50. */
@@ -3367,13 +3367,14 @@ function renderBonusWindowPanel() {
   $('bw-cap').value = String(Number(cfg.maxMultiplier));
   $('bw-starts').value = toLocalInput(p?.starts_at);
   $('bw-ends').value = toLocalInput(p?.ends_at);
+  // `?? true` and not `|| true`: a saved `false` has to survive. A window the
+  // operator deliberately silenced must not come back ticked.
+  $('bw-announce').checked = cfg.announce ?? true;
 
   paintProgram('bw', p);
   renderBonusPreview();
+  renderBonusPush(p);
   renderBonusReport(p);
-
-  // The push handoff only makes sense once there is something to announce.
-  $('bw-push').hidden = !p;
 
   const note = $('bw-note');
   if (p) {
@@ -3445,6 +3446,50 @@ function renderBonusPreview() {
 }
 
 /**
+ * The announcement's state, in one sentence.
+ *
+ * FOUR CASES THAT ALL LOOK LIKE SILENCE from the operator's chair, which is the
+ * whole reason this function exists rather than a fixed line of copy:
+ *   · the switch is off              -> nothing will ever be sent
+ *   · switch on, window not started  -> it will be sent, at the start date
+ *   · switch on, live, not yet sent  -> it is about to be sent (within a minute)
+ *   · sent                           -> how many were queued, and how many have
+ *                                       actually been delivered so far
+ *
+ * The last pair is the one worth separating. `sent` lags `queued` by design:
+ * the worker drains under quiet hours and the shared two-a-day cap, so a window
+ * announced at 2am legitimately reads "0 of 1,400 delivered" until morning, and
+ * without that sentence an operator would reasonably conclude it was broken.
+ */
+function renderBonusPush(p) {
+  const wrap = $('bw-push');
+  wrap.hidden = !p;
+  if (!p) return;
+
+  const cfg = { ...BONUS_WINDOW_DEFAULTS, ...(p.config ?? {}) };
+  const a = p.announced;
+  const note = $('bw-push-note');
+  const starts = p.starts_at ? new Date(p.starts_at) : null;
+
+  if (a) {
+    const when = new Date(a.at).toLocaleString();
+    const tail = a.status === 'done'
+      ? 'That announcement has finished going out.'
+      : 'Still going out: the worker delivers under quiet hours and the two-a-day cap, so this finishes over the next few hours rather than at once.';
+    note.textContent = `Announced ${when}. ${num(a.sent)} of ${num(a.queued)} students reached. ${tail}`;
+  } else if (!cfg.announce) {
+    note.textContent = 'Announcements are switched off for this window, so nothing will be sent. '
+      + 'Tick the box above and save, or write one by hand.';
+  } else if (!p.active) {
+    note.textContent = 'Nobody has been told yet. One push goes out automatically within a minute of this window going live.';
+  } else if (starts && starts.getTime() > Date.now()) {
+    note.textContent = `Queued up: the push goes out automatically when the window opens at ${starts.toLocaleString()}.`;
+  } else {
+    note.textContent = 'The window is live and the push is going out now. Reload in a minute to see how many it reached.';
+  }
+}
+
+/**
  * What the window has actually cost, from bonus_window_report (migration-063).
  *
  * Built with DOM APIs rather than innerHTML because the rows carry VENDOR NAMES,
@@ -3513,7 +3558,15 @@ function bonusWindowBody() {
     // 400 — leaving the field out entirely is what says "this kind has none".
     startsAt: val('bw-starts'),
     endsAt: val('bw-ends'),
-    config: { multiplier: val('bw-multiplier'), maxMultiplier: val('bw-cap') },
+    config: {
+      multiplier: val('bw-multiplier'),
+      maxMultiplier: val('bw-cap'),
+      // A real boolean, not the string a form would give. The server reads it
+      // defensively anyway (Boolean('false') is true, which would turn every
+      // silenced window into an announcement), but sending the right type is
+      // where that stops being a question.
+      announce: $('bw-announce').checked,
+    },
   };
 }
 
@@ -3714,12 +3767,18 @@ function toggleBonusWindow() {
   if (!p.active) {
     const from = p.starts_at ? new Date(p.starts_at).toLocaleString() : 'immediately';
     const to = p.ends_at ? new Date(p.ends_at).toLocaleString() : 'never';
+    // The announce line is part of the confirm, not a footnote: with the switch
+    // ticked this click also interrupts the entire student body, and that is
+    // the half an operator is most likely not to be holding in their head.
+    const announce = (cfg.announce ?? true)
+      ? '\n\nEvery student will get a push about it, once, within a minute of it going live.'
+      : '\n\nAnnouncements are off for this window, so nothing will be sent to students.';
     if (!confirm(
       `Turn on “${p.name}”?\n\n`
       + `Every purchase at every active spot earns ${Number(cfg.multiplier)}× points `
       + `from ${from} until ${to}, capped at ${Number(cfg.maxMultiplier)}× combined with a student's tier.\n\n`
-      + 'These points come out of the spots, not out of community points, and no vendor has opted in. '
-      + 'Nothing is sent to students — use Broadcast for that.'
+      + 'These points come out of the spots, not out of community points, and no vendor has opted in.'
+      + announce
     )) return;
     return patchIncentive(p.id, { active: true }, 'bw');
   }

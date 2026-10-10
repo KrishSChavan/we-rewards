@@ -624,22 +624,32 @@
                    banner outside the stack would add a second thing for it to
                    balance.
 
-                   Not a button. There is nothing behind it to open — the number
-                   it is announcing is already applied to every award — and a tap
-                   target that leads nowhere is worse than plain text. role=status
-                   so a screen reader hears it when it appears mid-session.
+                   A BUTTON, because the subtext does not fit. The operator's
+                   program name plus a deadline is more than one line at phone
+                   width, and the banner has to stay one line or it pushes the
+                   whole stack down for the length of a weekend. So the line is
+                   ellipsised here and tapping opens #bonus-window-info, which
+                   has room for all of it. Same popover machinery as the tier and
+                   community explainers (wireInfo), so the dimmed backdrop and
+                   tap-outside-to-close come for free.
 
                    The multiplier shown is THIS student's own: the server has
                    already combined their tier with the window and applied the
                    cap, so a tier-2 student and a new one see different numbers,
                    each correct for them. -->
-              <div id="bonus-window" class="bonus-window" role="status" hidden>
+              <button id="bonus-window" class="bonus-window" type="button"
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="bonus-window-info" hidden>
                 <span class="bw-bolt" aria-hidden="true">⚡</span>
                 <span class="bw-text">
                   <span class="bw-head"><b id="bonus-window-mult">2×</b> points right now</span>
                   <span id="bonus-window-sub" class="bw-sub"></span>
                 </span>
-              </div>
+                <span class="bw-more" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9.5 6 15.5 12l-6 6" />
+                  </svg>
+                </span>
+              </button>
 
               <!-- Add-your-student-email nudge. A shortcut to the same sheet as
                    the Account row (#link-email-btn), shown only while linking is
@@ -1791,6 +1801,30 @@
         <li><strong>Spend</strong>: how much you spend, with extra weight for meal-sized orders. Up to $30 of a single visit counts</li>
       </ul>
       <p>Keeping all three balanced climbs fastest. Reach <strong>350</strong> for <strong>1.5× points</strong>, or <strong>700</strong> for <strong>2×</strong>. The multiplier applies to everything you earn. It's a rolling 30-day window, so keep visiting to hold your tier.</p>
+    </div>
+  </div>
+
+  <!-- bonus window details: the same popover as the tier (i) above, opened by
+       the banner on Home rather than by an (i). It exists because the banner is
+       one ellipsised line and this is where the rest of it goes: the operator's
+       program name in full, the deadline in full, and the one thing the banner
+       cannot fit, which is WHY this student's number differs from the "2x
+       points" they were pushed about.
+
+       Every line of it is written by renderBonusWindowCard() from the live
+       numbers, so nothing here can contradict what is actually being awarded.
+       The <p>s are placeholders for shape only. -->
+  <div id="bonus-window-info" class="info-overlay" hidden>
+    <div id="bonus-window-info-card" class="info-card" role="dialog" aria-label="Bonus points details">
+      <button id="bonus-window-info-close" class="info-close" type="button" aria-label="Close">✕</button>
+      <h3 id="bw-card-name">Bonus points</h3>
+      <p id="bw-card-lead"></p>
+      <ul>
+        <li id="bw-card-where"></li>
+        <li id="bw-card-when"></li>
+        <li id="bw-card-tier"></li>
+      </ul>
+      <p class="bw-card-dismiss">Tap anywhere to close.</p>
     </div>
   </div>
 

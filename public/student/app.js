@@ -525,6 +525,11 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   // step 5), and only an empty wallet gets the explainer, because a new user's
   // first tap should say what this is, not show an empty picker.
   wireInfo('tier-info', 'tier-info-btn');
+  // closeOnCardClick: the bonus card is read-only text with nothing to aim at,
+  // so a tap landing on it should close rather than do nothing. The trigger is
+  // the banner itself, which is [hidden] until a window is live -- wiring it
+  // here regardless is safe because the element is always in the DOM.
+  wireInfo('bonus-window-info', 'bonus-window', { closeOnCardClick: true });
   // rewards hub: the wordmark pill opens it; the header row, the dimmed page,
   // a flick up on the header, or Esc close it
   $('hub-toggle').addEventListener('click', openHub);
@@ -677,6 +682,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     closeHelpSheet();
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
+    closeInfo('bonus-window-info', 'bonus-window');
     closeHub();
   });
 
@@ -1016,6 +1022,7 @@ function render(session) {
     // the popovers live at body level too — same reason
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
+    closeInfo('bonus-window-info', 'bonus-window');
     InstallPrompt.clearUser();  // stop keying install suppression to the signed-out user
     // Only on a real sign-OUT, never on a signed-out render. render(null) runs
     // at least twice on any ordinary landing-page load (onAuthStateChange's
@@ -2947,18 +2954,71 @@ function renderBonusWindow(t) {
   $('bonus-window-mult').textContent = `${Number(w.multiplier)}×`;
 
   // The name is OPERATOR-WRITTEN TEXT, so it goes in through textContent like
-  // every vendor name in this file. The deadline matters more than the name,
-  // so it leads: "until Sunday 11:59 PM" is the actionable half.
+  // every vendor name in this file.
+  //
+  // ' · ' and not ' — ': the repo copy rule bans em dashes in anything a
+  // student reads, and POST /api/admin/broadcasts refuses them outright on the
+  // one path where an operator types their own. The middot is already this
+  // app's separator for a meta line.
   const ends = w.endsAt ? new Date(w.endsAt) : null;
-  const when = ends && !Number.isNaN(ends.getTime())
+  const endsValid = ends && !Number.isNaN(ends.getTime());
+  const when = endsValid
     ? ends.toLocaleString(undefined, { weekday: 'long', hour: 'numeric', minute: '2-digit' })
     : null;
-  $('bonus-window-sub').textContent = when
-    ? `${w.name} — until ${when}`
-    : w.name;
+  // This line is deliberately allowed to ellipsise: the banner stays one line
+  // for the length of a weekend, and the whole of it is a tap away in the card.
+  $('bonus-window-sub').textContent = when ? `${w.name} · until ${when}` : w.name;
 
+  renderBonusWindowCard(w, t, endsValid ? ends : null);
   el.hidden = false;
   return w;
+}
+
+/**
+ * The expanded card behind the banner. Painted from the live numbers every time
+ * the banner is, so it cannot drift from what is actually being awarded.
+ *
+ * ITS REAL JOB IS THE LAST LINE. A student was pushed "2x points until Sunday"
+ * and their banner says 3x, and nothing anywhere explains the difference: the
+ * push goes to everybody so it has to quote the window's own multiplier, while
+ * the banner is personal and quotes theirs. Left unexplained that looks like one
+ * of the two numbers being wrong. This is the only surface with room to say
+ * which is which.
+ */
+function renderBonusWindowCard(w, t, ends) {
+  const windowMult = Number(w.windowMultiplier) || Number(w.multiplier);
+  const mine = Number(w.multiplier);
+  const tier = Number(t?.multiplier) || 1;
+
+  $('bw-card-name').textContent = w.name;
+  $('bw-card-lead').textContent =
+    `You’re earning ${mine}× points on everything you buy while this is on.`;
+  $('bw-card-where').textContent =
+    'Every WeRewards spot counts, whether you earn at the counter or by scanning a receipt.';
+  // The full date here, not the banner's short form: this is the surface with
+  // room for it, and "Sunday" alone is ambiguous by Friday night.
+  $('bw-card-when').textContent = ends
+    ? `Ends ${ends.toLocaleString(undefined, {
+      weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    })}.`
+    : 'Running right now.';
+
+  // Three genuinely different situations, and the wrong one of these is worse
+  // than none: telling a maxed-out student to "climb your tier" is nonsense,
+  // and so is implying a tier-1 student is being short-changed.
+  if (mine > windowMult) {
+    $('bw-card-tier').textContent =
+      `Everyone gets ${windowMult}× right now. Your ${tier}× tier is what takes you to ${mine}×.`;
+  } else if (tier > 1) {
+    // Their tier is real but the cap has flattened it back to the base rate.
+    // Said plainly rather than hidden: they would otherwise notice their tier
+    // doing nothing and assume it had been taken away.
+    $('bw-card-tier').textContent =
+      `This bonus tops out at ${mine}×, so everyone is on the same rate while it runs. Your ${tier}× tier is back to normal afterwards.`;
+  } else {
+    $('bw-card-tier').textContent =
+      `Everyone gets ${windowMult}× right now. Climb your tier and you’ll earn more than this during the next one.`;
+  }
 }
 
 /* ---------- hub: "how you climb" (the three score levers) ----------
@@ -3034,6 +3094,10 @@ function resetTier() {
   // The banner is global rather than per-student, so leaving it up would not
   // leak anything — but it quotes the LAST student's combined multiplier, which
   // the next one may not get. Down with everything else it was painted beside.
+  //
+  // Its expanded card is NOT closed here: this runs inside the sign-out
+  // teardown that closes every body-level popover a few lines further down, and
+  // a second close would be two places owning one thing.
   $('bonus-window').hidden = true;
   $('tier-earning-note').hidden = true;
 }
@@ -3043,11 +3107,23 @@ function resetTier() {
    `triggerId` the button that opened it (kept in sync via aria-expanded), and
    the ✕ inside is `<id>-close` by convention. */
 
-function wireInfo(id, triggerId) {
+function wireInfo(id, triggerId, { closeOnCardClick = false } = {}) {
   $(triggerId).addEventListener('click', () => openInfo(id, triggerId));
   $(`${id}-close`).addEventListener('click', () => closeInfo(id, triggerId));
   // the backdrop closes it; a click on the card itself must not
   $(id).addEventListener('click', (e) => { if (e.target === $(id)) closeInfo(id, triggerId); });
+  // ...unless the card is pure read-only text with nothing in it to aim at, in
+  // which case a tap landing on the card and doing nothing just reads as a
+  // stuck overlay. Opt-in rather than the default, because the tier and
+  // community explainers are things a student reads and may want to keep open
+  // while they look back at the number behind them. Listens on the CARD rather
+  // than the overlay so the two paths stay separate. The ✕ inside the card
+  // bubbles up to this listener too, which is harmless: closeInfo only removes
+  // a class, flips aria-expanded and schedules the same hide, so running twice
+  // in one tick does the same thing once.
+  if (closeOnCardClick) {
+    $(`${id}-card`).addEventListener('click', () => closeInfo(id, triggerId));
+  }
 }
 
 function openInfo(id, triggerId) {

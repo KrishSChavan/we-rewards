@@ -75,8 +75,20 @@
 --   twice the exposure. Same (vendor_id, client_token) shape migration-019 put
 --   on transactions, for the same reason.
 --
+--   THE ANNOUNCEMENT NEEDS NO SCHEMA, which is why there is none here for it.
+--   A live window announces itself to every student once, and that rides
+--   migration-061's broadcast rail unchanged: src/lib/bonus-window.js calls
+--   create_admin_broadcast with a fixed created_by and a client_token derived
+--   from the window's id, and 061's UNIQUE (created_by, client_token) — plus its
+--   choice to RETURN the first broadcast for a repeated token rather than raise
+--   — is already exactly the exactly-once primitive a timer running on every
+--   dyno forever requires. So this file adds no "announced_at" column, and there
+--   is no flag anywhere that could fall out of step with whether a push was
+--   really sent. ⚠ It does mean 063 now depends on 061 having been applied; the
+--   announce tick logs and returns rather than throwing if it has not.
+--
 --   HOW TO APPLY: paste into the Supabase SQL Editor and run, after
---   migration-039. Safe to re-run.
+--   migration-039 (and 061, for the announcement). Safe to re-run.
 --
 --   ⚠ DEPLOY ORDER: run this BEFORE the server code. The reverse order leaves
 --   the Incentives tab 500ing on a missing function, and an operator who

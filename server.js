@@ -36,6 +36,7 @@ import { startCampaignWorker, stopCampaignWorker } from './src/lib/campaigns.js'
 import { startReferralWorker, stopReferralWorker } from './src/lib/referrals.js';
 import { startReminderWorker, stopReminderWorker } from './src/lib/reminders.js';
 import { startBroadcastWorker, stopBroadcastWorker } from './src/lib/broadcasts.js';
+import { startBonusWindowWorker, stopBonusWindowWorker } from './src/lib/bonus-window.js';
 import {
   flushNotificationLog, startNotificationLogPruner, stopNotificationLogPruner,
 } from './src/lib/notification-log.js';
@@ -1725,6 +1726,22 @@ if (isMain) {
   // 30s and 300s intervals decide, and either way the student's cap is the cap.
   startBroadcastWorker();
 
+  // Bonus window announcements (migration-063). Watches for a double-points
+  // window going live and queues ONE broadcast for it, through the same rail
+  // startBroadcastWorker drains, so it inherits push_opt_in, quiet hours and the
+  // shared two-a-day cap rather than inventing a second way to interrupt people.
+  //
+  // Started AFTER the broadcast worker, which is not a tie-break like the pair
+  // above but an ordering that costs nothing and reads correctly: the thing that
+  // DELIVERS is already running before the thing that QUEUES. Either order
+  // works, because the queue is a table and not a handoff between two timers.
+  //
+  // Exactly-once is the database's job, not this timer's: the announcement is
+  // keyed by the window's id in admin_broadcasts.client_token, so a deploy
+  // mid-window, two dynos, or a restart loop all resolve to the one row the
+  // first tick wrote. See the header of src/lib/bonus-window.js.
+  startBonusWindowWorker();
+
   // Notification-log retention (migration-062). pg_cron is meant to prune it
   // daily, but a project without pg_cron only got a NOTICE at paste time and
   // would keep every row forever; this is the fallback. Same posture as the
@@ -1749,6 +1766,7 @@ if (isMain) {
     stopReferralWorker();   // the sweep is idempotent; the next boot picks it up
     stopReminderWorker();   // same: an unclaimed student is simply due again next boot
     stopBroadcastWorker();  // a queued recipient is still queued next boot; nothing is lost
+    stopBonusWindowWorker(); // an unannounced window is announced by the next boot's first tick
     stopNotificationLogPruner();
     io.close(async () => {
       // Last call for queued analytics. capture() batches in memory to keep a

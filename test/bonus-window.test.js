@@ -27,16 +27,20 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   validBonusWindowConfig, effectiveMultiplier, tierPreview, BONUS_WINDOW_DEFAULTS,
+  announceCopy,
 } from '../src/lib/bonus-window.js';
 import { validIncentive } from '../src/routes/admin.js';
 
 /* ---------- validBonusWindowConfig ---------- */
 
 test('an empty form falls back to the documented defaults', () => {
+  // Compared against the exported defaults object WHOLE, rather than against a
+  // hand-listed copy of its fields: a new knob added to BONUS_WINDOW_DEFAULTS
+  // and forgotten in the validator is exactly the drift worth catching here,
+  // and a hand-listed expectation would have silently stopped checking it.
   for (const raw of [undefined, null, {}, { multiplier: '', maxMultiplier: '' }]) {
     assert.deepEqual(
-      validBonusWindowConfig(raw).config,
-      { multiplier: BONUS_WINDOW_DEFAULTS.multiplier, maxMultiplier: BONUS_WINDOW_DEFAULTS.maxMultiplier },
+      validBonusWindowConfig(raw).config, BONUS_WINDOW_DEFAULTS,
       `should default ${JSON.stringify(raw)}`,
     );
   }
@@ -47,7 +51,7 @@ test('the form’s values arrive as strings and come back as numbers', () => {
   // only ever sees strings. Storing "2" in config.multiplier would make
   // `tier * windowMultiplier` a string concatenation at award time.
   const out = validBonusWindowConfig({ multiplier: '2.5', maxMultiplier: '4' });
-  assert.deepEqual(out.config, { multiplier: 2.5, maxMultiplier: 4 });
+  assert.deepEqual(out.config, { multiplier: 2.5, maxMultiplier: 4, announce: true });
   assert.equal(typeof out.config.multiplier, 'number');
   assert.equal(typeof out.config.maxMultiplier, 'number');
 });
@@ -106,6 +110,125 @@ test('a cap below the multiplier itself is refused', () => {
 test('a cap above 10 is refused', () => {
   assert.ok(validBonusWindowConfig({ multiplier: 2, maxMultiplier: 12 }).error);
   assert.equal(validBonusWindowConfig({ multiplier: 2, maxMultiplier: 10 }).error, undefined);
+});
+
+/* ---------- the announce switch ---------- */
+
+describe('config.announce', () => {
+  test('defaults to on, because a promotion nobody hears about is just a discount', () => {
+    assert.equal(validBonusWindowConfig({}).config.announce, true);
+    assert.equal(BONUS_WINDOW_DEFAULTS.announce, true);
+  });
+
+  test('an explicit false survives the round trip', () => {
+    // The bug this guards: a window the operator deliberately silenced coming
+    // back ticked, and announcing itself the next time they save.
+    assert.equal(validBonusWindowConfig({ announce: false }).config.announce, false);
+  });
+
+  test('⚠ the STRING "false" is false, not true', () => {
+    // Boolean('false') === true. This value decides whether the entire student
+    // body is interrupted, so a form that ever serialised its checkbox as a
+    // string would turn every "don't announce" into an announcement. The admin
+    // panel sends a real boolean; this is the belt under that.
+    assert.equal(validBonusWindowConfig({ announce: 'false' }).config.announce, false);
+    assert.equal(validBonusWindowConfig({ announce: '0' }).config.announce, false);
+    assert.equal(validBonusWindowConfig({ announce: 0 }).config.announce, false);
+  });
+
+  test('anything else truthy is on', () => {
+    for (const raw of [true, 'true', 'on', 1]) {
+      assert.equal(validBonusWindowConfig({ announce: raw }).config.announce, true, `announce=${raw}`);
+    }
+  });
+
+  test('a missing value falls back to the default rather than to false', () => {
+    for (const raw of [undefined, null, '']) {
+      assert.equal(
+        validBonusWindowConfig({ announce: raw }).config.announce, true,
+        `announce=${JSON.stringify(raw)} should default on`,
+      );
+    }
+  });
+});
+
+/* ---------- the generated push ---------- */
+
+describe('announceCopy', () => {
+  const WINDOW_ROW = {
+    id: 'aaaaaaaa-0000-0000-0000-000000000001',
+    name: 'Double points weekend',
+    // A Sunday, 23:59 US Eastern, expressed as the UTC instant the database
+    // would hand back. PUNCH_TIMEZONE is unset in tests, so the formatter uses
+    // its America/New_York default: 03:59Z Monday is 23:59 Sunday on campus.
+    ends_at: '2026-10-12T03:59:00.000Z',
+    config: { multiplier: 2, maxMultiplier: 3, announce: true },
+  };
+
+  test('the headline is the WINDOW’s multiplier, not any one student’s', () => {
+    // One push goes to everybody and their tiers differ, so it promises the
+    // floor; the in-app banner pays each of them more (studentBonusWindow).
+    // The reverse would be a lie to most of the audience.
+    const { title, body } = announceCopy(WINDOW_ROW);
+    assert.match(title, /^2x points/);
+    assert.match(body, /2x points/);
+    assert.ok(!title.includes('3x'), 'the cap must not leak into the headline');
+  });
+
+  test('⚠ the deadline is in CAMPUS time, not UTC', () => {
+    // A dyno runs in UTC. Without the timezone this window reads "Monday
+    // 3:59 AM", which is a day and an hour that are wrong for every single
+    // person reading it.
+    const { title } = announceCopy(WINDOW_ROW);
+    assert.match(title, /Sunday/, `expected a Sunday deadline, got: ${title}`);
+    assert.ok(!title.includes('Monday'), `UTC leaked into the copy: ${title}`);
+  });
+
+  test('⚠ no em dash reaches a student (the repo copy rule)', () => {
+    // POST /api/admin/broadcasts refuses em dashes outright, and this path does
+    // not go through that route — so the rule has to hold here on purpose. A
+    // generated string is the one that would put an em dash in front of the
+    // whole campus at once. Same assertion broadcasts.test.js makes.
+    const { title, body } = announceCopy(WINDOW_ROW);
+    assert.ok(!title.includes('—'), `em dash in title: ${title}`);
+    assert.ok(!body.includes('—'), `em dash in body: ${body}`);
+  });
+
+  test('it fits a notification shade', () => {
+    // Mirrors BROADCAST_TITLE_MAX / BROADCAST_BODY_MAX. A long operator name
+    // cannot blow these, because the name is deliberately not spliced into
+    // either string, but the lengths are asserted rather than assumed.
+    const long = { ...WINDOW_ROW, name: 'x'.repeat(80), config: { multiplier: 2.5 } };
+    for (const w of [WINDOW_ROW, long]) {
+      const { title, body } = announceCopy(w);
+      assert.ok(title.length <= 60, `title ${title.length} chars: ${title}`);
+      assert.ok(body.length <= 140, `body ${body.length} chars: ${body}`);
+      assert.ok(title.length > 0 && body.length > 0, 'neither may be empty');
+    }
+  });
+
+  test('a missing or unparseable end date still produces a usable push', () => {
+    // validIncentive makes both dates mandatory, so this is unreachable through
+    // the panel. It is asserted because the fallback has to be a sentence and
+    // not the string "Invalid Date" or an empty title, which create_admin_
+    // broadcast would reject with TITLE_REQUIRED.
+    for (const ends_at of [null, undefined, 'not-a-date']) {
+      const { title, body } = announceCopy({ ...WINDOW_ROW, ends_at });
+      assert.match(title, /2x points/);
+      assert.ok(!/Invalid Date|NaN|undefined|null/.test(title + body), `leaked a bad date: ${title} / ${body}`);
+    }
+  });
+
+  test('it always lands students on the home screen', () => {
+    // Where the banner is. A push about a multiplier that opened some other
+    // screen would be a push about nothing the student can see.
+    assert.equal(announceCopy(WINDOW_ROW).url, '/');
+  });
+
+  test('a window with no config falls back to the defaults rather than NaN', () => {
+    const { title } = announceCopy({ ...WINDOW_ROW, config: null });
+    assert.match(title, /^2x points/, `expected the default multiplier, got: ${title}`);
+  });
 });
 
 /* ---------- effectiveMultiplier ---------- */
@@ -190,7 +313,7 @@ describe('validIncentive, for a bonus window', () => {
     assert.equal(out.error, undefined);
     assert.equal(out.row.kind, 'bonus_window');
     assert.equal(out.row.budget_points, null);
-    assert.deepEqual(out.row.config, { multiplier: 2, maxMultiplier: 3 });
+    assert.deepEqual(out.row.config, { multiplier: 2, maxMultiplier: 3, announce: true });
     assert.ok(out.row.starts_at && out.row.ends_at);
   });
 
@@ -381,5 +504,157 @@ test('⚠ floor(basePoints × applied) is EXACT for every allowed combination', 
         }
       }
     }
+  }
+});
+
+/* ---------- the student-facing card ---------- */
+
+// renderBonusWindowCard is lifted out of the browser bundle and run against a
+// stub `$`, the same way test/signup-bonus.test.js lifts welcomeBonusMessage.
+// public/ cannot import from src/, so this is the only way to assert the copy
+// without a headless browser.
+//
+// WHAT IS WORTH ASSERTING IS THE LAST LINE OF THE CARD. A student is pushed
+// "2x points until Sunday" and their own banner says 3x, because the push is
+// addressed to everybody and the banner is personal. This card is the only
+// surface that explains which number is which, and the THREE cases read very
+// differently: telling a maxed-out student to "climb your tier" is nonsense,
+// and so is implying a tier-1 student is being short-changed.
+const STUDENT_APP = fileURLToPath(new URL('../public/student/app.js', import.meta.url));
+const studentSrc = readFileSync(STUDENT_APP, 'utf8');
+
+const cardFrom = studentSrc.indexOf('function renderBonusWindowCard(');
+const cardTo = studentSrc.indexOf('/* ---------- hub: "how you climb"');
+assert.ok(
+  cardFrom > 0 && cardTo > cardFrom,
+  'renderBonusWindowCard moved in public/student/app.js — re-anchor this test',
+);
+
+/** Run the real function against a stub DOM; returns { id: text }. */
+function paintCard(w, t, ends) {
+  const painted = {};
+  const $ = (id) => ({
+    set textContent(v) { painted[id] = v; },
+    get textContent() { return painted[id]; },
+  });
+  // eslint-disable-next-line no-new-func
+  const fn = new Function('$', `${studentSrc.slice(cardFrom, cardTo)}; return renderBonusWindowCard;`)($);
+  fn(w, t, ends);
+  return painted;
+}
+
+const SUNDAY = new Date('2026-10-12T03:59:00.000Z');
+
+describe('the expanded bonus card', () => {
+  test('a tier-1 student is told what everyone gets and what climbing buys', () => {
+    // applied === the window's own multiplier, and their tier is 1, so there is
+    // genuinely something to aim at.
+    const c = paintCard(
+      { name: 'Double points weekend', multiplier: 2, windowMultiplier: 2 },
+      { multiplier: 1 }, SUNDAY,
+    );
+    assert.match(c['bw-card-tier'], /Everyone gets 2× right now/);
+    assert.match(c['bw-card-tier'], /Climb your tier/);
+    assert.match(c['bw-card-lead'], /2× points/);
+  });
+
+  test('a student whose tier lifts them above the base rate is told so', () => {
+    // 1.5x tier on a 2x window, capped at 3x: they are on 3x and everyone else
+    // is on 2x. The card has to name both numbers or the push looks wrong.
+    const c = paintCard(
+      { name: 'Double points weekend', multiplier: 3, windowMultiplier: 2 },
+      { multiplier: 1.5 }, SUNDAY,
+    );
+    assert.match(c['bw-card-tier'], /Everyone gets 2× right now/);
+    assert.match(c['bw-card-tier'], /1\.5× tier/);
+    assert.match(c['bw-card-tier'], /takes you to 3×/);
+    assert.ok(!/Climb your tier/.test(c['bw-card-tier']), 'they are already above the base rate');
+  });
+
+  test('⚠ a student the cap has flattened is NOT told to climb their tier', () => {
+    // 2x tier, 2x window, cap 2x: applied === windowMultiplier even though
+    // their tier is 2. The naive branch here would tell the most loyal student
+    // on the platform to go and earn a tier they already have.
+    const c = paintCard(
+      { name: 'Double points weekend', multiplier: 2, windowMultiplier: 2 },
+      { multiplier: 2 }, SUNDAY,
+    );
+    assert.ok(!/Climb your tier/.test(c['bw-card-tier']), `told a maxed student to climb: ${c['bw-card-tier']}`);
+    assert.match(c['bw-card-tier'], /tops out at 2×/);
+    assert.match(c['bw-card-tier'], /back to normal afterwards/);
+  });
+
+  test('the operator’s name and a full deadline both land', () => {
+    const c = paintCard(
+      { name: 'Homecoming weekend', multiplier: 2, windowMultiplier: 2 },
+      { multiplier: 1 }, SUNDAY,
+    );
+    // The name goes in as text, never as markup: it is operator-written.
+    assert.equal(c['bw-card-name'], 'Homecoming weekend');
+    // The full date, not the banner's short form: "Sunday" alone is ambiguous
+    // by Friday night, and this is the surface with room for the rest.
+    assert.match(c['bw-card-when'], /Ends Sunday/);
+    assert.match(c['bw-card-when'], /October/);
+  });
+
+  test('a missing end date degrades to a sentence, not "Invalid Date"', () => {
+    const c = paintCard(
+      { name: 'Double points weekend', multiplier: 2, windowMultiplier: 2 },
+      { multiplier: 1 }, null,
+    );
+    assert.equal(c['bw-card-when'], 'Running right now.');
+    for (const v of Object.values(c)) {
+      assert.ok(!/Invalid Date|NaN|undefined/.test(v), `leaked a bad value: ${v}`);
+    }
+  });
+
+  test('no em dash anywhere in the card (the repo copy rule)', () => {
+    for (const tier of [1, 1.5, 2]) {
+      const c = paintCard(
+        { name: 'Double points weekend', multiplier: tier === 1 ? 2 : 3, windowMultiplier: 2 },
+        { multiplier: tier }, SUNDAY,
+      );
+      for (const [id, v] of Object.entries(c)) {
+        assert.ok(!String(v).includes('—'), `em dash in ${id}: ${v}`);
+      }
+    }
+  });
+});
+
+/* ---------- every id the new client code touches exists ---------- */
+
+test('every element the bonus-window client code reaches for is in the markup', () => {
+  // The failure this catches is silent in the worst way: $('typo') returns null,
+  // and `null.textContent = x` throws inside renderTier — which is wrapped in a
+  // try/catch in loadTier, so the tier chip, the meter AND the levers would all
+  // just quietly stop painting, with no error anywhere a student or an operator
+  // would see.
+  const html = readFileSync(
+    fileURLToPath(new URL('../public/student/index.html', import.meta.url)), 'utf8',
+  );
+  const ids = [...studentSrc.matchAll(/\$\('(bonus-window[a-z-]*|bw-card-[a-z-]+|tier-earning-note)'\)/g)]
+    .map((m) => m[1]);
+  assert.ok(ids.length >= 8, `expected to find the new ids in app.js, found ${ids.length}`);
+  for (const id of new Set(ids)) {
+    assert.ok(html.includes(`id="${id}"`), `app.js reaches for #${id}, which is not in index.html`);
+  }
+  // The popover's three by-convention ids, which wireInfo derives rather than
+  // spelling out, so the grep above cannot see them.
+  for (const id of ['bonus-window-info', 'bonus-window-info-card', 'bonus-window-info-close']) {
+    assert.ok(html.includes(`id="${id}"`), `wireInfo needs #${id}, which is not in index.html`);
+  }
+});
+
+test('the admin panel’s bonus-window ids are in its markup too', () => {
+  const html = readFileSync(
+    fileURLToPath(new URL('../public/admin/index.html', import.meta.url)), 'utf8',
+  );
+  const adminSrc = readFileSync(
+    fileURLToPath(new URL('../public/admin/admin.js', import.meta.url)), 'utf8',
+  );
+  const ids = [...adminSrc.matchAll(/\$\('(bw-[a-z-]+)'\)/g)].map((m) => m[1]);
+  assert.ok(ids.length >= 10, `expected the bw- ids in admin.js, found ${ids.length}`);
+  for (const id of new Set(ids)) {
+    assert.ok(html.includes(`id="${id}"`), `admin.js reaches for #${id}, which is not in index.html`);
   }
 });

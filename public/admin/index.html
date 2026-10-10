@@ -462,6 +462,20 @@
             <div id="bw-preview" class="bw-preview"></div>
           </div>
 
+          <!-- The announce switch. ON by default: a promotion nobody is told
+               about is a discount, not a promotion. Off is for a test window or
+               a quiet one. The label IS the tap target (same shape as
+               .tag-opt), and the checkbox stays a real focusable control. -->
+          <div class="inc-field inc-field-wide">
+            <label class="bw-announce" for="bw-announce">
+              <input id="bw-announce" type="checkbox" checked />
+              <span class="bw-announce-text">
+                <span class="bw-announce-title">Tell every student when it starts</span>
+                <span class="vendor-edit-hint">One push, within a minute of the window opening, through the same rail as Broadcast, so it respects quiet hours and the two-a-day cap. Sent once per window: toggling the window off and on will not push again.</span>
+              </span>
+            </label>
+          </div>
+
           <p id="bw-error" class="field-error" role="alert" hidden></p>
           <p id="bw-note" class="inc-note" hidden></p>
 
@@ -472,10 +486,15 @@
           </div>
         </form>
 
-        <!-- Students are NOT told automatically. This is the handoff. -->
+        <!-- The announcement's live state. renderBonusPush() owns the text:
+             what it says depends on whether the switch is on, whether the
+             window is live, and whether the push has actually gone out, and
+             those four cases look identical from the operator's chair
+             otherwise. The manual button stays either way, for a second push
+             in their own words. -->
         <div id="bw-push" class="bw-push" hidden>
-          <p class="muted"><strong>Nobody has been told yet.</strong> Turning a window on changes what points are worth; it sends nothing. Use Broadcast to push it — it respects quiet hours and the two-a-day cap like everything else.</p>
-          <button id="bw-push-btn" class="btn-ghost btn-compact" type="button">Write the push →</button>
+          <p id="bw-push-note" class="muted"></p>
+          <button id="bw-push-btn" class="btn-ghost btn-compact" type="button">Write another push →</button>
         </div>
 
         <div id="bw-report" class="bw-report" hidden>

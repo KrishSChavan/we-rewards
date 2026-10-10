@@ -4143,30 +4143,46 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    radius, padding and lift all match, so a temporary banner reads as part of
    the stack rather than as something that has crashed into it.
 
-   NOT a button, so no :active transform and no tap affordance: the multiplier
-   it announces is already applied to every award and there is nothing behind it
-   to open. The border is what carries the urgency instead of a shadow or an
-   animation — this thing is on screen for a whole weekend, and anything that
-   pulses would be unbearable by Saturday. */
+   A BUTTON, because .bw-sub cannot fit: it opens #bonus-window-info, which has
+   room for the whole of it. The border is what carries the urgency rather than a
+   shadow or an animation — this thing is on screen for a whole weekend, and
+   anything that pulses would be unbearable by Saturday. */
 .bonus-window {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.7rem; align-items: center;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.7rem; align-items: center;
+  width: 100%; text-align: left;
   padding: 0.8rem 1rem; border-radius: 1.1rem;
   background: var(--rf-bonus-bg); color: var(--rf-bonus-ink);
   border: 2px solid var(--rf-bonus-line);
   box-shadow: var(--rf-lift);
 }
+.bonus-window:active { transform: scale(0.98); }
 .bw-bolt { font-size: 1.35rem; line-height: 1; }
 .bw-text { min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
 .bw-head { font-weight: 800; font-size: 0.95rem; }
 /* 900 and a size bump on the number itself: it is the whole message, and at
    0.95rem beside it the "×" was doing more work than the digit. */
 .bw-head b { font-weight: 900; font-size: 1.15rem; }
-/* The operator's program name plus the deadline. Ellipsised rather than wrapped
-   so a long program name cannot push the stack taller mid-weekend. */
+/* The operator's program name plus the deadline. DELIBERATELY ELLIPSISED: the
+   banner stays one line for the length of a weekend rather than pushing the
+   stack down, and the whole string is one tap away in the card. That is the
+   trade this chevron is advertising. */
 .bw-sub {
   font-size: 0.76rem; font-weight: 700; opacity: 0.85;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* The "there is more" affordance. Without it the truncation reads as a bug
+   rather than as an invitation. Same chevron, same size, as .cc-chevron on the
+   community card directly below it. */
+.bw-more { display: flex; opacity: 0.65; }
+.bw-more svg { width: 1.1rem; height: 1.1rem; display: block; }
+
+/* The card's closing line. Quieter than the body — it is an instruction about
+   the overlay, not part of what the overlay says. Two classes rather than
+   !important, because `.info-card p` above is (1 class + 1 element) and a bare
+   .bw-card-dismiss would lose to it; `.info-card .bw-card-dismiss` is two
+   classes and wins on specificity alone. margin-bottom is already 0 from
+   `.info-card p:last-child`, which this is. */
+.info-card .bw-card-dismiss { font-size: 0.78rem; opacity: 0.6; }
 
 .home-email-nudge {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center;

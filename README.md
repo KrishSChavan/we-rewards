@@ -817,16 +817,62 @@ loyalty buys nothing that weekend. That is inherent to capping a product, which
 is why the admin panel **draws** the effective multiplier for all three tiers
 beside the form instead of leaving the operator to work it out.
 
-### Nothing is sent to students automatically
+### It announces itself, exactly once, through the broadcast rail
 
-Turning a window on changes what points are worth and tells nobody. The panel
-says so and hands off to the **Broadcast** tab (migration-061) with the copy
-pre-filled — so the push goes out through the rail that already respects
-`push_opt_in`, quiet hours and the shared two-a-day cap that Privacy Policy §7.4
-promises. The student side shows it without a push either way: a banner at the
-top of Home, and the tier row's "N× at every spot" switches to the **combined**
-multiplier (the chips keep showing the tier, because they are labelled "tier"
-and a weekend does not change anybody's tier).
+Within a minute of a window going live, every student gets **one** push. It is
+built by `announceCopy()` from the window's own numbers and queued through
+`create_admin_broadcast` (migration-061) — not through a second notification
+path — so it inherits `push_opt_in`, quiet hours and the shared two-a-day cap
+that Privacy Policy §7.4 promises. `config.announce` is a per-window switch,
+**on by default**, so a test or a deliberately quiet window needs no code change.
+
+**Exactly-once is the database's job, not the timer's.** `runBonusWindowAnnounceTick`
+runs every 60s on every dyno forever, so "have we announced this one?" cannot be
+a variable. migration-061 already put a unique index on
+`(created_by, client_token)` and made `create_admin_broadcast` return the *first*
+broadcast for a repeated token instead of erroring — so a fixed `created_by`
+(the nil UUID, meaning "WeRewards on a timer") plus a token derived from the
+window's id makes every later tick resolve to the row the first one wrote. Two
+dynos racing, a deploy mid-window, a restart loop, or the operator toggling the
+window off and on again all produce no second push. ⚠ That `created_by` must not
+be null: a unique index treats NULLs as distinct, so `(null, token)` would
+collide with nothing and every tick would queue the student body again.
+
+Two smaller things the rail could not have known by itself:
+
+- **The deadline is rendered in campus time** (`punchTimezone()`). A dyno runs in
+  UTC, so "11:59 PM Sunday" would otherwise go out as "3:59 AM Monday" — a day
+  and an hour that are wrong for everyone reading it.
+- **The broadcast expires with the window**, not at migration-061's default 48
+  hours. A student whose cooldown kept them out of the queue would otherwise be
+  told "2× points until Sunday" on Tuesday.
+
+The headline quotes the **window's** multiplier, not any one student's: one push
+goes to everybody and their tiers differ, so it promises the floor and the app
+pays more. The reverse would be a lie to most of the audience. The manual
+**Broadcast** handoff stays in the panel for a second push in your own words.
+
+### What a student sees
+
+A banner at the top of Home, and the tier row's "N× at every spot" switches to
+the **combined** multiplier (the chips keep showing the tier, because they are
+labelled "tier" and a weekend does not change anybody's tier).
+
+The banner is **one ellipsised line and a chevron**, because the operator's
+program name plus a deadline does not fit at phone width and the banner is on
+screen for a whole weekend — letting it wrap would push the home stack down for
+days. Tapping it opens a card on a dimmed backdrop (the same `wireInfo`
+machinery as the tier and community explainers, so tap-outside and Escape come
+for free; this one also closes on a tap anywhere, since it is read-only text
+with nothing to aim at).
+
+**The card's real job is its last line.** A student was pushed "2× points until
+Sunday" and their own banner says 3×, and nothing else anywhere explains the
+difference. The card is the only surface with room to say which number is which,
+and it says a different thing in each of the three cases — tier lifting them
+above the base rate, the cap flattening their tier back down to it, or tier 1
+with everything still to climb. Telling a maxed-out student to "climb your tier"
+would be worse than saying nothing.
 
 ### `bonus_window_credits` is a report, not a ledger
 

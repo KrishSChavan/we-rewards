@@ -24,7 +24,7 @@ import { applicationAccepted, vendorResetCode } from '../lib/email-templates.js'
 import { validReward, validRatio, validStarterItems, starterItemToReward } from '../lib/rewards.js';
 import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
 import { validSignupConfig } from '../lib/signup-bonus.js';
-import { validBonusWindowConfig, invalidateBonusWindow } from '../lib/bonus-window.js';
+import { validBonusWindowConfig, invalidateBonusWindow, announceBroadcastFor } from '../lib/bonus-window.js';
 import {
   getPoster, putPoster, deletePoster, readPoster, decodePosterBody,
   POSTER_MAX_BYTES, POSTER_EXTENSIONS,
@@ -2444,15 +2444,22 @@ router.get('/incentives', async (req, res, next) => {
       // database (migration-063), for the same no-truncation reason this
       // route's header gives for using counts instead of reads.
       if (row.kind === 'bonus_window') {
-        const { data, error } = await supabaseAdmin.rpc('bonus_window_report', {
-          p_incentive_id: row.id,
-        });
+        // Two reads, concurrently: what it cost, and whether the automatic
+        // announcement has gone out (migration-063). The second is what lets
+        // the panel distinguish "not announced yet" from "announced, and the
+        // worker is still working through quiet hours" — which otherwise both
+        // look like silence.
+        const [{ data, error }, announced] = await Promise.all([
+          supabaseAdmin.rpc('bonus_window_report', { p_incentive_id: row.id }),
+          announceBroadcastFor(row.id),
+        ]);
         if (error) throw error;
         const report = data ?? {};
         return {
           referrals: { pending: 0, paid: 0, void: 0 },
           payouts: 0,
           report,
+          announced,
           // Deleting a window that has already multiplied awards would throw
           // away the record of WHY those points moved, which is the same reason
           // a spent program can only be turned off. spent_points stays 0 for
@@ -2489,6 +2496,7 @@ router.get('/incentives', async (req, res, next) => {
         ),
         payouts: payouts.count ?? 0,
         report: null,
+        announced: null,
         // The server decides this, not the dashboard, so the rule lives in one
         // place as kinds are added. For the two community-point kinds it is the
         // test the panel always made: a program that has paid can only be
@@ -2533,7 +2541,13 @@ router.post('/incentives', async (req, res, next) => {
     // that gets added later.
     invalidateBonusWindow();
     res.status(201).json({
-      ...data, referrals: { pending: 0, paid: 0, void: 0 }, payouts: 0, report: null, locked: false,
+      ...data,
+      referrals: { pending: 0, paid: 0, void: 0 },
+      payouts: 0,
+      report: null,
+      // A brand new program is off and has announced nothing by definition.
+      announced: null,
+      locked: false,
     });
   } catch (err) {
     next(err);
