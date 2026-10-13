@@ -174,9 +174,13 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 
 /* ---------- nav ---------- */
 
+/* The safe-area term is for the iOS app: viewport-fit=cover (index.html) runs
+   the page up under the status bar, which hid Sign in behind the battery icon.
+   Wherever nothing covers the top of the page it is 0. Same treatment as
+   .brand-banner, the signed-in header. */
 .nav {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 1.1rem clamp(1.2rem, 4vw, 3rem);
+  padding: calc(1.1rem + env(safe-area-inset-top, 0px)) clamp(1.2rem, 4vw, 3rem) 1.1rem;
 }
 
 .wordmark { font-weight: 900; letter-spacing: 0.12em; font-size: 0.95rem; }
