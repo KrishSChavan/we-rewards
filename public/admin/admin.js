@@ -6640,6 +6640,78 @@ function notifRowHtml(n, now = Date.now()) {
     + '</button>';
 }
 
+/**
+ * Who the platform can actually reach, as a line of chips.
+ *
+ * Pure, like notifHealthHtml, so test/admin-notifications-client.test.js can
+ * drive every state from literals.
+ *
+ * THE TWO NUMBERS THAT MATTER, and why they sit next to each other. "Students
+ * have not come back, so they have not accepted the new Terms, so they are not
+ * getting notifications" is the natural reading and it is wrong: nothing in any
+ * send path reads terms_version (see the route's comment). The real blocker is
+ * that a push subscription can only be created from inside the app, so whoever
+ * drifted away has no endpoint. So this panel shows the stale-consent count
+ * deliberately DEMOTED to a muted chip with the explanation on it, and gives the
+ * prominence to "reachable by neither" (the number that actually costs
+ * reach) and to "stale and emailable", which is the population migration-064
+ * reaches today without anyone accepting anything.
+ */
+function notifReachabilityHtml(r) {
+  if (!r) return '';
+  if (r.available === false) {
+    return notifChip('warn', 'Reachability unknown',
+      `Migration 064 is not applied, so these counts cannot be read${r.reason ? `: ${r.reason}` : ''}`);
+  }
+
+  const total = Number(r.students ?? 0);
+  const pct = (v) => (total > 0 ? ` (${Math.round((Number(v) / total) * 100)}%)` : '');
+  const chips = [];
+
+  chips.push(notifChip('muted', `${num(total)} student${total === 1 ? '' : 's'}`,
+    'Accounts with a profile. A student who signed in and never accepted anything has no profile row and is not counted.'));
+
+  // Push first, and 'warn' rather than 'good' when it is the minority channel:
+  // on a campus where most people use the iOS app this number is structurally
+  // small and that is the finding, not a glitch.
+  chips.push(notifChip(
+    r.pushConfigured === false ? 'bad' : (Number(r.push) > 0 ? 'good' : 'warn'),
+    `${num(r.push)} reachable by push${pct(r.push)}`,
+    r.pushConfigured === false
+      ? 'Push is not configured on this server, so nobody is reachable by push whatever this says'
+      : 'Has at least one registered device and has not turned Deal alerts off. The iOS app cannot register one at all (see docs/apns-plan.md).'));
+
+  chips.push(notifChip(
+    r.emailConfigured === false ? 'bad' : (Number(r.email) > 0 ? 'good' : 'warn'),
+    `${num(r.email)} reachable by email${pct(r.email)}`,
+    r.emailConfigured === false
+      ? 'Email is not configured on this server, so nobody is reachable by email whatever this says'
+      : 'Has a usable address, has not turned Email alerts off, and is not on the suppression list.'));
+
+  // THE number. Nobody can be told anything, by any channel.
+  const neither = Number(r.neither ?? 0);
+  chips.push(notifChip(neither > 0 ? 'bad' : 'good',
+    `${num(neither)} reachable by nothing${pct(neither)}`,
+    neither > 0
+      ? 'No device and no usable address. Nothing the platform sends can arrive for these accounts.'
+      : 'Every student can be reached by at least one channel.'));
+
+  // The headline for this release: lapsed students email reaches regardless of
+  // whether they have accepted anything.
+  if (Number(r.staleAndEmailable) > 0) {
+    chips.push(notifChip('good', `${num(r.staleAndEmailable)} on old Terms, emailable now`,
+      'On a stale consent version AND reachable by email. Consent is not checked when sending, so these students receive reminders and announcements today.'));
+  }
+
+  // Demoted on purpose: interesting, not a delivery problem.
+  if (r.consentStale != null) {
+    chips.push(notifChip('muted', `${num(r.consentStale)} on old Terms`,
+      `Have not accepted ${r.termsVersion || 'the current version'} yet. This does NOT stop notifications: the consent gate is on the API routes, not on sending. They will see the modal next time they open the app.`));
+  }
+
+  return chips.join('');
+}
+
 function notifHealthHtml(h, now = Date.now()) {
   const chips = [];
   chips.push(h.push?.configured ? notifChip('good', 'Push on') : notifChip('bad', 'Push not configured'));
@@ -7020,6 +7092,15 @@ async function loadNotifHealth() {
   try {
     const h = await notifApi('/api/admin/notifications/health');
     $('notif-health').innerHTML = notifHealthHtml(h);
+    // Fetched together and rendered separately. Its own catch, because a missing
+    // migration-064 must not blank the health strip that would tell you so --
+    // the same reason each queue view carries its own banner slot.
+    try {
+      const r = await notifApi('/api/admin/notifications/reachability');
+      $('notif-reach').innerHTML = notifReachabilityHtml(r);
+    } catch (e) {
+      if (!e.denied) $('notif-reach').innerHTML = '';
+    }
     $('notif-health-error').hidden = true;
     $('notif-updated').textContent = `Updated ${notifWhen(h.generatedAt || new Date().toISOString())}`;
   } catch (e) {

@@ -208,7 +208,70 @@
 // do not exist yet. Same reasoning as that entry: early costs one prompt, late
 // means having kept something §2.6 did not cover. Revert this line and the
 // Policy's "Last Updated" date together, never one without the other.
-export const TERMS_VERSION = '2026-10-03';
+// 2026-10-12: reminders and announcements may now arrive by EMAIL (Policy §2.6,
+// §7.4; migration-064). No new kind of message, no change to the frequency
+// promise, and nothing new recorded — this bump is about the CHANNEL, which is
+// the one axis the 2026-10-02 rewrite did not generalise.
+//
+// Material on the plainest of the tests above, because the prior §7.4 did not
+// merely fail to mention it: it said the opposite in so many words. "Both kinds
+// are sent only to accounts we can reach with a push notification" was a promise
+// that a reminder and an announcement could not reach a mailbox, and the email
+// bullet above it scoped email to telling students "about a deal". The Deal
+// emails switch said the same thing in its name. All three are now false.
+//
+// It is also the 2026-08-20 bump's own reasoning applied to a second feature:
+// "the same number of messages, arriving somewhere new" is still a change in
+// what students agreed to, even though no student receives one extra message.
+//
+// WHY THIS IS WORTH INTERRUPTING EVERYONE FOR, given it reaches the people who
+// are NOT interrupted. Push can only be granted from inside the app, so a
+// student who drifted away has no endpoint and the reminder built to fetch them
+// back was the one message that could never reach them. Email has no such
+// precondition — and it is the only channel that works at all on the iOS build,
+// which is a Capacitor WKWebView and exposes no PushManager (see
+// docs/apns-plan.md for the real fix there). The students this bump is for are
+// precisely the ones who will see the consent modal LAST, which is the right way
+// round: the disclosure lands before the first message does.
+//
+// §7.4 WAS GENERALISED ALONG THE CHANNEL AXIS, deliberately, exactly as
+// 2026-10-02 generalised it along the message-kind axis. It now says we choose
+// what to send, when, and by which of the two channels, and that a future kind
+// of house message needs no new switch and no new version of the Policy. Between
+// that sentence and 2026-10-02's, this should be the last notification bump.
+//
+// WHAT WAS DELIBERATELY NOT WRITTEN, and this is the important half. A blanket
+// clause — "using the app means consenting to all alerts from us at our
+// discretion" — was considered and rejected. Three reasons, any one sufficient.
+// First, it would contradict this same document twice over: the frequency limits
+// in §7.4 ("two per day is the total number of times WeRewards will interrupt
+// you, whatever the reason") and the per-feature switches, both of which are
+// enforced in SQL by the shared student_notify_state budget that all four claim
+// functions spend. A Policy that promises unlimited discretion while the code
+// enforces two a day is not a broader permission, it is an inaccurate
+// disclosure. Second, a working opt-out for marketing email is not ours to waive
+// by wording: src/routes/unsubscribe.js, the suppression list and the
+// List-Unsubscribe header exist because that is the obligation, and a clause
+// claiming otherwise removes nothing but our own accuracy. Third, App Store
+// review expects push to be opt-in and revocable, and nothing is approved yet.
+// The generalisation above gets the whole of what a blanket clause was wanted
+// for — never needing another bump for a new kind or a new channel — and gives
+// up only the part that was never ours to take.
+//
+// ⚠ THE PAYOUT-SURFACE WARNING AT THE TOP OF THIS FILE STILL APPLIES. Every
+// existing student goes back through the consent modal, which runs POST
+// /api/me/accept-terms and claims a stashed referral code on the way out. See
+// the 2026-08-10 and 2026-09-14 entries for why that is bounded; nothing in this
+// bump widens it.
+//
+// ⚠ AND LIKE 2026-10-01 AND 2026-10-03, THIS CAN REACH STUDENTS BEFORE THE
+// FEATURE DOES. migration-064 is applied by hand and the fallback is inert
+// without it (the claims simply never return out_reach:'email'), so for a while
+// the Policy discloses a channel nothing is using. Same reasoning as those
+// entries: early costs one prompt, late means having already mailed something
+// §7.4 did not cover. Revert this line and both documents' "Last Updated" dates
+// together, never one without the other.
+export const TERMS_VERSION = '2026-10-12';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.

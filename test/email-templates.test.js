@@ -16,6 +16,9 @@ import {
   vendorResetCode,
   studentEmailCode,
   dealDigest,
+  pointsReminder,
+  announcement,
+  isEmailableReminder,
 } from '../src/lib/email-templates.js';
 
 /** Every template owes the caller the same three fields, both parts non-empty. */
@@ -265,4 +268,120 @@ test('a multi-location application is acknowledged as one, not as a single shop'
   assert.match(many.text, /3 locations/);
   const one = applicationReceived({ businessName: 'Joes', contactName: 'Jo', locationCount: 1 });
   assert.equal(/locations/.test(one.text), false);
+});
+
+/* ---------- the re-engagement pair (migration-064) ---------- */
+
+test('only a reminder tier that names a real fact may be emailed', () => {
+  // THE ANTI-SPAM RULE, as a pure function. migration-060 refused reminders an
+  // email fallback because "mailing someone to say nothing has happened is how
+  // an account gets marked as spam", and that reasoning survives here: the three
+  // tiers that name a balance, a shortfall or a live deal go out, and the two
+  // that are really adverts do not. The generic tier is the one that matters —
+  // it is by its own admission the line "with no number in it".
+  assert.equal(isEmailableReminder('afford'), true);
+  assert.equal(isEmailableReminder('close'), true);
+  assert.equal(isEmailableReminder('deal'), true);
+  assert.equal(isEmailableReminder('discover'), false, 'an advert for a spot they have never visited is emailable');
+  assert.equal(isEmailableReminder('generic'), false, 'the content-free tier is emailable');
+  assert.equal(isEmailableReminder(undefined), false);
+
+  // And the template itself is the gate, not just the predicate: a caller that
+  // forgets to check still cannot compose one.
+  assert.equal(pointsReminder({ kind: 'generic', vendorName: 'Taco Bar' }), null);
+  assert.equal(pointsReminder({ kind: 'discover', vendorName: 'Taco Bar' }), null);
+});
+
+test('a reminder refuses to assert a fact it was not given', () => {
+  // The same rule reminders.js applies to a balance it could not read: saying
+  // "you have 0 pts" to someone holding 400 is worse than saying nothing. A tier
+  // missing the numbers its own sentence promises composes nothing at all.
+  assert.equal(pointsReminder({ kind: 'afford', vendorName: 'Taco Bar' }), null, 'afford with no points composed anyway');
+  assert.equal(pointsReminder({ kind: 'afford', vendorName: 'Taco Bar', points: 120 }), null, 'afford with no reward composed anyway');
+  assert.equal(pointsReminder({ kind: 'close', vendorName: 'Taco Bar', rewardTitle: 'a free taco' }), null, 'close with no shortfall composed anyway');
+  assert.equal(pointsReminder({ kind: 'deal', vendorName: 'Taco Bar' }), null, 'deal with no title composed anyway');
+  // No vendor to name means no sentence worth sending, whatever the tier.
+  assert.equal(pointsReminder({ kind: 'afford', points: 120, rewardTitle: 'a free taco' }), null);
+});
+
+test('the emailable tiers compose a well-formed message that names the facts', () => {
+  const afford = pointsReminder({
+    name: 'Sam Reyes', kind: 'afford', vendorName: 'Taco Bar',
+    rewardTitle: 'a free taco', points: 120,
+    appUrl: 'https://we-rewards.com/', unsubscribeUrl: 'https://we-rewards.com/unsubscribe?u=1&t=2',
+  });
+  assertWellFormed(afford, 'reminder/afford');
+  assert.match(afford.subject, /Taco Bar/);
+  assert.match(afford.subject, /120/);
+  assert.match(afford.text, /120 pts/);
+  assert.match(afford.text, /a free taco/);
+
+  const close = pointsReminder({
+    name: 'Sam', kind: 'close', vendorName: 'Taco Bar',
+    rewardTitle: 'a free taco', shortfall: 40,
+    appUrl: 'https://we-rewards.com/', unsubscribeUrl: 'https://we-rewards.com/u',
+  });
+  assertWellFormed(close, 'reminder/close');
+  assert.match(close.subject, /40 pts to go/);
+
+  const dealMsg = pointsReminder({
+    name: 'Sam', kind: 'deal', vendorName: 'Taco Bar', dealTitle: 'Half price tacos',
+    appUrl: 'https://we-rewards.com/', unsubscribeUrl: 'https://we-rewards.com/u',
+  });
+  assertWellFormed(dealMsg, 'reminder/deal');
+  assert.match(dealMsg.subject, /Half price tacos/);
+
+  // THE SUBJECT IS NOT THE PUSH TITLE, deliberately. composeReminder's voice is
+  // "Free food is waiting!", which is warm on a lock screen and the exact shape
+  // a spam filter scores on in a subject line. Reaching the inbox is the entire
+  // reason this template exists separately.
+  for (const m of [afford, close, dealMsg]) {
+    assert.equal(/^Free food is waiting/.test(m.subject), false, 'the push voice leaked into a subject line');
+    assert.equal(m.subject.includes('!'), false, `an exclamation mark reached a subject line: ${m.subject}`);
+  }
+});
+
+test('reminder and announcement emails carry the way out', () => {
+  // Both are marketing, and one opt-out covers every marketing message we send
+  // (src/routes/unsubscribe.js sets email_opt_in false AND suppresses the
+  // address at the marketing scope). The link has to be in the body too, not
+  // only in the List-Unsubscribe header src/lib/email.js adds.
+  const r = pointsReminder({
+    kind: 'close', vendorName: 'Taco Bar', rewardTitle: 'a free taco', shortfall: 40,
+    unsubscribeUrl: 'https://we-rewards.com/unsubscribe?u=1&t=2',
+  });
+  assert.match(r.html, /unsubscribe\?u=1/, 'a marketing email had no opt-out in its body');
+  assert.match(r.text, /Stop these emails/);
+
+  const a = announcement({
+    title: 'Finals week', body: 'Lots of spots are running something this week.',
+    unsubscribeUrl: 'https://we-rewards.com/unsubscribe?u=1&t=2',
+  });
+  assert.match(a.html, /unsubscribe\?u=1/);
+});
+
+test('an announcement escapes the operator’s own words', () => {
+  // Operator copy comes from a textarea on /admin and reaches every account on
+  // campus. A title that takes the layout apart would do it in thousands of
+  // inboxes at once, so this is escaped like any other attacker-influenced text.
+  const a = announcement({
+    name: 'Sam',
+    title: '<script>alert(1)</script>',
+    body: 'Body & "quotes" <b>here</b>',
+    unsubscribeUrl: 'https://we-rewards.com/u',
+  });
+  assertWellFormed(a, 'announcement/escaping');
+  assert.equal(a.html.includes('<script>'), false, 'a script tag survived into the HTML');
+  assert.equal(a.html.includes('<b>here</b>'), false, 'operator HTML was rendered rather than escaped');
+  assert.match(a.html, /&amp;/);
+});
+
+test('an announcement with no body is refused rather than sent empty', () => {
+  // create_admin_broadcast raises BODY_REQUIRED so this should be unreachable,
+  // but an announcement with nothing in it is not worth a slot from a student's
+  // two-per-day, and null is how the worker is told to settle without sending.
+  assert.equal(announcement({ title: 'Something' }), null);
+  assert.equal(announcement({ title: 'Something', body: '   ' }), null);
+  // A missing TITLE is survivable: the body is the message.
+  assertWellFormed(announcement({ body: 'The app is down for an hour tonight.' }), 'announcement/no-title');
 });

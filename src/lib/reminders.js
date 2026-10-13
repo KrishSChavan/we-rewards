@@ -42,6 +42,8 @@
 import { supabaseAdmin } from './supabase.js';
 import { CAMPAIGN_CONFIG, createWorkerStatus } from './campaigns.js';
 import { pushEnabled, sendToSubscriptionsDetailed, studentSubscriptions } from './push.js';
+import { emailEnabled, sendEmail, emailUrl, unsubscribeUrl } from './email.js';
+import { pointsReminder } from './email-templates.js';
 import { visibleUserIds } from './realtime.js';
 import { loadVendorCatalogue, loadRecommendedVendorIds } from './cache.js';
 import { readPurses } from './pools.js';
@@ -440,7 +442,11 @@ export function composeReminder(candidate) {
 let timer = null;
 let running = false;   // one tick at a time, whatever the interval does
 
-const ZERO = { claimed: 0, delivered: 0, refunded: 0 };
+// emailed counts the subset of `delivered` that went to a mailbox rather than a
+// device, and deferred the students claimed whose tier may not be emailed (see
+// deferReminder). Both are reported rather than inferred because they are the
+// two numbers that say whether migration-064 is actually doing anything.
+const ZERO = { claimed: 0, delivered: 0, refunded: 0, emailed: 0, deferred: 0 };
 
 /**
  * Students a recent tick claimed and then could not reach, with the ms it
@@ -665,6 +671,128 @@ async function refundReminder(userId) {
 }
 
 /**
+ * Give the shared budget back WITHOUT re-queueing the student.
+ *
+ * The companion to refundReminder, and the difference is the whole reason it
+ * exists: a refund nulls last_reminder_at, which means "never reminded" and puts
+ * the student straight back at the head of a queue ordered oldest-first. That is
+ * right for a delivery that failed and wrong for a reminder we chose not to
+ * send, because the choice will be the same on the next tick and every tick
+ * after it. defer_reminder_push (migration-064) releases the cooldown and both
+ * counters and leaves the cadence gate alone.
+ */
+async function deferReminder(userId) {
+  try {
+    const { data, error } = await supabaseAdmin.rpc('defer_reminder_push', { p_user_id: userId });
+    if (error) {
+      console.warn(`[reminders] defer failed user=${userId} (run migration-064?): ${error.message}`);
+      return false;
+    }
+    if (data !== true) {
+      console.warn(`[reminders] nothing to defer for user=${userId}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[reminders] defer threw user=${userId}: ${err?.message ?? err}`);
+    return false;
+  }
+}
+
+/**
+ * Mail one reminder to the student it was claimed for.
+ *
+ * The fallback half of delivery (migration-064), reached only when push accepted
+ * nothing. Like campaigns.js's emailBundle this rides the claim that already
+ * spent the student's budget, so it adds no rule of its own about frequency,
+ * caps or quiet hours; all that is left here is the address and the words.
+ *
+ * The TIER RULE lives in pointsReminder, which returns null for a tier that may
+ * not be emailed. Keeping it in the pure template rather than here is what makes
+ * it testable without a database, and what stops a future tier being emailed by
+ * default just because somebody added it to the cascade.
+ *
+ * @returns {Promise<{sent: boolean, reason: string|null}>}
+ *   reason is 'tier_not_emailable' when the words were refused rather than the
+ *   send, which the caller reads as "defer, do not refund".
+ */
+async function emailReminder(userId, candidate, deals) {
+  const vendorId = candidateVendorId(candidate, deals);
+  // Composed BEFORE the profile is read, because the tier rule is the cheapest
+  // test and the commonest refusal: no point querying for an address we are not
+  // going to use.
+  if (!pointsReminder(candidate)) return { sent: false, reason: 'tier_not_emailable' };
+
+  const refused = (reason, name) => {
+    logNotification({
+      channel: 'email',
+      kind: 'reminder',
+      outcome: 'refused',
+      reason,
+      recipientKind: 'student',
+      studentId: userId,
+      vendorId,
+      recipientLabel: name ?? null,
+      template: 'reminder',
+      ref: { tier: candidate?.kind ?? null, fallback: true },
+    });
+    return { sent: false, reason };
+  };
+
+  const { data: profile, error } = await supabaseAdmin
+    .from('profiles')
+    .select('email, name')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[reminders] could not read profile for email user=${userId}: ${error.message}`);
+    return refused('no_email_address');
+  }
+  if (!profile?.email) return refused('no_email_address', profile?.name);
+
+  const msg = pointsReminder({
+    ...candidate,
+    name: profile.name,
+    appUrl: emailUrl(candidate?.url ?? '/'),
+    unsubscribeUrl: unsubscribeUrl(userId),
+  });
+  // Cannot happen -- the probe above composed from the same candidate -- but a
+  // null here would otherwise send `undefined` as a subject.
+  if (!msg) return refused('content_empty', profile.name);
+
+  const res = await sendEmail({
+    to: profile.email,
+    subject: msg.subject,
+    html: msg.html,
+    text: msg.text,
+    // Marketing: adds List-Unsubscribe, and is refused for an address suppressed
+    // at ANY scope. A reminder is the clearest marketing of the four things that
+    // can reach a student, so this is not a judgement call.
+    category: 'marketing',
+    unsubscribeUrl: unsubscribeUrl(userId),
+    // The student and the day, so a retried tick cannot mail the same reminder
+    // twice. Not a batch id because a reminder has none: the claim is per
+    // student and the cadence gate is three days, so the day is granular enough
+    // to de-dupe a retry and coarse enough to be stable across one.
+    idempotencyKey: `reminder:${userId}:${new Date().toISOString().slice(0, 10)}`,
+    tags: ['reminder'],
+    log: {
+      kind: 'reminder',
+      recipientKind: 'student',
+      studentId: userId,
+      vendorId,
+      recipientLabel: profile.name ?? null,
+      template: 'reminder',
+      ref: { tier: candidate?.kind ?? null, fallback: true },
+    },
+  });
+  if (!res.ok && res.reason !== 'suppressed') {
+    console.warn(`[reminders] email not accepted user=${userId} tier=${candidate?.kind} reason=${res.reason}`);
+  }
+  return { sent: res.ok, reason: res.ok ? null : (res.reason ?? 'send_failed') };
+}
+
+/**
  * The spot a candidate is about, as an id, for the log's vendor link.
  *
  * pickReminder strips ids out of the candidate on purpose (it is copy), so the
@@ -694,11 +822,14 @@ function candidateVendorId(candidate, deals) {
  * not what was intended: "refunded" on a row whose refund failed would tell
  * the operator the student's budget is intact when it is not.
  */
-function logReminder({ userId, candidate, payload, deals, outcome, reason = null, devices = [], refunded }) {
+function logReminder({ userId, candidate, payload, deals, outcome, reason = null, devices = [], refunded, ref: extraRef }) {
   const ref = { tier: candidate?.kind ?? null };
   if (candidate?.vendorName) ref.vendorName = candidate.vendorName;
   if (candidate?.rewardTitle) ref.rewardTitle = candidate.rewardTitle;
   if (refunded !== undefined) ref.refunded = refunded;
+  // Merged last so a caller can add a fact the composer does not know -- today
+  // only `deferred`, from the tier-not-emailable path in the tick.
+  if (extraRef) Object.assign(ref, extraRef);
   logNotification({
     channel: 'push',
     kind: 'reminder',
@@ -766,7 +897,7 @@ export async function runReminderTick() {
   // sent. test/campaigns.test.js asserts this shape for the campaign worker by
   // proving it touches no socket; the same reasoning is the whole reason this
   // check sits above everything else rather than inside the loop.
-  if (!pushEnabled) return { ...ZERO };
+  if (!pushEnabled && !emailEnabled) return { ...ZERO };
 
   // The tick swallows its own failures (it resolves ZERO), so it reports them
   // to the status through `t` rather than by throwing.
@@ -802,6 +933,11 @@ async function reminderTick(t) {
       p_quiet_start: CAMPAIGN_CONFIG.quietStart,
       p_quiet_end: CAMPAIGN_CONFIG.quietEnd,
       p_timezone: CAMPAIGN_CONFIG.timezone,
+      // Whether the claim may count a mailbox as a way to reach someone
+      // (migration-064). Passing emailEnabled rather than `true` is what stops the
+      // claim handing back students this process has no way to mail: with no
+      // Resend key the candidate set collapses back to migration-060's.
+      p_email_enabled: emailEnabled,
     });
     if (error) {
       // The one failure worth naming. Without migration-060 applied the RPC is
@@ -815,7 +951,16 @@ async function reminderTick(t) {
     }
     workerStatus.claimOk();
 
-    const userIds = [...new Set((rows ?? []).map((r) => r.out_user_id).filter(Boolean))];
+    // reach per student, as the claim saw it under the lock: 'push', 'email' or
+    // 'both'. A row without one is treated as 'push', which is what every row
+    // was before migration-064 and so is the right reading of a database still
+    // running migration-060's claim.
+    const reachByUser = new Map();
+    for (const r of rows ?? []) {
+      if (!r?.out_user_id) continue;
+      if (!reachByUser.has(r.out_user_id)) reachByUser.set(r.out_user_id, r.out_reach ?? 'push');
+    }
+    const userIds = [...reachByUser.keys()];
     if (!userIds.length) return { ...ZERO };
 
     // Three reads for the whole batch, before the loop. The catalogue and the
@@ -837,6 +982,8 @@ async function reminderTick(t) {
 
     let delivered = 0;
     let refunded = 0;
+    let emailed = 0;
+    let deferred = 0;
     // SEQUENTIAL ON PURPOSE, the same way the campaign worker is: a push
     // service will happily rate-limit a burst of parallel sends from one origin,
     // and a rate-limited send is a spent budget with nothing delivered. Nobody
@@ -860,6 +1007,7 @@ async function reminderTick(t) {
       let sendResult = null;
       let sendThrew = false;
       const deals = dealsByUser.get(userId) ?? [];
+      const reach = reachByUser.get(userId) ?? 'push';
       try {
         const ctx = await buildContext(userId, catalogue, recommendedIds, deals);
         candidate = pickReminder(ctx);
@@ -894,11 +1042,69 @@ async function reminderTick(t) {
         console.warn(`[reminders] nothing to say to user=${userId} — refunding`);
       }
 
-      if (accepted > 0) {
+      // THE FALLBACK (migration-064). Reached only when push took nothing, so
+      // nobody is ever sent both for the same reminder — the same guarantee
+      // campaigns.js makes for a deal, and the one Privacy Policy §7.4 states.
+      //
+      // Three outcomes, and the third is the one worth reading twice:
+      //
+      //   * mailed      -> delivered, like a push.
+      //   * not mailable -> DEFERRED, not refunded. pointsReminder returns null
+      //     for the discover and generic tiers, which say nothing true of this
+      //     student in particular and so do not go in a mailbox (see
+      //     EMAILABLE_REMINDER_KINDS). A refund would null last_reminder_at,
+      //     put them back at the head of a queue ordered oldest-first, and have
+      //     the next tick compose the same generic tier and do it again --
+      //     forever, burning a slot every thirty seconds. Only a student with
+      //     NO endpoint is deferred: for one whose push genuinely failed, the
+      //     refund is still the right answer and the loop below gives it.
+      //   * mail refused -> falls through to the refund, like any failure.
+      const mayEmail = emailEnabled && (reach === 'email' || reach === 'both');
+      let emailSent = false;
+      let emailRefused = null;
+      if (accepted === 0 && mayEmail && candidate) {
+        const res = await emailReminder(userId, candidate, deals);
+        emailSent = res.sent;
+        emailRefused = res.reason;
+      }
+
+      if (accepted === 0 && !emailSent && emailRefused === 'tier_not_emailable' && reach === 'email') {
+        // Nothing failed and nothing was sent: this student has no device and
+        // today we have nothing worth mailing them. Give the shared budget back
+        // and let their cadence gate stand.
+        deferred += 1;
+        const didDefer = await deferReminder(userId);
+        logReminder({
+          userId, candidate, payload, deals,
+          outcome: 'refused',
+          reason: 'tier_not_emailable',
+          ref: { deferred: didDefer },
+        });
+        continue;
+      }
+
+      if (accepted > 0 || emailSent) {
         delivered += 1;
+        if (emailSent) emailed += 1;
         // Reached them, so whatever went wrong before is over.
         recentlyFailed.delete(userId);
-        logReminder({ userId, candidate, payload, deals, outcome: 'sent', devices: sendResult?.devices ?? [] });
+        // The PUSH row only when a device took it. A reminder that landed in a
+        // mailbox is logged by sendEmail itself (one row per call, channel
+        // 'email'), so logging a 'sent' push row here as well would claim a
+        // delivery that never happened. Where push was tried and took nothing
+        // but the email landed, the honest pair is a failed push row and a sent
+        // email row -- exactly what campaigns.js records for a deal.
+        if (accepted > 0) {
+          logReminder({ userId, candidate, payload, deals, outcome: 'sent', devices: sendResult?.devices ?? [] });
+        } else {
+          logReminder({
+            userId, candidate, payload, deals,
+            outcome: 'failed',
+            reason: sendResult?.tried ? 'no_device_accepted' : 'no_devices',
+            devices: sendResult?.devices ?? [],
+            refunded: false,
+          });
+        }
       } else {
         // Before the refund, not after: the refund is what puts them back at the
         // head of the queue, so the thing that keeps them out of the next claim
@@ -911,6 +1117,10 @@ async function reminderTick(t) {
         if (!payload) { outcome = 'refused'; reason = 'content_empty'; }
         else if (sendThrew) reason = 'send_error';
         else if (!sendResult?.tried) reason = 'no_devices';
+        // An email was tried and the mailer would not take it. Worth naming
+        // separately from a push failure: the student has a usable channel and
+        // something upstream (a suppression, a Resend outage) refused it.
+        if (emailRefused && emailRefused !== 'tier_not_emailable') reason = `email_${emailRefused}`;
         logReminder({
           userId, candidate, payload, deals, outcome, reason,
           devices: sendResult?.devices ?? [],
@@ -918,7 +1128,7 @@ async function reminderTick(t) {
         });
       }
     }
-    return { claimed: userIds.length, delivered, refunded };
+    return { claimed: userIds.length, delivered, refunded, emailed, deferred };
   } catch (err) {
     // Never throws upward: this is a background sweep with nothing downstream of
     // it, and the next tick retries from scratch. Same posture as claimNearby.
@@ -944,7 +1154,11 @@ async function reminderTick(t) {
  * hold the process open during shutdown. Both mirror startReferralWorker.
  */
 export function startReminderWorker() {
-  if (timer || !pushEnabled) return;
+  // Armed when EITHER channel is live (migration-064). The comment above this
+  // function used to say a reminder has no email fallback and so a tick with no
+  // VAPID keys had nothing to do but spend budgets; that is no longer true, and
+  // a deployment with Resend but no VAPID keys is now a working reminder loop.
+  if (timer || (!pushEnabled && !emailEnabled)) return;
   // A floor, so a mistyped REMINDER_TICK_SECONDS (0, or a negative) cannot turn
   // this into a hot loop against the claim. 30s is already absurdly often for a
   // feature whose interval is three days.
@@ -955,7 +1169,7 @@ export function startReminderWorker() {
     try {
       const r = await runReminderTick();
       if (r.claimed) {
-        console.log(`[reminders] tick claimed=${r.claimed} delivered=${r.delivered} refunded=${r.refunded}`);
+        console.log(`[reminders] tick claimed=${r.claimed} delivered=${r.delivered} emailed=${r.emailed} refunded=${r.refunded} deferred=${r.deferred}`);
       }
     } catch (err) {
       // runReminderTick already swallows everything; this is the belt under it.

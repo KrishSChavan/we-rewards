@@ -19,10 +19,46 @@
 // exactly why the failure has to be surfaced deliberately, here.
 
 import 'dotenv/config';
-import { emailEnabled, emailFrom, sendEmail } from '../src/lib/email.js';
-import {
-  applicationReceived, applicationAccepted, vendorResetCode, dealDigest,
-} from '../src/lib/email-templates.js';
+
+// DYNAMIC, and wrapped, for one reason: src/lib/email.js imports
+// src/lib/supabase.js at module scope (the suppression list lives in the
+// database), and supabase.js THROWS AT IMPORT when SUPABASE_URL and friends are
+// unset. With a static import here, the only thing a developer without a .env
+// ever sees from this script is a Supabase stack trace that names neither this
+// script nor the thing it actually wants -- which sends people to look at the
+// database when the answer is "copy .env.example". Top-level await is available
+// (this package is type: module).
+//
+// check-gemini, check-posthog and check-stripe do not need this: their modules
+// reach nothing that reads the database.
+let emailEnabled; let emailFrom; let sendEmail;
+let applicationReceived; let applicationAccepted; let vendorResetCode; let dealDigest;
+let pointsReminder; let announcement;
+try {
+  ({ emailEnabled, emailFrom, sendEmail } = await import('../src/lib/email.js'));
+  ({
+    applicationReceived, applicationAccepted, vendorResetCode, dealDigest,
+    pointsReminder, announcement,
+  } = await import('../src/lib/email-templates.js'));
+} catch (err) {
+  console.error('\nResend configuration\n');
+  console.error(`  FAIL  Could not load the mail modules: ${err?.message ?? err}`);
+  console.error('        This script reads the same env the server does, so a missing .env stops it');
+  console.error('        before any check runs. If the message above names SUPABASE_*, that is all');
+  console.error('        this is: cp .env.example .env and fill it in.');
+  console.error('');
+  console.error('        To check PROD config without a local .env:');
+  console.error('          set -a; eval "$(heroku config -s -a we-rewards)"; set +a');
+  console.error('          npm run check:resend');
+  console.error('');
+  console.error('        That shell then holds prod secrets. Do not run npm test or a deploy from');
+  console.error('        it: POSTHOG_API_KEY being set fails a test, and the deploy preflight runs');
+  console.error('        the tests, so it would block the deploy for a reason nothing explains.\n');
+  // Safe here, unlike at the foot of this file: no fetch is in flight yet, so
+  // there are no handles mid-unwind to trip the libuv assertion that note
+  // describes.
+  process.exit(1);
+}
 
 let failed = false;
 
@@ -42,11 +78,12 @@ function warn(msg, hint) {
 }
 
 /**
- * The From line has to be a verified sender on a verified domain. Two mistakes
- * are common enough to be worth naming separately: a bare address with no
- * display name (a real deliverability signal, not a style note), and an
+ * The From line has to be a verified sender on a verified domain. Three
+ * mistakes are common enough to be worth naming separately: a bare address with
+ * no display name (a real deliverability signal, not a style note), an
  * onboarding@resend.dev left in from the quickstart, which can only ever mail
- * the account owner and looks fine right up until a real vendor applies.
+ * the account owner and looks fine right up until a real vendor applies, and a
+ * noreply sender with nowhere for a reply to go.
  */
 function checkFrom() {
   const from = emailFrom();
@@ -67,6 +104,31 @@ function checkFrom() {
     fail('EMAIL_FROM is still on resend.dev',
          'That sandbox domain can only mail the Resend account owner. Verify your own domain and use an address on it.');
   }
+
+  // A NOREPLY SENDER WITH NO REPLY-TO, which is the one combination that makes
+  // mail measurably more likely to be filtered rather than less. Replies are a
+  // positive engagement signal, and src/lib/email.js says so where REPLY_TO is
+  // read: an address that bounces replies "teaches people the sender is a robot
+  // they cannot reach, which is exactly when they press Report spam instead".
+  //
+  // A FAIL rather than a warn, because this is silent and permanent. Nothing
+  // errors, no student or vendor sees anything, and the only symptom is a slow
+  // reputation decline on the domain every password reset also goes out on.
+  // Setting EMAIL_REPLY_TO to any monitored mailbox clears it; the address does
+  // not have to be on the sending domain.
+  if (/^(no-?reply|do-?not-?reply|noreply)@/i.test(address)) {
+    const replyTo = (process.env.EMAIL_REPLY_TO || '').trim();
+    if (!replyTo) {
+      fail(`EMAIL_FROM is a noreply address with no EMAIL_REPLY_TO: ${address}`,
+           'Set EMAIL_REPLY_TO to a mailbox somebody reads. A sender nobody can reply to is read as bulk mail.');
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(replyTo)) {
+      fail(`EMAIL_REPLY_TO is not a usable address: ${replyTo}`,
+           'It is the only way a reply reaches a human, because EMAIL_FROM is a noreply address.');
+    } else {
+      ok(`Reply-To: ${replyTo} (required, because From is a noreply address)`);
+    }
+  }
+
   return address.split('@')[1];
 }
 
@@ -150,6 +212,20 @@ async function sendSamples(to) {
         { campaignId: 'c2', vendor: 'Noodle Bar', title: 'Free drink', body: 'With any bowl, all week.' },
       ],
       appUrl: `${process.env.APP_ORIGIN ?? ''}/?deals=1`,
+      unsubscribeUrl: `${process.env.APP_ORIGIN ?? ''}/unsubscribe?u=sample&t=sample`,
+    })],
+    // migration-064. The 'close' tier because it is the one with a shortfall in
+    // it, which is the sentence most worth reading in a real inbox.
+    ['points reminder', pointsReminder({
+      name: 'Alex', kind: 'close', vendorName: 'Noodle Bar',
+      rewardTitle: 'a free bowl', shortfall: 40,
+      appUrl: `${process.env.APP_ORIGIN ?? ''}/?spot=sample`,
+      unsubscribeUrl: `${process.env.APP_ORIGIN ?? ''}/unsubscribe?u=sample&t=sample`,
+    })],
+    ['announcement', announcement({
+      name: 'Alex', title: 'Six new spots just joined',
+      body: 'Four cafes and two sandwich places are giving points from today.',
+      appUrl: `${process.env.APP_ORIGIN ?? ''}/?spots=1`,
       unsubscribeUrl: `${process.env.APP_ORIGIN ?? ''}/unsubscribe?u=sample&t=sample`,
     })],
   ];

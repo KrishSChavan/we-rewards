@@ -250,7 +250,7 @@ test('with push unconfigured the tick claims nothing and sends nothing', () => {
         () => { throw new Error('the tick must not reach the database with nothing to deliver with'); },
         () => runBroadcastTick(),
       );
-      assert.deepEqual(result, { claimed: 0, delivered: 0, failed: 0 });
+      assert.deepEqual(result, { claimed: 0, delivered: 0, failed: 0, emailed: 0 });
       assert.equal(seen.length, 0, 'the tick spent a student’s budget with nothing configured');
       assert.equal(calls, 0, 'the tick talked to the network with nothing configured');
     } finally {
@@ -320,7 +320,7 @@ const KEYS = webpush.generateVAPIDKeys();
  * has already filled in — the parent could not have imported broadcasts.js at
  * all otherwise.
  */
-function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, delivering = false, logError = null } = {}) {
+function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, delivering = false, logError = null, profileRows = null, emailStatus = 200 } = {}) {
   const src = `
     // Any socket at all is a failure in most of these tests, but it must be
     // observable rather than a thrown ECONNREFUSED that reads as an unrelated
@@ -333,6 +333,9 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     const fetches = [];
     const logRows = [];
     const LOG_ERROR = ${JSON.stringify(logError)};
+    const PROFILE_ROWS = ${JSON.stringify(profileRows)};
+    const EMAIL_STATUS = ${JSON.stringify(emailStatus)};
+    const emails = [];
     globalThis.fetch = async (input, init = {}) => {
       const url = String(input?.url ?? input);
       fetches.push({
@@ -344,6 +347,16 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
         if (LOG_ERROR) {
           return new Response(JSON.stringify(LOG_ERROR), { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
+      }
+      // migration-064: the email fallback. Both default to null so every test
+      // written before it is unaffected.
+      if (url.includes('api.resend.com/emails')) {
+        emails.push(JSON.parse(init.body ?? '{}'));
+        return new Response(JSON.stringify(EMAIL_STATUS < 300 ? { id: 're_1' } : { message: 'nope' }),
+          { status: EMAIL_STATUS, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (PROFILE_ROWS && url.includes('/rest/v1/profiles')) {
+        return new Response(JSON.stringify(PROFILE_ROWS), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
@@ -414,7 +427,7 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     const { flushNotificationLog } = await import(${JSON.stringify(NOTIF_LOG)});
     const flush = () => flushNotificationLog();
 
-    const out = await (${body})({ broadcasts, seen, fetches, armed, CAMPAIGN_CONFIG, supabaseAdmin, sent, logRows, flush, BY_NAME });
+    const out = await (${body})({ broadcasts, seen, fetches, armed, CAMPAIGN_CONFIG, supabaseAdmin, sent, logRows, flush, BY_NAME, emails });
     console.log('__RESULT__' + JSON.stringify(out ?? null));
   `;
   const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
@@ -438,7 +451,7 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
 
 test('the caps forwarded to the claim are CAMPAIGN_CONFIG’s own, not a second copy', () => {
   const out = runConfigured('async ({ broadcasts, seen, fetches }) => ({ result: await broadcasts.runBroadcastTick(), seen, fetches })');
-  assert.deepEqual(out.result, { claimed: 0, delivered: 0, failed: 0 });
+  assert.deepEqual(out.result, { claimed: 0, delivered: 0, failed: 0, emailed: 0 });
   assert.equal(out.seen.length, 1, 'a configured tick made no claim at all');
   assert.equal(out.seen[0].name, 'claim_admin_broadcast_pushes');
   const p = out.seen[0].params;
@@ -526,7 +539,7 @@ test('a missing migration is a quiet nothing, not a crash', () => {
   const out = runConfigured('async ({ broadcasts }) => broadcasts.runBroadcastTick()', {
     error: { message: 'Could not find the function public.claim_admin_broadcast_pushes' },
   });
-  assert.deepEqual(out, { claimed: 0, delivered: 0, failed: 0 });
+  assert.deepEqual(out, { claimed: 0, delivered: 0, failed: 0, emailed: 0 });
 });
 
 test('a configured deployment does arm the loop, so the no-op above is not vacuous', () => {
@@ -612,7 +625,7 @@ test('a claimed recipient nobody could be reached for is settled, not left hangi
 
   assert.deepEqual(
     out.result,
-    { claimed: 1, delivered: 0, failed: 1 },
+    { claimed: 1, delivered: 0, failed: 1, emailed: 0 },
     'the tick did not account for the recipient it claimed and failed to reach',
   );
 
@@ -650,7 +663,7 @@ test('a claimed recipient whose send throws is still settled exactly once', () =
 
   assert.deepEqual(
     out.result,
-    { claimed: 1, delivered: 0, failed: 1 },
+    { claimed: 1, delivered: 0, failed: 1, emailed: 0 },
     'a thrown send was not accounted for as a failed delivery',
   );
   const finishes = out.seen.filter((c) => c.name === 'finish_admin_broadcast');
@@ -682,7 +695,7 @@ test('a claimed row with no ids is counted, not settled against null', () => {
       },
     },
   );
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1, emailed: 0 });
   assert.deepEqual(
     out.seen.filter((c) => c.name === 'finish_admin_broadcast'),
     [],
@@ -709,7 +722,7 @@ test('a delivered broadcast is settled as delivered, once, with the right ids', 
     sent,
   })`, { ...ONE_CLAIMED, delivering: true });
 
-  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0, emailed: 0 });
   assert.equal(out.sent.length, 1, 'exactly one push for one claimed recipient');
   assert.equal(out.sent[0].endpoint, 'https://push.test/a');
   // The copy the claim returned, carried through compose to the wire. The claim
@@ -839,7 +852,7 @@ const TICK_AND_LOG = `async ({ broadcasts, seen, logRows, flush }) => {
 
 test('a delivered broadcast is logged once, as sent, with the dedupe key the backfill uses', () => {
   const out = runConfigured(TICK_AND_LOG, { ...ONE_CLAIMED, delivering: true });
-  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0, emailed: 0 });
   assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: true }]);
 
   assert.equal(out.rows.length, 1, `expected one log row, got ${JSON.stringify(out.rows)}`);
@@ -862,7 +875,7 @@ test('a delivered broadcast is logged once, as sent, with the dedupe key the bac
 
 test('a broadcast nobody could receive is logged as failed and refunded, with no dedupe key', () => {
   const out = runConfigured(TICK_AND_LOG, ONE_CLAIMED);
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1, emailed: 0 });
   assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: false }]);
   assert.equal(out.rows.length, 1);
   const r = out.rows[0];
@@ -889,7 +902,7 @@ test('a row with no words is logged as refused, content_empty, and still settled
       finish_admin_broadcast: { data: true },
     },
   });
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1, emailed: 0 });
   assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: false }]);
   assert.equal(out.rows.length, 1);
   assert.equal(out.rows[0].outcome, 'refused');
@@ -905,7 +918,7 @@ test('a thrown send is logged as send_error', () => {
     await flush();
     return { result, rows: logRows };
   }`, ONE_CLAIMED);
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, failed: 1, emailed: 0 });
   assert.equal(out.rows.length, 1);
   assert.equal(out.rows[0].reason, 'send_error');
 });
@@ -916,7 +929,7 @@ test('a missing notification_log table does not change a single settlement', () 
     delivering: true,
     logError: { code: '42P01', message: 'relation "public.notification_log" does not exist' },
   });
-  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, failed: 0, emailed: 0 });
   assert.deepEqual(out.finishes, [{ p_broadcast_id: CLAIMED_BROADCAST, p_user_id: CLAIMED_USER, p_delivered: true }]);
 });
 
@@ -947,7 +960,7 @@ test('worker status records each tick, and rpcMissing follows the claim', () => 
   assert.deepEqual(out.afterOk.lastResult, out.r1);
   assert.equal(out.afterOk.rpcMissing, false);
 
-  assert.deepEqual(out.r2, { claimed: 0, delivered: 0, failed: 0 });
+  assert.deepEqual(out.r2, { claimed: 0, delivered: 0, failed: 0, emailed: 0 });
   assert.equal(out.afterMissing.rpcMissing, true);
   assert.match(out.afterMissing.lastError, /admin_broadcast_recipients/);
   assert.equal(out.afterMissing.lastTickAt, out.afterOk.lastTickAt, 'a failed tick moved lastTickAt');
@@ -971,4 +984,117 @@ test('broadcastBackoff names the student just failed and when they come back', (
   const until = Date.parse(out.after[0].until);
   const twoHours = 2 * 60 * 60 * 1000;
   assert.ok(until >= out.t0 + twoHours && until <= out.t0 + twoHours + 60_000, `until ${out.after[0].until} is not two hours out`);
+});
+
+/* ---------- the email fallback (migration-064) ----------
+
+   migration-061 argued against this: "an announcement that missed its push has
+   usually missed its moment". True of a phone that was off, false of a student
+   who has no endpoint at all — one who has not opened the app since before
+   alerts existed, or who is on the iOS build, where WKWebView exposes no
+   PushManager and a push was never going to land at any moment. */
+
+const MAIL_ON = {
+  RESEND_API_KEY: 're_test_key',
+  EMAIL_FROM: 'WeRewards <hi@we-rewards.com>',
+  APP_ORIGIN: 'https://we-rewards.com',
+};
+const MAIL_PROFILE = [{ email: 'student@example.edu', name: 'Sam Reyes' }];
+
+const EMAIL_ONLY = {
+  rpcByName: {
+    claim_admin_broadcast_pushes: {
+      data: [{
+        out_user_id: CLAIMED_USER,
+        out_broadcast_id: CLAIMED_BROADCAST,
+        out_title: 'Six new spots just joined',
+        out_body: 'Four cafes and two sandwich places are giving points from today.',
+        out_url: '/?spots=1',
+        out_reach: 'email',
+      }],
+    },
+    finish_admin_broadcast: { data: true },
+  },
+};
+
+const TICK_AND_MAIL = `async ({ broadcasts, seen, emails, logRows, sent, flush }) => {
+  const result = await broadcasts.runBroadcastTick();
+  await flush();
+  return { result, emails, rows: logRows, sent: sent.length, calls: seen.map((c) => ({ n: c.name, p: c.params })) };
+}`;
+
+test('an announcement reaches a student with no device by email', () => {
+  const out = runConfigured(TICK_AND_MAIL, {
+    ...EMAIL_ONLY,
+    env: MAIL_ON,
+    profileRows: MAIL_PROFILE,
+  });
+
+  assert.equal(out.sent, 0, 'something was pushed to a student with no endpoints');
+  assert.equal(out.emails.length, 1, `expected one email, saw ${out.emails.length}`);
+  assert.equal(out.result.delivered, 1, 'a mailed announcement was not counted as delivered');
+  assert.equal(out.result.emailed, 1);
+  assert.equal(out.result.failed, 0, 'a delivered announcement was counted as a failure');
+  assert.match(out.emails[0].subject, /Six new spots/);
+  assert.match(out.emails[0].text, /Four cafes/);
+});
+
+test('an announcement that landed in a mailbox settles the recipient as DELIVERED', () => {
+  // THE ONCE-ONLY GUARANTEE. The recipient row is both the queue and the guard:
+  // settling it as undelivered leaves it 'queued', and the next tick mails the
+  // same words to the same person. So a successful email has to close the row
+  // exactly as a successful push does.
+  const out = runConfigured(TICK_AND_MAIL, {
+    ...EMAIL_ONLY,
+    env: MAIL_ON,
+    profileRows: MAIL_PROFILE,
+  });
+
+  const finish = out.calls.filter((c) => c.n === 'finish_admin_broadcast');
+  assert.equal(finish.length, 1, `expected one settle, saw ${JSON.stringify(out.calls.map((c) => c.n))}`);
+  assert.equal(finish[0].p.p_delivered, true, 'an emailed announcement was settled as a failure and will be sent again');
+});
+
+test('an announcement a device accepted is never also emailed', () => {
+  const out = runConfigured(TICK_AND_MAIL, {
+    rpcByName: {
+      ...EMAIL_ONLY.rpcByName,
+      claim_admin_broadcast_pushes: {
+        data: [{
+          ...EMAIL_ONLY.rpcByName.claim_admin_broadcast_pushes.data[0],
+          out_reach: 'both',
+        }],
+      },
+    },
+    env: MAIL_ON,
+    profileRows: MAIL_PROFILE,
+    delivering: true,
+  });
+
+  assert.equal(out.emails.length, 0, 'the student was sent both a push and an email');
+  assert.equal(out.result.emailed, 0);
+});
+
+test('the claim is told whether this process can actually send email', () => {
+  const on = runConfigured(
+    'async ({ broadcasts, seen }) => { await broadcasts.runBroadcastTick(); return seen[0].params.p_email_enabled; }',
+    { env: MAIL_ON },
+  );
+  assert.equal(on, true, 'a deployment with Resend configured did not ask for email-only students');
+
+  const off = runConfigured(
+    'async ({ broadcasts, seen }) => { await broadcasts.runBroadcastTick(); return seen[0].params.p_email_enabled; }',
+    { env: { RESEND_API_KEY: '', EMAIL_FROM: '' } },
+  );
+  assert.equal(off, false, 'a deployment with no mailbox still asked for email-only students');
+});
+
+test('with neither channel configured the broadcast tick claims nothing', () => {
+  const out = runConfigured(
+    'async ({ broadcasts, seen, fetches }) => ({ result: await broadcasts.runBroadcastTick(), names: seen.map((c) => c.name), fetches })',
+    { env: { VAPID_PUBLIC_KEY: '', VAPID_PRIVATE_KEY: '', RESEND_API_KEY: '', EMAIL_FROM: '' } },
+  );
+  assert.deepEqual(out.result, { claimed: 0, delivered: 0, failed: 0, emailed: 0 });
+  assert.deepEqual(out.names, [], 'a deployment that can send nothing still called the claim');
+  assert.deepEqual(out.fetches, [], 'a deployment that can send nothing still hit the network');
 });

@@ -69,6 +69,7 @@ import { validLogo } from '../lib/logo.js';
 // 404 for. stripeMode() names which mode this process is actually keyed for, so
 // the refusal it produces points the operator at the right dashboard.
 import { cancelSubscription, getSubscription, stripeEnabled, stripeMode } from '../lib/stripe.js';
+import { TERMS_VERSION } from '../lib/terms.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -3936,6 +3937,79 @@ notificationRoutes.get('/health', async (req, res, next) => {
       },
       migrations,
       visibleStudents: visibleUserIds().length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/notifications/reachability
+ *
+ * How many students we can actually reach, by channel — and, next to it, how
+ * many are on a stale consent version, because those two numbers together
+ * settle a question that is otherwise answered by guesswork.
+ *
+ * THE GUESS THIS EXISTS TO CORRECT. "Students have not revisited, so they have
+ * not accepted the new Terms, so they are not getting notifications" is a
+ * reasonable story and it is not what the code does. profiles.terms_version is
+ * read in exactly three places — requireConsent (the 403 on /api/me/*), the
+ * consent-status route, and the student detail panel here — and in none of the
+ * send paths. campaign_audience and admin_broadcast_audience exclude students
+ * with NO profile row (signed in, never consented, migration-022); a stale row
+ * is a perfectly good recipient. So a big consent_stale number is not a
+ * delivery problem, and the fix for it is not loosening the gate.
+ *
+ * What IS a delivery problem is reachable_neither, and the cause is structural:
+ * a push subscription can only be created from inside the app, past the consent
+ * modal, so a student who drifted away has no endpoint and never will until they
+ * come back. staleAndEmailable is therefore the number worth watching after
+ * migration-064 — the students this release can reach today, by email, without
+ * anyone accepting anything.
+ *
+ * Read-only and cheap: one RPC. Degrades to available:false when migration-064
+ * has not been applied, which also makes this route the probe for it (the
+ * function is the only object that migration adds).
+ */
+notificationRoutes.get('/reachability', async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin.rpc('student_reachability', {
+      // src/lib/terms.js is the single source of truth; SQL has no business
+      // knowing it. Passed in so the two consent counts mean "against the
+      // version this server is serving" rather than against a copy.
+      p_terms_version: TERMS_VERSION,
+    });
+    if (error) {
+      // A missing function is the expected answer on a database still running
+      // migration-063, and it is not an error worth a 500: the tab renders a
+      // "run migration-064" note instead, the same way the queue views handle
+      // their own migrations.
+      if (isMissingObject(error)) {
+        return res.json({ available: false, migration: '064', reason: error.message });
+      }
+      throw error;
+    }
+    // rpc() on a table-returning function hands back an array of one row.
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return res.json({ available: false, migration: '064', reason: 'no rows' });
+
+    const n = (v) => Number(v ?? 0);
+    res.json({
+      available: true,
+      generatedAt: new Date().toISOString(),
+      termsVersion: TERMS_VERSION,
+      students: n(row.students),
+      push: n(row.push_reachable),
+      email: n(row.email_reachable),
+      either: n(row.reachable_either),
+      neither: n(row.reachable_neither),
+      consentCurrent: n(row.consent_current),
+      consentStale: n(row.consent_stale),
+      staleAndEmailable: n(row.stale_and_emailable),
+      // So the panel can say WHY a channel reads zero, which is otherwise
+      // indistinguishable from "nobody is reachable".
+      pushConfigured: pushEnabled,
+      emailConfigured: emailEnabled,
     });
   } catch (err) {
     next(err);

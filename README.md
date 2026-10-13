@@ -973,6 +973,8 @@ are pure functions in `src/lib/email-templates.js`.
 | The operator accepts it | `applicationAccepted` | transactional |
 | A reset code is minted (either door) | `vendorResetCode` | transactional |
 | A deal could not be pushed | `dealDigest` | marketing |
+| A points reminder could not be pushed | `pointsReminder` | marketing |
+| An operator announcement could not be pushed | `announcement` | marketing |
 
 **Transactional vs marketing is load-bearing, not a label.** Marketing is sent
 only to a live opt-in, always carries `List-Unsubscribe`, and is refused for any
@@ -992,6 +994,50 @@ Run `npm run check:resend` before trusting any of it, and
 `npm run check:resend -- you@example.com` to send one of each template to a real
 inbox. A misconfigured key fails invisibly — nothing 500s, and four things just
 quietly stop happening.
+
+### Deliverability (DNS)
+
+**None of this is in the repo and none of it is an env var**, which is exactly
+why it is written down here: whether mail lands in an inbox or a spam folder is
+decided almost entirely by four DNS records on `we-rewards.com`, and the sender's
+local part has essentially nothing to do with it. A `noreply@` From does not help
+(see `.env.example` on why it mildly hurts), and neither does anything in
+`email.js`.
+
+What Resend needs, and what should be there:
+
+| Record | Value | Why |
+| --- | --- | --- |
+| `send.we-rewards.com` TXT | `v=spf1 include:amazonses.com ~all` | Authorises Resend's senders for the Return-Path |
+| `send.we-rewards.com` MX | `feedback-smtp.*.amazonses.com` | Where bounces go, so the webhook can suppress them |
+| `resend._domainkey.we-rewards.com` TXT | the DKIM public key | Signs as `d=we-rewards.com`, which is what aligns |
+| `_dmarc.we-rewards.com` TXT | see below | Tells receivers what to do when the above fail |
+
+**The one that bites: DMARC alignment mode.** Resend's Return-Path is on the
+`send.` SUBDOMAIN while the From is on the bare domain. DMARC's `aspf=s` (strict)
+requires those to be *identical*, so a subdomain does not align and **SPF fails
+DMARC on every message**. Mail still gets through on the DKIM leg alone, which
+is why this is invisible — until a forwarder, a mailing list or a selector
+rotation breaks that one leg, at which point `p=reject` means the message is
+*rejected*, password resets included.
+
+Relaxed alignment is the DMARC default and is what you want here, so the fix is
+to leave both alignment tags off:
+
+```
+v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@we-rewards.com;
+```
+
+Always include `rua=`. Without a reporting address nobody ever finds out that
+SPF has been failing alignment, which is how a record like this survives.
+
+Check the live state any time, no credentials needed:
+
+```sh
+dig +short TXT _dmarc.we-rewards.com
+dig +short TXT send.we-rewards.com
+dig +short TXT resend._domainkey.we-rewards.com
+```
 
 ## Product analytics (PostHog)
 

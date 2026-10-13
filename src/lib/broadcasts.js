@@ -50,6 +50,8 @@
 import { supabaseAdmin } from './supabase.js';
 import { CAMPAIGN_CONFIG, createWorkerStatus } from './campaigns.js';
 import { pushEnabled, sendToSubscriptionsDetailed, studentSubscriptions } from './push.js';
+import { emailEnabled, sendEmail, emailUrl, unsubscribeUrl } from './email.js';
+import { announcement } from './email-templates.js';
 import { visibleUserIds } from './realtime.js';
 import { logNotification } from './notification-log.js';
 
@@ -186,7 +188,10 @@ export function composeBroadcast(row) {
 let timer = null;
 let running = false;   // one tick at a time, whatever the interval does
 
-const ZERO = { claimed: 0, delivered: 0, failed: 0 };
+// emailed is the subset of `delivered` that went to a mailbox rather than a
+// device (migration-064). Reported rather than inferred: it is the number that
+// says whether the fallback is reaching the students push cannot.
+const ZERO = { claimed: 0, delivered: 0, failed: 0, emailed: 0 };
 
 /**
  * Students a recent tick claimed and could not reach, with the ms it happened,
@@ -335,6 +340,95 @@ async function settle(broadcastId, userId, delivered) {
 }
 
 /**
+ * Mail one announcement to the student it was claimed for.
+ *
+ * The fallback half of delivery (migration-064), reached only when push accepted
+ * nothing, so nobody is sent both for the same announcement. It rides the claim
+ * that already spent the student's budget and adds no rule of its own about
+ * frequency, caps or quiet hours.
+ *
+ * WHY THIS EXISTS AT ALL, given migration-061 argued against it. That file said
+ * "an announcement that missed its push has usually missed its moment", which is
+ * true of a student whose phone was off and false of the student this is for:
+ * one who has no endpoint and never will, because they have not opened the app
+ * since before alerts existed or because they are on the iOS build, where
+ * WKWebView exposes no PushManager at all. For them a push was never going to
+ * land at any moment, so there is no moment to miss. The 48-hour expires_at on
+ * the broadcast is what still keeps genuinely stale news out of a mailbox.
+ *
+ * Unlike a reminder there is no tier rule: an announcement is operator copy with
+ * something in it by construction (create_admin_broadcast raises BODY_REQUIRED),
+ * so anything worth pushing is worth mailing.
+ */
+async function emailBroadcast(userId, broadcastId, row) {
+  const ref = { broadcastId, fallback: true };
+  const refused = (reason, name) => {
+    logNotification({
+      channel: 'email',
+      kind: 'announcement',
+      outcome: 'refused',
+      reason,
+      recipientKind: 'student',
+      studentId: userId,
+      recipientLabel: name ?? null,
+      template: 'announcement',
+      ref,
+    });
+    return false;
+  };
+
+  const { data: profile, error } = await supabaseAdmin
+    .from('profiles')
+    .select('email, name')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[broadcasts] could not read profile for email user=${userId}: ${error.message}`);
+    return refused('no_email_address');
+  }
+  if (!profile?.email) return refused('no_email_address', profile?.name);
+
+  const msg = announcement({
+    name: profile.name,
+    title: row.out_title,
+    body: row.out_body,
+    url: row.out_url ? emailUrl(row.out_url) : '',
+    appUrl: emailUrl('/'),
+    unsubscribeUrl: unsubscribeUrl(userId),
+  });
+  if (!msg) return refused('content_empty', profile.name);
+
+  const res = await sendEmail({
+    to: profile.email,
+    subject: msg.subject,
+    html: msg.html,
+    text: msg.text,
+    // Marketing: adds List-Unsubscribe, and is refused for an address suppressed
+    // at ANY scope. An announcement is a message we chose to send about
+    // ourselves, which is the definition the suppression list cares about.
+    category: 'marketing',
+    unsubscribeUrl: unsubscribeUrl(userId),
+    // The pair is the natural idempotency key, exactly as the batch id is for a
+    // deal: (broadcast, student) is the recipient row's own primary key, so a
+    // requeued row that is claimed again cannot mail the same words twice.
+    idempotencyKey: `broadcast:${broadcastId}:${userId}`,
+    tags: ['announcement'],
+    log: {
+      kind: 'announcement',
+      recipientKind: 'student',
+      studentId: userId,
+      recipientLabel: profile.name ?? null,
+      template: 'announcement',
+      ref,
+    },
+  });
+  if (!res.ok && res.reason !== 'suppressed') {
+    console.warn(`[broadcasts] email not accepted broadcast=${broadcastId} user=${userId} reason=${res.reason}`);
+  }
+  return res.ok;
+}
+
+/**
  * One pass: claim a few recipients, send to each, settle every one of them.
  *
  * Exported so a test or an operator can drive a single pass by hand, exactly as
@@ -351,14 +445,17 @@ export async function runBroadcastTick() {
   // never reach it: claiming here would silence a student for four hours --
   // deals, nearby alerts and reminders included -- over a notification that was
   // never going to be sent, and the recipient row would come back round as
-  // 'queued' having achieved exactly nothing. Unlike campaigns.js there is no
-  // second transport to fall back to (migration-061 has no email path on
-  // purpose: an announcement that missed its push has usually missed its
-  // moment), so push alone decides whether this tick has any business running.
+  // 'queued' having achieved exactly nothing.
+  //
+  // THERE IS NOW A SECOND TRANSPORT (migration-064), so the condition is
+  // "neither channel" rather than "no push". migration-061 argued against an
+  // email path on the ground that "an announcement that missed its push has
+  // usually missed its moment"; see emailBroadcast below for why that is true
+  // of a phone that was off and false of a student who has no endpoint at all.
   // test/campaigns.test.js and test/reminders.test.js both assert this shape by
   // proving the tick touches no socket; the same reasoning is why this check
   // sits above everything else rather than inside the loop.
-  if (!pushEnabled) return { ...ZERO };
+  if (!pushEnabled && !emailEnabled) return { ...ZERO };
 
   // The tick swallows its own failures (it resolves ZERO), so it reports them
   // to the status through `t` rather than by throwing.
@@ -375,6 +472,7 @@ async function broadcastTick(t) {
   // many students have had their shared budget spent and their recipient rows
   // moved to 'sending', whatever happens next.
   let claimedCount = 0;
+  let emailed = 0;
 
   try {
     const { data: rows, error } = await supabaseAdmin.rpc('claim_admin_broadcast_pushes', {
@@ -397,6 +495,10 @@ async function broadcastTick(t) {
       // no way for a fourth feature to drift into believing a student has a
       // bigger budget than the other three think they do.
       p_cooldown_minutes: CAMPAIGN_CONFIG.cooldownMinutes,
+      // Whether a mailbox counts as a way to reach someone (migration-064).
+      // emailEnabled rather than true, so a deployment with no Resend key keeps
+      // migration-061's candidate set instead of claiming students it cannot mail.
+      p_email_enabled: emailEnabled,
       p_daily_cap: CAMPAIGN_CONFIG.dailyCap,
       p_weekly_cap: CAMPAIGN_CONFIG.weeklyCap,
       p_quiet_start: CAMPAIGN_CONFIG.quietStart,
@@ -517,20 +619,45 @@ async function broadcastTick(t) {
           console.warn(`[broadcasts] unusable copy broadcast=${broadcastId} user=${userId} — requeueing`);
         }
 
+        // THE FALLBACK (migration-064). Only when push took nothing, so nobody
+        // is sent both for the same announcement.
+        const mayEmail = emailEnabled && (row.out_reach === 'email' || row.out_reach === 'both');
+        let emailSent = false;
+        if (accepted === 0 && mayEmail && payload) {
+          emailSent = await emailBroadcast(userId, broadcastId, row);
+        }
+        const reached = accepted > 0 || emailSent;
+
         // Recorded BEFORE the settle, not after: the settle is what makes this
         // student immediately re-claimable (it nulls last_push_at), so the thing
         // that keeps them out of the next batch has to be written whether or not
         // the settle itself succeeds.
-        if (accepted > 0) recentlyFailed.delete(userId);
+        if (reached) recentlyFailed.delete(userId);
         else recentlyFailed.set(userId, Date.now());
 
         settleAsked = true;
-        const settled = await settle(broadcastId, userId, accepted > 0);
-        if (accepted > 0) delivered += 1;
+        // The recipient row is settled as DELIVERED when either channel landed.
+        // Anything else would leave it queued and mail the student again on the
+        // next tick -- the once-only guarantee is the row's own primary key, and
+        // it only holds if a successful email closes the row like a push does.
+        const settled = await settle(broadcastId, userId, reached);
+        if (reached) delivered += 1;
         else failed += 1;
+        if (emailSent) emailed += 1;
 
         if (accepted > 0) {
           logBroadcast({ userId, broadcastId, row, payload, outcome: 'sent', devices: sendResult?.devices ?? [] });
+        } else if (emailSent) {
+          // The PUSH row stays a failure -- sendEmail logs the email itself, and
+          // claiming a push delivery that never happened would make the admin
+          // screen lie. refunded:false because the row was closed, not given back.
+          logBroadcast({
+            userId, broadcastId, row, payload,
+            outcome: 'failed',
+            reason: sendResult?.tried ? 'no_device_accepted' : 'no_devices',
+            devices: sendResult?.devices ?? [],
+            refunded: false,
+          });
         } else {
           let outcome = 'failed';
           let reason = 'no_device_accepted';
@@ -563,7 +690,7 @@ async function broadcastTick(t) {
     // exactly one settle asked of it. That invariant is the whole contract this
     // function owes the migration; it is worth checking against any change to
     // the loop above.
-    return { claimed: claimedRows.length, delivered, failed };
+    return { claimed: claimedRows.length, delivered, failed, emailed };
   } catch (err) {
     // Never throws upward: this is a background sweep with nothing downstream
     // of it, and the next tick retries from scratch. Same posture as
@@ -597,7 +724,8 @@ async function broadcastTick(t) {
  * startReminderWorker and startCampaignWorker.
  */
 export function startBroadcastWorker() {
-  if (timer || !pushEnabled) return;
+  // Armed when EITHER channel is live (migration-064).
+  if (timer || (!pushEnabled && !emailEnabled)) return;
   // A floor, so a mistyped BROADCAST_TICK_SECONDS (0, or a negative, or a
   // string) cannot turn this into a hot loop against the claim. Ten seconds
   // rather than the reminder worker's thirty, because the intended cadence here

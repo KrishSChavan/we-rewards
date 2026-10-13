@@ -133,6 +133,7 @@ function sandbox({ routes = {}, visible = true, escape = escapeSrc } = {}) {
     return {
       notifOutcomeText, notifReasonText, notifBlockerText, notifUnavailableText, notifRel,
       notifNextText, notifRowHtml, notifHealthHtml, notifQueueSectionHtml, notifDetailHtml,
+      notifReachabilityHtml,
       notifStudentHtml, notifStudentCardHtml, notifLogQuery, syncNotifTimers, stopNotifTimers,
       notifFastTick, pollNewNotifications, openNotifications, loadNotifLog, loadNotifQueue,
       loadNotifSummary, setNotifFilter, closeNotifDetail, openNotifDetail, onNotifTap,
@@ -732,4 +733,76 @@ test('the student card section is dropped if the operator moved on to another st
   release();
   await pending;
   assert.equal(node('student-detail-body').children.length, 0, 'A\'s history must not land in B\'s card');
+});
+
+/* ---------- the reachability panel (migration-064) ---------- */
+
+const REACH = {
+  available: true,
+  generatedAt: '2026-10-12T15:00:00.000Z',
+  termsVersion: '2026-10-12',
+  students: 400,
+  push: 40,
+  email: 380,
+  either: 385,
+  neither: 15,
+  consentCurrent: 60,
+  consentStale: 340,
+  staleAndEmailable: 330,
+  pushConfigured: true,
+  emailConfigured: true,
+};
+
+test('the reachability panel leads with who cannot be reached, not with stale consent', () => {
+  // THE POINT OF THE PANEL. "They have not accepted the new Terms, so they are
+  // not getting notifications" is the natural guess and it is wrong: no send
+  // path reads terms_version. So the stale count is present but muted and
+  // carries the correction, while the chip that gets a red is the one that
+  // actually costs reach.
+  const { api } = sandbox();
+  const html = api.notifReachabilityHtml(REACH);
+
+  assert.match(html, /15 reachable by nothing/);
+  assert.match(html, /340 on old Terms/);
+  // The correction travels with the number, because this is the number somebody
+  // will act on.
+  assert.match(html, /does NOT stop notifications/i);
+  // And the opportunity is stated as such.
+  assert.match(html, /330 on old Terms, emailable now/);
+});
+
+test('each channel shows its share, and says so when the server cannot use it', () => {
+  const { api } = sandbox();
+  const html = api.notifReachabilityHtml(REACH);
+  assert.match(html, /40 reachable by push \(10%\)/);
+  assert.match(html, /380 reachable by email \(95%\)/);
+
+  // A zero that means "not configured" must not read as "nobody is reachable":
+  // those call for completely different actions.
+  const noMail = api.notifReachabilityHtml({ ...REACH, email: 0, emailConfigured: false });
+  assert.match(noMail, /Email is not configured on this server/);
+  const noPush = api.notifReachabilityHtml({ ...REACH, push: 0, pushConfigured: false });
+  assert.match(noPush, /Push is not configured on this server/);
+});
+
+test('a database without migration-064 says which migration, not nothing', () => {
+  const { api } = sandbox();
+  const html = api.notifReachabilityHtml({ available: false, migration: '064', reason: 'function does not exist' });
+  assert.match(html, /Reachability unknown/);
+  assert.match(html, /Migration 064 is not applied/);
+  // Never a blank panel and never a thrown render: the strip that would tell an
+  // operator what is wrong is the one thing that has to survive.
+  assert.equal(api.notifReachabilityHtml(null), '');
+  assert.equal(api.notifReachabilityHtml(undefined), '');
+});
+
+test('reachability divides by zero safely on an empty campus', () => {
+  const { api } = sandbox();
+  const html = api.notifReachabilityHtml({
+    available: true, students: 0, push: 0, email: 0, either: 0, neither: 0,
+    consentCurrent: 0, consentStale: 0, staleAndEmailable: 0,
+    pushConfigured: true, emailConfigured: true,
+  });
+  assert.doesNotMatch(html, /NaN/, 'an empty campus rendered NaN%');
+  assert.match(html, /0 students/);
 });

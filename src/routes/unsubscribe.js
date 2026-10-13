@@ -199,8 +199,8 @@ router.get('/', async (req, res, next) => {
 
     if (on) {
       return res.type('html').send(page({
-        title: 'Deal emails are back on',
-        message: 'We’ll let you know when a spot you go to has something on. At most twice a day, never at night.',
+        title: 'Email alerts are back on',
+        message: 'We’ll let you know when a spot you go to has something on, and when your points are worth spending. At most twice a day, never at night.',
         action: button('/', 'Open WeRewards'),
       }));
     }
@@ -212,7 +212,7 @@ router.get('/', async (req, res, next) => {
     const undo = `/unsubscribe?u=${encodeURIComponent(userId)}&t=${encodeURIComponent(String(req.query.t))}&resubscribe=1`;
     res.type('html').send(page({
       title: 'You’re unsubscribed',
-      message: 'No more deal emails. Your points, your account and anything you need to be told about them are unaffected, and deals still show up in the app.',
+      message: 'No more emails about deals, your points or the service. Your account and anything you need to be told about it are unaffected, and deals still show up in the app.',
       action: button(undo, 'Undo, keep them coming'),
     }));
   } catch (err) {

@@ -386,7 +386,7 @@ test('with push unconfigured the tick claims nothing and sends nothing', () => {
         () => { throw new Error('the tick must not reach the database with nothing to deliver with'); },
         () => runReminderTick(),
       );
-      assert.deepEqual(result, { claimed: 0, delivered: 0, refunded: 0 });
+      assert.deepEqual(result, { claimed: 0, delivered: 0, refunded: 0, emailed: 0, deferred: 0 });
       assert.equal(seen.length, 0, 'the tick spent a student’s budget with nothing configured');
       assert.equal(calls, 0, 'the tick talked to the network with nothing configured');
     } finally {
@@ -452,7 +452,7 @@ const KEYS = webpush.generateVAPIDKeys();
  * test/setup.js has already filled in — the parent could not have imported
  * reminders.js at all otherwise.
  */
-function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, subs = null, pushStatus = 201, logError = null, dealRows = null } = {}) {
+function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = null, subs = null, pushStatus = 201, logError = null, dealRows = null, profileRows = null, emailStatus = 200 } = {}) {
   const src = `
     // Any socket at all is a failure in these tests, but it must be observable
     // rather than a thrown ECONNREFUSED that reads as an unrelated bug.
@@ -467,6 +467,11 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     const SUBS = ${JSON.stringify(subs)};
     const DEAL_ROWS = ${JSON.stringify(dealRows)};
     const LOG_ERROR = ${JSON.stringify(logError)};
+    // migration-064: the two routes the email fallback needs. Both default to
+    // null so every test written before it is byte-for-byte unaffected.
+    const PROFILE_ROWS = ${JSON.stringify(profileRows)};
+    const EMAIL_STATUS = ${JSON.stringify(emailStatus)};
+    const emails = [];
     globalThis.fetch = async (input, init = {}) => {
       const url = String(input?.url ?? input);
       const method = String(init.method ?? input?.method ?? 'GET').toUpperCase();
@@ -481,6 +486,12 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
         return json(SUBS);
       }
       if (DEAL_ROWS && url.includes('/rest/v1/campaign_recipients')) return json(DEAL_ROWS);
+      if (url.includes('api.resend.com/emails')) {
+        emails.push(JSON.parse(init.body ?? '{}'));
+        if (EMAIL_STATUS >= 200 && EMAIL_STATUS < 300) return json({ id: 're_1' }, EMAIL_STATUS);
+        return json({ message: 'nope' }, EMAIL_STATUS);
+      }
+      if (PROFILE_ROWS && url.includes('/rest/v1/profiles')) return json(PROFILE_ROWS);
       return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
@@ -525,7 +536,7 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
     const { flushNotificationLog } = await import(${JSON.stringify(NOTIF_LOG)});
     const flush = () => flushNotificationLog();
 
-    const out = await (${body})({ reminders, seen, fetches, armed, CAMPAIGN_CONFIG, logRows, sent, flush, BY_NAME });
+    const out = await (${body})({ reminders, seen, fetches, armed, CAMPAIGN_CONFIG, logRows, sent, flush, BY_NAME, emails });
     console.log('__RESULT__' + JSON.stringify(out ?? null));
   `;
   const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', src], {
@@ -549,7 +560,7 @@ function runConfigured(body, { rows = [], error = null, env = {}, rpcByName = nu
 
 test('the caps forwarded to the claim are CAMPAIGN_CONFIG’s own, not a second copy', () => {
   const out = runConfigured('async ({ reminders, seen, fetches }) => ({ result: await reminders.runReminderTick(), seen, fetches })');
-  assert.deepEqual(out.result, { claimed: 0, delivered: 0, refunded: 0 });
+  assert.deepEqual(out.result, { claimed: 0, delivered: 0, refunded: 0, emailed: 0, deferred: 0 });
   assert.equal(out.seen.length, 1, 'a configured tick made no claim at all');
   assert.equal(out.seen[0].name, 'claim_reminder_pushes');
   const p = out.seen[0].params;
@@ -621,7 +632,7 @@ test('a missing migration is a quiet nothing, not a crash', () => {
   const out = runConfigured('async ({ reminders }) => reminders.runReminderTick()', {
     error: { message: 'Could not find the function public.claim_reminder_pushes' },
   });
-  assert.deepEqual(out, { claimed: 0, delivered: 0, refunded: 0 });
+  assert.deepEqual(out, { claimed: 0, delivered: 0, refunded: 0, emailed: 0, deferred: 0 });
 });
 
 test('a configured deployment does arm the loop, so the no-op above is not vacuous', () => {
@@ -685,7 +696,7 @@ test('a claimed student nobody could be reached for is refunded, not left silenc
 
   assert.deepEqual(
     out.result,
-    { claimed: 1, delivered: 0, refunded: 1 },
+    { claimed: 1, delivered: 0, refunded: 1, emailed: 0, deferred: 0 },
     'the tick did not account for the student it claimed and failed to reach',
   );
 
@@ -848,7 +859,7 @@ const TICK_AND_LOG = `async ({ reminders, seen, logRows, sent, flush }) => {
 test('a delivered reminder is logged as sent, with its tier, spot and devices', () => {
   const out = runConfigured(TICK_AND_LOG, { ...ONE_CLAIMED, subs: [LOG_SUB], dealRows: LIVE_DEAL_ROWS });
 
-  assert.deepEqual(out.result, { claimed: 1, delivered: 1, refunded: 0 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 1, refunded: 0, emailed: 0, deferred: 0 });
   assert.equal(out.sent, 1);
   assert.ok(!out.names.includes('refund_reminder_push'), 'a delivered reminder was refunded');
 
@@ -880,7 +891,7 @@ test('a delivered reminder is logged as sent, with its tier, spot and devices', 
 
 test('a reminder nobody could receive is logged as failed, no_devices, and refunded', () => {
   const out = runConfigured(TICK_AND_LOG, ONE_CLAIMED);
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1, emailed: 0, deferred: 0 });
   assert.equal(out.rows.length, 1);
   const r = out.rows[0];
   assert.equal(r.outcome, 'failed');
@@ -894,7 +905,7 @@ test('a reminder nobody could receive is logged as failed, no_devices, and refun
 
 test('a reminder every device refused is logged as no_device_accepted', () => {
   const out = runConfigured(TICK_AND_LOG, { ...ONE_CLAIMED, subs: [LOG_SUB], pushStatus: 500 });
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1, emailed: 0, deferred: 0 });
   assert.equal(out.rows[0].outcome, 'failed');
   assert.equal(out.rows[0].reason, 'no_device_accepted');
   assert.equal(out.rows[0].devices[0].status, 500);
@@ -909,7 +920,7 @@ test('refunded on the log row is what the refund actually did', () => {
       refund_reminder_push: { data: null, error: { message: 'boom' } },
     },
   });
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 0 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 0, emailed: 0, deferred: 0 });
   assert.equal(out.rows[0].ref.refunded, false);
 });
 
@@ -918,7 +929,7 @@ test('a missing notification_log table does not change a single reminder outcome
     ...ONE_CLAIMED,
     logError: { code: 'PGRST205', message: "Could not find the table 'public.notification_log' in the schema cache" },
   });
-  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1 });
+  assert.deepEqual(out.result, { claimed: 1, delivered: 0, refunded: 1, emailed: 0, deferred: 0 });
   assert.equal(out.names.filter((n) => n === 'refund_reminder_push').length, 1);
 });
 
@@ -950,7 +961,7 @@ test('worker status records each tick, and rpcMissing follows the claim', () => 
 
   // The tick still resolves ZERO (never throws upward); the status is where the
   // failure shows.
-  assert.deepEqual(out.r2, { claimed: 0, delivered: 0, refunded: 0 });
+  assert.deepEqual(out.r2, { claimed: 0, delivered: 0, refunded: 0, emailed: 0, deferred: 0 });
   assert.equal(out.afterMissing.ticks, 2);
   assert.equal(out.afterMissing.rpcMissing, true);
   assert.match(out.afterMissing.lastError, /claim_reminder_pushes/);
@@ -1018,4 +1029,180 @@ test('previewReminder with no student says nothing', async () => {
   const { previewReminder } = await import('../src/lib/reminders.js');
   assert.deepEqual(await previewReminder(''), { candidate: null, composed: null });
   assert.deepEqual(await previewReminder(null), { candidate: null, composed: null });
+});
+
+/* ---------- the email fallback (migration-064) ----------
+
+   The loop this exists to break: a push subscription can only be created from
+   inside the app, so a student who has drifted away has no endpoint, and the one
+   message built to fetch them back is the one message that cannot reach them.
+   Email has no such precondition. What follows pins the four properties that
+   make it safe rather than a mailshot. */
+
+const MAIL_ON = {
+  RESEND_API_KEY: 're_test_key',
+  EMAIL_FROM: 'WeRewards <hi@we-rewards.com>',
+  APP_ORIGIN: 'https://we-rewards.com',
+};
+const MAIL_PROFILE = [{ email: 'student@example.edu', name: 'Sam Reyes' }];
+
+/** One claimed student the claim says is reachable only by email. */
+const ONE_EMAIL_ONLY = {
+  rpcByName: {
+    claim_reminder_pushes: { data: [{ out_user_id: CLAIMED_ID, out_reach: 'email' }] },
+    refund_reminder_push: { data: true },
+    defer_reminder_push: { data: true },
+  },
+};
+
+const TICK_AND_MAIL = `async ({ reminders, seen, emails, logRows, sent, flush }) => {
+  const result = await reminders.runReminderTick();
+  await flush();
+  return { result, emails, rows: logRows, sent: sent.length, names: seen.map((c) => c.name) };
+}`;
+
+test('the claim is told whether this process can actually send email', () => {
+  // p_email_enabled is what widens the candidate set to students with no device.
+  // Passing a literal true would have the claim hand back students this process
+  // has no way to mail, and every one of them would cost a slot and a defer.
+  const off = runConfigured(
+    'async ({ reminders, seen }) => { await reminders.runReminderTick(); return seen.find((c) => c.name === "claim_reminder_pushes").params.p_email_enabled; }',
+    { env: { RESEND_API_KEY: '', EMAIL_FROM: '' } },
+  );
+  assert.equal(off, false, 'a deployment with no mailbox still asked for email-only students');
+
+  const on = runConfigured(
+    'async ({ reminders, seen }) => { await reminders.runReminderTick(); return seen.find((c) => c.name === "claim_reminder_pushes").params.p_email_enabled; }',
+    { env: MAIL_ON },
+  );
+  assert.equal(on, true, 'a deployment with Resend configured did not ask for email-only students');
+});
+
+test('a student no device can reach is mailed instead, and counted as delivered', () => {
+  // The whole point. No push_subscriptions rows, so nothing can be sent to a
+  // device; a live deal, so the cascade lands on a tier that carries a fact.
+  const out = runConfigured(TICK_AND_MAIL, {
+    ...ONE_EMAIL_ONLY,
+    env: MAIL_ON,
+    dealRows: LIVE_DEAL_ROWS,
+    profileRows: MAIL_PROFILE,
+  });
+
+  assert.equal(out.sent, 0, 'something was pushed to a student with no endpoints');
+  assert.equal(out.emails.length, 1, `expected one email, saw ${out.emails.length}`);
+  assert.equal(out.result.delivered, 1, 'a mailed reminder was not counted as delivered');
+  assert.equal(out.result.emailed, 1, 'the email was not counted');
+  assert.equal(out.result.refunded, 0, 'a reminder that landed in a mailbox was refunded anyway');
+  assert.equal(out.result.deferred, 0);
+
+  // Addressed to the student, and carrying the facts rather than the push voice.
+  assert.equal(out.emails[0].to?.[0] ?? out.emails[0].to, 'student@example.edu');
+  assert.match(out.emails[0].subject, /Taco Bar/, 'the subject did not name the spot');
+  // One opt-out for all marketing mail, which is the only kind of promise worth
+  // making: List-Unsubscribe is what keeps a sending domain out of a spam folder.
+  assert.ok(out.emails[0].headers?.['List-Unsubscribe'], 'a marketing email went out with no List-Unsubscribe');
+
+  // Neither function was called: nothing failed, and nothing was withheld.
+  assert.ok(!out.names.includes('refund_reminder_push'), 'a delivered reminder was refunded');
+  assert.ok(!out.names.includes('defer_reminder_push'), 'a delivered reminder was deferred');
+});
+
+test('a tier with nothing specific in it is DEFERRED, never refunded, when email is the only channel', () => {
+  // THE TRAP, and the reason defer_reminder_push exists at all. Every read here
+  // answers empty, so the cascade lands on its generic tier -- "your points are
+  // waiting", the one line with no number in it -- which pointsReminder refuses
+  // to put in a mailbox.
+  //
+  // A refund would be the obvious thing to do and would be a bug with teeth:
+  // refund_reminder_push nulls last_reminder_at, the claim orders candidates
+  // `nulls first`, so this student returns to the HEAD of the queue, composes
+  // the same generic tier thirty seconds later, and is claimed, refused and
+  // refunded again -- forever, burning one of p_max_users slots every tick and
+  // starving everyone behind them. A defer gives the budget back and leaves the
+  // 72-hour gate standing.
+  const out = runConfigured(TICK_AND_MAIL, {
+    ...ONE_EMAIL_ONLY,
+    env: MAIL_ON,
+    profileRows: MAIL_PROFILE,
+  });
+
+  assert.equal(out.emails.length, 0, 'the generic tier was mailed to a student anyway');
+  assert.equal(out.result.deferred, 1, 'the claim was not deferred');
+  assert.equal(out.result.refunded, 0, 'the claim was refunded, which re-queues the student forever');
+  assert.equal(out.result.delivered, 0);
+
+  const defers = out.names.filter((n) => n === 'defer_reminder_push');
+  const refunds = out.names.filter((n) => n === 'refund_reminder_push');
+  assert.equal(defers.length, 1, `expected exactly one defer, saw ${JSON.stringify(out.names)}`);
+  assert.equal(refunds.length, 0, 'the student was refunded as well as deferred');
+});
+
+test('a student who HAS a device is still refunded when the push fails, not deferred', () => {
+  // The asymmetry, and it is the half that is easy to get wrong. The defer above
+  // is for "we had nothing worth mailing"; this is "we had something and the
+  // transport dropped it". Only the second is a failure, and only a failure may
+  // null last_reminder_at to try again -- which is exactly what a student with a
+  // flaky endpoint needs and what a student with no endpoint must never get.
+  const out = runConfigured(TICK_AND_MAIL, {
+    rpcByName: {
+      claim_reminder_pushes: { data: [{ out_user_id: CLAIMED_ID, out_reach: 'both' }] },
+      refund_reminder_push: { data: true },
+      defer_reminder_push: { data: true },
+    },
+    env: MAIL_ON,
+    subs: [LOG_SUB],
+    profileRows: MAIL_PROFILE,
+    pushStatus: 500,
+  });
+
+  assert.equal(out.result.refunded, 1, 'a failed push was not refunded');
+  assert.equal(out.result.deferred, 0, 'a failed push was deferred, which holds the student for 72 hours');
+  assert.ok(out.names.includes('refund_reminder_push'));
+  assert.ok(!out.names.includes('defer_reminder_push'));
+});
+
+test('a reminder a device accepted is never also emailed', () => {
+  // Privacy Policy §7.4 promises a student never receives both for the same
+  // message, and the budget was spent once. The fallback is reached only when
+  // push accepted NOTHING, so a successful push must leave the mailer untouched.
+  const out = runConfigured(TICK_AND_MAIL, {
+    rpcByName: {
+      claim_reminder_pushes: { data: [{ out_user_id: CLAIMED_ID, out_reach: 'both' }] },
+      refund_reminder_push: { data: true },
+      defer_reminder_push: { data: true },
+    },
+    env: MAIL_ON,
+    subs: [LOG_SUB],
+    dealRows: LIVE_DEAL_ROWS,
+    profileRows: MAIL_PROFILE,
+  });
+
+  assert.equal(out.sent, 1, 'the push did not go out');
+  assert.equal(out.emails.length, 0, 'the student was sent both a push and an email');
+  assert.equal(out.result.delivered, 1);
+  assert.equal(out.result.emailed, 0, 'a push delivery was counted as an email');
+});
+
+test('with neither channel configured the tick still claims nothing', () => {
+  // migration-064 widened the guard from "no push" to "neither channel". The
+  // original property has to survive that: a tick that cannot deliver must not
+  // reach the claim, because the claim is what spends the budget.
+  const out = runConfigured(
+    'async ({ reminders, seen, fetches }) => ({ result: await reminders.runReminderTick(), names: seen.map((c) => c.name), fetches })',
+    { env: { VAPID_PUBLIC_KEY: '', VAPID_PRIVATE_KEY: '', RESEND_API_KEY: '', EMAIL_FROM: '' } },
+  );
+  assert.deepEqual(out.result, { claimed: 0, delivered: 0, refunded: 0, emailed: 0, deferred: 0 });
+  assert.deepEqual(out.names, [], 'a deployment that can send nothing still called the claim');
+  assert.deepEqual(out.fetches, [], 'a deployment that can send nothing still hit the network');
+});
+
+test('email alone is enough to arm the loop', () => {
+  // The inverse of the guard above, and a real deployment shape: Resend is
+  // configured, VAPID is not. Before migration-064 that was a dead worker, and
+  // for the iOS build it is the ONLY shape that reaches anybody.
+  const armed = runConfigured(
+    'async ({ reminders, armed }) => { reminders.startReminderWorker(); reminders.stopReminderWorker(); return armed; }',
+    { env: { VAPID_PUBLIC_KEY: '', VAPID_PRIVATE_KEY: '', ...MAIL_ON } },
+  );
+  assert.equal(armed.length, 1, 'a deployment that can only email did not arm the reminder loop');
 });

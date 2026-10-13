@@ -607,3 +607,206 @@ export function dealDigest({ name, items = [], appUrl = '/', unsubscribeUrl = ''
     text,
   };
 }
+
+/* ==================== re-engagement ==================== */
+
+/**
+ * The kinds of reminder that may be sent by email, and the whole of that rule.
+ *
+ * migration-060 refused reminders an email fallback on the ground that one "is a
+ * nudge, not news, and mailing someone to say nothing has happened is how an
+ * account gets marked as spam". That reasoning is kept; migration-064 only moves
+ * the decision to where the words are. composeReminder in src/lib/reminders.js
+ * has five tiers and these are the three that name a fact that is true of this
+ * student in particular: a balance they hold, a shortfall they can close, or a
+ * deal that is live at a spot they use.
+ *
+ * The two that are missing are missing on purpose. `discover` ("you have not
+ * been to X yet") is an advert for somewhere they have never been, and the
+ * generic tier is by its own admission "the one line here with no number in it",
+ * fired "precisely when we have nothing specific to offer". A push costs a
+ * student one glance at a lock screen; an email that says nothing costs the
+ * sending domain its reputation, and it is the same domain every password reset
+ * goes out on. Not worth it for the tier least likely to bring anyone back.
+ */
+const EMAILABLE_REMINDER_KINDS = Object.freeze(['afford', 'close', 'deal']);
+
+/** Is this reminder tier one we are willing to put in a mailbox? */
+export const isEmailableReminder = (kind) => EMAILABLE_REMINDER_KINDS.includes(kind);
+
+/**
+ * A reminder about the student's own points, for a student push cannot reach.
+ *
+ * Takes the CANDIDATE rather than composeReminder's output, and that is
+ * deliberate: the two channels share their facts and not their words. A push
+ * body is 140 characters read off a lock screen, where "Free food is waiting!"
+ * is warm; the same line as a subject is a spam filter's favourite shape, and
+ * reaching the inbox is the entire point of this template existing. So the voice
+ * here is calmer and more concrete, and the numbers come from one place.
+ *
+ * Returns null for a tier that may not be emailed (see isEmailableReminder) and
+ * for a candidate missing the facts its own tier promises — a null is the
+ * caller's signal to defer rather than send, exactly as dealDigest returns null
+ * for an empty list.
+ *
+ * @param {object} c
+ * @param {string} [c.name]          student's name, for the greeting
+ * @param {string} c.kind            'afford' | 'close' | 'deal'
+ * @param {string} [c.vendorName]
+ * @param {string} [c.rewardTitle]
+ * @param {number} [c.points]        balance at that vendor (afford)
+ * @param {number} [c.shortfall]     points still needed (close)
+ * @param {string} [c.dealTitle]     (deal)
+ * @param {string} [c.appUrl]
+ * @param {string} [c.unsubscribeUrl]
+ */
+export function pointsReminder({
+  name,
+  kind,
+  vendorName,
+  rewardTitle,
+  points,
+  shortfall,
+  dealTitle,
+  appUrl = '/',
+  unsubscribeUrl = '',
+} = {}) {
+  if (!isEmailableReminder(kind)) return null;
+
+  const vendor = String(vendorName ?? '').trim();
+  const reward = String(rewardTitle ?? '').trim();
+  const deal = String(dealTitle ?? '').trim();
+
+  // Every tier needs a vendor to name, and each needs its own facts. A missing
+  // one means the cascade handed us something it should not have, and guessing
+  // would put a sentence in front of a student that is not true of them: the
+  // same reasoning reminders.js uses when it refuses to assert a balance it
+  // could not read.
+  if (!vendor) return null;
+  let subject;
+  let lead;
+  let detail;
+  if (kind === 'afford') {
+    if (!Number.isFinite(Number(points)) || !reward) return null;
+    subject = `${vendor}: ${Number(points)} pts to spend`;
+    lead = `You have <strong>${Number(points)} pts</strong> at ${esc(vendor)}, which is enough for ${esc(reward)}.`;
+    detail = 'It is sitting there whenever you want it.';
+  } else if (kind === 'close') {
+    if (!Number.isFinite(Number(shortfall)) || !reward) return null;
+    subject = `${vendor}: ${Number(shortfall)} pts to go`;
+    lead = `You are <strong>${Number(shortfall)} pts</strong> from ${esc(reward)} at ${esc(vendor)}.`;
+    detail = 'One more visit should just about do it.';
+  } else {
+    if (!deal) return null;
+    subject = `${vendor}: ${deal}`;
+    lead = `${esc(vendor)} has something on: <strong>${esc(deal)}</strong>.`;
+    detail = 'Worth a look while it lasts.';
+  }
+
+  const greeting = name ? `Hi ${esc(String(name).split(' ')[0])},` : 'Hi,';
+
+  const card = `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 12px 0;">
+    <tr><td style="border:1px solid ${EDGE};border-left:4px solid ${ACCENT};border-radius:8px;padding:16px;">
+      <div style="font-family:Helvetica,Arial,sans-serif;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${MUTED};margin:0 0 6px 0;">${esc(vendor)}</div>
+      <div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;color:${INK};">${lead}</div>
+    </td></tr>
+  </table>`;
+
+  const body = [
+    p(greeting),
+    card,
+    p(detail),
+    button(appUrl, kind === 'deal' ? 'See the deal' : 'See your points'),
+  ].join('\n');
+
+  const text = [
+    name ? `Hi ${String(name).split(' ')[0]},` : 'Hi,',
+    '',
+    // The same facts without the markup. strip the <strong> rather than keeping
+    // a second copy of each sentence, so the two can never drift apart.
+    lead.replace(/<[^>]+>/g, ''),
+    detail,
+    '',
+    `Open WeRewards: ${appUrl}`,
+    '',
+    unsubscribeUrl ? `Stop these emails: ${unsubscribeUrl}` : '',
+    'WeRewards',
+  ].filter((l) => l !== '').join('\n');
+
+  const footer = unsubscribeUrl
+    ? `You’re getting this because email alerts are on for your WeRewards account, and we couldn’t reach you with a notification.<br /><a href="${esc(unsubscribeUrl)}" style="color:${MUTED};">Turn these emails off</a><br />${footerLines()}`
+    : footerLines();
+
+  return {
+    subject,
+    html: layout({
+      // Raw, not escaped: layout() escapes the title itself.
+      title: kind === 'deal' ? deal : `Your points at ${vendor}`,
+      preheader: `${lead.replace(/<[^>]+>/g, '')} ${detail}`,
+      body,
+      footer,
+    }),
+    text,
+  };
+}
+
+/**
+ * An operator announcement, for a student push cannot reach.
+ *
+ * The copy is whatever the operator typed, so this template adds no voice of its
+ * own beyond the frame — and escapes all of it, because an announcement is
+ * composed in a textarea on /admin and goes to every account on campus.
+ *
+ * Returns null without a body, which is the signal to settle the recipient
+ * rather than send: an announcement with nothing in it is not worth a slot from
+ * a student's two-per-day.
+ */
+export function announcement({ name, title, body: message, url, appUrl = '/', unsubscribeUrl = '' } = {}) {
+  const heading = String(title ?? '').trim();
+  const text_ = String(message ?? '').trim();
+  if (!text_) return null;
+
+  const greeting = name ? `Hi ${esc(String(name).split(' ')[0])},` : 'Hi,';
+  // The operator's own link when they set one, the app otherwise. url is
+  // validated at creation time (migration-061's create_admin_broadcast), so this
+  // is a choice between two trusted values rather than a sanitiser.
+  const href = String(url ?? '').trim() || appUrl;
+
+  const bodyHtml = [
+    p(greeting),
+    p(`<strong>${esc(heading || 'An update from WeRewards')}</strong>`),
+    p(esc(text_)),
+    button(href, 'Open WeRewards'),
+  ].join('\n');
+
+  const textBody = [
+    name ? `Hi ${String(name).split(' ')[0]},` : 'Hi,',
+    '',
+    heading || 'An update from WeRewards',
+    text_,
+    '',
+    `Open WeRewards: ${href}`,
+    '',
+    unsubscribeUrl ? `Stop these emails: ${unsubscribeUrl}` : '',
+    'WeRewards',
+  ].filter((l) => l !== '').join('\n');
+
+  const footer = unsubscribeUrl
+    ? `You’re getting this because email alerts are on for your WeRewards account, and we couldn’t reach you with a notification.<br /><a href="${esc(unsubscribeUrl)}" style="color:${MUTED};">Turn these emails off</a><br />${footerLines()}`
+    : footerLines();
+
+  return {
+    // The operator's title is the subject when they gave one. Clipped, because
+    // an admin textarea has no length limit and a 200-character subject is
+    // truncated by every inbox in a different place.
+    subject: (heading || 'An update from WeRewards').slice(0, 80),
+    html: layout({
+      title: heading || 'An update from WeRewards',
+      preheader: text_.slice(0, 140),
+      body: bodyHtml,
+      footer,
+    }),
+    text: textBody,
+  };
+}
