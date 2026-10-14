@@ -130,6 +130,7 @@
     <li><strong>Your appearance preference.</strong> Your light/dark theme choice is saved locally so the app opens the way you left it.</li>
     <li><strong>An offline app cache.</strong> The app registers a service worker that caches its own pages and styles so it loads quickly and works on a poor connection. This cache holds application files, not your personal data.</li>
     <li><strong>An analytics identifier.</strong> PostHog stores a random identifier for your browser, in local storage and in one cookie. It is a random value, not your name or email, and it is what ties the pages of a single visit together. See Section 2.14.</li>
+    <li><strong>A tag-tap identifier.</strong> When you tap one of our NFC tags (a page at /t/...), a cookie holding a random value is set for that page only, so the same phone tapping again counts as one visitor rather than a new one each time. We keep only a one-way hash of the value, never the value itself, it is not linked to your account, and it expires after 30 days.</li>
   </ul>
   <p>All of these are stored on your device rather than sent to us as a separate collection of data. You can clear them at any time through your browser's site-data settings.</p>
 

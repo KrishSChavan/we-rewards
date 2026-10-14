@@ -55,6 +55,11 @@ import {
   AMBASSADOR_COOKIE,
 } from '../lib/ambassadors.js';
 import { loadVendorCatalogue, loadRecommendedVendorIds } from '../lib/cache.js';
+// The installed app's half of NFC tap counting (migration-065): the same ref
+// normaliser and catalogue lookup the landing page uses, under the same cap,
+// so a tap counts the same whichever door it came in by.
+import { publicSpotByRef, normalizeTapRef } from '../lib/spots-page.js';
+import { recordNfcTap, hashVisitor, withTimeout, CATALOGUE_WAIT_MS } from '../lib/nfc-taps.js';
 // Where a vendor's points live (migration-044). Nothing in this file re-derives
 // that rule inline: a second copy of it that disagreed with the SQL functions
 // would show a customer one balance and charge them from another.
@@ -426,6 +431,72 @@ router.post('/decline', async (req, res, next) => {
     const { error } = await supabaseAdmin.auth.admin.deleteUser(req.user.id);
     if (error) throw error;
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/nfc-tap  { ref }
+ * The installed iOS app reporting a counter tag it handled itself. That tap
+ * never reaches GET /t: the app claims /t/* as a Universal Link (the
+ * apple-app-site-association file server.js serves), so iOS opens the app
+ * straight away and the landing page, which is where a web tap is counted,
+ * is never served. Without this the spots with the most installed customers
+ * would show the FEWEST taps in /admin, which is the opposite of the truth.
+ * src/lib/nfc-taps.js carries the rest of the reasoning.
+ *
+ * NO CONSENT GATE, deliberately, which is why it sits above the line rather
+ * than with the service: the tap happened whether or not this account has
+ * agreed to the current terms, and a count is not a service rendered to the
+ * student. requireUser still applies (router-wide), so the row is tied to a
+ * real account and the visitor hash is derived from the account id instead of
+ * a cookie, which the app does not share with Safari anyway.
+ *
+ * Always 204. The client fires this and forgets it (public/student/app.js),
+ * so no status could change anything, and a tap must never be made to look
+ * like a failure to the person holding the phone. 400 only when there is no
+ * ref at all, which is a client bug rather than a tap.
+ *
+ * Only the installed app calls this. A tag opened in the browser is counted
+ * by the landing page, and the client never reports a ?spot= it took off a
+ * URL, so a web tap is not counted twice.
+ */
+router.post('/nfc-tap', async (req, res, next) => {
+  try {
+    const raw = req.body?.ref;
+    if (typeof raw !== 'string') {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'ref is required.' });
+    }
+    const ref = normalizeTapRef(raw);
+    if (!ref) console.warn(`[nfc-tap] malformed ref from the app: ${raw.slice(0, 40)}`);
+
+    // Same lookup and the same cap as the landing page. A catalogue blip must
+    // not hold the app's request open, and an unresolved ref still counts: it
+    // is recorded against the ref alone, which is how a stale slug on a tag
+    // becomes visible to the operator.
+    let spot = null;
+    if (ref) {
+      try {
+        spot = await withTimeout(publicSpotByRef(ref), CATALOGUE_WAIT_MS);
+      } catch (err) {
+        console.warn(`[nfc-tap] catalogue read failed for ${ref} (app): ${err?.message ?? err}`);
+      }
+    }
+
+    // Awaited rather than fired and forgotten: the write is bounded (see
+    // WRITE_TIMEOUT_MS there), it never throws, and a 204 that means "counted"
+    // is worth more to a test than one that means "received".
+    await recordNfcTap({
+      ref: ref || 'generic',
+      vendorId: spot?.id ?? null,
+      known: Boolean(spot),
+      source: 'app',
+      visitorHash: hashVisitor(`u:${req.user.id}`),
+      userId: req.user.id,
+      userAgent: req.headers['user-agent'],
+    });
+    res.status(204).end();
   } catch (err) {
     next(err);
   }

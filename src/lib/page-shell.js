@@ -2,8 +2,9 @@
  * The document shell every server-rendered PUBLIC page shares, and the one place
  * this site's crawler-facing head tags are written.
  *
- * WHO USES IT. src/lib/spots-page.js (the partner directory) and
- * src/lib/content-pages.js (how it works, FAQ). Not the five PWA shells under
+ * WHO USES IT. src/lib/spots-page.js (the partner directory),
+ * src/lib/content-pages.js (how it works, FAQ) and src/lib/tap-page.js (the
+ * NFC tag landing). Not the five PWA shells under
  * public/: those are hand-authored files with their own boot scripts, service
  * workers and CSP-sensitive ordering, and rewriting them through a template
  * would buy nothing and risk a lot. Their head tags are maintained in place; the
@@ -15,11 +16,15 @@
  * nothing blocking its first paint. These pages are read once, by a person who
  * arrived from a search result or by a crawler measuring how fast that happens.
  *
- * WHY THERE IS NO <script>. `script-src 'self'` forbids inline script, and none
- * of these pages needs behaviour. The only <script> emitted is
- * `application/ld+json`, which is a data block a browser never executes and CSP
- * therefore never blocks. That was verified against this exact policy rather
- * than assumed.
+ * WHY THERE IS (ALMOST) NO <script>. `script-src 'self'` (server.js) forbids
+ * inline script, and none of the crawler-facing pages needs behaviour. The
+ * only <script> they emit is `application/ld+json`, which is a data block a
+ * browser never executes and CSP therefore never blocks. That was verified
+ * against this exact policy rather than assumed. The one exception is the NFC
+ * tag landing (src/lib/tap-page.js), which needs a few lines of behaviour and
+ * gets them through `scripts`: same-origin FILE urls, emitted as plain
+ * <script src> tags that 'self' already allows. Inline script stays forbidden
+ * and the CSP is untouched.
  *
  * COPY RULE: no em dashes in anything a visitor reads. Comments are exempt.
  */
@@ -147,13 +152,20 @@ function jsonLdScript(node) {
  * CANONICAL_ORIGIN, never from the request's host. That is precisely what stops
  * the staging dyno from claiming these pages as its own if it is ever crawled.
  */
-export function layout({ path, title, description, body, jsonLd, noindex = false }) {
+export function layout({ path, title, description, body, jsonLd, noindex = false, scripts = [] }) {
   const url = absoluteUrl(path);
   const ogImage = absoluteUrl('/icons/og-image.png');
   const blocks = (Array.isArray(jsonLd) ? jsonLd : [jsonLd])
     .filter(Boolean)
     .map(jsonLdScript)
     .join('\n  ');
+  // Same-origin script FILES, one tag per line at the foot of the body so the
+  // document paints before any of them loads. Escaped like every other
+  // attribute here, and never inline code, which the CSP would refuse.
+  const scriptTags = (Array.isArray(scripts) ? scripts : [])
+    .filter(Boolean)
+    .map((src) => `  <script src="${escapeHtml(src)}"></script>\n`)
+    .join('');
 
   return `<!doctype html>
 <html lang="en">
@@ -212,7 +224,7 @@ ${body}
       <p>Questions? contactwerewards@gmail.com</p>
     </div>
   </footer>
-</body>
+${scriptTags}</body>
 </html>
 `;
 }

@@ -190,6 +190,17 @@ export function validNewVendor(body) {
   // exactly, so anything that gets in here could have come through that door.
   const starter = validStarterItems(b.rewards, { required: false });
   if (starter.error) return { error: starter.error };
+
+  // An explicit web address (migration-065), optional: blank means "make one
+  // from the name", which is what every vendor got before slugs were editable
+  // and what /join still gets. Only location one takes it; see createVendorRow.
+  const rawSlug = typeof b.slug === 'string' ? b.slug.trim() : b.slug;
+  let slug = null;
+  if (rawSlug != null && rawSlug !== '') {
+    const s = validSlug(rawSlug);
+    if (s.error) return { error: s.error };
+    slug = s.slug;
+  }
   // Not validated, NORMALISED (migration-042): both are optional pickers, and
   // an unrecognised tag drops out rather than 400ing a form the operator has
   // otherwise filled in correctly. See src/lib/cuisines.js.
@@ -204,6 +215,7 @@ export function validNewVendor(body) {
     contactName: contactName || null,
     phone: phone || null,
     rewards: starter.items,
+    slug,
   };
 }
 
@@ -581,6 +593,40 @@ function slugify(name) {
   return s || 'vendor';
 }
 
+/* ---------- a slug an OPERATOR typed (migration-065) ----------
+   The slug was an internal id until NFC tags made it a thing that gets written
+   into hardware: a tag carries /t/<slug>, and the public page is /spots/<slug>.
+   So the operator can now choose one, and a typed slug has to be something
+   slugify above could have produced: same alphabet, same 60-character cap, no
+   hyphen at either end. Otherwise the two kinds would behave differently and
+   the difference would only show up on a tag already stuck to a counter.
+
+   Two rules only a typed slug needs. It must not look like a uuid, because
+   /t/<ref> and /spots/<ref> resolve a uuid-shaped ref BY ID (publicSpotByRef),
+   so a slug shaped like one could never be reached by name. And it must not be
+   a word that is a top-level path of this server, because then
+   we-rewards.com/<slug> is a different page from the spot's, and a slug that
+   reads like a page name is exactly the kind that gets typed into the wrong
+   place on a poster. */
+const SLUG_MAX = 60;
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+const RESERVED_SLUGS = new Set(['t', 'spots', 'admin', 'terminal', 'scan', 'join', 'legal', 'api', 'r']);
+
+/** A typed slug -> { ok: true, slug } (trimmed, lower-cased) or { error }. Never throws. */
+export function validSlug(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { error: 'Enter a web address: lowercase letters, numbers and hyphens.' };
+  }
+  const slug = raw.trim().toLowerCase();
+  if (slug.length > SLUG_MAX) return { error: `The web address must be ${SLUG_MAX} characters or fewer.` };
+  if (!SLUG_RE.test(slug)) {
+    return { error: 'A web address can only use lowercase letters, numbers and hyphens, and cannot start or end with a hyphen.' };
+  }
+  if (isUuid(slug)) return { error: 'A web address cannot look like an id.' };
+  if (RESERVED_SLUGS.has(slug)) return { error: `"${slug}" is reserved. Choose another web address.` };
+  return { ok: true, slug };
+}
+
 // The columns a sibling location inherits when one login runs several stores
 // (migration-043): how the terminal prices and rings up a sale, and nothing
 // else. Deliberately NOT here: pin_hash (each till gets its own PIN, or none),
@@ -619,7 +665,7 @@ async function inheritedConfig(userId) {
  * caller can hand them to the next location).
  *
  * @param loc  { name, address?, logo?, cuisine?, priceLevel?, locationLabel?,
- *               contactName?, phone? }
+ *               contactName?, phone?, slug? }
  * @param config  inherited economics to spread in, or null for table defaults
  * @param slugStart  Map<base, next attempt> shared across one onboarding
  */
@@ -631,6 +677,58 @@ async function createVendorRow(loc, config, slugStart) {
   // operator click, not a hot path.
   const coords = loc.address ? await geocode(loc.address) : null;
 
+  // The insert, parameterised by the slug only, because the slug is the one
+  // column that decides whether it lands (vendors.slug is UNIQUE, and the only
+  // unique column an insert here can hit).
+  const insertWith = (slug) => supabaseAdmin
+    .from('vendors')
+    .insert({
+      // Spread FIRST so nothing inherited can overwrite this location's own
+      // identity below (an inherited row carries no name/slug today, and this
+      // is what keeps that true if INHERITED_CONFIG ever grows).
+      ...(config ?? {}),
+      name: loc.name,
+      slug,
+      // Which branch this row is, when one login runs several (migration-043).
+      // Null for the single-location vendor that is still the common case.
+      location_label: loc.locationLabel ?? null,
+      address: loc.address ?? null,
+      latitude: coords?.lat ?? null,
+      longitude: coords?.lng ?? null,
+      logo: loc.logo ?? null,
+      // Normalised at the door rather than trusted (migration-042): every
+      // door into this function carries operator- or applicant-typed values,
+      // and a vendor onboarded with junk here would be quietly unfilterable
+      // rather than visibly broken.
+      cuisine: normalizeCuisine(loc.cuisine),
+      price_level: normalizePriceLevel(loc.priceLevel),
+      // Who the operator calls about this storefront (migration-049). Carried
+      // here rather than left on the application because the application row
+      // is DELETED at the START of an accept — the delete is that handler's
+      // claim lock, so by the time we run it is already gone, and anything the
+      // accept did not read off the row before deleting it is lost the moment
+      // the vendor becomes real. Before 049 that is precisely
+      // where the phone number went, and the vendor who most needs phoning
+      // (locked out, no mailbox) was the one with no number on file.
+      contact_name: loc.contactName ?? null,
+      phone: loc.phone ?? null,
+    })
+    .select(`id, name, slug, location_label, contact_name, phone, ${INHERITED_CONFIG.join(', ')}`)
+    .single();
+
+  // A slug the operator typed (migration-065) is used exactly as typed, once.
+  // A collision is refused rather than suffixed, because the point of typing
+  // one is to get THAT address onto a tag, and "local-eats-2" written into
+  // hardware is the one outcome the operator cannot undo. The route turns
+  // SLUG_TAKEN into a 409 the form can show. Only location one ever carries a
+  // typed slug; a chain's siblings go through the generated base below.
+  if (loc.slug) {
+    const { data, error } = await insertWith(loc.slug);
+    if (!error) return data;
+    if (error.code === '23505') throw new Error('SLUG_TAKEN');
+    throw error;
+  }
+
   // Slug collisions get a numeric suffix (local-eats, local-eats-2, …). Every
   // location of a chain after the first collides by construction, since they
   // share a business name — hence slugStart, which resumes where the previous
@@ -639,41 +737,7 @@ async function createVendorRow(loc, config, slugStart) {
   const base = slugify(loc.name);
   const first = slugStart.get(base) ?? 0;
   for (let attempt = first; attempt < first + 25; attempt++) {
-    const { data, error } = await supabaseAdmin
-      .from('vendors')
-      .insert({
-        // Spread FIRST so nothing inherited can overwrite this location's own
-        // identity below (an inherited row carries no name/slug today, and this
-        // is what keeps that true if INHERITED_CONFIG ever grows).
-        ...(config ?? {}),
-        name: loc.name,
-        slug: attempt ? `${base}-${attempt + 1}` : base,
-        // Which branch this row is, when one login runs several (migration-043).
-        // Null for the single-location vendor that is still the common case.
-        location_label: loc.locationLabel ?? null,
-        address: loc.address ?? null,
-        latitude: coords?.lat ?? null,
-        longitude: coords?.lng ?? null,
-        logo: loc.logo ?? null,
-        // Normalised at the door rather than trusted (migration-042): every
-        // door into this function carries operator- or applicant-typed values,
-        // and a vendor onboarded with junk here would be quietly unfilterable
-        // rather than visibly broken.
-        cuisine: normalizeCuisine(loc.cuisine),
-        price_level: normalizePriceLevel(loc.priceLevel),
-        // Who the operator calls about this storefront (migration-049). Carried
-        // here rather than left on the application because the application row
-        // is DELETED at the START of an accept — the delete is that handler's
-        // claim lock, so by the time we run it is already gone, and anything the
-        // accept did not read off the row before deleting it is lost the moment
-        // the vendor becomes real. Before 049 that is precisely
-        // where the phone number went, and the vendor who most needs phoning
-        // (locked out, no mailbox) was the one with no number on file.
-        contact_name: loc.contactName ?? null,
-        phone: loc.phone ?? null,
-      })
-      .select(`id, name, slug, location_label, contact_name, phone, ${INHERITED_CONFIG.join(', ')}`)
-      .single();
+    const { data, error } = await insertWith(attempt ? `${base}-${attempt + 1}` : base);
     if (!error) { slugStart.set(base, attempt + 1); return data; }
     if (error.code !== '23505') throw error;
   }
@@ -716,6 +780,9 @@ async function onboardVendor({
   name, email, password, passwordHash, address, logo, cuisine, priceLevel,
   locationLabel = null, locations = [], contactName = null, phone = null,
   rewards = [],
+  // A web address the operator chose for location one (migration-065), or
+  // null for the generated one. /join never sends it.
+  slug = null,
 }) {
   let userId;
   let linkedExisting = false;
@@ -777,7 +844,9 @@ async function onboardVendor({
     // being true later without a schema change: a chain that puts a manager in
     // each store is corrected branch by branch from this dashboard.
     const contact = { contactName, phone };
-    const all = [{ name, address, logo, cuisine, priceLevel, locationLabel }, ...locations]
+    // `slug` rides on location one only: a typed address names ONE spot, and
+    // the siblings of a chain take generated ones (createVendorRow).
+    const all = [{ name, address, logo, cuisine, priceLevel, locationLabel, slug }, ...locations]
       .map((loc) => ({ ...contact, ...loc }));
     for (const loc of all) {
       const row = await createVendorRow(loc, config, slugStart);
@@ -846,7 +915,7 @@ async function onboardVendor({
 }
 
 /**
- * POST /api/admin/vendors  { name, email, password, address?, logo? }
+ * POST /api/admin/vendors  { name, email, password, slug?, address?, logo? }
  * Add a vendor from the operator's side: /join without the queue, for a vendor
  * signed up in person, over the phone, or at a demo. It runs the identical
  * onboarding an accepted application does, so the vendor can sign in to the
@@ -891,6 +960,9 @@ router.post('/vendors', async (req, res, next) => {
       // "No rewards yet" until somebody adds one — which the vendor editor on
       // this same dashboard can do the moment this returns.
       rewards: v.rewards,
+      // The web address the operator typed, if any (migration-065). Null
+      // means slugify(name), as before.
+      slug: v.slug,
     });
     if (result.conflict) {
       return res.status(409).json({
@@ -901,6 +973,12 @@ router.post('/vendors', async (req, res, next) => {
 
     res.status(201).json({ ok: true, vendor: result.vendor, linkedExisting: result.linkedExisting });
   } catch (err) {
+    // A typed slug that is already somebody's. onboardVendor has already
+    // unwound the login it created, so this is a clean "pick another" and
+    // not a half-made vendor.
+    if (String(err?.message ?? '') === 'SLUG_TAKEN') {
+      return res.status(409).json({ error: 'SLUG_TAKEN', message: 'That slug is already used by another spot.' });
+    }
     next(err);
   }
 });
@@ -1067,15 +1145,23 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
 
 /**
  * PATCH /api/admin/vendors/:id
- *   { name?, active?, address?, pointsPerDollar?, cuisine?, priceLevel?, logo? }
+ *   { name?, slug?, active?, address?, pointsPerDollar?, cuisine?, priceLevel?, logo? }
  * Operator edits for one vendor. Independent updates:
  *  - `name` is the vendor's display name, everywhere it appears: the student
  *    app's card, its transaction history, the terminal header, and the operator
  *    roster. The vendor has no way to change this itself, so a rebrand or a typo
- *    at onboarding is fixed here. `slug` is deliberately NOT regenerated: it's
- *    the vendor's stable internal id (unique column, shown in the roster meta),
- *    and nothing user-facing reads it, so churning it on a rename would buy
- *    nothing and risk a collision.
+ *    at onboarding is fixed here. `slug` is deliberately NOT regenerated on a
+ *    rename: since migration-065 it is edited on its own (next bullet), and a
+ *    slug that silently moved with the name would strand every tag written
+ *    with the old one.
+ *  - `slug` is the spot's web address (/spots/<slug>) and what an NFC tag
+ *    carries (/t/<slug>), so this is the one edit here that can invalidate a
+ *    physical object: a tag written with the old slug resolves nothing until it
+ *    is rewritten, which the client warns about before sending. The tap counts
+ *    survive the change (nfc_taps is keyed by vendor id), and a tag written
+ *    with the uuid is unaffected. validSlug is the rule; a collision with
+ *    another spot's slug is a 409 SLUG_TAKEN rather than a suffix, because a
+ *    slug the operator did not choose is a slug they will not write on a tag.
  *  - `active` is the kill-switch. Off = fully cut off: hidden from students
  *    (active=true filters) and its terminal is blocked at requireVendor.
  *    Non-destructive — balances, rewards, and history are preserved, so
@@ -1116,6 +1202,15 @@ router.patch('/vendors/:id', async (req, res, next) => {
       const n = validVendorName(body.name);
       if (n.error) return res.status(400).json({ error: 'BAD_REQUEST', message: n.error });
       updates.name = n.value;
+    }
+
+    // The web address and tag ref (migration-065); see the doc comment above
+    // for what changing it costs. Validated to exactly what slugify could have
+    // generated, so a typed slug and a generated one are the same kind of thing.
+    if (body.slug != null) {
+      const s = validSlug(body.slug);
+      if (s.error) return res.status(400).json({ error: 'BAD_REQUEST', message: s.error });
+      updates.slug = s.slug;
     }
 
     if (body.active != null) {
@@ -1212,7 +1307,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
     }
 
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, active, address, locationLabel, contactName, phone, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, slug, active, address, locationLabel, contactName, phone, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -1285,10 +1380,21 @@ router.patch('/vendors/:id', async (req, res, next) => {
       // edited. Keep the two lists identical.
       .select('id, name, slug, location_label, active, points_per_dollar, address, latitude, longitude, cuisine, price_level, has_logo, created_at, contact_name, phone, pool_id, point_pools(label)')
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      // vendors.slug is the only unique column an update here can collide on,
+      // and the central handler in server.js does not know 23505: left to it
+      // this would be a logged 500 with an alert, for a slug somebody else
+      // already has. Answered as what it is, so the form can say so.
+      if (error.code === '23505' && 'slug' in updates) {
+        return res.status(409).json({ error: 'SLUG_TAKEN', message: 'That slug is already used by another spot.' });
+      }
+      throw error;
+    }
     if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
     // Covers the on/off kill-switch, so a vendor toggled off disappears from
-    // students immediately rather than at the end of the catalogue TTL.
+    // students immediately rather than at the end of the catalogue TTL. Also
+    // a slug change: /t/<slug> and /spots/<slug> resolve off the cached
+    // catalogue, so without this the new address would 404 for a cache turn.
     invalidateVendorCaches(req.params.id);
     res.json(data);
   } catch (err) {
@@ -5144,6 +5250,206 @@ router.get('/tracked-qr/:id/export', async (req, res, next) => {
     next(err);
   }
 });
+
+/* ===================== NFC tags (migration-065) =====================
+   One row per tap of a counter tag, written by src/lib/nfc-taps.js from the
+   landing page (GET /t) and from the installed app (POST /api/me/nfc-tap),
+   rolled up per spot by the nfc_tap_overview view. READ-ONLY here: nothing
+   about a tag is configured on the server, and the one thing that changes what
+   a tag resolves to, the spot's slug, is edited through PATCH /vendors/:id.
+
+   A sub-router, like notificationRoutes, so test/admin-nfc.test.js can mount
+   it on a bare app and drive it without requireAdmin or a database. Every
+   read tolerates the migration not being there yet (production carries a
+   backlog of pastes): `unavailable` names it, and the client shows a banner
+   instead of an empty card that looks like "nobody taps".
+
+   THE COUNTS ARE COUNTED IN THE DATABASE. supabase/config.toml sets max_rows
+   = 1000, so a JS-side sum over tap rows would freeze at a thousand and stay
+   frozen; the view does the counting and the export pages through the rows. */
+
+const nfcRoutes = Router();
+
+const NFC_OVERVIEW_COLS = 'vendor_id, taps, taps_30d, taps_7d, taps_today, app_taps_30d, uniques_30d, first_tap, last_tap';
+// The unmatched list is one row per DISTINCT ref that resolved nothing. It is
+// bounded because its refs come off the open internet (anything slug-shaped
+// after /t/ lands a row), busiest first so a real stale tag is never pushed
+// off the bottom by junk.
+const NFC_UNMATCHED_MAX = 200;
+
+const tapCount = (v) => Math.max(0, Math.floor(Number(v ?? 0))) || 0;
+
+/** The roster order the card renders in: open spots first, then by name. */
+const byRoster = (a, b) => (a.active === b.active ? a.name.localeCompare(b.name, 'en') : a.active ? -1 : 1);
+
+/**
+ * `?days=` for the detail series: 1..365, default 30. Deliberately not the
+ * tracked-QR route's `Number(x) || 30`: that reads `?days=0` as absent and
+ * answers 30, where the clamp the client is promised says 1. Only an absent
+ * or unreadable value falls back to the default.
+ */
+function nfcWindowDays(raw) {
+  const v = queryScalar(raw);
+  const num = v == null || v === '' ? NaN : Number(v);
+  return Number.isFinite(num) ? Math.min(365, Math.max(1, Math.floor(num))) : 30;
+}
+
+/**
+ * GET /api/admin/nfc
+ * EVERY spot, with zeros for the ones nobody has tapped yet. The card is also
+ * where the operator copies each spot's tag URL from, so a spot with no tag on
+ * its counter yet has to be on it, not only the ones already counting.
+ * Plus the refs that matched no spot: 'generic' is the bare campus tag, and
+ * anything else is a tag written with a slug that has since been renamed or
+ * was mistyped, which is the whole reason that list exists.
+ */
+nfcRoutes.get('/', async (req, res, next) => {
+  try {
+    const [vendorsRes, overviewRes, unmatchedRes] = await Promise.all([
+      supabaseAdmin.from('vendors').select('id, name, slug, active'),
+      supabaseAdmin.from('nfc_tap_overview').select(NFC_OVERVIEW_COLS),
+      supabaseAdmin.from('nfc_tap_unmatched').select('ref, taps, taps_30d, last_tap')
+        .order('taps', { ascending: false }).limit(NFC_UNMATCHED_MAX),
+    ]);
+    if (vendorsRes.error) throw vendorsRes.error;
+    // Both views arrive in one paste, but each is checked on its own so a
+    // half-applied migration is still named rather than 500ing.
+    const missing = unavailableFor(overviewRes.error, 'migration-065')
+      ?? unavailableFor(unmatchedRes.error, 'migration-065');
+    if (missing) return res.json({ unavailable: missing, vendors: [], unmatched: [] });
+    if (overviewRes.error) throw overviewRes.error;
+    if (unmatchedRes.error) throw unmatchedRes.error;
+
+    const counts = new Map((overviewRes.data ?? []).map((o) => [o.vendor_id, o]));
+    const vendors = (vendorsRes.data ?? [])
+      .map((v) => {
+        const o = counts.get(v.id);
+        return {
+          vendorId: v.id,
+          name: v.name ?? '',
+          slug: v.slug ?? null,
+          active: v.active === true,
+          taps: tapCount(o?.taps),
+          taps30d: tapCount(o?.taps_30d),
+          taps7d: tapCount(o?.taps_7d),
+          tapsToday: tapCount(o?.taps_today),
+          appTaps30d: tapCount(o?.app_taps_30d),
+          uniques30d: tapCount(o?.uniques_30d),
+          firstTap: o?.first_tap ?? null,
+          lastTap: o?.last_tap ?? null,
+        };
+      })
+      .sort(byRoster);
+    const unmatched = (unmatchedRes.data ?? []).map((u) => ({
+      ref: String(u.ref ?? ''),
+      taps: tapCount(u.taps),
+      taps30d: tapCount(u.taps_30d),
+      lastTap: u.last_tap ?? null,
+    }));
+    res.json({ vendors, unmatched });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// One page of taps per round trip, and a hard ceiling on how many pages, the
+// same bargain as the poster scan export: a truncated file says so in its last
+// row rather than looking complete.
+const NFC_EXPORT_PAGE = 1000;
+const NFC_EXPORT_MAX = 50_000;
+
+/**
+ * GET /api/admin/nfc/export
+ * Every tap, newest first, as CSV: when, which spot, what the tag carried,
+ * which door (web page or app), whether it matched, and the device. Before
+ * `/:vendorId/detail` so the literal path wins.
+ *
+ * WITHOUT migration-065 this is a file with only the header row, not JSON. The
+ * client saves whatever comes back as a .csv (saveBlob), so a JSON body here
+ * would land on the operator's disk as a spreadsheet full of braces; an empty
+ * sheet is the honest answer, and the card above the button already carries
+ * the "not applied" banner.
+ */
+nfcRoutes.get('/export', async (req, res, next) => {
+  try {
+    const { data: vendors, error: vErr } = await supabaseAdmin.from('vendors').select('id, name');
+    if (vErr) throw vErr;
+    const names = new Map((vendors ?? []).map((v) => [v.id, v.name]));
+
+    const rows = [csvRow(['Tapped at (UTC)', 'Spot', 'Tag', 'Source', 'Matched', 'Device / user agent'])];
+    let offset = 0;
+    let truncated = false;
+    for (;;) {
+      // pageOf's 416-past-the-end handling isn't needed here: this loop never
+      // asks for a page it hasn't been told exists by the previous one.
+      const { data, error } = await supabaseAdmin
+        .from('nfc_taps')
+        .select('tapped_at, vendor_id, ref, source, known, user_agent')
+        .order('tapped_at', { ascending: false })
+        // A tiebreak, so two taps in the same millisecond cannot swap across a
+        // page boundary and one of them appear twice while the other vanishes.
+        .order('id', { ascending: false })
+        .range(offset, offset + NFC_EXPORT_PAGE - 1);
+      if (error) {
+        if (offset === 0 && unavailableFor(error, 'migration-065')) break;
+        throw error;
+      }
+      const page = data ?? [];
+      for (const t of page) {
+        rows.push(csvRow([
+          t.tapped_at,
+          t.vendor_id ? names.get(t.vendor_id) ?? t.vendor_id : '',
+          t.ref,
+          t.source,
+          t.known ? 'yes' : 'no',
+          t.user_agent,
+        ]));
+      }
+      offset += page.length;
+      if (page.length < NFC_EXPORT_PAGE) break;
+      if (offset >= NFC_EXPORT_MAX) { truncated = true; break; }
+    }
+    if (truncated) {
+      rows.push(csvRow([`TRUNCATED: only the most recent ${NFC_EXPORT_MAX} taps are listed.`, '', '', '', '', '']));
+      console.warn(`[nfc-tap] export truncated at ${NFC_EXPORT_MAX} rows`);
+    }
+    sendCsv(res, 'werewards-nfc-taps.csv', rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/nfc/:vendorId/detail?days=30
+ * The daily series and hour-of-day histogram behind one spot's Traffic panel,
+ * bucketed in the campus timezone by nfc_tap_detail (migration-065), the same
+ * shape tracked_qr_detail answers for a poster.
+ */
+nfcRoutes.get('/:vendorId/detail', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.vendorId)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    }
+    const days = nfcWindowDays(req.query.days);
+    const { data, error } = await supabaseAdmin.rpc('nfc_tap_detail', {
+      p_vendor_id: req.params.vendorId,
+      p_days: days,
+    });
+    if (error) {
+      // Not unavailableFor: that helper names migration-062 for ANY missing
+      // function, because every function the notification routes call lives
+      // there. This one lives in 065.
+      if (isMissingObject(error)) return res.json({ unavailable: 'migration-065', days, daily: [], hourly: [] });
+      throw error;
+    }
+    res.json(data ?? { days, daily: [], hourly: [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.use('/nfc', nfcRoutes);
+export { nfcRoutes };
 
 /* ===================== Ambassadors (migration-053) =====================
    A person recruiting for the app, with a short code they chose and a QR the

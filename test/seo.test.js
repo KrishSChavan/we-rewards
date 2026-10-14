@@ -110,13 +110,17 @@ describe('robots.txt', () => {
     const txt = robotsTxt({ isTestEnv: false });
     assert.match(txt, /^User-agent: \*$/m);
     assert.match(txt, /^Allow: \/$/m);
-    for (const closed of ['/admin', '/terminal', '/scan', '/api/', '/r/', '/unsubscribe']) {
+    for (const closed of ['/admin', '/terminal', '/scan', '/api/', '/r/', '/t/', '/unsubscribe']) {
       assert.match(txt, new RegExp(`^Disallow: ${closed.replace(/\//g, '\\/')}$`, 'm'), `must close ${closed}`);
     }
     // /api/ is closed with no exceptions. There was a carve-out for
     // /api/vendor-logo/ while the spot pages showed vendor artwork; they no
     // longer do (see the licence note in src/lib/spots-page.js), so it is gone.
     assert.ok(!/vendor-logo/.test(txt), 'nothing public needs to reach /api any more');
+    // The trailing slash on '/t/' is load-bearing: a robots rule matches by
+    // prefix, so a bare 'Disallow: /t' is really "everything under /t",
+    // /terminal included, and nothing in the file would say so.
+    assert.ok(!/^Disallow: \/t$/m.test(txt), 'a bare Disallow: /t would also match /terminal');
     assert.match(txt, /^Sitemap: https:\/\/we-rewards\.com\/sitemap\.xml$/m);
     // The whole point of the production file is that it does NOT say this.
     assert.ok(!/^Disallow: \/$/m.test(txt), 'production must never disallow the whole site');
@@ -205,7 +209,7 @@ describe('crawler routes', () => {
     const before = process.env.APP_ENV;
     process.env.APP_ENV = 'production';
     try {
-      for (const staff of ['/terminal', '/admin', '/scan']) {
+      for (const staff of ['/terminal', '/admin', '/scan', '/t']) {
         const res = await get(staff);
         assert.match(res.headers.get('x-robots-tag') || '', /noindex/, `${staff} must be noindex`);
       }

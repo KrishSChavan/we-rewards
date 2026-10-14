@@ -41,6 +41,7 @@
 
 import { loadVendorCatalogue } from './cache.js';
 import { CUISINES } from './cuisines.js';
+import { isUuid } from './ids.js';
 import { CANONICAL_ORIGIN, absoluteUrl } from './seo.js';
 import {
   layout, escapeHtml, organizationJsonLd, breadcrumbJsonLd, LOCALITY, REGION, COUNTRY,
@@ -131,6 +132,37 @@ export async function publicSpots() {
 export async function publicSpot(slug) {
   const spots = await publicSpots();
   return spots.find((s) => s.slug === slug) || null;
+}
+
+/**
+ * One spot by id OR slug, or null, for the NFC tag landing (src/routes/tap.js).
+ *
+ * A tag is programmed once and then lives on a counter for years, so it may
+ * carry whichever the person writing it had to hand: the vendor's uuid is what
+ * the admin screens show, the slug is what a human can read off a tag that
+ * will not scan. Same cached catalogue as everything else, so a tap costs no
+ * query the student home screen is not already paying for.
+ */
+export async function publicSpotByRef(ref) {
+  const spots = await publicSpots();
+  const byId = isUuid(ref);
+  return spots.find((s) => (byId ? s.id === ref : s.slug === ref)) || null;
+}
+
+/**
+ * What /t/<ref> may carry, normalised, or null for anything a tag would never
+ * hold. Strict on purpose: a uuid or one slug-shaped word is the whole
+ * alphabet, so junk paths are refused before the catalogue is read and the
+ * only thing that can travel on into a page is a string of this shape.
+ * Lower-cased because slugs are stored that way and a phone keyboard
+ * capitalises the first letter of anything typed by hand.
+ */
+export function normalizeTapRef(raw) {
+  if (typeof raw !== 'string') return null;
+  const ref = raw.trim().toLowerCase();
+  if (!ref) return null;
+  if (isUuid(ref) || /^[a-z0-9][a-z0-9-]{0,63}$/.test(ref)) return ref;
+  return null;
 }
 
 /**

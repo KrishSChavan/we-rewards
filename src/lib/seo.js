@@ -82,6 +82,10 @@ const DISALLOWED = [
   '/scan',
   '/api/',
   '/r/',
+  // '/t/' is the NFC tag landing (src/routes/tap.js): a crawler walking tags
+  // would count as taps, and the page is noindex anyway. Trailing slash, or it
+  // would also match /terminal.
+  '/t/',
   '/unsubscribe',
 ];
 

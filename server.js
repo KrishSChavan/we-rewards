@@ -19,6 +19,7 @@ import unsubscribeRoutes from './src/routes/unsubscribe.js';
 import webhookRoutes from './src/routes/webhooks.js';
 import stripeWebhookRoutes from './src/routes/stripe-webhook.js';
 import trackedQrRoutes from './src/routes/tracked-qr.js';
+import { createTapRouter } from './src/routes/tap.js';
 import { supabaseAdmin, UPSTREAM_GATEWAY } from './src/lib/supabase.js';
 import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
 import { NEARBY_CONFIG } from './src/lib/nearby.js';
@@ -385,6 +386,16 @@ const trackedQrLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'RATE_LIMITED', message: 'Too many scans from this network, wait a minute and try again.' },
 });
+// An NFC tag tap (src/routes/tap.js). Same settings and the same NAT reasoning
+// as above: a counter tag is tapped by a queue standing on one wifi. A separate
+// instance so a counter crowd and a poster crowd do not share one bucket.
+const nfcTapLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many taps from this network, wait a minute and try again.' },
+});
 // Unauthenticated password reset for a locked-out vendor (migration-031). The
 // per-code guess cap inside vendor_reset_begin is the fence that actually
 // matters — it survives IP rotation, which this can't — so size this for the
@@ -493,6 +504,10 @@ app.use('/api/me/student-email/start', rateLimit({
 app.use('/api/me/community-transfer', transferLimiter);
 app.use('/api/me/referral', referralLimiter);
 app.use('/api/me/punch', punchLimiter);
+// The installed app's report of a tag it handled (migration-065) shares the
+// tag limiter with /t itself: it is the same tap arriving by the other door,
+// and the same counter crowd on the same wifi.
+app.use('/api/me/nfc-tap', nfcTapLimiter);
 app.use('/api/punch/hold', punchHoldLimiter);
 app.use('/api/client-error', clientErrorLimiter);
 app.use('/api/client-event', clientEventLimiter);
@@ -882,6 +897,29 @@ app.get('/sitemap.xml', async (req, res) => {
   res.type('application/xml').send(sitemapXml([...STATIC_SITEMAP_PATHS, ...spotPaths]));
 });
 
+// ---- iOS Universal Links: /.well-known/apple-app-site-association ----
+// Apple's CDN fetches this over HTTPS when the iOS app is installed, and it
+// refuses a redirect or a body not served as JSON, so: no .json extension, no
+// redirect, nothing else in the body. It has to be an explicit route because
+// express.static refuses dotfile path segments, and it sits up here above the
+// shells and the static mirror for the same reason /robots.txt does. The
+// component list is deliberately narrow (only the tag landing, src/routes/tap.js)
+// so ordinary we-rewards.com links keep opening in the browser. The team and
+// bundle ids must match ios/App/App.xcodeproj (DEVELOPMENT_TEAM = UXXL68D688,
+// PRODUCT_BUNDLE_IDENTIFIER = com.werewards.app); both are read per request so
+// a test can override them.
+app.get('/.well-known/apple-app-site-association', (_req, res) => {
+  const team = process.env.APPLE_TEAM_ID || 'UXXL68D688';
+  const bundle = process.env.IOS_BUNDLE_ID || 'com.werewards.app';
+  const aasa = {
+    applinks: {
+      details: [{ appIDs: [`${team}.${bundle}`], components: [{ '/': '/t' }, { '/': '/t/*' }] }],
+    },
+  };
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.type('application/json').send(JSON.stringify(aasa));
+});
+
 // ---- Evergreen public pages (src/lib/content-pages.js) ----
 // Rendered per request rather than memoised: the strings are constant, the
 // render is string concatenation, and a cache here would be the kind of
@@ -964,6 +1002,19 @@ app.get('/spots/:slug', async (req, res) => {
     await spotsUnavailable(err, req, res);
   }
 });
+
+// ---- NFC tag landing: /t and /t/<vendor> (src/routes/tap.js) ----
+// A server-rendered page, so it lives with the other server-rendered pages
+// above the shells and the static mirror: the mount at '/' would otherwise hand
+// GET /t to the student shell. The student worker passes /t through (FOREIGN in
+// public/student/sw.js), which is what lets an installed PWA reach this at all.
+// /tap.js, the page's one script, needs no route of its own: public/student/
+// tap.js is lowered into the student mirror like every other file there and
+// served by the static mount below, and the stamp is the same ?v=<hash>
+// versioning the shells get, so a redeploy of it is never served stale.
+app.use('/t', nfcTapLimiter, createTapRouter({
+  stamp: (html) => versionAssets(html, '/', buildRoot('student')),
+}));
 
 // Versioned HTML shells first, so they win over express.static's own index.html.
 for (const { mount, dir, root } of shells) {

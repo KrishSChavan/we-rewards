@@ -99,6 +99,7 @@ function bootFailed(message) {
   $('tab-poster').addEventListener('click', openPoster);
   $('qr-new-form').addEventListener('submit', createQr);
   $('qr-export').addEventListener('click', () => exportQrAll($('qr-export')));
+  $('nfc-export').addEventListener('click', () => exportNfcAll($('nfc-export')));
   $('tab-roi').addEventListener('click', openRoi);
   // Changing the window is a reload, not a re-render: the rollup happens on the
   // server, and 7/30/90 are different queries rather than different slices of
@@ -173,6 +174,9 @@ function bootFailed(message) {
   });
   $('vendor-edit-close').addEventListener('click', closeVendorModal);
   $('vendor-name-save').addEventListener('click', saveVendorName);
+  $('vendor-slug-save').addEventListener('click', saveVendorSlug);
+  // Live: the two addresses the typed slug becomes, before Save is pressed.
+  $('vendor-edit-slug').addEventListener('input', syncVendorSlugHint);
   $('vendor-location-save').addEventListener('click', saveVendorLocationLabel);
   $('vendor-contact-save').addEventListener('click', saveVendorContact);
   $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
@@ -193,6 +197,9 @@ function bootFailed(message) {
   $('new-vendor-close').addEventListener('click', closeNewVendorModal);
   $('new-vendor-form').addEventListener('submit', createVendor);
   $('nv-password-show').addEventListener('click', toggleNewVendorPassword);
+  // The address placeholder follows the name, so the default is visible before
+  // the operator decides whether to override it.
+  $('nv-name').addEventListener('input', syncNewVendorSlugPlaceholder);
   $('nv-logo-pick').addEventListener('click', () => $('nv-logo-file').click());
   $('nv-logo-file').addEventListener('change', onNewVendorLogoPick);
   $('nv-logo-remove').addEventListener('click', () => setNewVendorLogo(null));
@@ -348,6 +355,8 @@ async function loadAll() {
       // button is what this card's own load-failure message tells the operator
       // to press, so it has to be reachable from here or that sentence is a lie.
       qrLoaded ? loadQrCodes() : null,
+      // And for the NFC tag card beside those codes, for the same ↻ reason.
+      nfcLoaded ? loadNfc() : null,
       // Same bargain again for the ambassadors tab: one view query, paid for
       // only once somebody has opened the screen it draws.
       ambLoaded ? loadAmbassadors() : null,
@@ -872,6 +881,9 @@ function paintVendorRows(list) {
   list.forEach((v) => {
     const row = document.createElement('div');
     row.className = 'vendor-row';
+    // So the NFC card's Edit slug button can find this row's info block and
+    // repaint it after a save, the way the roster's own Edit button does.
+    row.dataset.vendorId = v.id;
 
     const top = document.createElement('div');
     top.className = 'vendor-top';
@@ -1470,6 +1482,11 @@ function openVendorModal(v, infoEl) {
   $('vendor-edit-title').textContent = `Edit: ${v.name}`;
   $('vendor-edit-name').value = v.name ?? '';
   setNote($('vendor-name-note'), '', null);
+  // The slug, straight off the roster row (migration-065), and the two
+  // addresses it currently is, under the field.
+  $('vendor-edit-slug').value = v.slug ?? '';
+  setNote($('vendor-slug-note'), '', null);
+  syncVendorSlugHint();
   $('vendor-edit-location').value = v.location_label ?? '';
   setNote($('vendor-location-note'), '', null);
   // Straight off the roster row — GET /admin/vendors selects both since
@@ -1511,8 +1528,9 @@ function showRewardsMsg(text) {
 }
 
 // Rename the vendor everywhere it appears (student cards and history, terminal
-// header, this roster). The slug is NOT regenerated server-side, so the roster's
-// meta line keeps showing the original short id — that's deliberate, and the
+// header, this roster). The slug is NOT regenerated server-side: it is the
+// address written on every NFC tag for the spot, so it changes only when the
+// operator changes it on purpose (saveVendorSlug, in the NFC block), and the
 // hint under the field says so.
 async function saveVendorName() {
   if (!editVendor) return;
@@ -1846,6 +1864,7 @@ function closeNewVendorModal() {
   // reset() also wipes the typed password out of the DOM, which matters here for
   // the same reason it does on the reset dialog: this dashboard sits open on a desk.
   $('new-vendor-form').reset();
+  syncNewVendorSlugPlaceholder();   // reset() clears the name but not the placeholder it drove
   setNewVendorLogo(null);
   setNewVendorPasswordVisible(false);
   $('new-vendor-error').hidden = true;
@@ -1958,6 +1977,13 @@ function firstNewVendorProblem() {
   // here saves a round trip on a form the operator has otherwise finished.
   const phone = $('nv-phone').value.trim();
   if (phone && !/^[\d\s()+.-]{7,20}$/.test(phone)) return 'Enter a valid phone number, or leave it blank.';
+  // Optional too (migration-065), checked by the server's own slug rule when
+  // given; blank means "from the name", exactly as before.
+  const slug = $('nv-slug').value.trim();
+  if (slug) {
+    const check = validSlugClient(slug);
+    if (!check.ok) return `Web address: ${check.error}`;
+  }
   // Half an item is the only way to get this wrong: the field is optional as a
   // pair, so say which half is missing rather than dropping what was typed.
   const items = newVendorItems();
@@ -1987,6 +2013,9 @@ async function createVendor(e) {
       method: 'POST',
       body: JSON.stringify({
         name: $('nv-name').value.trim(),
+        // Only when typed: undefined is dropped by JSON.stringify, and the
+        // server then builds the address from the name as it always has.
+        slug: $('nv-slug').value.trim() || undefined,
         email,
         password: $('nv-password').value,
         address: $('nv-address').value.trim(),
@@ -5471,28 +5500,32 @@ async function toggleQrDetail(c, panel, btn, errEl) {
 }
 
 /** One bar chart. Bars carry their number as a title, because 30 labels do not
- *  fit on a phone and an unlabelled bar is decoration. */
-function qrChart(series, labelOf) {
+ *  fit on a phone and an unlabelled bar is decoration.
+ *
+ *  `value` and `unit` default to the tracked-QR series (p.scans); the NFC card
+ *  reads the same chart off p.taps, so the two never drift into two charts. */
+function qrChart(series, labelOf, { value = (p) => p.scans ?? 0, unit = 'scan' } = {}) {
   // The TRUE peak, reported above the chart. Kept separate from the divisor
   // below: tracked_qr_detail fills every bucket (generate_series), so an
   // unscanned code arrives as 30 rows of zero rather than as an empty array,
   // and a divisor floor leaking into the label made that read "peak 1 in a
   // day" next to a chart correctly showing none.
-  const peak = Math.max(0, ...series.map((p) => p.scans ?? 0));
+  const peak = Math.max(0, ...series.map(value));
   const max = Math.max(1, peak);
   const chart = document.createElement('div');
   chart.className = 'qr-chart';
   for (const p of series) {
+    const n = value(p);
     const col = document.createElement('div');
     col.className = 'qr-bar-col';
-    col.title = `${labelOf(p)}: ${p.scans ?? 0} scan${p.scans === 1 ? '' : 's'}`;
+    col.title = `${labelOf(p)}: ${n} ${unit}${n === 1 ? '' : 's'}`;
     const bar = document.createElement('div');
     bar.className = 'qr-bar';
     // A floor of 2% so a day with one scan is visibly different from a day with
     // none — the difference between "nobody" and "somebody" is the whole point
     // of the chart and it must not round away to a flat line.
-    bar.style.height = p.scans ? `${Math.max(2, Math.round((p.scans / max) * 100))}%` : '0';
-    if (!p.scans) bar.classList.add('qr-bar-empty');
+    bar.style.height = n ? `${Math.max(2, Math.round((n / max) * 100))}%` : '0';
+    if (!n) bar.classList.add('qr-bar-empty');
     col.appendChild(bar);
     chart.appendChild(col);
   }
@@ -5500,7 +5533,20 @@ function qrChart(series, labelOf) {
 }
 
 // Zero is a real answer and says so, rather than being dressed up as a peak.
-const peakText = (n, unit) => (n ? `peak ${n} in a${unit === 'hour' ? 'n' : ''} ${unit}` : 'no scans yet');
+const peakText = (n, unit, noun = 'scans') => (n ? `peak ${n} in a${unit === 'hour' ? 'n' : ''} ${unit}` : `no ${noun} yet`);
+
+/** The title line over one chart: what it is, and the peak or its absence. */
+function qrDetailHead(title, hint) {
+  const h = document.createElement('div');
+  h.className = 'qr-detail-head';
+  const t = document.createElement('strong');
+  t.textContent = title;
+  h.appendChild(t);
+  const s = document.createElement('span');
+  s.textContent = hint;
+  h.appendChild(s);
+  return h;
+}
 
 function paintQrDetail(panel, detail, c) {
   panel.textContent = '';
@@ -5509,24 +5555,12 @@ function paintQrDetail(panel, detail, c) {
   const daily = detail.daily ?? [];
   const hourly = detail.hourly ?? [];
 
-  const mk = (title, hint) => {
-    const h = document.createElement('div');
-    h.className = 'qr-detail-head';
-    const t = document.createElement('strong');
-    t.textContent = title;
-    h.appendChild(t);
-    const s = document.createElement('span');
-    s.textContent = hint;
-    h.appendChild(s);
-    return h;
-  };
-
   const d = qrChart(daily, (p) => p.day);
-  panel.appendChild(mk('Last 30 days', peakText(d.peak, 'day')));
+  panel.appendChild(qrDetailHead('Last 30 days', peakText(d.peak, 'day')));
   panel.appendChild(d.chart);
 
   const h = qrChart(hourly, (p) => `${p.hour}:00`);
-  panel.appendChild(mk('Time of day', `local time · ${peakText(h.peak, 'hour')}`));
+  panel.appendChild(qrDetailHead('Time of day', `local time · ${peakText(h.peak, 'hour')}`));
   panel.appendChild(h.chart);
 
   const foot = document.createElement('div');
@@ -5708,17 +5742,535 @@ async function exportQrScans(c, btn) {
 }
 
 /**
- * The QR poster tab, which now has two very different things on it.
+ * The QR poster tab, which now has three very different things on it.
  *
- * Reloads the codes on EVERY open rather than only the first, unlike the pools
- * tab's one-shot flag. The operator comes to this tab specifically to read scan
- * counts, so a cached count from whenever the dashboard happened to boot is the
- * one thing it must never show. It is a single view query.
+ * Reloads the codes AND the tag counts on EVERY open rather than only the
+ * first, unlike the pools tab's one-shot flag. The operator comes to this tab
+ * specifically to read scan and tap counts, so a cached count from whenever
+ * the dashboard happened to boot is the one thing it must never show. Two view
+ * queries, one each.
  */
 function openPoster() {
   setView('poster');
   loadQrCodes();
+  loadNfc();
 }
+
+/* ---------- NFC tags (migration-065) ----------
+   The reading-back for the passive tags stuck to counters (src/routes/tap.js),
+   and the one place the slug those tags carry can be changed.
+
+   TWO THINGS HERE ARE NOT THE QR CARD'S, though the rows are shaped like it.
+
+     THERE IS NOTHING TO MINT. A spot's tag address is /t/<its slug>, and the
+     slug already exists for every vendor (it is the /spots/ page address), so
+     a row per vendor appears whether or not a tag was ever written. A zero
+     row is real information: that counter has no tag, or nobody taps it.
+
+     THE SLUG IS HARDWARE. A tag is programmed once and stuck down, so the
+     Edit dialog's address field carries a warning rather than a confirm:
+     renaming strands every tag written with the old address until somebody
+     goes and rewrites it, and the row offers a PERMANENT link (/t/<uuid>) for
+     exactly that reason. validSlugClient mirrors the server's validSlug
+     (src/routes/admin.js) so a bad address is refused before the round trip;
+     the server re-checks regardless, and uniqueness is only known there
+     (409 SLUG_TAKEN, shown in the note in the server's own words).
+
+   The counts come from nfc_taps through GET /api/admin/nfc. client_events
+   still carries the generic funnel log and is not read here. A database
+   without the migration answers { unavailable: 'migration-065' } rather than
+   failing, and this card says so in a banner instead of an error, because
+   the fix is a paste and not a retry.
+
+   Everything in this block is sliced and evaluated by
+   test/admin-nfc-client.test.js, which anchors on the two landmark comments
+   and holds the whole block, comments included, to the no-em-dash rule. */
+
+let nfcRows = [];           // one per vendor, from GET /api/admin/nfc, active first then by name
+let nfcUnmatched = [];      // refs that matched no spot, 'generic' (the bare /t tag) among them
+let nfcUnavailable = null;  // 'migration-065' while the table is missing, else null
+// Set on the first successful load. Same bargain as qrLoaded: boot does not
+// pay for a card nobody has opened, but once opened, ↻ refreshes it.
+let nfcLoaded = false;
+// Open traffic panels, keyed by vendor id, holding the fetched series or
+// 'loading'. A Map rather than a flag on the node, as qrOpen is: every repaint
+// rebuilds the list and would destroy it.
+const nfcOpen = new Map();
+
+/** The server's rule for vendors.slug, mirrored (validSlug in src/routes/admin.js):
+ *  one to sixty of [a-z0-9-], no hyphen at either end. */
+const NFC_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+const NFC_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Words the server refuses as a slug: the app's own top-level paths, so an
+// address can never read like a page of the app's own. Same list as the
+// server, which is the one that counts.
+const NFC_RESERVED_SLUGS = ['t', 'spots', 'admin', 'terminal', 'scan', 'join', 'legal', 'api', 'r'];
+
+/**
+ * A typed address, normalised, or why it will be refused. Lower-cased rather
+ * than refused for case: slugs are stored lowercase and a phone keyboard
+ * capitalises the first letter of anything.
+ * @returns {{ ok: true, slug: string } | { ok: false, error: string }}
+ */
+function validSlugClient(raw) {
+  const slug = String(raw ?? '').trim().toLowerCase();
+  if (!slug) return { ok: false, error: 'Enter a web address.' };
+  if (slug.length > 60) return { ok: false, error: 'Keep it to 60 characters.' };
+  if (!NFC_SLUG_RE.test(slug)) {
+    return { ok: false, error: 'Lowercase letters, numbers and hyphens only, and it cannot start or end with a hyphen.' };
+  }
+  // A uuid is the other thing /t/<ref> can carry, so a slug shaped like one
+  // would be looked up as an id and never found.
+  if (NFC_UUID_RE.test(slug)) return { ok: false, error: 'That looks like an id. Pick a readable address.' };
+  if (NFC_RESERVED_SLUGS.includes(slug)) return { ok: false, error: `“${slug}” is reserved. Pick another.` };
+  return { ok: true, slug };
+}
+
+/** vendors.slug from a business name: the server's slugify, copied, for the
+ *  Add vendor form's placeholder only. The server builds the real one. */
+function slugify(name) {
+  const s = String(name).toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+    .replace(/-+$/, '');
+  return s || 'vendor';
+}
+
+/** The URL a tag carries. Built from where the dashboard itself is served, as
+ *  qrUrl is, so staging copies staging links and production copies production
+ *  ones. No slug is the generic campus tag, bare /t. */
+const nfcUrl = (slug) => (slug ? `${location.origin}/t/${slug}` : `${location.origin}/t`);
+/** The same tag by the vendor's id, which no rename can change. */
+const nfcPermanentUrl = (id) => `${location.origin}/t/${id}`;
+
+function nfcError(msg) {
+  const el = $('nfc-error');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+function nfcOkMsg(msg) {
+  const el = $('nfc-ok');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+async function loadNfc() {
+  try {
+    const res = await authFetch('/api/admin/nfc');
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      nfcError('Couldn’t load the tag counts. Hit ↻ to try again.');
+      return;
+    }
+    const d = await res.json().catch(() => ({}));
+    nfcRows = d.vendors ?? [];
+    nfcUnmatched = d.unmatched ?? [];
+    nfcUnavailable = d.unavailable || null;
+    nfcLoaded = true;
+    nfcError('');
+    nfcOkMsg('');
+    renderNfc();
+  } catch {
+    nfcError('Couldn’t load the tag counts. Check the connection and try again.');
+  }
+}
+
+function renderNfc() {
+  const list = $('nfc-list');
+  list.textContent = '';
+  $('nfc-unavailable').hidden = !nfcUnavailable;
+  $('nfc-export').hidden = Boolean(nfcUnavailable) || !nfcRows.length;
+  $('nfc-count').textContent = nfcUnavailable ? '' : nfcCountText();
+  if (nfcUnavailable) {
+    // Nothing under the banner, not a list of zeros: a zero that means "no
+    // table yet" must not read as "nobody taps".
+    renderNfcUnmatched([]);
+    return;
+  }
+  if (!nfcRows.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No spots yet. Every spot gets a tag address the moment it is added.';
+    list.appendChild(empty);
+  }
+  for (const v of nfcRows) list.appendChild(buildNfcRow(v));
+  list.appendChild(buildNfcGenericRow(nfcUnmatched.find((u) => u.ref === 'generic')));
+  renderNfcUnmatched(nfcUnmatched.filter((u) => u.ref !== 'generic'));
+}
+
+/** "12 spots · 340 taps in 30 days": the unmatched taps count too, since a
+ *  tap on a mistyped tag was still somebody at a counter. */
+function nfcCountText() {
+  const spots = nfcRows.length;
+  if (!spots) return '';
+  const taps30 = nfcRows.reduce((n, v) => n + (Number(v.taps30d) || 0), 0)
+    + nfcUnmatched.reduce((n, u) => n + (Number(u.taps30d) || 0), 0);
+  return `${num(spots)} spot${spots === 1 ? '' : 's'} · ${num(taps30)} tap${taps30 === 1 ? '' : 's'} in 30 days`;
+}
+
+/** One small button in a row's action strip, the shape buildQrRow uses. */
+function nfcButton(actions, label, fn, title) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'qr-btn';
+  b.textContent = label;
+  if (title) b.title = title;
+  b.addEventListener('click', () => fn(b));
+  actions.appendChild(b);
+  return b;
+}
+
+function buildNfcRow(v) {
+  const row = document.createElement('div');
+  row.className = 'qr-row nfc-row';
+  // Faded, not hidden: a spot turned off still has its tag on the counter.
+  if (v.active === false) row.classList.add('is-off');
+
+  /* ---- line 1: the spot, its slug, and the address a tag carries ---- */
+  const head = document.createElement('div');
+  head.className = 'qr-head';
+  const name = document.createElement('span');
+  name.className = 'nfc-name';
+  name.textContent = v.name ?? '';
+  head.appendChild(name);
+  if (v.active === false) {
+    const off = document.createElement('span');
+    off.className = 'amb-off-tag';
+    off.textContent = 'Off';
+    head.appendChild(off);
+  }
+  // The slug on its own is the /spots/ page name; the link beside it is what
+  // goes on the tag. Two things, so two chips, even though one is inside the
+  // other: the operator checking the web page and the one writing a tag are
+  // reading for different strings.
+  const slug = document.createElement('span');
+  slug.className = 'nfc-slug';
+  slug.textContent = v.slug || 'no web address yet';
+  if (v.slug) slug.title = `${location.host}/spots/${v.slug}`;
+  head.appendChild(slug);
+  if (v.slug) {
+    const link = document.createElement('span');
+    link.className = 'qr-link';
+    link.textContent = `/t/${v.slug}`;
+    link.title = nfcUrl(v.slug);
+    head.appendChild(link);
+  }
+  row.appendChild(head);
+
+  /* ---- line 2: what the tag has actually done ---- */
+  const stats = document.createElement('div');
+  stats.className = 'qr-stats';
+  stats.appendChild(qrStat(v.tapsToday, v.tapsToday === 1 ? 'tap today' : 'taps today'));
+  stats.appendChild(qrStat(v.taps7d, 'in 7 days'));
+  stats.appendChild(qrStat(v.taps30d, 'in 30 days'));
+  stats.appendChild(qrStat(v.taps, 'all time'));
+  // "people" rather than "unique visitors", as the banner rows say it: one
+  // phone tapping twice is one person. Over 30 days, like the app share next
+  // to it, because the cookie behind the count lives that long.
+  stats.appendChild(qrStat(v.uniques30d, 'people in 30 days'));
+  // Only once there is one: "0 of 0 from the app" on every row would bury the
+  // one row where the app share is the interesting number.
+  if ((Number(v.appTaps30d) || 0) > 0) {
+    const app = document.createElement('span');
+    app.className = 'qr-stat qr-stat-muted';
+    app.textContent = `${num(v.appTaps30d)} of ${num(v.taps30d)} from the app`;
+    stats.appendChild(app);
+  }
+  const last = document.createElement('span');
+  last.className = 'qr-stat qr-stat-muted';
+  last.textContent = `last tap ${qrWhen(v.lastTap)}`;
+  stats.appendChild(last);
+  row.appendChild(stats);
+
+  const rowError = document.createElement('span');
+  rowError.className = 'qr-row-error';
+  rowError.hidden = true;
+  row.appendChild(rowError);
+
+  const detail = document.createElement('div');
+  detail.className = 'qr-detail';
+  detail.hidden = !nfcOpen.has(v.vendorId);
+  row.appendChild(detail);
+
+  /* ---- line 3: the buttons ---- */
+  const actions = document.createElement('div');
+  actions.className = 'qr-actions';
+  if (v.slug) {
+    nfcButton(actions, 'Copy link', (b) => copyNfcLink(nfcUrl(v.slug), b),
+      'The address by web address. Changes when the web address does.');
+  }
+  nfcButton(actions, 'Copy permanent link', (b) => copyNfcLink(nfcPermanentUrl(v.vendorId), b),
+    'The address by id. It survives a rename, so write this one on a tag that will stay down for years.');
+  nfcButton(actions, nfcOpen.has(v.vendorId) ? 'Hide traffic' : 'Traffic', (b) => toggleNfcDetail(v, detail, b, rowError));
+  nfcButton(actions, 'Edit slug', (b) => editNfcSlug(v, b, rowError));
+  row.appendChild(actions);
+
+  if (nfcOpen.has(v.vendorId)) paintNfcDetail(detail, nfcOpen.get(v.vendorId), v);
+  return row;
+}
+
+/** The campus tag, bare /t with no spot on it. Always drawn, with zeros when
+ *  nobody has tapped one: it is the only place the operator learns the
+ *  address exists. `u` is its unmatched row, or undefined. */
+function buildNfcGenericRow(u) {
+  const row = document.createElement('div');
+  row.className = 'qr-row nfc-row nfc-generic';
+
+  const head = document.createElement('div');
+  head.className = 'qr-head';
+  const name = document.createElement('span');
+  name.className = 'nfc-name';
+  name.textContent = 'Generic tag (/t)';
+  head.appendChild(name);
+  const sub = document.createElement('span');
+  sub.className = 'nfc-sub';
+  sub.textContent = 'opens the app with no spot';
+  head.appendChild(sub);
+  const link = document.createElement('span');
+  link.className = 'qr-link';
+  link.textContent = '/t';
+  link.title = nfcUrl('');
+  head.appendChild(link);
+  row.appendChild(head);
+
+  const stats = document.createElement('div');
+  stats.className = 'qr-stats';
+  stats.appendChild(qrStat(u?.taps30d, 'in 30 days'));
+  stats.appendChild(qrStat(u?.taps, 'all time'));
+  const last = document.createElement('span');
+  last.className = 'qr-stat qr-stat-muted';
+  last.textContent = `last tap ${qrWhen(u?.lastTap)}`;
+  stats.appendChild(last);
+  row.appendChild(stats);
+
+  const actions = document.createElement('div');
+  actions.className = 'qr-actions';
+  nfcButton(actions, 'Copy link', (b) => copyNfcLink(nfcUrl(''), b));
+  row.appendChild(actions);
+  return row;
+}
+
+/** Refs that matched nothing, each exactly as the tag carried it. textContent
+ *  only, never markup: a ref is whatever somebody wrote on a tag, and nothing
+ *  about it is trusted. */
+function renderNfcUnmatched(list) {
+  const rows = $('nfc-unmatched-list');
+  rows.textContent = '';
+  $('nfc-unmatched').hidden = !list.length;
+  for (const u of list) {
+    const row = document.createElement('div');
+    row.className = 'nfc-unmatched-row';
+    const ref = document.createElement('span');
+    ref.className = 'qr-link nfc-unmatched-ref';
+    ref.textContent = `/t/${u.ref}`;
+    row.appendChild(ref);
+    const n = document.createElement('span');
+    n.className = 'qr-stat';
+    n.textContent = `${num(u.taps)} tap${u.taps === 1 ? '' : 's'}, ${num(u.taps30d)} in 30 days, last ${qrWhen(u.lastTap)}`;
+    row.appendChild(n);
+    rows.appendChild(row);
+  }
+}
+
+async function copyNfcLink(url, btn) {
+  const label = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(url);
+    btn.textContent = 'Copied';
+  } catch {
+    // Clipboard is permission-gated and fails on http:// origins. Showing the
+    // URL beats a button that silently does nothing (copyQrLink does the same).
+    btn.textContent = url;
+  }
+  setTimeout(() => { btn.textContent = label; }, 1600);
+}
+
+/* ---- the traffic panel, the QR card's with taps for scans ---- */
+
+async function toggleNfcDetail(v, panel, btn, errEl) {
+  if (nfcOpen.has(v.vendorId)) {
+    nfcOpen.delete(v.vendorId);
+    panel.hidden = true;
+    panel.textContent = '';
+    btn.textContent = 'Traffic';
+    return;
+  }
+  nfcOpen.set(v.vendorId, 'loading');
+  panel.hidden = false;
+  panel.textContent = 'Loading…';
+  btn.textContent = 'Hide traffic';
+  btn.disabled = true;
+  qrRowError(errEl, '');
+  try {
+    const res = await authFetch(`/api/admin/nfc/${v.vendorId}/detail?days=30`);
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) {
+      nfcOpen.delete(v.vendorId);
+      panel.hidden = true;
+      btn.textContent = 'Traffic';
+      return qrRowError(errEl, 'Couldn’t load the traffic for that tag.');
+    }
+    const detail = await res.json();
+    nfcOpen.set(v.vendorId, detail);
+    paintNfcDetail(panel, detail, v);
+  } catch {
+    nfcOpen.delete(v.vendorId);
+    panel.hidden = true;
+    btn.textContent = 'Traffic';
+    qrRowError(errEl, 'Couldn’t load the traffic. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function paintNfcDetail(panel, detail, v) {
+  panel.textContent = '';
+  if (detail === 'loading') { panel.textContent = 'Loading…'; return; }
+  // The detail route answers 200 with empty series while the migration is
+  // missing, so the panel says why rather than drawing thirty empty days.
+  if (detail.unavailable) { panel.textContent = 'Migration 065 not applied, so there is no tap history to draw yet.'; return; }
+
+  const taps = { value: (p) => p.taps ?? 0, unit: 'tap' };
+  const d = qrChart(detail.daily ?? [], (p) => p.day, taps);
+  panel.appendChild(qrDetailHead('Last 30 days', peakText(d.peak, 'day', 'taps')));
+  panel.appendChild(d.chart);
+
+  const h = qrChart(detail.hourly ?? [], (p) => `${p.hour}:00`, taps);
+  panel.appendChild(qrDetailHead('Time of day', `local time · ${peakText(h.peak, 'hour', 'taps')}`));
+  panel.appendChild(h.chart);
+
+  const foot = document.createElement('div');
+  foot.className = 'qr-detail-foot';
+  const first = document.createElement('span');
+  first.textContent = `first tap ${qrWhen(v.firstTap)}`;
+  foot.appendChild(first);
+  panel.appendChild(foot);
+}
+
+/** Open the Edit dialog on the address field. The dialog edits a ROSTER row,
+ *  the live object every save mutates, so it is opened from the roster rather
+ *  than from this card's copy of the vendor, and the roster is fetched first
+ *  when the operator got here before boot had finished loading it. */
+async function editNfcSlug(v, btn, errEl) {
+  qrRowError(errEl, '');
+  let row = vendors.find((x) => x.id === v.vendorId);
+  if (!row) {
+    btn.disabled = true;
+    try { await loadVendors(); } catch { /* reported below, as a row that is not there */ }
+    btn.disabled = false;
+    row = vendors.find((x) => x.id === v.vendorId);
+  }
+  if (!row) return qrRowError(errEl, 'Couldn’t find that spot in the roster. Hit ↻ and try again.');
+  // The roster row's own info block, so a save repaints the name line there
+  // too. A detached stand-in when the row is filtered out of view or the
+  // roster has not painted yet; saveVendorSlug repaints the whole roster then.
+  const info = document.querySelector(`#vendor-list .vendor-row[data-vendor-id="${row.id}"] .vendor-info`)
+    || document.createElement('div');
+  openVendorModal(row, info);
+  $('vendor-edit-slug').focus();
+}
+
+/* Same shape as exportQrAll: an authenticated fetch and then a blob, because
+   every /api/admin call carries a bearer token and an <a href> has nowhere to
+   put one. */
+async function exportNfcAll(btn) {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Exporting…';
+  nfcError('');
+  try {
+    const res = await authFetch('/api/admin/nfc/export');
+    if (res.status === 403) return denyAccess();
+    if (!res.ok) return nfcError('Couldn’t export that. Try again.');
+    saveBlob(await res.blob(), 'werewards-nfc-taps.csv');
+  } catch {
+    nfcError('Couldn’t export that. Check the connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+/* ---- the slug, from the Edit vendor dialog ---- */
+
+/** The two addresses the typed slug becomes, live under the field, or why it
+ *  will be refused. The host is the dashboard's own, so staging shows
+ *  staging; on production it reads we-rewards.com/spots/<slug>. */
+function syncVendorSlugHint() {
+  const el = $('vendor-slug-urls');
+  const raw = $('vendor-edit-slug').value;
+  const check = validSlugClient(raw);
+  if (check.ok) {
+    el.textContent = `${location.host}/spots/${check.slug} · ${location.host}/t/${check.slug}`;
+    el.classList.remove('is-err');
+    return;
+  }
+  // An empty field is not yet a mistake; anything else is told what is wrong
+  // while it is still being typed.
+  const typed = Boolean(raw.trim());
+  el.textContent = typed ? check.error : '';
+  el.classList.toggle('is-err', typed);
+}
+
+/** Same shape as saveVendorName. The check runs here first so the operator is
+ *  told why before a round trip; the server re-checks and is the only one that
+ *  knows whether another spot already has the address (409 SLUG_TAKEN, shown
+ *  in its own words). */
+async function saveVendorSlug() {
+  if (!editVendor) return;
+  const btn = $('vendor-slug-save');
+  const note = $('vendor-slug-note');
+  const check = validSlugClient($('vendor-edit-slug').value);
+  if (!check.ok) { setNote(note, check.error, 'err'); return; }
+
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ slug: check.slug }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    Object.assign(editVendor.v, data);                             // keep the in-memory roster in sync
+    editVendor.infoEl.innerHTML = vendorInfoHtml(editVendor.v);    // roster meta shows the new address
+    // Opened from the NFC card with the roster row out of view, the info block
+    // above is a stand-in nobody can see: repaint the roster so it catches up.
+    if (!editVendor.infoEl.isConnected) renderVendors();
+    $('vendor-edit-slug').value = editVendor.v.slug ?? '';
+    syncVendorSlugHint();
+    nfcSlugChanged(editVendor.v);
+    setNote(note, 'Saved. Rewrite any tag that carried the old address.', 'ok');
+    btn.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
+/** After a slug save: the NFC row for that spot shows the new address at once,
+ *  and the card says what the operator now has to go and do. */
+function nfcSlugChanged(v) {
+  const r = nfcRows.find((x) => x.vendorId === v.id);
+  if (!r) return;
+  r.slug = v.slug;
+  r.name = v.name;
+  if (!nfcLoaded) return;
+  renderNfc();
+  nfcOkMsg(`Address saved for ${v.name}: /t/${v.slug}. Rewrite any tag that carried the old one.`);
+}
+
+/** The Add vendor form's address placeholder follows the name as it is typed:
+ *  what the server will make of the name if the field stays blank. */
+function syncNewVendorSlugPlaceholder() {
+  const name = $('nv-name').value.trim();
+  $('nv-slug').placeholder = name ? slugify(name) : '';
+}
+
+/* ---------- end NFC tags ---------- */
 
 /* ===================== Ambassadors (migration-053) =====================
    People who recruit for the app. The operator adds one, gives them a code they

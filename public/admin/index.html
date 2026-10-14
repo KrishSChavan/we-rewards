@@ -89,7 +89,7 @@
       <button id="tab-roi" class="tab" type="button">ROI<span id="roi-badge" class="tab-badge" hidden>0</span></button>
       <button id="tab-applications" class="tab" type="button">Applications<span id="apps-badge" class="tab-badge" hidden>0</span></button>
       <button id="tab-incentives" class="tab" type="button">Incentives</button>
-      <button id="tab-poster" class="tab" type="button">QR poster</button>
+      <button id="tab-poster" class="tab" type="button">QR &amp; NFC</button>
       <button id="tab-pools" class="tab" type="button">Pools</button>
       <button id="tab-ambassadors" class="tab" type="button">Ambassadors</button>
       <button id="tab-broadcast" class="tab" type="button">Broadcast</button>
@@ -643,6 +643,37 @@
           </div>
         </form>
       </div>
+
+      <!-- ===== NFC TAGS (migration-065) ===== -->
+      <!-- The third thing with a code on it, and the one with nothing to create:
+           every spot already has a tag address, /t/<its slug>, because the slug
+           is the vendor's own (src/routes/tap.js). What this card adds is the
+           reading-back. A tap by somebody without the app is counted when the
+           landing page is served; a tap the installed iOS app handled is
+           reported by the app itself. Both land in nfc_taps, which is what the
+           rows below read, and nothing here can pay anybody. -->
+      <div class="card">
+        <div class="card-head">
+          <h3>NFC tags</h3>
+          <span id="nfc-count" class="chart-max"></span>
+        </div>
+        <p class="muted">A tag on a counter points at <strong>/t/</strong> followed by the spot's web address, which you can change from <strong>Edit</strong> on the vendor row. Someone without the app gets a page that offers it; the installed app opens the spot straight away. Both count as a tap here. A tag is written once, so if an address might ever change, write the <strong>permanent link</strong> instead: it carries the spot's id and survives a rename.</p>
+        <p id="nfc-unavailable" class="notif-banner" role="status" hidden>Migration 065 not applied: paste supabase/migrations/20261014120000_migration-065.sql into the SQL editor, then reload.</p>
+        <p id="nfc-error" class="field-error" role="alert" hidden></p>
+        <p id="nfc-ok" class="inc-ok" hidden></p>
+        <div class="list-tools">
+          <button id="nfc-export" class="btn-ghost btn-compact" type="button">Export all as CSV</button>
+        </div>
+        <div id="nfc-list" class="qr-list"></div>
+        <!-- Refs that matched no spot, each shown exactly as the tag carried
+             it. Hidden until there is one: an empty "Unmatched" heading reads
+             as a problem on a card that has none. -->
+        <div id="nfc-unmatched" class="nfc-unmatched" hidden>
+          <h4>Unmatched refs</h4>
+          <p class="muted">Taps whose tag did not match any spot: a typo on the tag, or a slug that has since changed.</p>
+          <div id="nfc-unmatched-list" class="nfc-unmatched-list"></div>
+        </div>
+      </div>
     </div>
 
     <!-- ===== POOLS TAB ===== -->
@@ -1135,7 +1166,23 @@
           <button id="vendor-name-save" class="vr-save" type="button">Save name</button>
           <span id="vendor-name-note" class="vendor-edit-note"></span>
         </div>
-        <p class="vendor-edit-hint">What students and the terminal see. The short id beside it in the roster is fixed and does not follow a rename.</p>
+        <p class="vendor-edit-hint">What students and the terminal see. The web address below does not follow a rename; change it there if it should.</p>
+      </div>
+
+      <!-- The slug, editable since migration-065. It is the spot's public
+           address twice over: /spots/<slug> is its web page and /t/<slug> is
+           what an NFC tag on its counter carries, which is why the hint shows
+           both. The warning is there because a tag is hardware: it is written
+           once and stuck down, and a change here strands every tag written
+           with the old address until somebody rewrites it. -->
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">Web address and NFC tag</p>
+        <div class="vendor-ratio-row">
+          <input id="vendor-edit-slug" class="vendor-edit-input vendor-edit-name" type="text" maxlength="60" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url" placeholder="irvings" aria-label="Web address" />
+          <button id="vendor-slug-save" class="vr-save" type="button">Save address</button>
+          <span id="vendor-slug-note" class="vendor-edit-note"></span>
+        </div>
+        <p id="vendor-slug-hint" class="vendor-edit-hint"><span id="vendor-slug-urls" class="vendor-slug-urls"></span>Lowercase letters, numbers and hyphens, up to 60 characters. Changing it changes the spot's web address and any tag already written with the old one. Rewrite those tags.</p>
       </div>
 
       <!-- Which BRANCH this row is (migration-043). Only earns its keep when one
@@ -1275,6 +1322,16 @@
         <div class="nv-field">
           <label class="vendor-edit-label" for="nv-name">Business name</label>
           <input id="nv-name" class="nv-input" type="text" maxlength="80" autocomplete="off" required />
+        </div>
+
+        <!-- The web address, optional (migration-065). Left blank it is made
+             from the name exactly as before; the placeholder shows that
+             default live, so an operator who wants something shorter on the
+             tag can see what they are overriding. -->
+        <div class="nv-field">
+          <label class="vendor-edit-label" for="nv-slug">Web address <em class="nv-opt">(optional)</em></label>
+          <input id="nv-slug" class="nv-input" type="text" maxlength="60" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url" />
+          <span class="vendor-edit-hint">Becomes the spot's /spots/ page and the /t/ address its NFC tag carries. Lowercase letters, numbers and hyphens. Leave blank to use the name.</span>
         </div>
 
         <div class="nv-field">

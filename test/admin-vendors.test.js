@@ -12,7 +12,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { validVendorName, validNewVendor } from '../src/routes/admin.js';
+import { validVendorName, validNewVendor, validSlug } from '../src/routes/admin.js';
 
 const GOOD = {
   name: 'Local Eats',
@@ -181,6 +181,61 @@ test('an over-long contact name is refused rather than truncated at the column',
   assert.match(validNewVendor({ ...GOOD, contactName: 'x'.repeat(81) }).error, /80 characters/);
 });
 
+/* ---------- the web address (migration-065) ----------
+
+   The slug used to be an internal id nobody typed. NFC tags made it a thing
+   that gets WRITTEN INTO HARDWARE (/t/<slug>) and the public page's address
+   (/spots/<slug>), so the operator can now choose it, and a chosen one has to
+   be something slugify could have generated: a typed slug and a generated one
+   must be the same kind of thing, or the difference only shows up on a tag
+   already stuck to a counter. */
+
+test('a typed slug is trimmed and lower-cased, and must be one slugify could have made', () => {
+  // A phone keyboard capitalises the first letter of anything typed by hand.
+  assert.deepEqual(validSlug('  Irvings '), { ok: true, slug: 'irvings' });
+  assert.equal(validSlug('cafe-210').slug, 'cafe-210');
+  assert.equal(validSlug('x').slug, 'x', 'one character is a slug');
+  assert.equal(validSlug('a'.repeat(60)).slug, 'a'.repeat(60), '60 is the cap, the same as slugify');
+});
+
+test('what a tag must never carry is refused with a message, never thrown', () => {
+  const bad = [
+    ['-x', 'a leading hyphen'],
+    ['x-', 'a trailing hyphen'],
+    ['a b', 'a space'],
+    ['café', 'an accent'],
+    ['a'.repeat(61), '61 characters'],
+    // /t/<ref> and /spots/<ref> resolve a uuid-shaped ref BY ID, so a slug
+    // shaped like one could never be reached by name.
+    ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 'uuid-shaped'],
+    ['admin', 'a top-level path of this server'],
+    ['', 'empty'],
+    ['   ', 'blank'],
+  ];
+  for (const [raw, why] of bad) {
+    assert.ok(validSlug(raw).error, `should reject ${JSON.stringify(raw)} (${why})`);
+    assert.equal(validSlug(raw).ok, undefined);
+  }
+  for (const raw of [null, undefined, 42, {}, ['irvings'], { toString: 1 }]) {
+    assert.ok(validSlug(raw).error, `should reject ${JSON.stringify(raw)}`);
+  }
+  // Every word that is a page or an API prefix on this server: /t/<slug> is
+  // fine, but we-rewards.com/<slug> would be a different page from the spot's.
+  for (const word of ['t', 'spots', 'admin', 'terminal', 'scan', 'join', 'legal', 'api', 'r']) {
+    assert.match(validSlug(word).error, /reserved/, word);
+  }
+});
+
+test('"Add vendor" takes an optional slug through the same rule, and blank means generated', () => {
+  assert.equal(validNewVendor(GOOD).slug, null, 'absent: slugify(name), as before');
+  assert.equal(validNewVendor({ ...GOOD, slug: '' }).slug, null);
+  assert.equal(validNewVendor({ ...GOOD, slug: '   ' }).slug, null);
+  assert.equal(validNewVendor({ ...GOOD, slug: ' Local-Eats ' }).slug, 'local-eats');
+  assert.ok(validNewVendor({ ...GOOD, slug: 'admin' }).error);
+  assert.ok(validNewVendor({ ...GOOD, slug: 'no spaces' }).error);
+  assert.ok(validNewVendor({ ...GOOD, slug: 42 }).error, 'a non-string is not coerced');
+});
+
 /* ---------- the orderings the write paths depend on ----------
 
    WHY THIS BLOCK LOOKS LIKE THIS. Everything above is an exported validator, so
@@ -305,6 +360,53 @@ describe('POST /api/admin/applications/:id/accept', () => {
     // JSON.stringify of `app` may be the one inside the JSON.parse round-trip.
     assert.equal((body.match(/JSON\.stringify\(app\)/g) ?? []).length, 1,
       'the raw row must not be logged alongside the redacted copy');
+  });
+});
+
+describe('PATCH /api/admin/vendors/:id (the slug, migration-065)', () => {
+  const src = () => handler("router.patch('/vendors/:id'", '/* ---------- per-vendor reward items (operator side)');
+
+  test('the slug is read through validSlug, and a collision is a 409 SLUG_TAKEN rather than a logged 500', () => {
+    const body = src();
+    assert.match(body, /validSlug\(body\.slug\)/, 'the handler must hold a typed slug to the shared rule');
+    assert.match(body, /updates\.slug = /, 'and write it');
+    // The central handler in server.js does not know 23505. Left to it, a slug
+    // somebody else already has would be an error_logs row, an alert to every
+    // operator and a 500, for a typo in a form.
+    assert.match(body, /error\.code === '23505'/);
+    assert.match(body, /status\(409\)\.json\(\{ error: 'SLUG_TAKEN'/);
+  });
+
+  test('the nothing-to-update message names slug, so the client is told what it may send', () => {
+    assert.match(src(), /Nothing to update \(send name, slug,/);
+  });
+
+  test('the catalogue is invalidated after the write, so /t/<new slug> resolves at once', () => {
+    const body = src();
+    const write = body.indexOf('.update(updates)');
+    const bust = body.indexOf('invalidateVendorCaches(req.params.id)');
+    assert.ok(write > 0 && bust > write, 'invalidateVendorCaches must follow the update');
+  });
+});
+
+describe('POST /api/admin/vendors (the slug, migration-065)', () => {
+  test('a typed slug reaches onboarding, and a taken one answers 409 instead of being suffixed', () => {
+    const body = handler("router.post('/vendors'", "router.post('/vendors/:id/reset-code'");
+    assert.match(body, /slug: v\.slug/, 'the validated slug must be handed to onboardVendor');
+    assert.match(body, /=== 'SLUG_TAKEN'/);
+    assert.match(body, /status\(409\)\.json\(\{ error: 'SLUG_TAKEN'/);
+  });
+
+  test('createVendorRow uses a typed slug as typed and never walks the suffix loop for it', () => {
+    // "local-eats-2" written into a tag is the one outcome the operator cannot
+    // undo, so a typed slug that is taken must come back as a refusal, not
+    // land as a neighbour of what they asked for.
+    const body = handler('async function createVendorRow(', 'async function onboardVendor(');
+    const typed = body.indexOf('if (loc.slug) {');
+    const refusal = body.indexOf("throw new Error('SLUG_TAKEN')");
+    const loop = body.indexOf('const base = slugify(loc.name)');
+    assert.ok(typed > 0 && refusal > typed, 'the typed branch must refuse a 23505');
+    assert.ok(loop > refusal, 'and return before the generated-slug loop is reached');
   });
 });
 

@@ -67,7 +67,38 @@ let historyLoaded = false;  // has the history screen fetched at least once?
 const paneSlides = {};      // pane id -> its in-flight slide (#vendor, #history-screen), so it can be cut short
 let justSignedIn = false;         // true between a Google sign-in and the consent check
 let pendingDealLink = null;       // a ?deal=/?deals= notification tap, held until the app is ready
-let pendingSpotLink = null;       // same, for a ?spot= nearby-notification tap (migration-051)
+// The storage keys of every boot-time capture live UP HERE, not beside the
+// functions that use them, and the reason is a bug that shipped. boot() below is
+// an async IIFE that calls capturePunchLink(), captureReferralLink(),
+// capturePosterQr() and captureSpotLink() synchronously, while this file is
+// still being evaluated. A const declared further down is in its temporal dead
+// zone at that moment, so each write threw a ReferenceError that the capture's
+// own catch swallowed, AFTER history.replaceState had already stripped the
+// parameter from the URL: an invite link or a scanned punch link looked
+// captured and was simply gone. test/boot-captures.test.js pins the order.
+const PENDING_PUNCH_KEY = 'wrw-pending-punch';   // sessionStorage; the functions are under "pending punch" below
+const PENDING_REF_KEY = 'wr-pending-ref';        // localStorage; "referrals" below
+// A stashed code the server would refuse anyway (the signup window is far
+// shorter than this). Purely so a code can't sit in storage forever.
+const PENDING_REF_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const PENDING_QR_KEY = 'wr-pending-qr';          // localStorage; "tracked poster QR" below
+const PENDING_QR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// An NFC tag tap (/t/<ref>, see "NFC tag taps" after readSpotParam) or a ?spot=
+// nearby-notification tap (migration-051), held as { spot, install, via } until
+// the catalogue can open it; via is 'app' when the native shell caught the tag
+// URL itself, the one tap nothing else counts (reportAppTap). It lives in BOTH
+// memory and localStorage because the two fail differently: on the web,
+// Google's OAuth round trip comes back to the bare origin, so a signed-out
+// student's target used to die with the page, and localStorage is what survives
+// that; memory covers a browser with site data blocked, where reading
+// localStorage THROWS (the v83 note in sw.js) but the same page can still sign
+// in and finish.
+// The key and TTL sit up here rather than beside their functions for the reason
+// the capture keys just above explain: boot() calls captureSpotLink() while this
+// file is still evaluating.
+const PENDING_TAP_KEY = 'wr-pending-tap';
+const PENDING_TAP_TTL_MS = 30 * 60 * 1000;   // outlives a sign-in; short enough that a tap never ambushes next week's visit
+let pendingTap = null;
 // Consent-gate state (the gate itself is far below, see ensureConsent). It is
 // declared up here with the rest of the module's state rather than beside the
 // feature because Splash.giveUp() reads consentChecking, and boot() can call
@@ -324,7 +355,8 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   captureReferralLink();           // same, for a friend's ?ref= invite link
   capturePosterQr();               // same, for a printed banner's ?qr= link (migration-050)
   pendingDealLink = captureDealLink();   // same, for a ?deal=/?deals= notification tap
-  pendingSpotLink = captureSpotLink();   // same, for a ?spot= nearby-spot notification tap
+  pendingTap = { spot: captureSpotLink(), install: captureInstallFlag() };   // same, for a tag tap (/t/<ref> lands here as ?spot=&install=) or a ?spot= nearby-spot tap
+  mergePending();                  // plus a stash an earlier page left: that is how a tap survives the OAuth round trip
   drawMockQr();                    // landing hero card — paint it before any await, so a slow/failed config fetch never leaves it blank
   // onChange: Chrome hands over the deferred prompt whenever it likes, often
   // after first paint, and that is the moment a dead "Add to Home Screen" row
@@ -709,7 +741,10 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     navigator.serviceWorker.addEventListener('message', (e) => {
       if (e.data?.type === 'open-spot') {
         const spot = readSpotParam(e.data.url);
-        if (spot) openVendor(spot, TAB.home);
+        // queueSpot, not openVendor: it takes an id or a slug (whatever /?spot=
+        // carries, the same as the tag landing's form) and holds it for the
+        // catalogue instead of dropping a tap that lands mid-load.
+        if (spot) queueSpot(spot);
         return;
       }
       if (e.data?.type !== 'open-deals') return;
@@ -739,10 +774,13 @@ function readDealParam(href) {
   } catch { return null; }
 }
 
-/* A nearby-spot notification points at /?spot=<vendorId>. Read once and
-   stripped from the URL for the same reason the deal link is: without that a
-   reload — or the OAuth round trip on a cold sign-in — reopens the same spot
-   forever. */
+/* /?spot=<vendor id or slug>. A nearby-spot notification sends the id; the NFC
+   tag landing page (/t/<ref>, see the block below) sends whichever the tag
+   held, which is usually the slug. Read once and stripped from the URL for the
+   same reason the deal link is: without that a reload — or the OAuth round trip
+   on a cold sign-in — reopens the same spot forever. The value is also stashed
+   (writePendingTap) so that it SURVIVES that round trip: the strip and the
+   stash are the two halves of one fix. */
 function captureSpotLink() {
   try {
     const params = new URLSearchParams(location.search);
@@ -751,6 +789,12 @@ function captureSpotLink() {
     params.delete('spot');
     const qs = params.toString();
     history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+    // A new tap REPLACES whatever an earlier one left in storage: tag A's "Get
+    // the app" (install=1) must not ride along on tag B's "Continue on the web"
+    // half an hour later. captureInstallFlag() runs after this and patches its
+    // own flag back in when THIS URL carries one.
+    clearPendingTap();
+    writePendingTap({ spot: id });
     return id;
   } catch { return null; }
 }
@@ -759,6 +803,229 @@ function readSpotParam(href) {
   try { return new URL(href, location.origin).searchParams.get('spot') || null; }
   catch { return null; }
 }
+
+/* ---------- NFC tag taps (/t/<ref>) ---------- */
+/* A passive NFC tag in a shop window holds https://we-rewards.com/t/<slug>. The
+   server renders a landing page there whose two links both end up here:
+   "Continue on the web" as /?spot=<ref>, "Get the app" as the same plus
+   install=1. The installed apps skip the page: the iOS shell is handed the tag
+   URL itself through Capacitor's appUrlOpen (routeUniversalLink, wired in
+   wireNativeOAuthCallback), and an Android WebAPK loads the landing page inside
+   its own window, where tap.js sends it straight on to /?spot=. The page counts
+   every tap it serves (nfc_taps, migration-065), so the iOS shell, which never
+   loads it, reports its own: reportAppTap, below the flush.
+
+   However it arrives, the target usually has to wait: for the catalogue, because
+   openVendor() looks the id up in allVendors and returns silently when it is not
+   there, and on the web for a sign-in that goes through Google and comes back to
+   the bare origin. pendingTap (declared with the module state, which also says
+   why it is kept in memory AND localStorage) holds it, and flushPendingTap()
+   consumes it exactly once, from whichever of render(), loadVendors() or a late
+   deep link gets there first. */
+
+// How the spot arrived. 'app': the native shell caught the tag URL itself
+// (routeUniversalLink), and has to count the tap itself. 'web' is reserved for
+// the landing page's own links; nothing writes it yet. Anything else, including
+// nothing at all (a notification's spot, a ?spot= the page captured), is no
+// origin, and an unknown value in storage, from an older build or a hand edit,
+// reads as none rather than as a tap to count.
+function tapVia(v) {
+  return v === 'app' || v === 'web' ? v : undefined;
+}
+
+// The stored shape is { spot, install, via, at }. Null when there is nothing, it
+// has expired, it is malformed, or storage itself throws (site data blocked).
+// via is left out rather than set to undefined when there is none, so the
+// shapes compare whole.
+function readPendingTap() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PENDING_TAP_KEY) || 'null');
+    if (!raw || typeof raw !== 'object') return null;
+    if (typeof raw.at !== 'number' || Date.now() - raw.at > PENDING_TAP_TTL_MS) return null;
+    const spot = raw.spot ? String(raw.spot) : null;
+    const install = raw.install === true;
+    if (!spot && !install) return null;
+    const via = tapVia(raw.via);
+    return via ? { spot, install, via } : { spot, install };
+  } catch { return null; }
+}
+
+// A patch over what is stored, not a replacement: ?spot= and ?install=1 are
+// captured by two separate calls at boot, and the second must not erase the
+// first. Storage errors are swallowed because memory still has the value.
+function writePendingTap(patch) {
+  try {
+    const next = { ...(readPendingTap() || {}), ...patch, at: Date.now() };
+    localStorage.setItem(PENDING_TAP_KEY, JSON.stringify(next));
+  } catch { /* site data blocked: see pendingTap */ }
+}
+
+function clearPendingTap() {
+  try { localStorage.removeItem(PENDING_TAP_KEY); } catch { /* same */ }
+}
+
+// The landing page's "Get the app" is /?spot=<ref>&install=1. Same shape as
+// captureSpotLink: read once and stripped, so a reload does not nudge twice.
+function captureInstallFlag() {
+  try {
+    const params = new URLSearchParams(location.search);
+    if (!params.has('install')) return false;
+    params.delete('install');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + location.hash);
+    writePendingTap({ install: true });
+    return true;
+  } catch { return false; }
+}
+
+// A tag holds the slug (readable, and stable across a re-import), a notification
+// the id, and the catalogue rows carry both. Case-insensitive on BOTH because a
+// tag is written by a person: the server lower-cases a web tap, but a Universal
+// Link hands the native app the tag's URL exactly as written, uppercase uuid and
+// all. Returns the vendorId, or null when the catalogue has no such spot
+// (deleted, paused, or simply not loaded yet).
+function resolveVendorRef(ref) {
+  if (!ref) return null;
+  const low = String(ref).toLowerCase();
+  const v = allVendors.find((x) => String(x.vendorId).toLowerCase() === low
+    || (x.slug && String(x.slug).toLowerCase() === low));
+  return v ? v.vendorId : null;
+}
+
+// Memory first: every write to memory also writes storage, so storage can only
+// know more when this page started with nothing (a fresh load after the OAuth
+// round trip). Called ONCE, from boot, never from a flush: a page that re-read
+// storage on every flush would pick up a stash a NEWER tab had just written and
+// open that spot in the wrong tab, clearing it from under the tab that asked.
+function mergePending() {
+  const mem = pendingTap || {};
+  const stored = readPendingTap() || {};
+  const spot = mem.spot || stored.spot || null;
+  const install = Boolean(mem.install || stored.install);
+  // Memory first here too. In practice only storage ever holds one at boot (the
+  // shell reloading under a tag it stashed): a page that captured ?spot= itself
+  // cleared storage before writing, so there is no older via for it to inherit.
+  const via = tapVia(mem.via || stored.via);
+  if (!spot && !install) { pendingTap = null; return; }
+  pendingTap = via ? { spot, install, via } : { spot, install };
+}
+
+// The spot the last tag tap opened, and when. Nothing reads these yet: phase 2
+// (an earn-code sheet that already knows the spot) will.
+let lastTapVendorId = null;
+let lastTapAt = 0;
+
+// Idempotent, and it consumes BEFORE acting: the entry is gone before openVendor
+// runs, so the callers that race here (render, loadVendors, a late deep link)
+// cannot open the same spot twice, and a throw inside openVendor cannot leave a
+// tap that re-fires on every load for the next half hour.
+function flushPendingTap() {
+  if (!pendingTap) return;
+  if (pendingTap.spot && !vendorsLoaded) return;   // openVendor needs the catalogue; loadVendors() comes back here
+  const { spot, install, via } = pendingTap;
+  pendingTap = null;
+  clearPendingTap();
+  if (spot) {
+    const id = resolveVendorRef(spot);
+    if (id) {
+      lastTapVendorId = id;
+      lastTapAt = Date.now();
+      openVendor(id, TAB.home);
+    }
+    if (via === 'app') reportAppTap(spot);
+  }
+  if (install) nudgeInstall();
+}
+
+// A Universal Link never reaches the landing page: the OS hands the tag URL
+// straight to the native shell, so the app is the only thing that can count
+// that tap, and this is the one beacon that does. Sent from the flush and not
+// from routeUniversalLink because the flush is what runs exactly once per tap
+// (the 5 s guard there only absorbs a doubled delivery), and because a tap that
+// waited through sign-in has a session by the time it flushes (the catalogue is
+// signed-in only), where the link had none to count with. Never for a ?spot=
+// the page captured: the landing page counted that tap when it served it. The
+// raw ref goes, not the resolved id: the server resolves it itself and files an
+// unknown one under Unmatched, which is exactly the stale or mistyped tag the
+// operator needs to hear about, so this does not wait on the catalogue's
+// verdict. Fire and forget, and nothing in here can throw: a lost beacon is a
+// count off by one, not a tap that failed to open. authFetch is declared far
+// below with the API helpers; a slice of this block that runs without it (the
+// tests) still has to flush.
+function reportAppTap(ref) {
+  try {
+    if (typeof authFetch !== 'function') return;
+    Promise.resolve(authFetch('/api/me/nfc-tap', { method: 'POST', body: JSON.stringify({ ref }) }))
+      .catch(() => {});
+  } catch { /* counted or not, the spot opened */ }
+}
+
+// ?install=1 is the landing page's "Get the app" on a platform where the web app
+// installs itself (Android, or iOS without an App Store listing). The 800 ms
+// lets the home screen and the spot's screen paint first. openManual() without
+// a gesture is safe by design: on Chromium it ARMS the native prompt for the
+// student's next tap, on iOS Safari it opens the Share-arrow guide outright, and
+// eligibility refuses it on desktop and inside an installed app, which is also
+// why the flag is harmless in the native shell (canOffer() is false there).
+function nudgeInstall() {
+  const ip = window.InstallPrompt;
+  if (!ip || !ip.canOffer()) return;
+  setTimeout(() => ip.openManual(), 800);
+}
+
+/* A URL the OS handed the native shell (see wireNativeOAuthCallback): the tag
+   URL itself, https://we-rewards.com/t/<ref>, or the landing page's /?spot=
+   form. Anything else, above all the OAuth callback on its custom scheme, is not
+   ours and returns false without touching anything. The origin test is exact
+   because the WebView's origin IS https://we-rewards.com (capacitor.config.json
+   server.url), so location.origin is the right thing to compare against.
+
+   The 5 s guard absorbs the same URL arriving twice in quick succession (iOS can
+   re-deliver a tag read, and a student can bump the tag twice). A second tap of
+   the same tag inside five seconds is the only thing it costs, and that was a
+   double tap. */
+let lastRoutedUrl = null;
+let lastRoutedAt = 0;
+
+function routeUniversalLink(url) {
+  let u;
+  try { u = new URL(String(url)); } catch { return false; }
+  if (u.origin !== location.origin) return false;
+  let ref = null;
+  const m = /^\/t(?:\/([^/]+))?\/?$/.exec(u.pathname);
+  if (m) {
+    if (!m[1]) return false;   // the generic tag: the app is open, and there is no spot to open in it
+    try { ref = decodeURIComponent(m[1]); } catch { ref = m[1]; }
+  } else if (u.pathname === '/') {
+    ref = readSpotParam(u.href);
+  }
+  if (!ref) return false;
+  const now = Date.now();
+  if (u.href === lastRoutedUrl && now - lastRoutedAt < 5000) return false;
+  lastRoutedUrl = u.href;
+  lastRoutedAt = now;
+  // Only the tag URL itself is a tap nothing else has counted: the AASA in
+  // server.js claims /t and /t/* and nothing more, so a /?spot= handed to the
+  // shell came off a landing page the server counted when it served it, and
+  // rides through with no via, like a notification's spot.
+  return queueSpot(ref, m ? 'app' : undefined);
+}
+
+// Stash first, then try at once: with the catalogue loaded this opens the spot
+// now, otherwise loadVendors() picks it up when the rows land. `via` belongs to
+// THIS ref: a notification's spot queued over a tag's that is still waiting on
+// the catalogue must not inherit the tag's beacon, so an absent via also drops
+// the old one, from memory and from storage (JSON.stringify leaves out an
+// undefined value, which is exactly the write wanted here).
+function queueSpot(ref, via) {
+  const next = { ...(pendingTap || {}), spot: ref };
+  if (via) next.via = via; else delete next.via;
+  pendingTap = next;
+  writePendingTap({ spot: ref, via });
+  flushPendingTap();
+  return true;
+}
+/* ---------- end NFC tag taps ---------- */
 
 function captureDealLink() {
   try {
@@ -845,7 +1112,10 @@ async function startOAuth(provider, queryParams) {
 }
 
 /**
- * Receives com.werewards.app://auth-callback?code=... from the system sheet.
+ * Receives com.werewards.app://auth-callback?code=... from the system sheet,
+ * and, since the NFC tags, every other URL the OS hands this app: a Universal
+ * Link (https://we-rewards.com/t/<ref>, or the landing page's /?spot= form)
+ * goes to routeUniversalLink, which opens that spot.
  *
  * Registered once at boot rather than per sign-in press: iOS can deliver the
  * deep link after the WebView has been evicted and rebuilt, in which case no
@@ -856,29 +1126,39 @@ function wireNativeOAuthCallback() {
   if (!plugins?.App?.addListener) return;
   plugins.App.addListener('appUrlOpen', async (event) => {
     const url = String(event?.url || '');
-    if (!url.startsWith(NATIVE_OAUTH_REDIRECT)) return;   // deep links we did not start
-    // Close first. Leaving the sheet up over a now-signed-in app reads as a hang.
-    try { await plugins.Browser?.close(); } catch { /* already dismissed */ }
+    if (url.startsWith(NATIVE_OAUTH_REDIRECT)) {
+      // Close first. Leaving the sheet up over a now-signed-in app reads as a hang.
+      try { await plugins.Browser?.close(); } catch { /* already dismissed */ }
 
-    // Custom schemes are not guaranteed to parse through URL in every WebKit,
-    // so fall back to reading the query string directly.
-    let params;
-    try { params = new URL(url).searchParams; }
-    catch { params = new URLSearchParams(url.slice(url.indexOf('?') + 1)); }
+      // Custom schemes are not guaranteed to parse through URL in every WebKit,
+      // so fall back to reading the query string directly.
+      let params;
+      try { params = new URL(url).searchParams; }
+      catch { params = new URLSearchParams(url.slice(url.indexOf('?') + 1)); }
 
-    // The student cancelled the sheet, or the provider refused. Not an error
-    // worth shouting about: they are looking at the sign-in screen already.
-    if (params.get('error')) return;
+      // The student cancelled the sheet, or the provider refused. Not an error
+      // worth shouting about: they are looking at the sign-in screen already.
+      if (params.get('error')) return;
 
-    const code = params.get('code');
-    if (!code) return;
-    const { error } = await sb.auth.exchangeCodeForSession(code);
-    if (error) {
-      $('auth-error').textContent = 'Couldn’t finish sign-in. Try again in a moment.';
-      $('auth-error').hidden = false;
+      const code = params.get('code');
+      if (!code) return;
+      const { error } = await sb.auth.exchangeCodeForSession(code);
+      if (error) {
+        $('auth-error').textContent = 'Couldn’t finish sign-in. Try again in a moment.';
+        $('auth-error').hidden = false;
+      }
+      // No success branch: onAuthStateChange SIGNED_IN already drives the UI.
+      return;
     }
-    // No success branch: onAuthStateChange SIGNED_IN already drives the UI.
+    routeUniversalLink(url);   // a tag's Universal Link, or a deep link that is not ours (ignored)
   });
+  // A cold start through a Universal Link needs nothing more: the App plugin
+  // retains an appUrlOpen that fired before any listener existed and delivers it
+  // to the first one registered (retainUntilConsumed), which is this one.
+  // App.getLaunchUrl() is deliberately NOT consulted. Capacitor keeps the last
+  // URL for the whole process and the page reloads itself whenever iOS reclaims
+  // the WebContent process, so reading it at boot would replay a tag tapped an
+  // hour ago over whatever the student was doing.
 }
 
 async function signInWithGoogle() {
@@ -1101,14 +1381,14 @@ function render(session) {
     dealsReady.then(() => openDealsSheet(id));
   }
 
-  // Same story for a nearby-spot tap, against the catalogue rather than the
-  // deals list: openVendor() looks the id up in allVendors and returns
-  // silently if it is not there yet, so this has to wait for the load.
-  if (pendingSpotLink) {
-    const id = pendingSpotLink;
-    pendingSpotLink = null;
-    vendorsReady.then(() => openVendor(id, TAB.home));
-  }
+  // Same story for a tag tap or a nearby-spot tap, against the catalogue rather
+  // than the deals list: openVendor() looks the id up in allVendors and returns
+  // silently if it is not there yet, so the flush waits for the load (and
+  // loadVendors() calls it too). It is idempotent and consumes once, so calling
+  // it here as well costs nothing and covers a catalogue that is already in: a
+  // silent token refresh re-enters render() without reloading it.
+  flushPendingTap();
+  vendorsReady.then(flushPendingTap);
 }
 
 /* ---------- add-to-home-screen: account entry point (trigger 5) ----------
@@ -4122,6 +4402,10 @@ async function loadVendors() {
       const v = allVendors.find((x) => x.vendorId === vendor.vendorId);
       if (v) { vendor = v; renderVendorRate(v); renderItems(); renderPunchUi(); applyBalance(v.balance ?? 0); }
     }
+    // A tag tap or a native deep link that arrived while this request was in
+    // flight is not stranded: it was waiting on vendorsLoaded, and this is the
+    // moment that flips. Idempotent, consumes once.
+    flushPendingTap();
   } catch {
     // The placeholders have to come down here too, or a student with no
     // connection is left watching two cards shimmer forever with the error
@@ -8379,7 +8663,8 @@ function escapeHtml(s) {
 
 /* ---------- pending punch: camera-scan → sign-in handoff ---------- */
 
-const PENDING_PUNCH_KEY = 'wrw-pending-punch';
+// PENDING_PUNCH_KEY is declared with the module state at the top of this file,
+// next to the other capture keys; the note there says why it cannot live here.
 
 function readPendingPunch() {
   try {
@@ -8422,10 +8707,8 @@ function capturePunchLink() {
    Monday and acted on when the app is finally installed on Thursday. The code
    is not a secret and the server decides whether it is still claimable, so
    there is nothing to protect by letting it die with the tab. */
-const PENDING_REF_KEY = 'wr-pending-ref';
-// A stashed code the server would refuse anyway (the signup window is far
-// shorter than this). Purely so a code can't sit in storage forever.
-const PENDING_REF_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// PENDING_REF_KEY and PENDING_REF_TTL_MS are declared with the module state at
+// the top of this file, next to the other capture keys; the note there says why.
 
 let referralState = null;   // last /api/me/referral payload, or null
 
@@ -8473,8 +8756,8 @@ function captureReferralLink() {
 
    localStorage and a 30-day life, matching the invite link above: a poster is
    scanned on the walk to class and acted on that evening. */
-const PENDING_QR_KEY = 'wr-pending-qr';
-const PENDING_QR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// PENDING_QR_KEY and PENDING_QR_TTL_MS are declared with the module state at the
+// top of this file, next to the other capture keys; the note there says why.
 
 function readPendingQr() {
   try {

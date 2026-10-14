@@ -1097,6 +1097,44 @@ h1, h3 { margin: 0; }
    rather than as a gap in the data. */
 .qr-bar-empty { height: 1px !important; background: var(--line); }
 
+/* ---------- NFC tags (migration-065) ---------- */
+/* Third card on the QR poster tab, built from the trackable-QR classes above
+   (.qr-row, .qr-stats, .qr-btn, .qr-detail and the chart): to an operator it is
+   the same kind of list, a line per thing-with-a-code-on-it and its traffic.
+   Only what those rows do not have is here: a name that is text rather than an
+   input, a slug chip, and the list of refs that matched nothing. */
+/* Faded, not hidden, like .amb-row.is-off: a spot turned off still has its tag
+   on the counter and still has the history the operator came to read. */
+.nfc-row.is-off .qr-head, .nfc-row.is-off .qr-stats { opacity: 0.6; }
+.nfc-name { flex: 1 1 12rem; min-width: 0; font-weight: 700; font-size: 0.92rem; overflow-wrap: anywhere; }
+.nfc-sub { font-size: 0.75rem; color: var(--muted); }
+/* The slug on its own, for an operator checking what the /spots/ page is
+   called; the /t/ address beside it is what goes on the tag. Monospace for the
+   same reason .qr-link is: it may be read character by character. */
+.nfc-slug {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; padding: 0.05rem 0.4rem;
+  overflow-wrap: anywhere;
+}
+.nfc-unmatched { margin-top: 1rem; }
+.nfc-unmatched h4 { margin: 0; font-size: 0.85rem; }
+.nfc-unmatched-list { display: grid; gap: 0.35rem; margin-top: 0.5rem; }
+.nfc-unmatched-row { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; font-size: 0.78rem; color: var(--muted); }
+/* A ref is whatever somebody wrote on a tag, so unlike .qr-link it may be long
+   and has to wrap rather than run off the card. */
+.nfc-unmatched-ref { white-space: normal; overflow-wrap: anywhere; color: var(--ink); }
+
+/* The two addresses a slug becomes, under the Edit dialog's field: its own
+   line, monospace like .qr-link, and red when what is typed would be refused. */
+.vendor-slug-urls {
+  display: block; margin-bottom: 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ink); overflow-wrap: anywhere;
+}
+.vendor-slug-urls:empty { display: none; }
+.vendor-slug-urls.is-err { font-family: inherit; color: var(--bad); }
+
 /* ---------- ambassadors (migration-053) ---------- */
 /* The row is deliberately shaped the opposite way round to the QR rows above:
    there, the NAME is the big thing and the code is a muted URL fragment. Here

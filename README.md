@@ -1381,6 +1381,8 @@ powershell -File test/sql/run.ps1 -Migration migration-053.sql `
            -Seed seed-053.sql -Behavior behavior-053.sql # ambassadors
 powershell -File test/sql/run.ps1 -Migration migration-063.sql `
            -Seed seed-063.sql -Behavior behavior-063.sql # double points weekend
+powershell -File test/sql/run.ps1 -Migration migration-065.sql `
+           -Seed seed-065.sql -Behavior behavior-065.sql # NFC tag traffic
 ```
 
 Each migration brings its own `-Seed` / `-Behavior` pair, because a seed written
