@@ -1645,12 +1645,21 @@
               aria-label="Earn, show your code" aria-haspopup="dialog"
               aria-expanded="false" aria-controls="earn-modal">
         <span class="tab-earn-disc" aria-hidden="true">
+          <!-- Four quadrants of EQUAL weight, so the glyph sits optically in the
+               middle of a round button. The old glyph's fourth corner was one
+               small square and a few dots: centred by its box, it still read as
+               leaning up and left. The 2x2 block spans 13-22, the same box the
+               outlined squares fill once their 2px stroke is counted. -->
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="3" width="7" height="7" rx="1.6" />
             <rect x="14" y="3" width="7" height="7" rx="1.6" />
             <rect x="3" y="14" width="7" height="7" rx="1.6" />
-            <path d="M14 14h3.5v3.5H14z" />
-            <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
+            <g fill="currentColor" stroke="none">
+              <rect x="13" y="13" width="3.6" height="3.6" rx="0.9" />
+              <rect x="18.4" y="13" width="3.6" height="3.6" rx="0.9" />
+              <rect x="13" y="18.4" width="3.6" height="3.6" rx="0.9" />
+              <rect x="18.4" y="18.4" width="3.6" height="3.6" rx="0.9" />
+            </g>
           </svg>
         </span>
         <span>Earn</span>
