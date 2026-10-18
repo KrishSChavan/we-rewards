@@ -865,6 +865,28 @@ h1, h3 { margin: 0; }
    already spaces these, so drop that margin inside the stacked actions. */
 .push-actions .btn-primary, .push-actions .btn-ghost { margin-top: 0; }
 @keyframes push-pop { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
+
+/* The ✕ in the top-right corner of every dialog. First child of the card, and
+   STICKY rather than absolute: the Edit and Add vendor cards scroll inside
+   themselves (max-height 90dvh), and an absolutely placed button would scroll
+   away with the content. The negative margins tuck it into the card's padding
+   corner and give its height back, so nothing under it moves. */
+.modal-x {
+  position: sticky; top: 0; z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+  width: 2.25rem; height: 2.25rem;
+  margin: -0.9rem -0.9rem -1.35rem auto;
+  border-radius: 50%; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--ink);
+  font: inherit; font-size: 1rem; font-weight: 900; line-height: 1;
+  cursor: pointer;
+}
+.modal-x:hover { background: var(--line); }
+.modal-x:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+/* Keep a long title ("Edit: Sher Halal Gyro and Grill") out from under it.
+   A centred title gets the same on the left, or it sits 1rem off centre. */
+.reset-card h2 { padding-right: 2rem; }
+.amb-qr-card h2 { padding-left: 2rem; }
 @media (prefers-reduced-motion: reduce) { .push-card { animation: none; } }
 
 @media (max-width: 640px) {

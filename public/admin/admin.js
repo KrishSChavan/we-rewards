@@ -119,6 +119,24 @@ function bootFailed(message) {
   $('rv-hidden-only').addEventListener('change', loadAdminReviews);
   $('rv-list').addEventListener('click', onReviewListTap);
   $('vendor-reviews-save').addEventListener('click', saveVendorReviewSettings);
+  // The ✕ in every dialog's top-right corner does exactly what that dialog's
+  // backdrop does — for the alerts card that is "Not now", so the X never
+  // turns into a quiet way to re-nag. One table so a new dialog is one line;
+  // test/admin-modal-close.test.js fails if an .overlay in index.html is
+  // missing either its button or its row here.
+  const MODAL_X = {
+    'amb-modal': closeAmbModal,
+    'amb-qr-modal': closeAmbQrModal,
+    'push-modal': dismissPushModal,
+    'reset-modal': closeResetModal,
+    'student-modal': closeStudentDetail,
+    'notif-modal': closeNotifDetail,
+    'vendor-modal': closeVendorModal,
+    'new-vendor-modal': closeNewVendorModal,
+  };
+  for (const [id, close] of Object.entries(MODAL_X)) {
+    $(id).querySelector('.modal-x').addEventListener('click', () => close());
+  }
   wireNotifications();   // the Notifications tab, its popup and the dashboard tile
   $('amb-add-btn').addEventListener('click', () => openAmbModal(null));
   $('amb-form').addEventListener('submit', submitAmbassador);
