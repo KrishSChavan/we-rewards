@@ -35,7 +35,7 @@ function block(fromNeedle, toNeedle) {
   return src.slice(from, to);
 }
 
-const codeBlock = block('function startMyCode(', '/* ---------- home → the full-screen earn code sheet');
+const codeBlock = block('function startMyCode(', '/* ---------- Earn → the full-screen earn code sheet');
 
 /**
  * Build the loop with a scripted server and hand-driven timers.

@@ -41,6 +41,13 @@ function fakeEl(id) {
     // Strings, not nodes: a lookup inside the markup finds nothing unless a
     // test supplies it (see the arrow's focus test).
     querySelector(sel) { return el.found?.[sel] ?? null; },
+    // Enough of classList for a toggle to be read back (the Earn button's
+    // .is-hint, set by renderHomeStart).
+    classes: new Set(),
+    classList: {
+      toggle(c, on = !el.classes.has(c)) { if (on) el.classes.add(c); else el.classes.delete(c); return on; },
+      contains: (c) => el.classes.has(c),
+    },
   };
   return el;
 }
@@ -410,6 +417,33 @@ describe('first-visit checklist and email nudge', () => {
     noOffer.renderHomeStart();
     assert.equal(noOffer.$('home-start-lead').textContent, 'Two steps, takes a minute.');
     assert.equal((noOffer.$('home-start-list').innerHTML.match(/<li/g) ?? []).length, 2);
+  });
+
+  test('the code step is a button that opens the code, and the others are not', () => {
+    const api = sandbox({ vendors: fresh, email: { eligible: true, linked: false, bonus: { points: 50 } } });
+    api.renderHomeStart();
+    const html = api.$('home-start-list').innerHTML;
+    assert.equal((html.match(/data-hs-action="code"/g) ?? []).length, 1);
+    assert.match(html, /<button class="hs-step hs-step-btn"[^>]*data-hs-action="code"[^>]*>[\s\S]*Show your code at the counter/);
+    assert.match(html, /Tap Earn below/, 'the step points at the button that replaced the old one');
+    assert.equal((html.match(/<button/g) ?? []).length, 1, 'the email and redeem steps stay plain rows');
+  });
+
+  test('the Earn button pulses for a new student and stops at their first visit', () => {
+    const api = sandbox({ vendors: fresh });
+    api.renderHomeStart();
+    assert.equal(api.$('show-code-btn').classList.contains('is-hint'), true);
+
+    api.setVendors([spot({ visited: true })]);
+    api.renderHomeStart();
+    assert.equal(api.$('show-code-btn').classList.contains('is-hint'), false);
+    assert.equal(api.$('home-start').hidden, true, 'the pulse and the checklist end together');
+  });
+
+  test('no pulse when the server cannot say whether the student is new', () => {
+    const api = sandbox({ vendors: fresh, allTime: false });
+    api.renderHomeStart();
+    assert.equal(api.$('show-code-btn').classList.contains('is-hint'), false);
   });
 
   test('the nudge names the bonus as community points, and only when there is one', () => {

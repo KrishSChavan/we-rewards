@@ -1517,13 +1517,8 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .home-actions.is-flat .et-full { display: none; }
 .home-actions.is-flat .et-abbr { display: inline; }
 
-/* "Show earn code" — the counter flow, the one that works while you are still
-   standing there, and the only way into #earn-modal. Keeps the filled navy
-   treatment it always had; the full-width row is now the other half of what
-   says it outranks the two beneath it. */
-.show-code-btn { background: var(--navy); color: #fff; }
-.show-code-btn .et-icon { background: rgba(255, 255, 255, 0.13); color: var(--accent); }
-.show-code-btn .et-title { color: #3DDC97; }
+/* "Show earn code" used to lead this block. It is the bottom bar's Earn button
+   now (.tab-earn), which keeps its navy-and-green colours. */
 
 /* "Scan a receipt" — the recovery path, for when you have already walked off.
    It is .earn-btn unchanged, which is the point: secondary here means "not the
@@ -1943,7 +1938,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .vendor-map-cta {
   position: sticky; bottom: 0; z-index: 6;
   flex: 0 0 auto;
-  padding: 0.8rem;
+  padding: 0.8rem 0.8rem calc(var(--earn-rise) + 0.2rem);   /* clear of the Earn bulge */
   background: var(--paper);
   border-top: 2px solid var(--hairline);
 }
@@ -2637,12 +2632,73 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
   width: 2.2rem; height: 3px; border-radius: 0 0 3px 3px; background: var(--brand);
 }
 
+/* ---------- Earn: a half circle raised out of the middle of the bar ----------
+   Two circles centred on the bar's top edge. The DOME (::after) is the bar
+   itself bulging up: bar colour, bar border, clipped to its top half. The DISC
+   is the button proper, in the old "Show earn code" colours (navy, green code).
+   Both sit on the bar's top edge, so only their upper halves rise above it.
+
+   The dome's z-index -1 works because .tabbar is a stacking context (a flex
+   item with a z-index): it paints over the bar's own border-top, which is what
+   makes the bulge read as one line, and under the disc. The label stays in the
+   flow at the bottom, on the same baseline as Home / Spots / Map / Account,
+   because the other buttons' icon + gap + label stack is exactly as tall. */
+.tab-earn { justify-content: flex-end; }
+/* How far the bulge rises above the bar: half the dome (4.3rem) plus its
+   border. It sits over the middle of whatever scrolls behind the bar, so the
+   screens that end there keep at least this much clear at the bottom:
+   .home-main (the carousel dots are centred right where it rises), the Spots /
+   History / Account pages, and the spot screen's sticky "Show in map" bar. A
+   spot's own content (.app-main) already ends 3rem up, which clears it. */
+:root { --earn-rise: 2.3rem; }
+.tab-earn::after {
+  content: ""; position: absolute; z-index: -1;
+  left: 50%; top: 0; width: 4.3rem; height: 4.3rem; margin: -2.15rem 0 0 -2.15rem;
+  border-radius: 50%; background: var(--card); border: 2px solid var(--hairline);
+  clip-path: inset(0 0 50% 0);
+}
+.tab-earn-disc {
+  position: absolute; left: 50%; top: 0;
+  width: 3.4rem; height: 3.4rem; margin: -1.7rem 0 0 -1.7rem;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--navy); color: #3DDC97;
+  box-shadow: 0 4px 10px rgba(16, 29, 51, 0.28);
+  transition: transform 120ms ease;
+}
+.tab-earn-disc svg { width: 1.75rem; height: 1.75rem; }
+/* The press shrinks the disc, not the whole slot: scaling the button would
+   shrink the dome away from the bar it is meant to be part of. */
+.tab-earn:active { transform: none; }
+.tab-earn:active .tab-earn-disc { transform: scale(0.92); }
+.tab-earn:focus-visible { outline: none; }
+.tab-earn:focus-visible .tab-earn-disc { outline: 3px solid var(--accent); outline-offset: 3px; }
+/* Dark: navy on the dark card is too close to tell apart, so the disc gets a
+   rim in the code's own green. */
+:root[data-theme="dark"] .tab-earn-disc { box-shadow: 0 0 0 2px rgba(61, 220, 151, 0.55), 0 4px 10px rgba(0, 0, 0, 0.4); }
+
+/* The pulse for a student who has never been to a spot (renderHomeStart sets
+   .is-hint). A ring that grows out of the disc and fades, then rests, so it
+   reads as "this one" without strobing. */
+.tab-earn.is-hint .tab-earn-disc { animation: earn-hint 2.6s ease-out infinite; }
+@keyframes earn-hint {
+  0%   { box-shadow: 0 4px 10px rgba(16, 29, 51, 0.28), 0 0 0 0 rgba(61, 220, 151, 0.6); }
+  55%  { box-shadow: 0 4px 10px rgba(16, 29, 51, 0.28), 0 0 0 14px rgba(61, 220, 151, 0); }
+  100% { box-shadow: 0 4px 10px rgba(16, 29, 51, 0.28), 0 0 0 14px rgba(61, 220, 151, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab-earn-disc { transition: none; }
+  .tab-earn.is-hint .tab-earn-disc {
+    animation: none;
+    box-shadow: 0 0 0 3px #3DDC97, 0 4px 10px rgba(16, 29, 51, 0.28);
+  }
+}
+
 /* ---------- spots + history + account pages ---------- */
 
 #spots, #history, #account {
   min-height: 100%;
   display: flex; flex-direction: column;
-  padding: calc(1.6rem + env(safe-area-inset-top)) 1.3rem 1.6rem;
+  padding: calc(1.6rem + env(safe-area-inset-top)) 1.3rem calc(var(--earn-rise) + 0.5rem);
 }
 
 /* ---------- the Spots tab ----------
@@ -3945,9 +4001,6 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .cc-icon svg { width: 1.6rem; height: 1.6rem; display: block; }
 
-/* ---------- show earn code ----------
-   Keeps its original navy fill and green label (see .show-code-btn above). */
-
 /* ---------- invite a friend: the wavy one ----------
    The button is transparent and the SVG inside it is the shape: a wavy
    rounded rectangle, filled and stroked, stretched to the button's box.
@@ -4353,6 +4406,17 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .hs-step.is-done .hs-num { background: var(--rf-ready-fill); color: var(--rf-ready-ink); }
 .hs-step.is-done .hs-title { text-decoration: line-through; color: var(--muted); }
 .hs-text { display: grid; gap: 0.1rem; }
+/* The step a tap can do ("Show your code at the counter" opens the code). The
+   same grid as a plain step plus a chevron, so it lines up with its siblings
+   and reads as a link, not a different kind of row. */
+.hs-step-btn {
+  width: 100%; grid-template-columns: auto minmax(0, 1fr) auto;
+  font: inherit; color: inherit; text-align: left;
+  background: none; border: 0; padding: 0; cursor: pointer;
+}
+.hs-step-btn .hs-num { background: var(--navy); color: #3DDC97; }
+.hs-go { align-self: center; font-size: 1.4rem; font-weight: 800; line-height: 1; color: var(--muted); }
+.hs-step-btn:focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; border-radius: 0.6rem; }
 .hs-title { font-weight: 800; font-size: 0.92rem; }
 .hs-sub { font-weight: 600; font-size: 0.8rem; color: var(--muted); }
 
@@ -4440,14 +4504,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .home-actions-row .et-title { font-size: 0.95rem; }
 .invite-btn .et-icon { color: var(--rf-wave-line); }
 
-.show-code-btn { min-height: 4rem; }
-.show-code-btn .et-icon { width: 2.6rem; height: 2.6rem; background: transparent; }
-.show-code-btn .et-icon svg { width: 2.1rem; height: 2.1rem; }
-.show-code-btn .et-title { font-size: 1.15rem; }
-
 .home-actions.is-flat .earn-btn { flex-direction: column; gap: 0.4rem; padding: 0.7rem 0.45rem; }
-.home-actions.is-flat .show-code-btn .et-icon svg { width: 1.6rem; height: 1.6rem; }
-.home-actions.is-flat .show-code-btn .et-title { font-size: 0.85rem; }
 
 /* ---------- Refresh, part 6: Home fills the screen ----------
    Home used to split its leftover height into three equal gaps (see
@@ -4461,7 +4518,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
    min-height on the spots block is the floor: below it the page scrolls
    rather than squashing the cards, and syncHomeDensity() sees that overflow
    and collapses the earn row exactly as it always has. */
-.home-main { padding-top: 0.9rem; }
+.home-main { padding-top: 0.9rem; padding-bottom: 1.4rem; }   /* bottom: clear of the Earn bulge, see --earn-rise */
 .home-stack { margin: 0 1.3rem; }
 .home-main > .home-spots {
   flex: 1 1 auto;

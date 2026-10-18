@@ -450,10 +450,13 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('consent-terms').addEventListener('change', syncConsentButton);
   $('consent-accept').addEventListener('click', acceptConsent);
   $('consent-decline').addEventListener('click', declineConsent);
-  // bottom nav: slide between Home / Spots / Account, and open the Map
+  // bottom nav: slide between Home / Spots / Account, open the Map, and Earn
   $('tabbar').addEventListener('click', (e) => {
     const btn = e.target.closest('.tab-btn');
     if (!btn) return;
+    // Earn is an action too (see index.html), opened by its own listener in the
+    // earn-code wiring. Stopped here for the same NaN reason as Map below.
+    if (btn.dataset.action === 'earn') return;
     // The Map is an action, not a tab (see index.html), and it has to be caught
     // before data-tab is read: Number(undefined) is NaN, and setTab(NaN) would
     // write an invalid --tab, snapping the track to Home with nothing lit. It
@@ -671,8 +674,14 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   });
   $('receipt-submit').addEventListener('click', submitReceipt);
   $('receipt-done').addEventListener('click', closeReceiptSheet);
-  // earn code: the home button opens the full-screen sheet; ✕ / drag / Esc close it
+  // earn code: the raised Earn button in the bottom bar opens the full-screen
+  // sheet; ✕ / drag / Esc close it
   $('show-code-btn').addEventListener('click', openEarnSheet);
+  // ...and so does the "Show your code at the counter" step of the first-visit
+  // checklist, which renderHomeStart rewrites, so the listener sits on the list.
+  $('home-start-list').addEventListener('click', (e) => {
+    if (e.target.closest('[data-hs-action="code"]')) openEarnSheet();
+  });
   $('earn-close').addEventListener('click', closeEarnSheet);
   // the sheet no longer fills the screen, so the dimmed strip above it is a
   // tap-to-dismiss target like every other overlay here
@@ -1301,6 +1310,7 @@ function render(session) {
     consentOk = false;          // next sign-in re-checks; never trust a stale pass
     hideConsentModal();
     dropEarnSheet();            // it lives at body level, so it would otherwise sit over the landing page
+    $('show-code-btn').classList.remove('is-hint');   // the next student may not be new
     dropAmbassadorSheet();      // same — and it names the previous student's code
     dropLinkSheet();            // same — and it holds the previous student's address
     resetStudentEmail();        // …and put its Account button away, same reason as the line below
@@ -2735,7 +2745,7 @@ function drawMockQr() {
   }
 }
 
-/* ---------- home earn code (shown right on the home screen) ---------- */
+/* ---------- the earn code (the sheet behind the bottom bar's Earn button) ---------- */
 
 function startMyCode() {
   refreshMyCode();
@@ -2799,7 +2809,7 @@ async function refreshMyCode() {
   }
 }
 
-/* ---------- home → the full-screen earn code sheet ---------- */
+/* ---------- Earn → the full-screen earn code sheet ---------- */
 
 // "Halfway" is measured against the sheet's own height, which it re-reads at
 // every grab — the sheet is content-sized, so that height moves. Released past
@@ -5297,10 +5307,16 @@ function refreshHomeRewards() {
 // The first-visit checklist. Only for a student the server says has never
 // been anywhere: visitedAllTime false means an older server that cannot say,
 // and guessing "new" there would greet regulars with a tutorial.
+//
+// The same test drives the Earn button's pulse (.is-hint): the button moved off
+// Home into the bottom bar, so until a student has earned somewhere, the bar
+// points at it and the checklist step below opens it. Both stop together, at
+// the first visit (a purchase, a receipt claim or a scanned visit).
 function renderHomeStart() {
   const el = $('home-start');
   if (!el) return;
   const isNew = visitedAllTime && allVendors.length > 0 && !allVendors.some((v) => v.visited);
+  $('show-code-btn').classList.toggle('is-hint', isNew);
   if (!isNew) { el.hidden = true; return; }
 
   const s = studentEmail;
@@ -5313,21 +5329,30 @@ function renderHomeStart() {
       sub: s.bonus?.points ? `Unlocks ${s.bonus.points} community points` : 'Brings your spots together',
     });
   }
-  steps.push({ done: false, title: 'Show your code at the counter', sub: 'Points land in your account right away' });
+  // The one step a tap can do for them: it opens the code, the same sheet as
+  // the Earn button its sub-line points at.
+  steps.push({ done: false, title: 'Show your code at the counter', sub: 'Tap Earn below. Points land right away', action: 'code' });
   steps.push({ done: false, title: 'Trade points for free food', sub: 'Each spot sets its own rewards' });
 
   // The lead counts the steps actually listed: the email step is only there
   // where linking is on offer, so "Three steps" over a two-item list was wrong
   // for every student who signed in with their student address.
   $('home-start-lead').textContent = `${steps.length === 2 ? 'Two' : 'Three'} steps, takes a minute.`;
-  $('home-start-list').innerHTML = steps.map((st, i) => `
-    <li class="hs-step${st.done ? ' is-done' : ''}">
+  $('home-start-list').innerHTML = steps.map((st, i) => {
+    const inner = `
       <span class="hs-num" aria-hidden="true">${st.done ? '✓' : i + 1}</span>
       <span class="hs-text">
         <span class="hs-title">${escapeHtml(st.title)}${st.done ? '<span class="sr-only"> (done)</span>' : ''}</span>
         <span class="hs-sub">${escapeHtml(st.sub)}</span>
-      </span>
-    </li>`).join('');
+      </span>`;
+    // An actionable step is a button filling the row, so the whole line is
+    // the tap target; the rest stay plain list items.
+    return st.action
+      ? `<li><button class="hs-step hs-step-btn" type="button" data-hs-action="${st.action}"
+            aria-haspopup="dialog" aria-controls="earn-modal">${inner}
+          <span class="hs-go" aria-hidden="true">›</span></button></li>`
+      : `<li class="hs-step${st.done ? ' is-done' : ''}">${inner}</li>`;
+  }).join('');
   el.hidden = false;
 }
 

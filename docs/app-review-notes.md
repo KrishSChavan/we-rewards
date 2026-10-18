@@ -105,7 +105,7 @@ terminal needs to act, say what you are doing out loud rather than cutting away.
 | 1 | Tap the app icon on the Home Screen. Let the splash and sign-in screen appear. | "must begin with launching the app" |
 | 2 | **Registration.** Tap *Continue with Apple* (or Google) with a fresh account → the system sheet → the "One quick thing" consent screen → tick the box → *Agree & create my account* → land on Home. | account registration flow |
 | 3 | Account tab → *Sign out*. Then sign back in with the demo email + password: tap *Vendor? Sign in with your terminal email and password*, type them, *Sign in*. | login flow, and it proves the credentials in the Notes field work |
-| 4 | **Home.** The rotating 6-digit identity code and its QR, the per-spot point balances. | the core screen |
+| 4 | **Home.** The per-spot point balances. Then tap **Earn**, the raised button in the middle of the bottom bar: the rotating 6-digit identity code and its QR. | the core screen |
 | 5 | **Earning.** Hold the phone's code up to the laptop's terminal camera (or type the 6 digits into the terminal). Show the terminal awarding, then cut back to the phone as the balance updates. | the typical user flow |
 | 6 | **Spots tab.** The map and the list of partner restaurants; open one spot, scroll its rewards. | shows the app is populated and real |
 | 7 | **Redeeming.** On a reward you can afford, tap *Redeem with points* → the 4-digit redeem code appears with its countdown → type it into the terminal → show the terminal confirming and the phone's balance dropping. | "accessing paid content or features" — show there is nothing to buy |
@@ -165,9 +165,11 @@ and prices itself. Audience: adults 18+ who eat at participating restaurants.
 15 partner restaurants are live, all in State College, Pennsylvania.
 
 MAIN FEATURES AND WHERE THEY ARE
-  Home tab    - your rotating identity code (the QR staff scan) and your point
-                balance at each restaurant you have visited. Also the receipt
-                scanner, for restaurants that accept a receipt photo instead.
+  Earn button - the raised button in the middle of the bottom bar, on every
+                tab. Opens your rotating identity code (the QR staff scan).
+  Home tab    - your point balance at each restaurant you have visited. Also
+                the receipt scanner, for restaurants that accept a receipt
+                photo instead.
   Spots tab   - map and list of partner restaurants and the rewards each one
                 offers. Tap a reward you can afford to get a 4-digit redeem
                 code, which staff type into their terminal.

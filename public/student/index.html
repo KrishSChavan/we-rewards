@@ -738,50 +738,23 @@
                    arithmetic) on copy the sheets behind them were already
                    repeating word for word.
 
-                   Now: the earn code takes a full-width row of its own, because
-                   it is the counter flow and the one a student opens standing at
-                   a till, and everything else shares the row beneath it. That
-                   second row is self-sizing (see .home-actions-row) — with only
-                   the receipt button in it, the receipt button IS the row and
-                   takes the same wide form as the button above; when invite
-                   joins, the two split it.
+                   Now: the earn code is not here at all. It is the raised Earn
+                   button in the middle of the bottom bar (#show-code-btn), so it
+                   is one tap away from every tab, including a spot's screen,
+                   which is where a student standing at a till usually is. What
+                   stays is the row below. That row is self-sizing (see
+                   .home-actions-row): with only the receipt button in it, the
+                   receipt button IS the row and takes the wide form; when
+                   invite joins, the two split it.
 
                    The explanatory line each button used to carry lives in the
-                   sheet it opens: #earn-modal's .mc-sub and #receipt-modal's
-                   .detail-desc were already saying the same thing in the same
-                   words. Invite is the exception — it has no sheet of its own
-                   (it goes straight to the OS share sheet) and its line is live
-                   referral state rather than fixed copy, so it rides on the
-                   button's aria-label, which loadReferral() keeps in step. -->
+                   sheet it opens: #receipt-modal's .detail-desc was already
+                   saying the same thing in the same words. Invite is the
+                   exception — it has no sheet of its own (it goes straight to
+                   the OS share sheet) and its line is live referral state
+                   rather than fixed copy, so it rides on the button's
+                   aria-label, which loadReferral() keeps in step. -->
               <div class="home-actions">
-                <!-- The code itself lives in a full-screen sheet (#earn-modal)
-                     rather than sitting on the home screen as a QR nobody is
-                     scanning yet. This button is the only way in, and the only
-                     one with a permanent claim on a whole row. -->
-                <button id="show-code-btn" class="earn-btn earn-btn-wide show-code-btn" type="button"
-                        aria-haspopup="dialog" aria-expanded="false" aria-controls="earn-modal">
-                  <span class="et-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <rect x="3" y="3" width="7" height="7" rx="1.6" />
-                      <rect x="14" y="3" width="7" height="7" rx="1.6" />
-                      <rect x="3" y="14" width="7" height="7" rx="1.6" />
-                      <path d="M14 14h3.5v3.5H14z" />
-                      <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
-                    </svg>
-                  </span>
-                  <!-- Two labels, one shown at a time by .home-actions.is-flat.
-                       The short one exists because a collapsed row gives each
-                       button ~99px on a 360px phone, where "Show earn code" is
-                       three lines and costs back half of what collapsing saved.
-                       display:none keeps the inactive one out of the
-                       accessibility tree too, so the button never announces
-                       both. -->
-                  <span class="et-title">
-                    <span class="et-full">Show earn code</span>
-                    <span class="et-abbr">Earn code</span>
-                  </span>
-                </button>
-
                 <!-- Everything else. A wrapper rather than loose siblings so the
                      buttons in it divide one row's width between themselves
                      instead of each claiming a row of .home-actions. -->
@@ -1655,6 +1628,33 @@
         </svg>
         <span>Spots</span>
       </button>
+      <!-- Earn: an ACTION, not a tab, like Map below. It opens #earn-modal,
+           the full-screen code sheet, over whatever is showing, so it has no
+           data-tab, no page in #tab-track, and never takes the active
+           highlight. Raised out of the middle of the bar as a half circle
+           (.tab-earn in styles.css) because it is THE counter action: one tap
+           from every tab and from a spot's screen. It used to be the
+           "Show earn code" button on Home, and it keeps that button's id, so
+           openEarnSheet / closeEarnSheet still find it by name.
+
+           Labelled "Earn" rather than icon-only on purpose: a bare QR icon in
+           this spot reads as "open the camera to scan", which is the opposite
+           of what it does. Gets .is-hint (a gentle pulse) for a student who
+           has never been to a spot; see renderHomeStart in app.js. -->
+      <button id="show-code-btn" class="tab-btn tab-earn" data-action="earn" type="button"
+              aria-label="Earn, show your code" aria-haspopup="dialog"
+              aria-expanded="false" aria-controls="earn-modal">
+        <span class="tab-earn-disc" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.6" />
+            <rect x="14" y="3" width="7" height="7" rx="1.6" />
+            <rect x="3" y="14" width="7" height="7" rx="1.6" />
+            <path d="M14 14h3.5v3.5H14z" />
+            <path d="M20.5 14v.01M20.5 17.5v.01M20.5 21v.01M17.5 21v.01M14 21v.01" />
+          </svg>
+        </span>
+        <span>Earn</span>
+      </button>
       <!-- Map: an ACTION, not a tab. It opens #map-modal, the same full-screen
            map as the Map pill on Home, over whatever is showing, and closing it
            lands back on that same page. So it has no data-tab and no page in
@@ -2202,7 +2202,7 @@
       <ol class="help-steps">
         <li>
           <h3>Show your code when you pay</h3>
-          <p>Tap “Show earn code” on the home screen and show it at the counter. If scanning isn’t an option, read out the short code underneath instead.</p>
+          <p>Tap <strong>Earn</strong> in the middle of the bottom bar and show the code at the counter. If scanning isn’t an option, read out the short code underneath instead.</p>
         </li>
         <li>
           <h3>Points land right away</h3>
