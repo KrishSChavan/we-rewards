@@ -112,7 +112,7 @@ begin
   -- anything else in the dataset, so if the filter is missing it takes the top
   -- slot and this assertion fails.
   insert into public.vendors (id, name, slug, points_per_dollar, active)
-  values (closed, 'Closed Diner 041', 'closed-diner-041b', 10, false);
+  values (closed, 'Closed Diner 041', 'closed-diner-041b', 1, false);
   insert into public.transactions (user_id, vendor_id, type, points, dollar_amount, created_at)
   select s1, closed, 'earn', 50, 5, now() - (g || ' days')::interval from generate_series(1, 9) g;
 

@@ -45,15 +45,15 @@ begin
   else raise notice 'FAIL join: Downtown row is % after the drain', bal; end if;
 
   -- ---------- 3. rate parity ----------
-  -- The kiosk earns at 20 to Downtown's 10. Sharing a purse across those two
-  -- means one systematically funds the other.
+  -- Sharing a purse across two earning rates means one location systematically
+  -- funds the other. pool_join still refuses that (POOL_RATE_MISMATCH), but since
+  -- migration-068 the mismatch cannot be set up at all: every vendor is held at
+  -- 1 point per $1, so the kiosk the seed puts on 20 is on 1 like the rest.
   begin
-    perform public.pool_join(pool, fast);
-    raise notice 'FAIL parity: a location on a different earning rate joined';
-  exception when others then
-    if sqlerrm like '%POOL_RATE_MISMATCH%' then
-      raise notice 'PASS parity: a mismatched earning rate is refused';
-    else raise notice 'FAIL parity: expected POOL_RATE_MISMATCH, got %', sqlerrm; end if;
+    update public.vendors set points_per_dollar = 20 where id = fast;
+    raise notice 'FAIL parity: a location was put on a different earning rate';
+  exception when check_violation then
+    raise notice 'PASS parity: no location can be on a different earning rate (068 CHECK)';
   end;
 
   -- ---------- 4. the second join, and the number the owner cares about ------

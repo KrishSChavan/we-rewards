@@ -72,3 +72,7 @@ insert into public.transactions (user_id, vendor_id, type, points, dollar_amount
   ('00000000-0000-0000-0000-000000000451', '00000000-0000-0000-0000-0000000005a1', 'earn', 500, 50),
   ('00000000-0000-0000-0000-000000000453', '00000000-0000-0000-0000-0000000005a1', 'earn', 200, 20),
   ('00000000-0000-0000-0000-000000000452', '00000000-0000-0000-0000-0000000005a3', 'earn', 500, 50);
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

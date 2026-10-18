@@ -201,7 +201,6 @@ function bootFailed(message) {
   $('vendor-edit-slug').addEventListener('input', syncVendorSlugHint);
   $('vendor-location-save').addEventListener('click', saveVendorLocationLabel);
   $('vendor-contact-save').addEventListener('click', saveVendorContact);
-  $('vendor-ratio-save').addEventListener('click', saveVendorRatio);
   $('vendor-sells-save').addEventListener('click', saveVendorSells);
   $('vendor-logo-pick').addEventListener('click', () => $('vendor-logo-file').click());
   $('vendor-logo-file').addEventListener('change', onVendorLogoPick);
@@ -886,11 +885,12 @@ const vendorInfoHtml = (v) =>
   // Without it two locations of a chain are the same name twice, told apart
   // only by a slug suffix nobody can read as a place.
   (v.location_label ? `<span class="vendor-loc">${escapeHtml(v.location_label)}</span>` : '') +
-  // Above the slug line on purpose. The slug and the earn rate are what the
-  // row IS; the phone and email are what the operator came here to do
-  // something with, so they sit closer to the name.
+  // Above the slug line on purpose. The slug is what the row IS; the phone
+  // and email are what the operator came here to do something with, so they
+  // sit closer to the name. (The earn rate used to share the slug's line; it
+  // is 1 point per $1 everywhere since migration-068.)
   vendorContactHtml(v) +
-  `<span class="vendor-meta">${escapeHtml(v.slug)} · ${num(v.points_per_dollar)} pts/$</span>`;
+  `<span class="vendor-meta">${escapeHtml(v.slug)}</span>`;
 
 function renderVendors() {
   $('vendor-error').hidden = true;
@@ -1519,8 +1519,6 @@ function openVendorModal(v, infoEl) {
   $('vendor-edit-contact').value = v.contact_name ?? '';
   $('vendor-edit-phone').value = v.phone ?? '';
   setNote($('vendor-contact-note'), '', null);
-  $('vendor-edit-ratio').value = Number(v.points_per_dollar);
-  setNote($('vendor-ratio-note'), '', null);
   // Straight off the roster row — GET /admin/vendors already selects both, so
   // opening the dialog costs no extra request.
   buildCuisineGrid($('vendor-edit-cuisine'), v.cuisine);
@@ -1532,7 +1530,7 @@ function openVendorModal(v, infoEl) {
   showRewardsMsg('Loading items…');
   resetVendorLogoSection(v);
   $('vendor-modal').hidden = false;
-  $('vendor-edit-ratio').focus();
+  $('vendor-edit-name').focus();
   loadVendorRewards(v.id);
   loadVendorReviewSettings(v.id);
   // Only when the roster says there is artwork to fetch. has_logo rides along on
@@ -1740,31 +1738,6 @@ function repaintVendorLabels(v, infoEl) {
   label('.vendor-edit', `Edit ${v.name}`);
   label('.vendor-reset', `Reset password for ${v.name}`);
   label('.vendor-delete', `Delete ${v.name}`);
-}
-
-async function saveVendorRatio() {
-  if (!editVendor) return;
-  const btn = $('vendor-ratio-save');
-  const note = $('vendor-ratio-note');
-  btn.disabled = true;
-  setNote(note, 'Saving…', null);
-  try {
-    const res = await authFetch(`/api/admin/vendors/${editVendor.v.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ pointsPerDollar: Number($('vendor-edit-ratio').value) }),
-    });
-    if (res.status === 403) return denyAccess();
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
-    Object.assign(editVendor.v, data);           // keep the in-memory roster in sync
-    editVendor.infoEl.innerHTML = vendorInfoHtml(editVendor.v);  // roster meta shows the new rate
-    $('vendor-edit-ratio').value = Number(editVendor.v.points_per_dollar);
-    setNote(note, 'Saved', 'ok');
-    btn.disabled = false;
-  } catch {
-    setNote(note, 'No connection.', 'err');
-    btn.disabled = false;
-  }
 }
 
 async function loadVendorRewards(vendorId) {
@@ -2058,18 +2031,18 @@ async function shrinkImage(file, maxPx) {
 }
 
 /**
- * The optional first item on the Add vendor form: [] or [ {title, spend, emoji} ],
- * the same shape /join sends (migration-052). Both blank means the operator is
+ * The optional first item on the Add vendor form: [] or [ {title, price, emoji} ],
+ * the same shape /join sends (migration-052, priced since 068). Both blank means the operator is
  * skipping it; one blank and one filled is a half-typed item, which
  * firstNewVendorProblem below refuses rather than silently dropping.
  */
 function newVendorItems() {
   const title = $('nv-item-title').value.trim();
-  const spend = $('nv-item-spend').value.trim();
-  if (!title && !spend) return [];
+  const price = $('nv-item-price').value.trim();
+  if (!title && !price) return [];
   // The terminal defaults new items to this too, and the vendor can change it
   // there; a picker on a modal the operator uses at a demo is not worth the room.
-  return [{ title, spend, emoji: '🎁' }];
+  return [{ title, price, emoji: '🎁' }];
 }
 
 // Client-side pre-checks mirror the server's rules (validNewVendor) so most
@@ -2096,9 +2069,9 @@ function firstNewVendorProblem() {
   const items = newVendorItems();
   if (items.length) {
     if (!items[0].title) return 'Name the first item, or clear its price to skip it.';
-    const spend = Number(items[0].spend);
-    if (!items[0].spend || !Number.isFinite(spend) || spend < 1 || spend > 1000) {
-      return 'For the first item, enter what a customer spends to earn it, from $1 to $1000 (or clear the name to skip it).';
+    const price = Number(items[0].price);
+    if (!items[0].price || !Number.isFinite(price) || price < 0.01 || price > 1000) {
+      return 'For the first item, enter what it sells for, from $0.01 to $1,000 (or clear the name to skip it).';
     }
   }
   return null;
@@ -2334,7 +2307,11 @@ function paintApplicationRows(list) {
         const line = document.createElement('span');
         line.className = 'app-location';
         // textContent throughout: every part of this is applicant-typed.
-        line.textContent = `${r.emoji || '🎁'} ${r.title} · $${r.spend} of purchases`;
+        // `price` since migration-068 (saved at 4x in points); an application
+        // sent before that named a `spend`, which is still its point cost.
+        line.textContent = r.price != null
+          ? `${r.emoji || '🎁'} ${r.title} · sells for $${r.price} · ${Math.max(1, Math.floor(Number(r.price))) * 4} pts`
+          : `${r.emoji || '🎁'} ${r.title} · $${r.spend} of purchases`;
         box.appendChild(line);
       });
       row.appendChild(box);
@@ -2930,13 +2907,11 @@ function buildPoolMemberRow(pool, m, err) {
   }
   const meta = document.createElement('span');
   meta.className = 'vendor-meta';
-  // The rate is here because it is the precondition a join fails on, and
-  // "switched off" because an off member is still IN the pool: its customers'
+  // "Switched off" is here because an off member is still IN the pool: its customers'
   // points sit in the purse and stay spendable at its siblings, which is not
   // what off means anywhere else in this dashboard. The join date is what every
   // settlement number below is windowed on.
   meta.textContent = [
-    `${num(m.points_per_dollar)} pts/$`,
     m.pool_joined_at
       ? `joined ${new Date(m.pool_joined_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}`
       : null,
@@ -2967,12 +2942,8 @@ function fillPoolPicker(select) {
   free.forEach((v) => {
     const opt = document.createElement('option');
     opt.value = v.id;
-    // The rate rides along because it is what a join fails on: reading "5 pts/$"
-    // against a pool of 20s here is quicker than reading POOL_RATE_MISMATCH
-    // afterwards, and it is the same fix either way.
     opt.textContent = [
       poolVendorLabel(v),
-      `${num(v.points_per_dollar)} pts/$`,
       v.active ? null : 'off',
     ].filter(Boolean).join(' · ');
     select.appendChild(opt);

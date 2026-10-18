@@ -14,7 +14,7 @@ describe('security regressions', { skip: dbConfigured ? false : 'set TEST_SUPABA
   let vendor, student;
 
   before(async () => {
-    vendor = await createVendor({ pointsPerDollar: 10, pin: '4321' });
+    vendor = await createVendor({ pin: '4321' });
     student = await createUser({ password: 'StudentPw123!' });
   });
   after(async () => cleanup({ vendorId: vendor?.id, userIds: [student?.id] }));
@@ -83,7 +83,7 @@ describe('security regressions', { skip: dbConfigured ? false : 'set TEST_SUPABA
     process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY;
     const { app } = await import('../../server.js');
 
-    const lockVendor = await createVendor({ pointsPerDollar: 10, pin: '4321' });
+    const lockVendor = await createVendor({ pin: '4321' });
     const owner = await createUser({ password: 'OwnerPw123!' });
     let listener;
     try {
@@ -135,7 +135,7 @@ describe('security regressions', { skip: dbConfigured ? false : 'set TEST_SUPABA
     process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.TEST_SUPABASE_SERVICE_ROLE_KEY;
     const { app } = await import('../../server.js');
 
-    const offVendor = await createVendor({ pointsPerDollar: 10 });
+    const offVendor = await createVendor();
     const owner = await createUser({ password: 'OwnerPw123!' });
     let listener;
     try {

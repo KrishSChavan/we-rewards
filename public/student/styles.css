@@ -3830,10 +3830,9 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .map-pin-points small { font-size: 0.75rem; font-weight: 700; color: var(--muted); }
 .map-pin-address { font-size: 0.84rem; font-weight: 600; color: var(--muted); line-height: 1.3; }
 .map-pin-address[hidden] { display: none; }
-.map-pin-rate { margin-top: 0.3rem; font-size: 0.84rem; font-weight: 700; color: var(--muted); line-height: 1.3; }
-.map-pin-rate[hidden] { display: none; }
-/* The shared-purse sentence, under the rate. Sets no display of its own, but
-   carries the companion rule anyway (exactly as .map-pin-rate does): the day
+/* The shared-purse sentence, under the address. Sets no display of its own, but
+   carries the companion rule anyway (as the rate line it sat under did, before
+   migration-068 took that line away): the day
    someone gives this a display value, the author rule would beat the hidden
    attribute and every unpooled spot would get a blank line in its sheet. */
 .map-pin-pool { margin-top: 0.3rem; font-size: 0.8rem; font-weight: 700; color: var(--muted); line-height: 1.3; }

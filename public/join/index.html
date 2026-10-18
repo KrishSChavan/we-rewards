@@ -175,14 +175,13 @@
              ever be — asking them to come back later and think of something is
              a second conversation we have to win first.
 
-             ASKED IN DOLLARS, DELIBERATELY. This page has never had a points
-             per dollar field, so a points figure typed here would be priced
-             against a rate the applicant has not been shown and cannot see.
-             They are asked the question they can answer instead, and the point
-             cost is worked out when the application is accepted, from the rate
-             their vendor row actually gets. Their terminal then shows the same
-             dollar figure back to them under every item's points price, so the
-             two screens never disagree. -->
+             ASKED IN DOLLARS, DELIBERATELY. A points figure typed here would be
+             a guess by somebody who has never seen a point. Since migration-068
+             they are asked what each item SELLS FOR, the question every shop
+             can answer, and it is saved at 4x in points when the application
+             is accepted: buy it four times, the fifth is free. Their terminal
+             shows the price and the points side by side, and they can change
+             either. -->
         <fieldset id="rewards-field" class="tag-field reward-field">
           <legend>What can customers redeem? <em class="opt">(at least one)</em></legend>
           <p class="hint">The reward students are working towards. It is the first thing they see on your card in the app, and you can edit it, add more, or switch it off at any time from your terminal.</p>
@@ -200,12 +199,12 @@
             <label>Item
               <input type="text" maxlength="60" autocomplete="off" placeholder="Free small coffee" data-rw-title />
             </label>
-            <label>How much should a customer spend with you to earn it?
-              <span class="rw-spend">
+            <label>What does it sell for?
+              <span class="rw-price">
                 <span class="rw-currency" aria-hidden="true">$</span>
-                <input type="number" min="1" max="1000" step="any" inputmode="decimal" placeholder="25" data-rw-spend />
+                <input type="number" min="0.01" max="1000" step="0.01" inputmode="decimal" placeholder="4.99" data-rw-price />
               </span>
-              <span class="hint">Their spend added up over time, not one order. We turn it into points for you.</span>
+              <span class="hint">We set the points at 4× the price, so a customer who buys it 4 times gets the 5th free. You can change it later.</span>
             </label>
             <div class="rw-emoji-field">
               <!-- A DOZEN, not the twenty the terminal offers. Up to six of these

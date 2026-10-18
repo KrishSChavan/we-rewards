@@ -37,7 +37,7 @@ begin
   now_local := (now() at time zone c_tz)::timestamp;
 
   -- 1. happy path: 12.19 receipt from an hour ago → claim row + earn txn
-  --    with the rcpt- token + balance + 10% community mint, all in one call.
+  --    with the rcpt- token + balance + 50% community mint (068), all in one call.
   select cr.claim_id, cr.new_balance, cr.new_community into v_claim, v_bal, v_comm
   from public.claim_receipt(s1, v, now_local - interval '1 hour', c_tz, 12.19, 121) cr;
 
@@ -47,8 +47,8 @@ begin
     raise notice 'FAIL happy path: claim %, balance % (wanted 121)', v_claim, v_bal;
   end if;
 
-  if v_comm = 12 then raise notice 'PASS happy path: community mint 12 (10%% of 121)';
-  else raise notice 'FAIL happy path: community mint % (wanted 12)', v_comm; end if;
+  if v_comm = 60 then raise notice 'PASS happy path: community mint 60 (50%% of 121, migration-068)';
+  else raise notice 'FAIL happy path: community mint % (wanted 60)', v_comm; end if;
 
   select count(*) into n from public.transactions
   where user_id = s1 and vendor_id = v and type = 'earn'

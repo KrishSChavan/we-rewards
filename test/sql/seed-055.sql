@@ -25,3 +25,7 @@ insert into public.vendors (id, name, slug, points_per_dollar, active, created_a
   ('00000000-0000-0000-0000-000000000552', 'Yallah Taco',    'yallah-taco-055',    12, true,  now() - interval '90 days'),
   ('00000000-0000-0000-0000-000000000553', 'Closed For Now', 'closed-for-now-055', 10, false, now() - interval '150 days'),
   ('00000000-0000-0000-0000-000000000554', 'Webster''s',     'websters-055',       8,  true,  timestamptz '2026-01-15 12:00:00+00');
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

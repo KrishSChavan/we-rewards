@@ -105,3 +105,7 @@ insert into public.point_balances (user_id, vendor_id, balance) values
 -- alerts and student deals apart.
 insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values
   (null, 'https://push.example/admin-1', 'k', 'a');
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

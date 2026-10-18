@@ -7,15 +7,17 @@
 //     between the public /join door and the operator's own "Add vendor" form.
 //   • starterItemToReward turns the dollars an applicant typed into the points
 //     a rewards row holds. This is the load-bearing conversion: /join has no
-//     rate field, so it is the ONLY place the two currencies meet, and getting
-//     it wrong mis-prices every item a vendor opens with.
+//     points field, so it is the ONLY place the two currencies meet, and getting
+//     it wrong mis-prices every item a vendor opens with. Since migration-068
+//     the applicant names what the item SELLS FOR (`price`, saved at 4x); an
+//     application sent before that names a `spend`, converted at the rate.
 //   • validApplication (src/routes/apply.js) is the public door itself, held
 //     here to the rule that an application naming no items cannot get in.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   validStarterItem, validStarterItems, starterItemToReward,
-  SPEND_MIN, SPEND_MAX, MAX_STARTER_ITEMS,
+  SPEND_MIN, SPEND_MAX, PRICE_MIN, PRICE_MAX, MAX_STARTER_ITEMS,
 } from '../src/lib/rewards.js';
 import { validApplication } from '../src/routes/apply.js';
 import { validNewVendor } from '../src/routes/admin.js';
@@ -99,10 +101,11 @@ test('`rewards` must be a list', () => {
   assert.match(validStarterItems({ title: 'Free coffee', spend: 25 }).error, /list/);
 });
 
-/* ---------- dollars to points ----------
-   The only place the two currencies meet. Every case here is a real vendor
-   configuration: 10/$ is the table default, 5/$ a vendor who halved it, 0.5 and
-   1000 the ends of the ratio band validRatio allows. */
+/* ---------- dollars to points: a pre-068 `spend` ----------
+   An application sent before migration-068 asked what a customer should
+   SPEND, converted at the location's rate. Every vendor is on 1 now, but the
+   conversion still has to honour whatever rate it is handed: 10/$ was the old
+   table default, 5/$ a vendor who halved it, 0.5 and 1000 the old band's ends. */
 
 test('at the default rate, the dollars an applicant typed become the obvious points', () => {
   assert.equal(starterItemToReward(ITEM, 10).cost_in_points, 250);
@@ -134,11 +137,56 @@ test('no legal spend at any legal rate can fall outside the price column bounds'
   }
 });
 
-test('a missing or nonsense rate falls back to the table default instead of throwing', () => {
+test('a missing or nonsense rate falls back to the one rate instead of throwing', () => {
   // This runs mid-onboard, after the login and the vendors row already exist. A
   // rate that failed to come back must not be the thing that unwinds an accept.
+  // The fallback is 1 point per $1 (migration-068), not the old default of 10.
   for (const rate of [null, undefined, 0, -5, NaN, 'ten']) {
-    assert.equal(starterItemToReward(ITEM, rate).cost_in_points, 250, `rate ${rate}`);
+    assert.equal(starterItemToReward(ITEM, rate).cost_in_points, 25, `rate ${rate}`);
+  }
+});
+
+/* ---------- what it sells for: the 068 question ---------- */
+
+const PRICED = { title: 'Small coffee', price: 4.99, emoji: '☕' };
+
+test('a priced item comes back with its price, not a spend', () => {
+  const out = validStarterItem({ title: ' Small coffee ', price: '4.99', emoji: '☕' });
+  assert.deepEqual(out.item, { title: 'Small coffee', price: 4.99, emoji: '☕' });
+});
+
+test('price wins when an item somehow carries both', () => {
+  assert.deepEqual(validStarterItem({ title: 'a', price: 3, spend: 25 }).item, { title: 'a', price: 3, emoji: '🎁' });
+});
+
+test('the price band is inclusive at both ends and refuses blanks', () => {
+  assert.equal(validStarterItem({ title: 'a', price: PRICE_MIN }).item.price, PRICE_MIN);
+  assert.equal(validStarterItem({ title: 'a', price: PRICE_MAX }).item.price, PRICE_MAX);
+  assert.ok(validStarterItem({ title: 'a', price: PRICE_MAX + 0.01 }).error);
+  for (const price of ['', null, 0, -1, 'abc', [], {}]) {
+    assert.match(validStarterItem({ title: 'a', price }).error ?? '', /what it sells for/, `should refuse ${JSON.stringify(price)}`);
+  }
+  // No price AND no spend is a blank price, not a pre-068 item.
+  assert.match(validStarterItem({ title: 'a' }).error, /what it sells for/);
+});
+
+test('a priced item is saved at 4x its whole-dollar price, keeping the price', () => {
+  // $4.99 earns 4 points a purchase (earning floors), so 4 purchases = 16.
+  assert.deepEqual(starterItemToReward(PRICED, 1), {
+    title: 'Small coffee', emoji: '☕', cost_in_points: 16, item_price_cents: 499,
+  });
+  assert.equal(starterItemToReward({ ...PRICED, price: 5 }, 1).cost_in_points, 20);
+  assert.equal(starterItemToReward({ ...PRICED, price: 12.5 }, 1).cost_in_points, 48);
+});
+
+test('a price under $1 still suggests points, never a free item', () => {
+  // 0 points means FREE (migration-067); a 75-cent item must not become one.
+  assert.equal(starterItemToReward({ ...PRICED, price: 0.75 }, 1).cost_in_points, 4);
+});
+
+test('a priced item ignores the rate it is handed', () => {
+  for (const rate of [null, 0, 1, 10, 1000]) {
+    assert.equal(starterItemToReward(PRICED, rate).cost_in_points, 16, `rate ${rate}`);
   }
 });
 
@@ -161,6 +209,17 @@ test('an application naming one item carries it through to the insert', () => {
   const out = validApplication({ ...APPLICATION, rewards: [ITEM] });
   assert.equal(out.error, undefined);
   assert.deepEqual(out.fields.rewards, [{ title: 'Free small coffee', spend: 25, emoji: '☕' }]);
+});
+
+test('what /join sends since 068, a price, carries through both doors', () => {
+  const app = validApplication({ ...APPLICATION, rewards: [{ title: 'Small coffee', price: '4.99', emoji: '☕' }] });
+  assert.equal(app.error, undefined);
+  assert.deepEqual(app.fields.rewards, [{ title: 'Small coffee', price: 4.99, emoji: '☕' }]);
+  const base = { name: 'Joe’s Pizza', email: 'joe@example.com', password: 'a-good-password' };
+  assert.deepEqual(validNewVendor({ ...base, rewards: [{ title: 'Small coffee', price: 4.99 }] }).rewards, [
+    { title: 'Small coffee', price: 4.99, emoji: '🎁' },
+  ]);
+  assert.match(validNewVendor({ ...base, rewards: [{ title: 'Small coffee', price: 0 }] }).error, /what it sells for/);
 });
 
 test('the items are checked before the locations, matching the order on the page', () => {

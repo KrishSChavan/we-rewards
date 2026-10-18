@@ -16,7 +16,7 @@ import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WIN
 import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupVendorAnalytics } from '../lib/analytics.js';
-import { validReward, validRatio, pointsFor, mergeRewardEdit, onceUpdate } from '../lib/rewards.js';
+import { validReward, lockedRatio, validItemPrice, pointsFor, mergeRewardEdit, onceUpdate } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 // The bonus window (migration-063). bonusBoost REPLACES reading
@@ -503,7 +503,7 @@ router.post('/award', async (req, res, next) => {
     if (error) throw error;
 
     const newBalance = data?.[0]?.new_balance;
-    // award_points also mints 10% into the student's cross-vendor pool
+    // award_points also mints 50% into the student's cross-vendor pool
     // (migration-026). One event carries both numbers: the student app reads
     // payload.community when it's there and refetches when it isn't
     // (public/student/app.js), so no new room or event type is needed.
@@ -822,7 +822,7 @@ function itemCapRefusal(vendor, cap, door) {
   return { error: 'ITEM_CAP_REACHED', message, cap, plan };
 }
 
-/** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji, oncePerStudent } */
+/** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji, oncePerStudent, itemPrice } */
 router.post('/rewards', requirePin, async (req, res, next) => {
   try {
     // Type-gate the two TEXT fields before validReward coerces them. It opens
@@ -837,6 +837,10 @@ router.post('/rewards', requirePin, async (req, res, next) => {
     }
     const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji, req.body?.oncePerStudent);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
+    // What the item sells for (migration-068), optional. The form suggests the
+    // point price from it; the server only stores it.
+    const price = validItemPrice(req.body?.itemPrice);
+    if (price.error) return res.status(400).json({ error: 'BAD_REWARD', message: price.error });
 
     // The free tier's catalogue cap. Counted on CREATE only, and counting
     // ACTIVE items rather than all of them — so a vendor who drops to freshman
@@ -869,6 +873,8 @@ router.post('/rewards', requirePin, async (req, res, next) => {
         // Only a free item writes the flag (migration-067), so a priced item
         // still saves on a database that does not have the column yet.
         ...(v.cost === 0 ? { once_per_student: v.once } : {}),
+        // Same reasoning for the price (068): no price, no column named.
+        ...(price.value != null ? { item_price_cents: price.value } : {}),
       })
       .select()
       .single();
@@ -882,7 +888,7 @@ router.post('/rewards', requirePin, async (req, res, next) => {
   }
 });
 
-/** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, costInVisits?, emoji?, oncePerStudent?, active? } */
+/** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, costInVisits?, emoji?, oncePerStudent?, itemPrice?, active? } */
 router.patch('/rewards/:id', requirePin, async (req, res, next) => {
   try {
     // A malformed id is a clean 404, not a uuid-cast 500 in the update query.
@@ -926,6 +932,13 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
       if (req.body?.costInVisits !== undefined) updates.cost_in_visits = v.visits;
       if (req.body?.emoji !== undefined) updates.emoji = v.emoji;
       Object.assign(updates, onceUpdate(req.body, current, v));
+    }
+    // The price stands apart from the merge above: no rule ties it to the
+    // other fields, and null (an emptied box) clears it.
+    if (req.body?.itemPrice !== undefined) {
+      const price = validItemPrice(req.body.itemPrice);
+      if (price.error) return res.status(400).json({ error: 'BAD_REWARD', message: price.error });
+      updates.item_price_cents = price.value;
     }
     if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
     if (!Object.keys(updates).length) {
@@ -1669,7 +1682,6 @@ router.delete('/campaigns/:id', requirePin, async (req, res, next) => {
 });
 
 /* ---------- vendor self-service settings ---------- */
-/* RATIO_MIN / RATIO_MAX now come from src/lib/rewards.js (shared with admin). */
 
 /** Validate quick-amount buttons: 0–8 rows, each a label + a fixed dollar amount.
  *  An empty list is valid — quick buttons are optional, and the terminal falls
@@ -1702,10 +1714,13 @@ function validSettings(body) {
   const updates = {};
   let pin = null;
 
+  // The earning rate is no longer the vendor's to set (migration-068: $1 = 1
+  // point everywhere). A terminal still on the old Settings screen sends it
+  // with every save, so 1 is accepted and written nowhere; anything else is
+  // refused with the reason rather than dropped without a word.
   if (body?.pointsPerDollar != null) {
-    const r = validRatio(body.pointsPerDollar);
+    const r = lockedRatio(body.pointsPerDollar);
     if (r.error) return { error: r.error };
-    updates.points_per_dollar = r.value; // column is numeric(6,2)
   }
 
   if (body?.allowExactEntry != null) {
@@ -1793,9 +1808,10 @@ router.get('/settings', requirePin, (req, res) => {
 });
 
 /**
- * PATCH /api/vendor/settings  { pointsPerDollar?, allowExactEntry?, tiers?, pin? }
- * Lets a vendor tune their own economics. Strict validation (ratio bounds,
- * well-formed ascending/non-overlapping tiers, 4-digit PIN). A PIN change is
+ * PATCH /api/vendor/settings  { allowExactEntry?, tiers?, pin?, ... }
+ * Lets a vendor tune their own terminal. Strict validation (well-formed
+ * ascending/non-overlapping tiers, 4-digit PIN). pointsPerDollar is accepted
+ * only as 1, the one rate (migration-068). A PIN change is
  * re-hashed with bcrypt and invalidates every existing PIN session for this
  * vendor — including this request's own token — so old sessions can't linger.
  */
@@ -1837,24 +1853,6 @@ router.patch('/settings', requirePin, async (req, res, next) => {
     // validSettings, because only this line knows the address was a no-op.
     if (!Object.keys(updates).length) {
       return res.json({ ...settingsView(req.vendor), pinChanged: false });
-    }
-
-    // RATE PARITY across a shared purse (migration-046). Locations that share
-    // points must charge the same points per dollar, or one systematically
-    // funds the other; pool_join refuses a mismatch at the door, and this is
-    // the other way parity could break — a vendor retuning their own rate from
-    // their own Settings tab. Fanned out rather than refused: a chain has to be
-    // able to reprice, and the alternative (leave the pool, change it, rejoin)
-    // moves customers' money twice for a number change. Every sibling lands on
-    // the new rate in one statement, so parity is never briefly false.
-    if (req.vendor.pool_id && 'points_per_dollar' in updates) {
-      const { error: fanErr } = await supabaseAdmin
-        .from('vendors')
-        .update({ points_per_dollar: updates.points_per_dollar })
-        .eq('pool_id', req.vendor.pool_id)
-        .neq('id', req.vendor.id);
-      if (fanErr) throw fanErr;
-      invalidateVendorCaches();   // every sibling's earn rate just changed
     }
 
     const { data, error } = await supabaseAdmin

@@ -741,7 +741,7 @@
 
       <div class="card">
         <h3>New pool</h3>
-        <p class="muted">A new pool is empty: it holds nothing and changes nothing until a location joins it. Every location in one pool has to charge the same points per dollar, and each needs a staff PIN set before it can join.</p>
+        <p class="muted">A new pool is empty: it holds nothing and changes nothing until a location joins it. Each location needs a staff PIN set before it can join.</p>
         <form id="pool-new-form" class="inc-form" novalidate>
           <div class="inc-field inc-field-wide">
             <label class="vendor-edit-label" for="pool-new-label">Pool name</label>
@@ -1250,15 +1250,8 @@
         <p class="vendor-edit-hint">Operator-only, and never shown to students or on the terminal. This is the number a reset code gets read out to when a vendor has lost their email as well as their password, so it is worth filling in even when the shop is easy to reach otherwise.</p>
       </div>
 
-      <div class="vendor-edit-section">
-        <p class="vendor-edit-label">Points per dollar</p>
-        <div class="vendor-ratio-row">
-          <input id="vendor-edit-ratio" class="vendor-edit-input" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" aria-label="Points per dollar" />
-          <button id="vendor-ratio-save" class="vr-save" type="button">Save rate</button>
-          <span id="vendor-ratio-note" class="vendor-edit-note"></span>
-        </div>
-        <p class="vendor-edit-hint">A $10 purchase at rate 10 earns 100 points. Allowed: 0.5 to 1000.</p>
-      </div>
+      <!-- No "Points per dollar" section since migration-068: every vendor earns
+           $1 = 1 point, held by a CHECK, so there is nothing here to edit. -->
 
       <!-- Spot reviews (migration-066). Loaded when the dialog opens, from its
            own endpoint rather than the roster row: see the note above
@@ -1448,18 +1441,19 @@
              empty and students see "No rewards yet" until somebody fills it in,
              which the Edit dialog on this same page can do straight away.
 
-             Priced in dollars, like /join, and converted to points on save at
-             whatever rate the new vendor lands on. -->
+             Asked as what it SELLS FOR, like /join since migration-068, and
+             saved with the ITEMS form's suggestion: 4x the whole-dollar price,
+             so buying it 4 times earns the 5th. -->
         <div class="nv-field">
           <span class="vendor-edit-label">First item <em class="nv-opt">(optional)</em></span>
           <div class="nv-item-row">
             <input id="nv-item-title" class="nv-input" type="text" maxlength="60" autocomplete="off" placeholder="Free small coffee" aria-label="Item name" />
             <span class="nv-spend">
               <span class="nv-currency" aria-hidden="true">$</span>
-              <input id="nv-item-spend" class="nv-input" type="number" min="1" max="1000" step="any" inputmode="decimal" placeholder="25" aria-label="Spend needed to earn it" />
+              <input id="nv-item-price" class="nv-input" type="number" min="0.01" max="1000" step="0.01" inputmode="decimal" placeholder="4.99" aria-label="What the item sells for" />
             </span>
           </div>
-          <span class="vendor-edit-hint">What a customer spends with them, over time, to earn it. Saved as points at their rate, so at 10 points per $1 a $25 item becomes 250 points. Leave both blank to skip.</span>
+          <span class="vendor-edit-hint">What the item sells for. Saved at 4× that in points (a $5 item becomes 20 points), so a customer who buys it 4 times gets the 5th free. The vendor can change it from their ITEMS tab. Leave both blank to skip.</span>
         </div>
 
         <div class="nv-field">

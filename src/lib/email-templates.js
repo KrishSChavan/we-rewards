@@ -348,7 +348,7 @@ export function applicationAccepted({
       h2('First things worth doing'),
       bullets([
         `Set a staff PIN. It is what stops a customer redeeming a reward themselves.`,
-        `Check your points rate, so customers earn what you meant them to.`,
+        `Check your items have the point prices you want. Customers earn 1 point per $1 at every spot.`,
         `Print your QR poster from the terminal and put it by the till.`,
       ]),
     ], GAP_TIGHT),
@@ -386,7 +386,7 @@ export function applicationAccepted({
     'FIRST THINGS WORTH DOING',
     '',
     '- Set a staff PIN. It is what stops a customer redeeming a reward themselves.',
-    '- Check your points rate, so customers earn what you meant them to.',
+    '- Check your items have the point prices you want. Customers earn 1 point per $1 at every spot.',
     '- Print your QR poster from the terminal and put it by the till.',
     '',
     'If anything looks wrong, reply to this email or write to us at contactwerewards@gmail.com and a person will get back to you.',

@@ -88,7 +88,7 @@ config — the terminal never sends a point value.
    the CLI directly:
    ```
    npm run onboard -- --name "Local Eats" --slug local-eats \
-     --email owner@example.com --password TempPass123! --ratio 10 --pin 4321
+     --email owner@example.com --password TempPass123! --pin 4321
    ```
 6. Add that vendor's rewards rows in the Supabase table editor
    (`rewards`: vendor_id, title, cost_in_points).
@@ -120,14 +120,44 @@ config — the terminal never sends a point value.
 
 ## Point math
 
-- Ratio: `points_per_dollar` per vendor (e.g., 10).
+- Rate: **1 point per $1 at every vendor** since migration-068. The column
+  `vendors.points_per_dollar` is still what every earn path multiplies by, and a
+  CHECK (`vendors_points_per_dollar_is_one`) holds it at 1. Vendors used to pick
+  their own (0.5 to 1000); see **One earning rate** below.
 - Quick-amount buttons (shown once the terminal's SCAN tab resolves a customer)
   award `floor(amount × ratio)`
   from a fixed dollar `amount` per button (edited in SETTINGS) — derived at request
-  time, so changing the ratio updates every button automatically.
+  time.
 - Exact entry awards `floor(amount × ratio)`. Always floor, never round up.
 - The base award is then multiplied by the customer's **tier multiplier**
   (1x / 1.5x / 2x, see below) and floored to whole points.
+- Every earn also mints **50%** of the awarded points (10% before migration-068)
+  into the student's community balance, rounded down, capped at 200 a day.
+
+## One earning rate (migration-068)
+
+Students could not compare spots when "150 points" meant $15 of lunch at one and
+$150 at the next, so every vendor now earns at $1 = 1 point and the vendor's
+Settings, the operator's vendor dialog and `onboard --ratio` no longer set it.
+The ITEMS form instead asks what an item **sells for** and fills "Points to
+redeem" with 4× the whole-dollar price (`suggestedItemPoints`, mirrored in
+`public/vendor/terminal.js`): buy it four times, the fifth is free. Whole
+dollars because earning floors, so a $4.99 coffee earns 4 and 4 × 4 = 16 is what
+four of them really earn. The vendor can type any point price instead; the
+price is saved as `rewards.item_price_cents` and priced from nowhere else. /join
+and the operator's "Add vendor" first item ask the same question.
+
+The migration converted every vendor that was off 1, dividing by its old rate so
+each student kept the same progress: item prices `round(cost / rate)` (never
+below 1; free and visits-only items untouched), balances `ceil(earned / rate)`,
+except points a student had **moved in from community points**, which stay 1:1
+because community points were not rescaled. History keeps its old numbers.
+Shared purses were **rebased**: `pool_leave` and `pool_settlement` read history
+since `pool_joined_at`, so each location's share was recomputed once, converted,
+written as one `pool_moves` 'join' row, and `pool_joined_at` moved to the
+conversion (the operator's pool view now says "joined" with that date). Every
+changed value is in `rate_conversion_068`. Apply it **before** deploying the
+server that ships with it, while the tills are quiet.
 
 ## Engagement tiers (earn multipliers)
 
@@ -139,7 +169,7 @@ customers; a geometric blend only pays out when all three are strong, so
 looping through vendors beats whaling one. Anti-farming: visits count once
 per vendor per day, and each visit credits at most $30 of spend.
 
-- Score < 350 → **1x** (the vendor's own ratio)
+- Score < 350 → **1x** (1 point per $1)
 - 350–699 → **1.5x**
 - 700+ → **2x**
 
@@ -290,8 +320,8 @@ later. Analytics sums are signed, so a voided transaction nets back out.
 ## Vendor self-service settings
 
 `GET`/`PATCH /api/vendor/settings` (PIN-gated) let a vendor tune their own
-economics from the terminal's **SETTINGS** tab: points-per-dollar (bounded), the
-exact-entry toggle, the quick-amount buttons (label + fixed dollar amount each),
+economics from the terminal's **SETTINGS** tab (the earning rate is not one of
+them since migration-068: 1 point per $1 everywhere): the exact-entry toggle, the quick-amount buttons (label + fixed dollar amount each),
 and the staff PIN. The quick-amount buttons render as tap-to-award buttons on the
 award pad the SCAN tab opens. A PIN change is re-hashed with bcrypt and **invalidates every
 existing PIN session** for that vendor, so the terminal re-asks for the new PIN.
@@ -460,12 +490,11 @@ wholesale, so the re-sync path re-stamps it every boot.
   matching on name, location label and address; Enter opens the vendor when the
   filter has narrowed to one.
 
-Two behaviours are unchanged and worth knowing before you edit someone's
-Settings, because they are the vendor's own rules and the operator inherits them:
-changing `points_per_dollar` on a **pooled** vendor fans the new rate out to every
-sibling in the pool (migration-044), and changing the **staff PIN** deletes that
-vendor's `vendor_pin_sessions`, signing every one of their live terminals out
-mid-shift.
+One behaviour is unchanged and worth knowing before you edit someone's
+Settings, because it is the vendor's own rule and the operator inherits it:
+changing the **staff PIN** deletes that vendor's `vendor_pin_sessions`, signing
+every one of their live terminals out mid-shift. (The other used to be the earn
+rate fanning out across a pool; there is one rate since migration-068.)
 
 Covered by `test/terminal-admin.test.js` (the pure decisions — the unconfigured
 cases are the load-bearing ones, since a false positive there hands out every
@@ -758,8 +787,8 @@ It is **incentive kind #3**, and the whole of it is one new value in
 the shape migration-040 established. `award_points` is **not touched**: both
 earn paths already compute `floor(basePoints × multiplier)` in JavaScript and
 hand an integer to the RPC, so a bonus window is a change to one multiplication
-in two places. The 10% community mint scales along with it for free, the same
-way it already does for a tier multiplier.
+in two places. The community mint (50% since migration-068) scales along with it
+for free, the same way it already does for a tier multiplier.
 
 ### ⚠ This is the one kind that spends the VENDORS' points
 
@@ -1383,11 +1412,15 @@ powershell -File test/sql/run.ps1 -Migration migration-063.sql `
            -Seed seed-063.sql -Behavior behavior-063.sql # double points weekend
 powershell -File test/sql/run.ps1 -Migration migration-065.sql `
            -Seed seed-065.sql -Behavior behavior-065.sql # NFC tag traffic
+powershell -File test/sql/run.ps1 -Migration migration-068.sql `
+           -Seed seed-068.sql -Behavior behavior-068.sql # $1 = 1 point conversion
 ```
 
 Each migration brings its own `-Seed` / `-Behavior` pair, because a seed written
 for one migration is dismantled by later ones (030 drops the columns 029's seed
-writes). `behavior-032.sql` stages the five-vendors-one-student storm and asserts
+writes). Every seed that creates vendors ends by putting them on 1 point per $1:
+migration-068 would otherwise convert that seed's balances and prices before its
+own assertions run. `behavior-032.sql` stages the five-vendors-one-student storm and asserts
 the student receives exactly one bundle.
 
 ### Running the DB tests locally

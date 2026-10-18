@@ -4,9 +4,11 @@
  *   node scripts/onboard-vendor.js \
  *     --name "Local Eats" --slug local-eats \
  *     --email owner@example.com --password TempPass123! \
- *     --ratio 10 --pin 4321 --address "123 College Ave, State College, PA"
+ *     --pin 4321 --address "123 College Ave, State College, PA"
  *
  * Creates: auth user for the vendor login, vendors row, vendor_staff link.
+ * There is no --ratio: every vendor earns $1 = 1 point (migration-068), which
+ * the vendors table default already gives.
  * Default tiers are applied; edit them in the Supabase dashboard or add flags later.
  * --address is optional; if given, it's geocoded (Nominatim) so the student app
  * can show a map on the vendor card. The vendor can also set/edit it later in the
@@ -29,7 +31,11 @@ const args = Object.fromEntries(
     .map((s) => { const [k, ...v] = s.trim().split(' '); return [k, v.join(' ')]; })
 );
 
-const required = ['name', 'slug', 'email', 'password', 'ratio', 'pin'];
+const required = ['name', 'slug', 'email', 'password', 'pin'];
+if (args.ratio) {
+  console.error('--ratio is gone: every vendor earns $1 = 1 point (migration-068). Drop the flag and re-run.');
+  process.exit(1);
+}
 const missing = required.filter((k) => !args[k]);
 if (missing.length) {
   console.error(`Missing flags: ${missing.map((m) => '--' + m).join(', ')}`);
@@ -57,7 +63,6 @@ const { data: vendor, error: vendErr } = await supabase
   .insert({
     name: args.name,
     slug: args.slug,
-    points_per_dollar: Number(args.ratio),
     pin_hash: await bcrypt.hash(String(args.pin), 10),
     location_label: args.location ? String(args.location).trim() : null,
     address,

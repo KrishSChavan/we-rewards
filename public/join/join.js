@@ -196,18 +196,17 @@ function collectLocations() {
    what they would give away; asking them to come back and think about it later
    is a second conversation, and until it happens their spot looks broken.
 
-   PRICED IN DOLLARS. This page has no points-per-dollar field and never has,
-   so a points figure typed here would be a guess against a rate the applicant
-   cannot see. They are asked what a customer should SPEND, and the server turns
-   that into points on accept, at whatever rate their vendor row lands on. Their
-   terminal then prints the same dollar figure back under the points price
-   (spendForPoints in public/vendor/terminal.js), so nobody has to hold two
-   currencies in their head. Keep these bounds in sync with SPEND_MIN /
-   SPEND_MAX / MAX_STARTER_ITEMS in src/lib/rewards.js. */
+   PRICED IN DOLLARS. A points figure typed here would be a guess by somebody
+   who has never seen a point, so since migration-068 they are asked the one
+   thing every shop knows: what the item SELLS FOR. The server saves it at 4x
+   in points on accept (suggestedItemPoints in src/lib/rewards.js), so a
+   customer who buys it four times has earned the fifth, and their terminal
+   shows both numbers. Keep these bounds in sync with PRICE_MIN / PRICE_MAX /
+   MAX_STARTER_ITEMS in src/lib/rewards.js. */
 
 const MAX_ITEMS = 6;
-const SPEND_MIN = 1;
-const SPEND_MAX = 1000;
+const PRICE_MIN = 0.01;
+const PRICE_MAX = 1000;
 const DEFAULT_EMOJI = '🎁';
 
 const rewardRows = () => [...document.querySelectorAll('#reward-rows .rw-row')];
@@ -256,7 +255,7 @@ function collectRewards() {
     // Sent as typed. Number('') is 0 and Number('abc') is NaN, and the server's
     // range check refuses both with a message naming the item — turning them
     // into a number here would only decide which wrong value it complains about.
-    spend: row.querySelector('[data-rw-spend]').value.trim(),
+    price: row.querySelector('[data-rw-price]').value.trim(),
     emoji: row.querySelector('[data-rw-emoji]').dataset.picked || DEFAULT_EMOJI,
   }));
 }
@@ -286,9 +285,9 @@ function firstProblem() {
   const items = collectRewards();
   for (let i = 0; i < items.length; i++) {
     if (!items[i].title) return `Name item ${i + 1}, or remove it.`;
-    const spend = Number(items[i].spend);
-    if (!items[i].spend || !Number.isFinite(spend) || spend < SPEND_MIN || spend > SPEND_MAX) {
-      return `For item ${i + 1}, enter how much a customer spends to earn it, from $${SPEND_MIN} to $${SPEND_MAX}.`;
+    const price = Number(items[i].price);
+    if (!items[i].price || !Number.isFinite(price) || price < PRICE_MIN || price > PRICE_MAX) {
+      return `For item ${i + 1}, enter what it sells for, from $${PRICE_MIN} to $${PRICE_MAX.toLocaleString('en-US')}.`;
     }
   }
   // Counting from 2: location one is the form above these rows.

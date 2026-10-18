@@ -44,7 +44,7 @@ const STEPS = [
   },
   {
     title: 'Points land right away',
-    body: 'Points appear on your phone the moment the shop awards them, not overnight. Every spot sets its own earning rate and its own rewards, so a coffee shop and a pizza place can run completely different programs.',
+    body: 'Points appear on your phone the moment the shop awards them, not overnight. Every spot earns the same, 1 point per $1, and sets its own rewards, so a coffee shop and a pizza place can still run completely different programs.',
   },
   {
     title: 'Trade them in for free food',

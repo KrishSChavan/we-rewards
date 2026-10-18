@@ -73,3 +73,7 @@ insert into public.punch_redeem_codes (code, user_id, vendor_id, card_id, expire
 
 insert into public.point_balances (user_id, vendor_id, balance) values
   ('aaaaaaaa-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 120);
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

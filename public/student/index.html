@@ -697,7 +697,7 @@
               </div>
 
               <!-- Community points — the one balance on this screen that isn't
-                   tied to a single spot: 10% of everything earned anywhere lands
+                   tied to a single spot: 50% of everything earned anywhere lands
                    here and spends anywhere. First in the stack, because it is
                    the balance the button under it feeds.
                    Tapping it opens the Move-points sheet (#move-modal) when
@@ -723,7 +723,7 @@
                   <span id="community-amount" class="cc-amount" hidden>
                     <span id="community-balance" class="cc-num">0</span><small>pts</small>
                   </span>
-                  <span class="cc-sub">10% back on every visit. Spend it at any spot.</span>
+                  <span class="cc-sub">50% back on every visit. Spend it at any spot.</span>
                 </span>
                 <span class="cc-chevron" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
@@ -1863,9 +1863,9 @@
     <div id="community-info-card" class="info-card" role="dialog" aria-label="How community points work">
       <button id="community-info-close" class="info-close" type="button" aria-label="Close">✕</button>
       <h3>Community points</h3>
-      <p>Every time you earn at a WeRewards spot, <strong>10%</strong> of those points drop into your community balance too.</p>
+      <p>Every time you earn at a WeRewards spot, <strong>half</strong> of those points drop into your community balance too.</p>
       <ul>
-        <li>Earn <strong>150 pts</strong> at a spot → <strong>15 community points</strong></li>
+        <li>Earn <strong>20 pts</strong> at a spot → <strong>10 community points</strong></li>
         <li>They're <strong>on top</strong> of your normal points, so your spot balance isn't touched</li>
         <li>They spend at <strong>any</strong> spot, not just the one that gave them to you</li>
       </ul>
@@ -2472,7 +2472,6 @@
             </div>
           </div>
           <p id="map-pin-address" class="map-pin-address"></p>
-          <p id="map-pin-rate" class="map-pin-rate" hidden></p>
           <!-- Why the number above is the same on the chain's other pins.
                Written by paintPinPool(); ships [hidden] so the sheet's height is
                unchanged for an unpooled spot. -->

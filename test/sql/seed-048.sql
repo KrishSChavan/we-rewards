@@ -70,3 +70,7 @@ insert into public.punch_cards (user_id, vendor_id, punches) values
 -- The other student, at the one vendor student one has never been to.
 insert into public.transactions (user_id, vendor_id, type, points, dollar_amount, created_at) values
   ('00000000-0000-0000-0000-000000000482', '00000000-0000-0000-0000-0000000004b5', 'earn', 50, 5, now() - interval '1 day');
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

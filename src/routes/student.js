@@ -1402,7 +1402,7 @@ router.get('/tier', requireConsent, async (req, res, next) => {
 
 /**
  * GET /api/me/community — the cross-vendor pool (community-points.md step 4).
- * Not keyed to a vendor: one row per student, minted at 10% of every earn.
+ * Not keyed to a vendor: one row per student, minted at 50% of every earn (10% before 068).
  * A student who has never earned has no row, which is a 0 balance, not an error.
  */
 router.get('/community', requireConsent, async (req, res, next) => {
@@ -2131,7 +2131,7 @@ export function mergeHistory(transactions, grants, { max = HISTORY_ROWS, grantMa
  * GET /api/me/history[?days=30] — the student's recent activity.
  *
  * Two sources merged, because community points arrive two different ways: the
- * 10% that rides on an `earn` row (migration-026), and an incentive payout,
+ * 50% that rides on an `earn` row (migration-026; 10% before 068), and an incentive payout,
  * which has no vendor and therefore cannot be a transaction at all
  * (community_grants, migration-039). A referral bonus that never appeared here
  * would look to a student like points from nowhere.

@@ -41,3 +41,7 @@ commit;
 -- The pool is made the supported way, through pool_join (migration-046).
 select * from public.pool_join('00000000-0000-0000-0000-0000000066f1', '00000000-0000-0000-0000-0000000066a2');
 select * from public.pool_join('00000000-0000-0000-0000-0000000066f1', '00000000-0000-0000-0000-0000000066a3');
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

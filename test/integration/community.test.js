@@ -1,7 +1,7 @@
 // Integration tests for the community-points engine (migrations 026 + 027)
 // against a real (disposable) Supabase. Opt-in: the whole suite is skipped
 // unless TEST_SUPABASE_URL is set (see helpers.js). Covers the step-7 checklist
-// of community-points.md: the 10% mint (floor, idempotency, daily cap, inactive
+// of community-points.md: the mint (50% since migration-068; floor, idempotency, daily cap, inactive
 // vendors), the reversal unwind (both columns, clamped), the one-way transfer
 // (exact move, insufficient funds, ineligible vendors, the monthly inbound cap,
 // no vendor undo), and the migration-025 guard on the new money table.
@@ -15,8 +15,8 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
   let vendorA, vendorB, student;
 
   before(async () => {
-    vendorA = await createVendor({ pointsPerDollar: 10 });
-    vendorB = await createVendor({ pointsPerDollar: 10 });
+    vendorA = await createVendor();
+    vendorB = await createVendor();
     student = await createUser();
   });
   after(async () => {
@@ -48,20 +48,20 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
 
   /* ---------- the mint (migration-026) ---------- */
 
-  test('award_points mints floor(points × 10%): 9 mints 0, 10 mints 1', async () => {
+  test('award_points mints floor(points × 50%): 1 mints 0, 3 mints 1 (migration-068)', async () => {
     const start = (await community()).balance;
 
-    const nine = await award(9);
-    assert.equal(nine.error, null);
-    assert.equal(nine.data[0].new_community, start, '9 points mints nothing');
+    const one = await award(1);
+    assert.equal(one.error, null);
+    assert.equal(one.data[0].new_community, start, '1 point mints nothing');
 
-    const ten = await award(10);
-    assert.equal(ten.error, null);
-    assert.equal(ten.data[0].new_community, start + 1, '10 points mints exactly 1');
+    const three = await award(3);
+    assert.equal(three.error, null);
+    assert.equal(three.data[0].new_community, start + 1, '3 points mint exactly 1');
 
-    const big = await award(150);
+    const big = await award(30);
     assert.equal(big.error, null);
-    assert.equal(big.data[0].new_community, start + 1 + 15, '150 points mints 15');
+    assert.equal(big.data[0].new_community, start + 1 + 15, '30 points mint 15');
 
     const cb = await community();
     assert.equal(cb.balance, start + 16);
@@ -79,11 +79,11 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
     const token = `ct-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const start = (await community()).balance;
 
-    const first = await award(100, { token });
+    const first = await award(20, { token });
     assert.equal(first.error, null);
     assert.equal(first.data[0].new_community, start + 10);
 
-    const second = await award(100, { token });
+    const second = await award(20, { token });
     assert.equal(second.error, null);
     assert.equal(second.data[0].new_community, start + 10, 'the retry mints nothing more');
     assert.equal((await community()).balance, start + 10);
@@ -92,15 +92,15 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
   test('daily mint cap: past 200 community points/day the mint stops, vendor points still land in full', async () => {
     const capped = await createUser();
     try {
-      // 2000 award-points = 200 community points — exactly the daily cap.
-      await award(1000, { userId: capped.id });
-      await award(1000, { userId: capped.id });
+      // 400 award-points = 200 community points at 50% — exactly the daily cap.
+      await award(200, { userId: capped.id });
+      await award(200, { userId: capped.id });
       assert.equal((await community(capped.id)).balance, 200);
 
-      const over = await award(500, { userId: capped.id });
+      const over = await award(100, { userId: capped.id });
       assert.equal(over.error, null);
       assert.equal(over.data[0].new_community, 200, 'the mint is capped...');
-      assert.equal(over.data[0].new_balance, 2500, '...but the vendor points land in full');
+      assert.equal(over.data[0].new_balance, 500, '...but the vendor points land in full');
       assert.equal((await community(capped.id)).balance, 200);
     } finally {
       await cleanup({ userIds: [capped.id] });
@@ -108,7 +108,7 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
   });
 
   test('an award at an inactive vendor mints 0 community points (vendor points still land)', async () => {
-    const hidden = await createVendor({ pointsPerDollar: 10 });
+    const hidden = await createVendor();
     try {
       await admin.from('vendors').update({ active: false }).eq('id', hidden.id);
       const res = await award(100, { vendorId: hidden.id });
@@ -119,7 +119,7 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
         .from('transactions').select('community_points')
         .eq('user_id', student.id).eq('vendor_id', hidden.id).eq('type', 'earn')
         .single();
-      assert.equal(tx.community_points, 0, 'only the community 10% is withheld');
+      assert.equal(tx.community_points, 0, 'only the community mint is withheld');
     } finally {
       await cleanup({ vendorId: hidden.id });
     }
@@ -128,7 +128,7 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
   test('reverse_transaction unwinds the mint from balance AND lifetime_earned, clamped at 0', async () => {
     const undoer = await createUser();
     try {
-      const { data: aw } = await award(100, { userId: undoer.id });
+      const { data: aw } = await award(20, { userId: undoer.id });
       assert.equal(aw[0].new_community, 10);
 
       // Move the 10 away FIRST, then void the earn — the one place the ledger
@@ -156,7 +156,7 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
   /* ---------- the transfer (migration-027) ---------- */
 
   test('a transfer of 80 moves exactly 80: community −80, vendor B +80, vendor A untouched', async () => {
-    await award(1000);   // fund the pool (+100 community)
+    await award(200);    // fund the pool (+100 community at 50%)
     const startCb = (await community()).balance;
     const startA = await vendorBalance(vendorA.id);
     const startB = await vendorBalance(vendorB.id);
@@ -204,7 +204,7 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
   });
 
   test('a transfer to an inactive or opted-out vendor → VENDOR_INELIGIBLE', async () => {
-    const target = await createVendor({ pointsPerDollar: 10 });
+    const target = await createVendor();
     try {
       await admin.from('vendors').update({ accepts_community_points: false }).eq('id', target.id);
       const optedOut = await transfer(1, { vendorId: target.id });
@@ -229,13 +229,14 @@ describe('community points (mint + transfer RPCs)', { skip: dbConfigured ? false
     // assertion that used to guard that ("test needs 100 community points")
     // started failing for a reason that had nothing to do with the cap.
     //
-    // 1000 award-points mints exactly 100 community points, and a brand-new
-    // student is nowhere near the 200/day mint cap, so this is deterministic.
-    const capped = await createVendor({ pointsPerDollar: 10 });
+    // 200 award-points mints exactly 100 community points (50%, migration-068),
+    // and a brand-new student is nowhere near the 200/day mint cap, so this is
+    // deterministic.
+    const capped = await createVendor();
     const payer = await createUser();
     try {
       await admin.from('vendors').update({ community_monthly_cap: 100 }).eq('id', capped.id);
-      await award(1000, { userId: payer.id });
+      await award(200, { userId: payer.id });
       assert.equal((await community(payer.id)).balance, 100, 'the fixture mints exactly 100');
 
       const ok = await transfer(80, { userId: payer.id, vendorId: capped.id });

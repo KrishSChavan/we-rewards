@@ -165,3 +165,7 @@ insert into public.earn_codes (code, user_id, expires_at) values
 insert into public.redeem_codes (code, user_id, vendor_id, reward_id, expires_at) values
   ('5702', '00000000-0000-0000-0000-000000000572', '00000000-0000-0000-0000-0000000005a1',
    '00000000-0000-0000-0000-0000000005f9', now() + interval '120 seconds');
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

@@ -52,3 +52,7 @@ insert into public.vendor_applications
 values
   ('00000000-0000-0000-0000-0000000004d1', 'Applied 049', 'Sam Applicant',
    '814 555 0134', 'applied-049@example.com', 'x');
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

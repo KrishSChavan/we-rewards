@@ -34,13 +34,13 @@ export const newAnonClient = () =>
 const rand = () => randomUUID().slice(0, 8);
 
 /** Insert a throwaway vendor. `pin` (optional) is bcrypt-hashed like onboarding. */
-export async function createVendor({ pointsPerDollar = 10, pin = null } = {}) {
+// No rate argument: every vendor earns $1 = 1 point, held by a CHECK (migration-068).
+export async function createVendor({ pin = null } = {}) {
   const { data, error } = await admin
     .from('vendors')
     .insert({
       name: `Test Vendor ${rand()}`,
       slug: `test-vendor-${rand()}`,
-      points_per_dollar: pointsPerDollar,
       pin_hash: pin ? await bcrypt.hash(String(pin), 10) : null,
     })
     .select()

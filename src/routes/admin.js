@@ -21,7 +21,7 @@ import { rollupRoi } from '../lib/roi.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
 import { sendEmail, emailUrl, emailEnabled } from '../lib/email.js';
 import { applicationAccepted, vendorResetCode } from '../lib/email-templates.js';
-import { validReward, validRatio, validStarterItems, starterItemToReward, mergeRewardEdit, onceUpdate } from '../lib/rewards.js';
+import { validReward, lockedRatio, validItemPrice, validStarterItems, starterItemToReward, mergeRewardEdit, onceUpdate } from '../lib/rewards.js';
 import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
 import { validSignupConfig } from '../lib/signup-bonus.js';
 import { validBonusWindowConfig, invalidateBonusWindow, announceBroadcastFor } from '../lib/bonus-window.js';
@@ -870,12 +870,10 @@ async function onboardVendor({
       // vendors and each needs its own copy, which is also what lets one shop
       // stop doing the cookie without the others losing it.
       //
-      // Priced HERE rather than at /join, because only now is there a rate to
-      // price against: `row.points_per_dollar` is whatever this location
-      // actually landed on — the table default, or a sibling store's, via the
-      // inheritance a few lines up. An applicant who said "$25 of purchases"
-      // gets 250 points at 10/$ and 125 at 5/$, which is the same promise in
-      // both cases. See starterItemToReward.
+      // Priced HERE rather than at /join. Since migration-068 the applicant
+      // names what each item sells for and it gets the ITEMS form's 4x
+      // suggestion; an application sent before that named a spend, converted
+      // at `row.points_per_dollar` (now 1 everywhere). See starterItemToReward.
       //
       // Inside the try on purpose: a failure here unwinds the whole onboard
       // like any other, and the vendors delete in the catch cascades these
@@ -1152,7 +1150,7 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
 
 /**
  * PATCH /api/admin/vendors/:id
- *   { name?, slug?, active?, address?, pointsPerDollar?, cuisine?, priceLevel?, logo? }
+ *   { name?, slug?, active?, address?, cuisine?, priceLevel?, logo? }
  * Operator edits for one vendor. Independent updates:
  *  - `name` is the vendor's display name, everywhere it appears: the student
  *    app's card, its transaction history, the terminal header, and the operator
@@ -1177,9 +1175,9 @@ router.post('/vendors/:id/reset-code', async (req, res, next) => {
  *    card. It's geocoded (Nominatim) so latitude/longitude stay in sync; a
  *    geocode miss keeps the address but drops coords (no map until it resolves).
  *    Sending '' clears the address and its coordinates.
- *  - `pointsPerDollar` is the vendor's earn ratio, same bounds as the vendor's
- *    own Settings save (validRatio, shared in src/lib/rewards.js). The terminal
- *    picks it up on its next /api/vendor/config fetch.
+ *  - `pointsPerDollar` is accepted only as 1 and changes nothing: every vendor
+ *    earns $1 = 1 point since migration-068 (lockedRatio, shared with the
+ *    vendor's own Settings save in src/lib/rewards.js).
  *  - `cuisine` / `priceLevel` are what the place sells (migration-042).
  *    Normalised rather than rejected — see below.
  *  - `logo` is the vendor's artwork, the same base64 data-URL the vendor's own
@@ -1278,9 +1276,8 @@ router.patch('/vendors/:id', async (req, res, next) => {
     }
 
     if (body.pointsPerDollar != null) {
-      const r = validRatio(body.pointsPerDollar);
+      const r = lockedRatio(body.pointsPerDollar);
       if (r.error) return res.status(400).json({ error: 'BAD_REQUEST', message: r.error });
-      updates.points_per_dollar = r.value;
     }
 
     // What the place sells (migration-042). Both are normalised rather than
@@ -1314,7 +1311,7 @@ router.patch('/vendors/:id', async (req, res, next) => {
     }
 
     if (!Object.keys(updates).length) {
-      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, slug, active, address, locationLabel, contactName, phone, pointsPerDollar, cuisine, priceLevel, and/or logo).' });
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send name, slug, active, address, locationLabel, contactName, phone, cuisine, priceLevel, and/or logo).' });
     }
 
     // Geocode a changed address so the student card's map stays in sync.
@@ -1324,10 +1321,11 @@ router.patch('/vendors/:id', async (req, res, next) => {
       updates.longitude = coords?.lng ?? null;
     }
 
-    // ---- the two edits a pool constrains (migration-046) ----
-    // Only read the row when one of them is actually in play, so the ordinary
-    // rename/logo/tag save costs nothing extra.
-    const touchesPool = 'points_per_dollar' in updates || updates.active === false;
+    // ---- the edit a pool constrains (migration-046) ----
+    // Only read the row when it is actually in play, so the ordinary
+    // rename/logo/tag save costs nothing extra. (The other one was the rate,
+    // which no longer changes: migration-068.)
+    const touchesPool = updates.active === false;
     let poolId = null;
     if (touchesPool) {
       const { data: v, error: vErr } = await supabaseAdmin
@@ -1357,23 +1355,6 @@ router.patch('/vendors/:id', async (req, res, next) => {
           message: 'This is the last open location sharing these points, and customers still hold some. Take it out of the pool first, or open another location in it.',
         });
       }
-    }
-
-    // RATE PARITY, kept by fanning out rather than refusing. Locations sharing a
-    // purse must charge the same points per dollar (earning at 20 and spending
-    // against a menu priced for 5 means one shop systematically funds the
-    // other), and pool_join enforces that at the door. But a chain has to be
-    // able to reprice: refusing here would mean leaving the pool to change a
-    // rate, and leaving moves customers' money. So the new rate lands on every
-    // member at once, in one statement, and parity is never briefly false.
-    if (poolId && 'points_per_dollar' in updates) {
-      const { error: fanErr } = await supabaseAdmin
-        .from('vendors')
-        .update({ points_per_dollar: updates.points_per_dollar })
-        .eq('pool_id', poolId)
-        .neq('id', req.params.id);
-      if (fanErr) throw fanErr;
-      invalidateVendorCaches();   // every sibling's rate just changed
     }
 
     const { data, error } = await supabaseAdmin
@@ -1667,12 +1648,14 @@ router.get('/vendors/:id/rewards', async (req, res, next) => {
   }
 });
 
-/** POST /api/admin/vendors/:id/rewards  { title, costInPoints, costInVisits, emoji, oncePerStudent } */
+/** POST /api/admin/vendors/:id/rewards  { title, costInPoints, costInVisits, emoji, oncePerStudent, itemPrice } */
 router.post('/vendors/:id/rewards', async (req, res, next) => {
   try {
     if (!(await vendorExists(req, res))) return;
     const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji, req.body?.oncePerStudent);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
+    const price = validItemPrice(req.body?.itemPrice);
+    if (price.error) return res.status(400).json({ error: 'BAD_REWARD', message: price.error });
 
     const { data, error } = await supabaseAdmin
       .from('rewards')
@@ -1684,6 +1667,7 @@ router.post('/vendors/:id/rewards', async (req, res, next) => {
         emoji: v.emoji,
         // Only a free item writes the flag (migration-067); see the vendor POST.
         ...(v.cost === 0 ? { once_per_student: v.once } : {}),
+        ...(price.value != null ? { item_price_cents: price.value } : {}),   // 068
       })
       .select()
       .single();
@@ -1696,7 +1680,7 @@ router.post('/vendors/:id/rewards', async (req, res, next) => {
   }
 });
 
-/** PATCH /api/admin/vendors/:id/rewards/:rewardId  { title?, costInPoints?, costInVisits?, emoji?, oncePerStudent?, active? } */
+/** PATCH /api/admin/vendors/:id/rewards/:rewardId  { title?, costInPoints?, costInVisits?, emoji?, oncePerStudent?, itemPrice?, active? } */
 router.patch('/vendors/:id/rewards/:rewardId', async (req, res, next) => {
   try {
     if (!(await vendorExists(req, res))) return;
@@ -1727,6 +1711,12 @@ router.patch('/vendors/:id/rewards/:rewardId', async (req, res, next) => {
       if (req.body?.costInVisits !== undefined) updates.cost_in_visits = v.visits;
       if (req.body?.emoji !== undefined) updates.emoji = v.emoji;
       Object.assign(updates, onceUpdate(req.body, current, v));
+    }
+    // Same as the vendor PATCH: the price (068) stands apart from the merge.
+    if (req.body?.itemPrice !== undefined) {
+      const price = validItemPrice(req.body.itemPrice);
+      if (price.error) return res.status(400).json({ error: 'BAD_REWARD', message: price.error });
+      updates.item_price_cents = price.value;
     }
     if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
     if (!Object.keys(updates).length) {

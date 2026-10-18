@@ -27,3 +27,7 @@ insert into public.profiles (user_id, email, name, terms_accepted_at, terms_vers
 insert into public.vendors (id, name, slug, points_per_dollar, active) values
   ('00000000-0000-0000-0000-00000000065a', 'Irvings 065',   'irvings-065',   10, true),
   ('00000000-0000-0000-0000-00000000065b', 'Untapped 065',  'untapped-065',  10, true);
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

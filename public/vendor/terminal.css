@@ -1334,6 +1334,15 @@ body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea,
    borrow the emoji picker's selected look so the form has one way to show a
    choice. */
 .reward-free[hidden] { display: none; }
+/* The line under the item price (migration-068): what the 4x suggestion means,
+   or, once the vendor has set points of their own, the suggestion one tap away.
+   Pulled up under its input, and the button reads as a link so it does not
+   compete with Save. */
+.reward-price-note { margin-top: -0.4rem; font-size: 0.95rem; }
+.reward-price-use {
+  font: inherit; font-weight: 700; color: var(--ink); background: none; border: 0;
+  padding: 0.2rem 0; text-decoration: underline; cursor: pointer;
+}
 .reward-free-q { font-weight: 700; margin-bottom: 0.4rem; }
 .reward-free-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
 .reward-free-opts button {

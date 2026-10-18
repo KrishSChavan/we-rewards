@@ -68,3 +68,7 @@ insert into public.campaign_recipients (campaign_id, user_id, status, deliver_af
   ('00000000-0000-0000-0000-0000000004c1', '00000000-0000-0000-0000-000000000472', 'queued', now() - interval '1 minute'),
   ('00000000-0000-0000-0000-0000000004c1', '00000000-0000-0000-0000-000000000473', 'queued', now() - interval '1 minute'),
   ('00000000-0000-0000-0000-0000000004c1', '00000000-0000-0000-0000-000000000474', 'queued', now() - interval '1 minute');
+
+-- migration-068 holds every vendor at $1 = 1 point, and converts a seed left on
+-- any other rate before these assertions run. So this world earns at 1 too.
+update public.vendors set points_per_dollar = 1 where points_per_dollar <> 1;

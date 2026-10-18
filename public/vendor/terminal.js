@@ -66,6 +66,7 @@ let editingRewardId = null;
 let editingVisitsWas = null;   // punch price the item had when the form opened
 let rewardRaiseArmed = false;  // two-tap confirm for raising a punch price
 let rewardOnce = false;        // free item: once per student (true) or every visit
+let rewardPointsTyped = false; // the vendor has typed in Points, so the price stops filling it
 let logoValue = null;      // current logo data-URL (null = none) shown in Settings
 let logoChanged = false;   // only PATCH the logo when the vendor actually changed it
 let lastActivity = null;   // most recent transaction (for the "Undo last" button)
@@ -301,7 +302,6 @@ function bootFailed(message) {
   $('set-pw-save').addEventListener('click', () => updatePassword());
   $('set-pin-save').addEventListener('click', () => updateStaffPin());
   $('tier-add').addEventListener('click', () => { addTierRow(); refreshSettingsDirty(); });
-  $('set-ratio').addEventListener('input', updateRatioExample);
   $('set-exact').addEventListener('click', () => { toggleSwitch($('set-exact')); refreshSettingsDirty(); });
   $('set-logo-input').addEventListener('change', onLogoPick);
   $('set-logo-remove').addEventListener('click', removeLogo);
@@ -755,8 +755,8 @@ async function loadConfig() {
    which one a request means from the X-Vendor-Id header and answers
    VENDOR_AMBIGUOUS without it; everything below is the terminal's half of that.
 
-   Locations are INDEPENDENT vendors: separate points, items, deals, stats,
-   earning rate and staff PIN. So switching is a full reload of everything this
+   Locations are INDEPENDENT vendors: separate points, items, deals, stats
+   and staff PIN. So switching is a full reload of everything this
    terminal knows, not a filter over shared data. See applyStoreSwitch.        */
 
 // Remembered per ACCOUNT (two vendors sharing one iPad must not inherit each
@@ -1061,8 +1061,8 @@ function repaintForStore() {
    moves money between locations that need not all belong to whoever is standing
    at this till, so it is an operator action in the WeRewards dashboard.
 
-   NOT shared, and none of this touches them: items, visits, redeem codes, the
-   earning rate, stats, the staff PIN. Only the money is common.
+   NOT shared, and none of this touches them: items, visits, redeem codes,
+   stats, the staff PIN. Only the money is common.
 
    With no pool in existence pointsShared is false everywhere, every element
    below stays hidden and empty, and this terminal draws exactly what it drew
@@ -2682,6 +2682,8 @@ function renderRewardList() {
       const spend = spendForPoints(r.cost_in_points);
       bits.push(`${r.cost_in_points} pts${spend ? ` (about ${spend} of purchases)` : ''}`);
     }
+    // What it sells for (migration-068), first, when the vendor has said.
+    if (r.item_price_cents != null) bits.unshift(`Sells for ${centsText(r.item_price_cents)}`);
     if (r.cost_in_visits != null) bits.push(`${r.cost_in_visits} visits`);
     info.innerHTML = `
       <span class="reward-emoji">${escapeHtml(r.emoji || '🎁')}</span><span class="redeem-title">${escapeHtml(r.title)}</span>
@@ -2790,13 +2792,21 @@ function openRewardForm(reward) {
   editingVisitsWas = reward?.cost_in_visits ?? null;
   $('reward-form-title').textContent = reward ? 'Edit item' : 'Add item';
   $('reward-title').value = reward?.title ?? '';
+  $('reward-price').value = reward?.item_price_cents != null ? (reward.item_price_cents / 100).toFixed(2) : '';
   $('reward-cost').value = reward?.cost_in_points ?? '';
+  // A new item's points follow its price until the vendor types in Points. An
+  // existing one follows only while it has a point price sitting on the
+  // suggestion, so a price the vendor chose by hand is never overwritten by a
+  // price edit, and a visits-only item (no point price) never gains one by it.
+  rewardPointsTyped = reward != null
+    && !(reward.cost_in_points != null && reward.cost_in_points === suggestedItemPoints($('reward-price').value));
   $('reward-visits').value = reward?.cost_in_visits ?? '';
   setFreeLimit(reward?.once_per_student === true);
   setSelectedEmoji(reward?.emoji || '🎁');
   $('reward-form-error').hidden = true;
   updateRewardHint();
-  $('reward-cost').oninput = updateRewardHint;
+  $('reward-cost').oninput = () => { rewardPointsTyped = true; updateRewardHint(); };
+  $('reward-price').oninput = onRewardPriceInput;
   $('reward-form').hidden = false;
   $('reward-title').focus();
 }
@@ -2830,7 +2840,66 @@ function setFreeLimit(once) {
   });
 }
 
+/* ---------- item price → suggested points (migration-068) ----------
+   Mirrors src/lib/rewards.js suggestedItemPoints, which this browser bundle
+   cannot import: 4 x the WHOLE-dollar price, never below 4. Whole dollars
+   because earning rounds down, so a $4.99 coffee earns 4 points and 4 x 4 = 16
+   is what four of them actually earn. Change both together. */
+const ITEM_POINTS_MULTIPLIER = 4;
+
+function suggestedItemPoints(price) {
+  const n = Number(price);
+  if (String(price ?? '').trim() === '' || !Number.isFinite(n) || n <= 0) return null;
+  return Math.min(100000, Math.max(1, Math.floor(n)) * ITEM_POINTS_MULTIPLIER);
+}
+
+// Not `priceText`: the billing section further down declares one already, and
+// in this classic script the later of two same-named declarations wins
+// everywhere, which printed "Sells for null".
+function centsText(cents) {
+  const d = cents / 100;
+  return `$${Number.isInteger(d) ? d : d.toFixed(2)}`;
+}
+
+function onRewardPriceInput() {
+  const pts = suggestedItemPoints($('reward-price').value);
+  if (pts != null && !rewardPointsTyped) $('reward-cost').value = pts;
+  updateRewardHint();
+}
+
+function useSuggestedPoints() {
+  const pts = suggestedItemPoints($('reward-price').value);
+  if (pts == null) return;
+  $('reward-cost').value = pts;
+  rewardPointsTyped = false;   // following the price again
+  updateRewardHint();
+}
+
+// The line under the price box: what the suggestion means, or, once the vendor
+// has set points of their own, the suggestion one tap away.
+function updatePriceNote() {
+  const note = $('reward-price-note');
+  const pts = suggestedItemPoints($('reward-price').value);
+  note.textContent = '';
+  if (pts == null) {
+    note.textContent = 'We\u2019ll suggest points from the price: 4\u00d7 it, so buying it 4 times earns the 5th free.';
+    return;
+  }
+  if (Number($('reward-cost').value) === pts && $('reward-cost').value.trim() !== '') {
+    note.textContent = `Suggested ${pts} points: buy it 4 times, get the 5th free.`;
+    return;
+  }
+  note.append(`4\u00d7 the price is ${pts} points. `);
+  const use = document.createElement('button');
+  use.type = 'button';
+  use.className = 'reward-price-use';
+  use.textContent = `Use ${pts}`;
+  use.addEventListener('click', useSuggestedPoints);
+  note.append(use);
+}
+
 function updateRewardHint() {
+  updatePriceNote();
   const free = rewardCostIsFree();
   const cost = Number($('reward-cost').value);
   // The free question appears only while the box says 0, and the visits box
@@ -2841,7 +2910,7 @@ function updateRewardHint() {
   $('reward-form-hint').textContent = free
     ? 'Students redeem it without spending any points.'
     : cost > 0
-      ? `At ${config.pointsPerDollar} pts per $1, a customer earns this after about ${spendForPoints(cost)} of purchases.`
+      ? `Customers earn 1 point per $1, so this takes about ${spendForPoints(cost)} of purchases.`
       : '';
 }
 
@@ -2850,6 +2919,7 @@ function closeRewardForm() {
   editingRewardId = null;
   editingVisitsWas = null;
   rewardRaiseArmed = false;
+  rewardPointsTyped = false;
 }
 
 async function saveReward() {
@@ -2858,6 +2928,9 @@ async function saveReward() {
   // not as Number('') === 0, which would trip the positive-price validator.
   const rawCost = $('reward-cost').value.trim();
   const rawVisits = $('reward-visits').value.trim();
+  // Optional. Blank sends null, which clears a saved price on an edit.
+  const rawPrice = $('reward-price').value.trim();
+  const itemPrice = rawPrice === '' ? null : Number(rawPrice);
   const cost = rawCost === '' ? null : Number(rawCost);
   // A free item's visits box is hidden, and whatever it still holds is dropped
   // rather than sent: the server refuses a free item with a visit price.
@@ -2890,7 +2963,7 @@ async function saveReward() {
       method: editingRewardId ? 'PATCH' : 'POST',
       body: JSON.stringify({
         title, costInPoints: cost, costInVisits: visits, emoji: selectedEmoji,
-        oncePerStudent: cost === 0 && rewardOnce,
+        oncePerStudent: cost === 0 && rewardOnce, itemPrice,
       }),
     }
   );
@@ -4880,7 +4953,6 @@ async function downloadPoster() {
 
 function settingsSnapshot() {
   return {
-    ratio: $('set-ratio').value.trim(),
     exact: switchOn($('set-exact')),
     tiers: collectTiers(),
     // Keyed by the CARD they live on (data-card="address"), which is what gives
@@ -4981,7 +5053,6 @@ async function loadSettings() {
 
 function renderSettings(s) {
   if (!s) return;
-  $('set-ratio').value = s.pointsPerDollar ?? '';
   setSwitch($('set-exact'), s.allowExactEntry !== false);
   setSwitch($('set-punch'), s.punchEnabled === true);
   $('set-address').value = s.address ?? '';
@@ -4998,7 +5069,6 @@ function renderSettings(s) {
   $('set-pw-msg').hidden = true;
   $('settings-error').hidden = true;
   renderTierEditor(s.tiers ?? []);
-  updateRatioExample();
   // Again here, and not only from enterSettings: a save re-fetches /config
   // before re-rendering this form, so this is where an operator's pool change
   // reaches a terminal that has been sitting on Settings. Nothing on the card
@@ -5101,18 +5171,6 @@ function toggleSwitch(el) {
   setSwitch(el, !switchOn(el));
 }
 
-function updateRatioExample() {
-  const r = Number($('set-ratio').value);
-  // The one points preview in this file that does NOT need the integer-cent form
-  // from src/lib/rewards.js pointsFor(): the amount is the literal 10, so the
-  // product is r * 10 and a double only ever floors short when the true answer is
-  // a whole number the product lands just under. Swept every rate validRatio
-  // admits (0.50 to 1000.00 in hundredths): zero disagreements with pointsFor at
-  // $10. Left as-is so the example line stays readable; if this ever takes a
-  // vendor-typed amount instead of 10, switch it to the pointsFor expression.
-  $('set-ratio-eg').textContent = Number.isFinite(r) && r > 0 ? `${Math.floor(10 * r)} pts` : '';
-}
-
 /* tier-button editor: a list of {label, min, max} rows */
 
 function renderTierEditor(tiers) {
@@ -5153,8 +5211,9 @@ async function saveSettings(afterTarget) {
   if (busy) return;
   $('settings-error').hidden = true;
 
+  // No pointsPerDollar: every spot earns $1 = 1 point (migration-068), and the
+  // Settings screen shows that as a fact rather than a field.
   const body = {
-    pointsPerDollar: Number($('set-ratio').value),
     allowExactEntry: switchOn($('set-exact')),
     tiers: collectTiers(),
     address: $('set-address').value.trim(),
@@ -5166,7 +5225,7 @@ async function saveSettings(afterTarget) {
   if (logoChanged) body.logo = logoValue;   // null clears it; a data-URL sets it
   // No `pin` here: the staff PIN saves itself from the Access region, because a
   // PIN change drops every PIN session server-side — folding that into this
-  // batch meant editing the earning rate could sign the counter out.
+  // batch meant editing any setting could sign the counter out.
 
   await pushSettings(body, afterTarget);
 }

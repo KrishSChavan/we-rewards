@@ -206,18 +206,18 @@ textarea { resize: vertical; min-height: 4.5rem; }
 /* The currency sign sits inside the field's border rather than beside it, so
    "$" reads as part of the number and not as a stray character in the layout.
    The input keeps its own focus ring by lending it to the wrapper. */
-.rw-spend {
+.rw-price {
   display: flex; align-items: center; gap: 0.15rem;
   border: 2.5px solid var(--ink); border-radius: 0.6rem;
   background: var(--card); padding-left: 0.85rem;
 }
-.rw-spend:focus-within { border-color: var(--navy); box-shadow: 0 0 0 2px var(--sky-line); }
+.rw-price:focus-within { border-color: var(--navy); box-shadow: 0 0 0 2px var(--sky-line); }
 .rw-currency { font-size: 1.15rem; font-weight: 700; color: var(--muted); }
-.rw-spend input {
+.rw-price input {
   border: none; border-radius: 0; padding-left: 0.25rem; background: none;
   min-width: 0;   /* a number input has an intrinsic width that would push the $ out */
 }
-.rw-spend input:focus { outline: none; box-shadow: none; border-color: transparent; }
+.rw-price input:focus { outline: none; box-shadow: none; border-color: transparent; }
 
 .rw-emoji-field { display: flex; flex-direction: column; gap: 0.4rem; }
 .rw-emoji-grid { display: flex; flex-wrap: wrap; gap: 0.35rem; }

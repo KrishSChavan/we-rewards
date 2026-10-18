@@ -4,21 +4,60 @@
 // (/api/admin/vendors/:id/...), so the two can't drift apart.
 //
 // Since migration-052 there is a THIRD door, and it is unlike the other two:
-// the public /join form, where an applicant names their first items before a
-// vendors row (and therefore a points-per-dollar rate) exists to price them
-// against. That door prices in dollars and converts on accept — see the
-// starter-item section at the foot of this file.
+// the public /join form, where an applicant names their first items before
+// they have a terminal. That door asks what each item sells for and turns it
+// into points on accept — see the starter-item section at the foot of this file.
 
-export const RATIO_MIN = 0.5;
-export const RATIO_MAX = 1000;
+// ONE RATE FOR EVERY VENDOR since migration-068: $1 = 1 point, held by the
+// vendors_points_per_dollar_is_one CHECK. Vendors used to pick their own (0.5 to
+// 1000), which left "150 points" meaning $15 at one spot and $150 at the next.
+// The column stays, and every earn path still reads it, because it is the one
+// number the award maths is written against; this constant is what the
+// write paths compare to.
+export const POINTS_PER_DOLLAR = 1;
 
-/** points_per_dollar → { value } (2dp, fits numeric(6,2)) or { error }. */
-export function validRatio(raw) {
-  const r = Number(raw);
-  if (!Number.isFinite(r) || r < RATIO_MIN || r > RATIO_MAX) {
-    return { error: `Points per dollar must be between ${RATIO_MIN} and ${RATIO_MAX}.` };
+/**
+ * A pointsPerDollar in a settings body → { ok } or { error }. Only 1 passes,
+ * and the caller writes nothing either way. Kept as a check rather than
+ * dropping the field because a terminal still running the old Settings screen
+ * sends the rate with every save: 1 must not break that save, and any other
+ * number should be told why it did not stick rather than silently ignored.
+ */
+export function lockedRatio(raw) {
+  if (Number(raw) === POINTS_PER_DOLLAR) return { ok: true };
+  return { error: 'Every spot earns 1 point per $1 spent, so the earning rate can’t be changed.' };
+}
+
+// ITEM PRICES (migration-068). The ITEMS form asks what an item sells for and
+// suggests a point price of 4x: at $1 = 1 point, a student who buys it four
+// times has earned the fifth. The suggestion uses WHOLE dollars because earning
+// rounds down (pointsFor): a $4.99 coffee earns 4 points, so 4 x 4.99 = 20
+// would take five coffees, not four. The vendor can type any point price
+// instead; nothing prices an item from this on its own.
+export const ITEM_POINTS_MULTIPLIER = 4;
+export const ITEM_PRICE_MAX = 1000;   // dollars; = the rewards_item_price_range CHECK
+
+/** The suggested point price for an item that sells for `price` dollars, or null. */
+export function suggestedItemPoints(price) {
+  const n = Number(price);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  // Under $1 still suggests 4, not 0: 0 points is a FREE item (migration-067).
+  return Math.min(100000, Math.max(1, Math.floor(n)) * ITEM_POINTS_MULTIPLIER);
+}
+
+/**
+ * An itemPrice in a request body (dollars) → { value: cents | null } or { error }.
+ * Blank or null clears it: the price is optional, and an item that predates it
+ * has none.
+ */
+export function validItemPrice(raw) {
+  if (raw == null || raw === '') return { value: null };
+  const n = Number(raw);
+  const cents = Math.round(n * 100);
+  if (!Number.isFinite(n) || cents < 1 || cents > ITEM_PRICE_MAX * 100) {
+    return { error: `Item price must be from $0.01 to $${ITEM_PRICE_MAX.toLocaleString('en-US')}.` };
   }
-  return { value: Math.round(r * 100) / 100 };
+  return { value: cents };
 }
 
 /**
@@ -36,7 +75,8 @@ export function validRatio(raw) {
  * which is why this went unnoticed. Multiplying integer cents by integer
  * hundredths keeps every intermediate exact (the largest is 20000 * 100000 =
  * 2e9, well inside 2^53), so the result is the documented
- * floor(amount * points_per_dollar) at every ratio validRatio admits.
+ * floor(amount * points_per_dollar) at every ratio the column ever held (0.5 to
+ * 1000 until migration-068 fixed it at 1, where the naive form is also exact).
  *
  * The terminal and the scan page compute the same preview client-side and
  * cannot import this (they are browser bundles, not server modules), so the
@@ -119,25 +159,26 @@ export function onceUpdate(body, current, v) {
 
 /* ---------- starter items: the ones an applicant names on /join ----------
 
-   A vendor's FIRST redeemable item, collected before they have a terminal, a
-   rate, or any idea what a point is. Everything below exists because of one
-   asymmetry: the items a vendor edits later are priced in POINTS (they can see
-   their rate, and the ITEMS tab prints the dollar equivalent under every one),
-   but an applicant on /join has no rate to price against — the vendors row does
-   not exist yet, and which rate it lands on depends on the table default, on
-   what the operator sets, and on whether this login already runs a store whose
-   settings migration-043 will copy.
+   A vendor's FIRST redeemable items, collected before they have a terminal or
+   any idea what a point is. So the public door never asks for points. Since
+   migration-068 it asks the question every shop can answer, what the item
+   SELLS FOR, and the point cost is worked out on accept with the same 4x the
+   terminal's ITEMS form suggests (suggestedItemPoints above): buy it four
+   times, the fifth is free.
 
-   So the public door asks in DOLLARS ("how much should a customer spend with
-   you to earn this?") and the point cost is derived at accept, per location,
-   from the rate that location actually got. See migration-052. */
+   Before 068 the question was "how much should a customer spend with you to
+   earn it?", converted at the rate the location landed on (migration-052). An
+   application already sent carries `spend` instead of `price`, and still
+   converts that way: what the applicant asked for was a spend, and at $1 = 1
+   point that spend IS the point cost. */
 
-// What a customer spends to earn one starter item. Both bounds are sanity
-// bounds on a public, unauthenticated form rather than product limits, and both
-// are exactly what the /join inputs enforce, so nothing typed into a form that
-// accepted it can then be refused by the server. A vendor who wants an item
-// outside this band sets it from their terminal afterwards, where they can see
-// what it costs in points. Decimals are allowed inside it ($7.50 is a price).
+// Starter-item bounds. Sanity bounds on a public, unauthenticated form rather
+// than product limits, and exactly what the /join inputs enforce, so nothing
+// typed into a form that accepted it can then be refused by the server.
+// Decimals are allowed inside them ($4.99 is a price).
+export const PRICE_MIN = 0.01;
+export const PRICE_MAX = ITEM_PRICE_MAX;
+// The pre-068 question's bounds, kept for applications sent before it.
 export const SPEND_MIN = 1;
 export const SPEND_MAX = 1000;
 
@@ -146,7 +187,9 @@ export const SPEND_MAX = 1000;
 export const MAX_STARTER_ITEMS = 6;
 
 /**
- * Validate ONE starter item → { item: { title, spend, emoji } } or { error }.
+ * Validate ONE starter item → { item: { title, price, emoji } } or { error }.
+ * An item with `spend` and no `price` is a pre-068 application and comes back
+ * as { title, spend, emoji }, validated against the old bounds.
  *
  * @param at  how to name this item in an error message ("Item 2"), so an
  *   applicant with four of them is told WHICH one is wrong. The /join form
@@ -162,15 +205,22 @@ export function validStarterItem(raw, at = 'Item') {
   if (!title || title.length > 60) return { error: `${at}: give the item a name (up to 60 characters).` };
 
   // Number(''), Number(null) and Number([]) are all 0, and Number(undefined) is
-  // NaN — so the range check below is what refuses a blank, not a separate
-  // branch. Money, so two decimals: a third would be quietly dropped by the
-  // rounding in starterItemToReward and the applicant would never see it go.
-  const spend = Math.round(Number(raw.spend) * 100) / 100;
-  if (!Number.isFinite(spend) || spend < SPEND_MIN || spend > SPEND_MAX) {
-    return { error: `${at}: enter how much a customer spends to earn it, from $${SPEND_MIN} to $${SPEND_MAX}.` };
+  // NaN — so the range checks below are what refuse a blank, not a separate
+  // branch. Money, so two decimals: a third would be quietly dropped on the way
+  // to item_price_cents and the applicant would never see it go.
+  if (raw.price === undefined && raw.spend !== undefined) {
+    const spend = Math.round(Number(raw.spend) * 100) / 100;
+    if (!Number.isFinite(spend) || spend < SPEND_MIN || spend > SPEND_MAX) {
+      return { error: `${at}: enter how much a customer spends to earn it, from $${SPEND_MIN} to $${SPEND_MAX}.` };
+    }
+    return { item: { title, spend, emoji } };
   }
 
-  return { item: { title, spend, emoji } };
+  const price = Math.round(Number(raw.price) * 100) / 100;
+  if (!Number.isFinite(price) || price < PRICE_MIN || price > PRICE_MAX) {
+    return { error: `${at}: enter what it sells for, from $${PRICE_MIN} to $${PRICE_MAX.toLocaleString('en-US')}.` };
+  }
+  return { item: { title, price, emoji } };
 }
 
 /**
@@ -207,22 +257,29 @@ export function validStarterItems(raw, { required = false } = {}) {
 }
 
 /**
- * A validated starter item + the rate its vendors row actually landed on → the
- * public.rewards insert. This is the dollars-to-points conversion the whole
- * design turns on; see the header above and migration-052.
+ * A validated starter item → the public.rewards insert.
  *
- * Clamped to the same 1..100000 band validPrice enforces, so no combination of
- * a legal spend and a legal rate (RATIO_MAX is 1000) can produce a row the
- * vendor's own routes would then refuse to edit. Rounded, not floored: the
- * figure is "about $25 of purchases" on both screens that show it, and a
- * systematic round-down would make every item quietly cheaper than asked for.
+ * A priced item (068) gets suggestedItemPoints(price) and keeps its price, the
+ * same as one added from the ITEMS form. A pre-068 `spend` item converts at the
+ * location's rate, rounded rather than floored (the applicant was shown "about
+ * $25 of purchases", and a round-down would make it quietly cheaper than asked
+ * for), and clamped to the 1..100000 band validPrice enforces so the vendor's
+ * own routes can always edit what this writes.
  */
 export function starterItemToReward(item, pointsPerDollar) {
+  if (item.price != null) {
+    return {
+      title: item.title,
+      emoji: item.emoji,
+      cost_in_points: suggestedItemPoints(item.price),
+      item_price_cents: Math.round(item.price * 100),
+    };
+  }
   const rate = Number(pointsPerDollar);
-  // Falls back to the vendors table default rather than throwing: this runs
-  // mid-onboard, after the login and the vendors row already exist, and a
-  // missing rate must not be the thing that unwinds a whole accept.
-  const usable = Number.isFinite(rate) && rate > 0 ? rate : 10;
+  // Falls back to the one rate rather than throwing: this runs mid-onboard,
+  // after the login and the vendors row already exist, and a missing rate must
+  // not be the thing that unwinds a whole accept.
+  const usable = Number.isFinite(rate) && rate > 0 ? rate : POINTS_PER_DOLLAR;
   const points = Math.min(100000, Math.max(1, Math.round(item.spend * usable)));
   return { title: item.title, emoji: item.emoji, cost_in_points: points };
 }

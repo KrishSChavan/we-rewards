@@ -12,7 +12,7 @@ describe('money paths (RPCs)', { skip: dbConfigured ? false : 'set TEST_SUPABASE
   let vendor, student;
 
   before(async () => {
-    vendor = await createVendor({ pointsPerDollar: 10 });
+    vendor = await createVendor();
     student = await createUser();
   });
   after(async () => cleanup({ vendorId: vendor?.id, userIds: [student?.id] }));

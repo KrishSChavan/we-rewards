@@ -2616,7 +2616,7 @@ function historyRow(tx) {
       : earn
         ? `Earned at ${vendorName}`
         : (reward ? `Redeemed ${reward}` : 'Redeemed a reward');
-  // Earn rows also surface the 10% that rode along ("+150 pts · +15 community");
+  // Earn rows also surface the 50% that rode along ("+15 pts · +7 community"; 10% before migration-068);
   // a compensating row's negative community_points stays out of the sub.
   const mint = earn && (tx.community_points ?? 0) > 0 ? `+${tx.community_points} community` : null;
   const sub = transfer
@@ -3622,8 +3622,8 @@ function onHubDragEnd(e) {
 }
 
 /* ---------- hub: community points (the cross-vendor wallet) ----------
-   10% of everything earned at a spot is also minted into this pool
-   (migration-026), and the pool isn't tied to the spot that issued it. Spending
+   50% of everything earned at a spot is also minted into this pool
+   (migration-026; 10% until migration-068), and the pool isn't tied to the spot that issued it. Spending
    it means MOVING it into one vendor's balance (migration-027) — the move sheet
    below — after which the existing redeem flow takes over.
 
@@ -4807,14 +4807,18 @@ function formatAddress(text) {
 // only the ratio.
 //
 // A missing or nonsense rate renders NOTHING rather than a number. Number(null)
-// is 0, and "0 pts per $1" is both a lie and outside the 0.5-1000 range the
-// vendor settings enforce, so an old cached payload with no rate in it must go
-// quiet instead of promising a student they earn nothing here.
+// is 0, and "0 pts per $1" is a lie, so an old cached payload with no rate in it
+// must go quiet instead of promising a student they earn nothing here.
+//
+// Since migration-068 every spot earns 1 point per $1, so the cards, the Spots
+// rows, the random pick and the map sheet no longer print the rate: the same
+// words on every spot told a student nothing about any of them. The spot screen
+// says it once (renderVendorRate) and the nearby notification uses it as its
+// nudge.
 function earnRateText(n) {
   const r = Number(n);
   if (!isFinite(r) || r <= 0) return '';
-  // "1 pts" reads as a typo, and a vendor setting exactly 1 is inside the
-  // 0.5-1000 range their Settings tab allows, so it is a rate a student will see.
+  // "1 pts" reads as a typo, and 1 is now the only rate there is.
   const unit = r === 1 ? 'pt' : 'pts';
   return `${r.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${unit} per $1`;
 }
@@ -4871,9 +4875,9 @@ function poolAnySpotText(v) {
   return label ? `any ${label} spot` : 'any of this owner\u2019s spots';
 }
 
-// The rate line on the vendor screen. Kept beside the card's copy of the same
-// idea rather than down with openVendor, so a change to the wording lands on
-// both surfaces at once.
+// The rate line on the vendor screen: since migration-068 the one place in the
+// app that states the rate, so it says it is the same everywhere. Kept beside
+// earnRateText rather than down with openVendor.
 function renderVendorRate(v) {
   const el = $('vendor-rate');
   if (!el) return;
@@ -4886,7 +4890,7 @@ function renderVendorRate(v) {
   // the Spots rows carry the same fact; leaving it off the detail screen means
   // the biggest number on the app is the least explained.
   const pool = poolChipText(v);
-  const base = text ? `Base rate: ${text}. Your tier multiplier applies on top.` : '';
+  const base = text ? 'Every $1 earns 1 point, at every spot. Your tier multiplier applies on top.' : '';
   el.textContent = [pool, base].filter(Boolean).join(' ');
   // Not `!text`: a pooled spot whose rate is missing still has something to say,
   // and hiding on the rate alone would swallow the pool line with it.
@@ -5032,9 +5036,6 @@ function buildVendorCard(v) {
   // The underline already says "tappable"; the old 📍 … 👆 emoji pair said it
   // twice and crowded a line that only has two lines to work with.
   const address = v.address ? `<span class="vc-address">${escapeHtml(shortAddress(v.address))}</span>` : '';
-  // What a dollar spent here is worth, right under the balance it feeds. Empty
-  // string when the rate is missing, so the line disappears rather than lying.
-  const rate = earnRateText(v.pointsPerDollar);
   // Why the same number is on three cards. Empty for every vendor with no pool,
   // which is all of them until an operator makes one, so the card is unchanged.
   const poolChip = poolChipText(v);
@@ -5056,7 +5057,6 @@ function buildVendorCard(v) {
     <span class="vc-body">
       <span class="vc-points"><span class="vc-num">${v.balance ?? 0}</span><small>pts</small></span>
       ${poolChip ? `<span class="vc-pool">${escapeHtml(poolChip)}</span>` : ''}
-      ${rate ? `<span class="vc-rate">${rate}</span>` : ''}
       <span class="vc-progress-slot" data-html="${escapeHtml(progress)}">${progress}</span>
       ${address}
     </span>
@@ -5855,15 +5855,15 @@ function buildSpotRow(v) {
     ? `<span class="spot-logo" style="background-image:url('/api/vendor-logo/${encodeURIComponent(v.vendorId)}')"></span>`
     : `<span class="spot-mono">${escapeHtml(vendorMonogram(v.name))}</span>`;
 
-  const rate = earnRateText(v.pointsPerDollar);
   // Same chip as the carousel card's, and it must join spotRowSig() below for
   // the same reason. It is a fifth grid child spanning the full width, so it
   // sits UNDER the whole row rather than squeezing the name column.
   const poolChip = poolChipText(v);
-  // "★ 4.6 (12)" ahead of the rate on the same small line (migration-066).
-  // In spotRowSig() too: a new review must rebuild the row, since only the
-  // balance and the heart are ever patched in place.
-  const sub = [ratingChipText(v.rating), rate].filter(Boolean).join(' · ');
+  // "★ 4.6 (12)" on the small line under the name (migration-066). It shared
+  // the line with the earn rate until migration-068 made that the same at
+  // every spot. In spotRowSig() too: a new review must rebuild the row, since
+  // only the balance and the heart are ever patched in place.
+  const sub = ratingChipText(v.rating);
 
   row.innerHTML = `
     <span class="spot-mark" aria-hidden="true">${mark}</span>
@@ -6184,10 +6184,7 @@ function openPickSheet(v) {
   // spot names the chain instead, or a blind draw that lands on a sibling reads
   // as a second, separate balance the student did not know they had.
   const where = poolWhereText(v);
-  $('pick-rate').textContent = [
-    earnRateText(v.pointsPerDollar),
-    bal > 0 ? `You have ${bal} pts ${where || 'here'}.` : '',
-  ].filter(Boolean).join(' · ');
+  $('pick-rate').textContent = bal > 0 ? `You have ${bal} pts ${where || 'here'}.` : '';
 
   const ov = $('spots-pick-modal');
   ov.hidden = false;
@@ -7442,8 +7439,8 @@ function refreshMapPins() {
 // open, and the live patch above when a push lands while the sheet is up.
 // Hidden (and emptied) for an unpooled vendor, which is every vendor today, so
 // the sheet keeps exactly the height it has now. styles.css gives .map-pin-pool
-// no display of its own, but carries the [hidden] display:none companion beside
-// .map-pin-rate's anyway: the day anyone adds one, an author display rule beats
+// no display of its own, but carries the [hidden] display:none companion anyway
+// (the rate line it was copied from left with migration-068): the day anyone adds one, an author display rule beats
 // the hidden attribute and every unpooled spot gains a blank line in its sheet.
 function paintPinPool(v) {
   const el = $('map-pin-pool');
@@ -7502,10 +7499,6 @@ function openPinSheet(vendorId, pan) {
   const addr = $('map-pin-address');
   addr.textContent = v.address ? `📍 ${shortAddress(v.address)}` : '';
   addr.hidden = !v.address;
-  const rate = $('map-pin-rate');
-  const rateText = earnRateText(v.pointsPerDollar);
-  rate.textContent = rateText ? `Base rate: ${rateText}` : '';
-  rate.hidden = !rateText;
   // The number right above this is the chain's when the spot is pooled, and the
   // sheet is the surface with room to say so in full.
   paintPinPool(v);
@@ -8248,7 +8241,7 @@ function connectSocket() {
         InstallPrompt.onPointsEarned({ vendor: v, prevBalance: prev, newBalance: next, earned: next - prev });
       }
       loadTier();                             // an earn just landed — score may have moved
-      // The 10% community mint rides along on the same push (community-points.md
+      // The community mint (50% since migration-068) rides along on the same push (community-points.md
       // step 3), so honour it the moment the field appears; until then fall back
       // to a re-read. Neither does anything visible before the mint path exists.
       if (payload.community != null) setCommunityPoints(payload.community);

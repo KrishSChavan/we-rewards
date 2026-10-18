@@ -69,7 +69,7 @@ begin
 
   -- ── 2. a NEW vendor gets neither ────────────────────────────────────────
   insert into public.vendors (name, slug, points_per_dollar)
-  values ('Brand New Spot', 'brand-new-055', 10)
+  values ('Brand New Spot', 'brand-new-055', 1)
   returning id into vnew;
 
   select plan into txt from public.vendors where id = vnew;

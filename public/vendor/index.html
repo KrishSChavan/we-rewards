@@ -934,12 +934,12 @@
             <h3 class="region-head" id="region-spot-h">Your spot</h3>
             <p class="manage-note">How your spot earns, and how it looks on the cards your customers carry. These save together: change as many as you like, then press Save settings at the end of this group.</p>
 
-            <div class="stats-card" data-card="ratio">
+            <!-- A fact, not a field, since migration-068: one rate for every spot,
+                 so students can compare them. No data-card, because there is
+                 nothing here to save or to go unsaved. -->
+            <div class="stats-card">
               <h3>Earning rate</h3>
-              <label class="settings-field">Points per $1 spent
-                <input id="set-ratio" type="number" inputmode="decimal" min="0.5" max="1000" step="0.5" />
-              </label>
-              <p class="manage-note">Customers earn <strong id="set-ratio-eg"></strong> for a $10 purchase (before their tier multiplier).</p>
+              <p class="manage-note">Customers earn <strong>1 point per $1</strong> spent, at every WeRewards spot, before their tier multiplier. A $10 purchase earns 10 points.</p>
             </div>
 
             <div class="stats-card" data-card="exact">
@@ -956,7 +956,7 @@
 
             <div class="stats-card" data-card="tiers">
               <h3>Quick amount buttons</h3>
-              <p class="manage-note">Tap-to-award buttons shown once you scan a customer's code. Each is a set purchase amount; points are that amount × your rate. They're optional: remove them all and the terminal shows just the keypad.</p>
+              <p class="manage-note">Tap-to-award buttons shown once you scan a customer's code. Each is a set purchase amount; points are that amount, at 1 point per $1. They're optional: remove them all and the terminal shows just the keypad.</p>
               <div id="tier-editor" class="tier-editor"></div>
               <button id="tier-add" class="btn-ghost btn-compact" type="button">+ Add button</button>
             </div>
@@ -1106,8 +1106,16 @@
            0 points is a FREE item (migration-067): the visits box hides, since
            a free item cannot also have a visit price, and the vendor is asked
            how often a student can have it. -->
+      <!-- What it sells for (migration-068), asked first because it is the
+           question every vendor can answer. Typing it fills Points with 4x the
+           whole-dollar price (buy 4, the 5th is free) until the vendor types in
+           Points themselves. Optional, and saved with the item. -->
+      <label>Item price ($)
+        <input id="reward-price" type="number" inputmode="decimal" min="0.01" max="1000" step="0.01" placeholder="4.99" />
+      </label>
+      <p id="reward-price-note" class="manage-note reward-price-note" aria-live="polite"></p>
       <label>Points to redeem
-        <input id="reward-cost" type="number" inputmode="numeric" min="0" max="100000" step="1" placeholder="150" />
+        <input id="reward-cost" type="number" inputmode="numeric" min="0" max="100000" step="1" placeholder="20" />
       </label>
       <div id="reward-free" class="reward-free" hidden>
         <p class="reward-free-q">Free item. How often can a student redeem it?</p>
