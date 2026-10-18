@@ -4563,6 +4563,12 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .review-anon input { width: 1.3rem; height: 1.3rem; accent-color: var(--navy); }
 .review-as { align-self: flex-start; color: var(--muted); font-size: 0.85rem; font-weight: 600; margin-top: -0.3rem; }
 .review-where { color: var(--muted); font-size: 0.85rem; font-weight: 600; line-height: 1.4; }
+.review-where.is-blocked {
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  border: 2px solid var(--warn); border-radius: 0.8rem;
+  color: var(--ink); font-weight: 800; font-size: 0.92rem;
+}
 .review-error { color: var(--danger); font-weight: 800; font-size: 0.92rem; line-height: 1.4; }
 .review-google { width: 100%; margin-top: 0.4rem; padding-top: 0.8rem; border-top: 2px dashed var(--sky-line); }
 .review-google-fine { margin-top: 0.4rem; color: var(--muted); font-size: 0.8rem; font-weight: 600; }

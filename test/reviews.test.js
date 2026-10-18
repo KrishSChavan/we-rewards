@@ -493,3 +493,51 @@ describe('history', () => {
     assert.deepEqual(items.map((i) => i.id), ['t1']);
   });
 });
+
+describe('the Post button says why it cannot be pressed', () => {
+  // Reported from staging: stars filled, Post dimmed, nothing explained why
+  // (Test Cafe has no address, so no map position, and there was no visit).
+  const app = readFileSync(new URL('../public/student/app.js', import.meta.url), 'utf8');
+  const grab = (name) => {
+    const start = app.indexOf(`function ${name}(`);
+    const end = app.indexOf('\n}\n', start) + 3;
+    return app.slice(start, end);
+  };
+  const run = (state, rating, busy = false) => {
+    const btn = { disabled: null, textContent: 'Post review' };
+    // eslint-disable-next-line no-new-func
+    new Function('btn', 'state', 'rating', 'busy', `
+      const $ = () => btn;
+      let reviewState = state, reviewRating = rating, reviewBusy = busy;
+      ${grab('reviewBlock')}
+      ${grab('syncReviewSubmit')}
+      syncReviewSubmit();
+    `)(btn, state, rating, busy);
+    return btn;
+  };
+
+  test('an unmapped spot with no recent visit', () => {
+    const b = run({ mapped: false, recentVisit: false, mine: null }, 5);
+    assert.equal(b.disabled, true);
+    assert.equal(b.textContent, 'Review after your next visit');
+  });
+  test('staff of the spot', () => {
+    const b = run({ ownSpot: true, mapped: true, recentVisit: true }, 5);
+    assert.equal(b.disabled, true);
+    assert.equal(b.textContent, 'You run this spot');
+  });
+  test('no stars yet', () => {
+    const b = run({ mapped: true, recentVisit: false }, 0);
+    assert.equal(b.disabled, true);
+    assert.equal(b.textContent, 'Tap a star to rate');
+  });
+  test('ready to post, or to save an edit', () => {
+    assert.deepEqual(run({ mapped: true, recentVisit: false }, 4), { disabled: false, textContent: 'Post review' });
+    assert.deepEqual(run({ mapped: false, recentVisit: false, mine: { rating: 2 } }, 4), { disabled: false, textContent: 'Save changes' });
+  });
+  test('mid-post the label is left to submitReview', () => {
+    const b = run({ mapped: true, recentVisit: true }, 4, true);
+    assert.equal(b.disabled, true);
+    assert.equal(b.textContent, 'Post review');
+  });
+});

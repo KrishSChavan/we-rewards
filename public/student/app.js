@@ -9435,7 +9435,6 @@ async function openReviewSheet(vendorId, { trigger = 'button', data = null } = {
   // Where the presence check will come from, said up front rather than as a
   // surprise permission prompt after they have written something.
   paintReviewWhere(name);
-  $('review-submit').textContent = mine ? 'Save changes' : 'Post review';
   $('review-later').hidden = !prompted;
   setReviewError(null);
   $('review-form-view').hidden = false;
@@ -9516,23 +9515,49 @@ function syncReviewAs() {
   $('review-as').textContent = `Shown as “${named ? reviewState.appearAs : 'WeRewards member'}”.`;
 }
 
+/**
+ * Why this sheet cannot post at all, or null. 'own': staff of this spot.
+ * 'unmapped': a first review with no visit in the last 24h, at a spot with no
+ * map position, so there is no way to show they are there.
+ */
+function reviewBlock() {
+  const st = reviewState;
+  if (st?.ownSpot) return 'own';
+  if (!st?.mine && !st?.recentVisit && !st?.mapped) return 'unmapped';
+  return null;
+}
+
+/**
+ * The Post button's state AND its words. A dimmed button that says "Post
+ * review" reads as broken (it was reported as exactly that on staging), so
+ * whenever it cannot be pressed its label says why. While a post is in flight
+ * submitReview owns the label ("Checking you're here…", "Posting…").
+ */
 function syncReviewSubmit() {
-  const blocked = Boolean(reviewState?.ownSpot)
-    || (!reviewState?.mine && !reviewState?.recentVisit && !reviewState?.mapped);
-  $('review-submit').disabled = reviewBusy || !reviewRating || blocked;
+  const btn = $('review-submit');
+  const block = reviewBlock();
+  btn.disabled = reviewBusy || !reviewRating || Boolean(block);
+  if (reviewBusy) return;
+  btn.textContent = block === 'own' ? 'You run this spot'
+    : block === 'unmapped' ? 'Review after your next visit'
+    : !reviewRating ? 'Tap a star to rate'
+    : reviewState?.mine ? 'Save changes' : 'Post review';
 }
 
 /** The line under the form saying how presence will be checked, or why it can't be. */
 function paintReviewWhere(name) {
   const st = reviewState;
   const where = $('review-where');
+  const block = reviewBlock();
   const needsPresence = !st?.mine && !st?.recentVisit;
-  const text = st?.ownSpot ? `You run ${name}, so you can’t review it.`
+  const text = block === 'own' ? `You run ${name}, so you can’t review it.`
+    : block === 'unmapped' ? `We can’t check your location at ${name} yet, so you can review it within a day of earning or redeeming there.`
     : !needsPresence ? ''
-    : st.mapped ? `When you post, we’ll check your location once to make sure you’re at ${name}. It isn’t saved.`
-    : `You can review ${name} within a day of earning or redeeming there.`;
+    : `When you post, we’ll check your location once to make sure you’re at ${name}. It isn’t saved.`;
   where.hidden = !text;
   where.textContent = text;
+  // A reason they cannot post is a warning, not fine print.
+  where.classList.toggle('is-blocked', Boolean(block));
 }
 
 function setReviewError(text) {
@@ -9621,10 +9646,7 @@ async function submitReview() {
     setReviewError('No connection. Your review wasn’t sent. Try again.');
   } finally {
     reviewBusy = false;
-    if (!$('review-form-view').hidden) {
-      $('review-submit').textContent = st.mine ? 'Save changes' : 'Post review';
-    }
-    syncReviewSubmit();
+    syncReviewSubmit();               // restores the label as well as the state
   }
 }
 
