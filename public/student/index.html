@@ -1480,8 +1480,9 @@
         <div class="hub-body-inner" id="hub-body-inner">
 
         <!-- 30-day tier meter. The nodes are the three multipliers; the track
-             behind them fills with the actual 0–1000 score, mapped piecewise
-             so each leg of the bar is one tier's worth of progress. -->
+             behind them fills with the student's rank (top 100% → 50% → 10%),
+             mapped piecewise so each leg of the bar is one tier's worth of
+             progress. -->
         <div id="tier-bar" class="tier-bar" hidden>
           <div class="tier-head">
             <span class="tier-head-label">YOUR TIER PROGRESS
@@ -1512,10 +1513,10 @@
           <p id="tier-hint" class="tier-hint"></p>
         </div>
 
-        <!-- The live version of the tier explainer's three bullets. Every
-             number here is already in the /api/me/tier payload and was being
-             thrown away, so this costs no extra request: it turns the meter
-             above from a status readout into something you can act on. -->
+        <!-- The live version of the tier explainer's three bullets: what this
+             student has done in the window and how much credit each part of
+             the score is giving them. Every number is already in the
+             /api/me/tier payload, so this costs no extra request. -->
         <div id="tier-levers" class="tier-levers" hidden>
           <div class="lever-head">
             <span class="lever-title">HOW YOU CLIMB</span>
@@ -1822,13 +1823,13 @@
     <div id="tier-info-card" class="info-card" role="dialog" aria-label="How the tier score works">
       <button id="tier-info-close" class="info-close" type="button" aria-label="Close">✕</button>
       <h3>How your multiplier works</h3>
-      <p>Your points multiplier climbs the more you use WeRewards over the last 30 days. You earn a score from 0–1000 that blends three things:</p>
+      <p>Your points multiplier depends on how you rank against every WeRewards student over the last 30 days. Your rank comes from a score that blends three things:</p>
       <ul>
         <li><strong>Variety</strong>: how many different spots you visit</li>
         <li><strong>Loyalty</strong>: how often you come back to the same spots</li>
         <li><strong>Spend</strong>: how much you spend, with extra weight for meal-sized orders. Up to $30 of a single visit counts</li>
       </ul>
-      <p>Keeping all three balanced climbs fastest. Reach <strong>350</strong> for <strong>1.5× points</strong>, or <strong>700</strong> for <strong>2×</strong>. The multiplier applies to everything you earn. It's a rolling 30-day window, so keep visiting to hold your tier.</p>
+      <p>The <strong>top 50%</strong> of students earn <strong>1.5× points</strong>, and the <strong>top 10%</strong> earn <strong>2×</strong>. Ties share the higher tier, and one visit in the last 30 days is all it takes to be ranked. Keeping all three balanced climbs fastest. The multiplier applies to everything you earn. Rankings move as everyone visits, so keep visiting to hold your tier.</p>
     </div>
   </div>
 

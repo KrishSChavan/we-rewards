@@ -3174,7 +3174,7 @@ async function shareAmbassador() {
   }
 }
 
-/* ---------- hub: tier meter (30-day score → earn multiplier) ---------- */
+/* ---------- hub: tier meter (30-day rank → earn multiplier) ---------- */
 
 // Paint the meter inside the rewards hub, plus the multiplier chip the
 // collapsed pill shows when the hub is shut.
@@ -3194,13 +3194,13 @@ async function loadTier() {
 function renderTier(t) {
   const nodes = [...$('tier-nodes').querySelectorAll('.tier-node')];
   const n = nodes.length;
-  // One node per multiplier, and the score that unlocks each: [0, ...cutoffs].
-  // The nodes are spaced EVENLY and the score is mapped onto that spacing —
-  // not the other way round — so every leg of the bar is worth exactly one
-  // tier's progress even though the real cutoffs (350, 700 of 1000) aren't
-  // evenly spaced, and so the last node means "maxed" rather than "score 1000",
-  // which is a number the multiplier stops caring about at 700.
-  const edges = [0, ...(t.cutoffs ?? [])].slice(0, n);
+  // One node per multiplier, and the rank that unlocks each: "top 100%" for
+  // the base node, then [...rankCutoffs] (top 50%, top 10%). The nodes are
+  // spaced EVENLY and the rank is mapped onto that spacing, so every leg of the
+  // bar is worth exactly one tier's progress even though 100→50 and 50→10
+  // aren't the same width, and so the last node means "maxed" rather than
+  // "first place".
+  const edges = [100, ...(t.rankCutoffs ?? [])].slice(0, n);
 
   nodes.forEach((el, i) => {
     const at = n > 1 ? i / (n - 1) : 0;
@@ -3210,26 +3210,32 @@ function renderTier(t) {
     el.style.left = `calc(var(--tier-inset) + (100% - var(--tier-dot)) * ${at})`;
   });
 
-  // How far along, piecewise: which leg the score sits on, plus its progress
-  // across that leg.
-  let leg = 0;
-  while (leg < n - 1 && t.score >= (edges[leg + 1] ?? Infinity)) leg++;
-  let fill = 1;                                   // past the last cutoff = maxed
-  if (leg < n - 1) {
-    const span = (edges[leg + 1] ?? 0) - edges[leg];
-    const within = span > 0 ? Math.max(0, Math.min(1, (t.score - edges[leg]) / span)) : 0;
-    fill = (leg + within) / (n - 1);
+  // How far along, piecewise: which leg the rank sits on, plus its progress
+  // across that leg. A smaller top-% is further along. Unranked (no visits in
+  // the window, so no topPercent) is an empty bar.
+  const top = t.topPercent;
+  let fill = 0;
+  if (top != null) {
+    let leg = 0;
+    while (leg < n - 1 && top <= (edges[leg + 1] ?? -Infinity)) leg++;
+    fill = 1;                                     // inside the last cutoff = maxed
+    if (leg < n - 1) {
+      const span = edges[leg] - (edges[leg + 1] ?? 0);
+      const within = span > 0 ? Math.max(0, Math.min(1, (edges[leg] - top) / span)) : 0;
+      fill = (leg + within) / (n - 1);
+    }
   }
   $('tier-fill').style.width = `${fill * 100}%`;
 
   // The tier the server reports wins over anything derived above; they agree,
-  // but this is the authoritative one.
+  // but this is the authoritative one. Each node above the base is captioned
+  // with the rank that unlocks it, unless it is the student's own.
   const cur = Math.min(n - 1, Math.max(0, (t.tier ?? 1) - 1));
   nodes.forEach((el, i) => {
     el.classList.toggle('is-done', i < cur);
     el.classList.toggle('is-current', i === cur);
     el.querySelector('.tier-node-cap').textContent =
-      i === cur ? 'Current tier' : i === 0 ? 'Base tier' : i === n - 1 ? 'Max tier' : '';
+      i === cur ? 'Current tier' : i === 0 ? 'Base tier' : edges[i] != null ? `Top ${edges[i]}%` : '';
   });
 
   // A live bonus window (migration-063) is already folded into what the student
@@ -3245,14 +3251,16 @@ function renderTier(t) {
   // "tier" and a weekend does not change what tier anybody is.
   $('tier-earning-mult').textContent = boosted ? `${boosted.multiplier}x` : mult;
   $('tier-earning-note').hidden = !boosted;
-  // Says what the next tier is worth, not how far off it is in numbers: the
-  // distance is engagement SCORE, and printing it as "40 pts" beside "1.5x
-  // points" used "pts" for two different things in one sentence. The panel
-  // itself still shows the score for anyone who wants the number.
+  // Where they rank and what the next line is worth, not how far off it is in
+  // score: the score it takes moves every time anyone else visits, so a number
+  // printed here would be stale by the time they acted on it.
+  const nextTop = edges[cur + 1];
   $('tier-hint').textContent =
-    t.nextTierScore != null
-      ? `Keep visiting to unlock ${t.nextMultiplier}x points at every spot`
-      : 'Max multiplier ✓';
+    top == null
+      ? `Earn at any spot to get ranked. The top ${edges[1] ?? 50}% earn ${t.nextMultiplier ?? 1.5}x.`
+      : t.nextMultiplier == null || nextTop == null
+        ? `You’re in the top ${top}% · max multiplier ✓`
+        : `You’re in the top ${top}%. Reach the top ${nextTop}% for ${t.nextMultiplier}x points.`;
 
   // The same chip in two places: the collapsed pill and the panel's own header.
   // Both are painted here so they can never disagree.
@@ -3361,62 +3369,51 @@ function renderBonusWindowCard(w, t, ends) {
 }
 
 /* ---------- hub: "how you climb" (the three score levers) ----------
-   The bar is where you are; the text beside it is what is left to do, never
-   where you stand — "2 more spots", not "4 of 9". A number you can act on beats
-   a number you can only read.
-
-   Those asks come from the server (scoreProfile → `remaining` in
-   src/lib/tiers.js), computed next to the thresholds that define them. So the
-   targets never cross the wire and there is no second copy of VISIT_TARGET /
-   SPEND_TARGET here to go stale the day the scoring is tuned. */
+   The three things the score that RANKS you is made of. The bar is how much
+   credit each one is giving you; the text beside it is what you have done in
+   the window ("3 spots"), not what is left to do. There used to be a countdown
+   here ("12 more spots") to a fixed bar, and the tier is a rank now: no number
+   of spots is "enough" when the line moves with everyone else. */
 
 const LEVER_TIPS = [
   'Variety is holding you back most. Any spot you haven’t tried counts.',
   'Loyalty is holding you back most. Head back somewhere you’ve already been.',
   'Spend is holding you back most. Meal-sized orders count for more than a coffee.',
 ];
-const LEVER_DONE = 'Maxed ✓';
 
 function renderLevers(t) {
   const el = $('tier-levers');
   const comps = [t.breadth, t.loyalty, t.spend];
-  const rem = t.remaining;
-  // An older server that sends neither the components nor the asks: show the
-  // meter alone rather than three empty bars.
-  if (comps.some((c) => typeof c !== 'number') || !rem) { el.hidden = true; return; }
+  // An older server that sends no components: show the meter alone rather
+  // than three empty bars.
+  if (comps.some((c) => typeof c !== 'number')) { el.hidden = true; return; }
 
   $('lever-window').textContent = `last ${t.windowDays ?? 30} days`;
 
   const pct = (v) => `${Math.max(0, Math.min(1, v)) * 100}%`;
-  const more = (n, word) => `${n} more ${word}${n === 1 ? '' : 's'}`;
+  const count = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
   $('lever-variety-fill').style.width = pct(t.breadth);
-  $('lever-variety-val').textContent = rem.spots > 0 ? more(rem.spots, 'spot') : LEVER_DONE;
+  $('lever-variety-val').textContent = count(t.distinctVendors ?? 0, 'spot');
 
   // Loyalty is two things at once: going back to the same spots (the bigger
-  // half) and going out often. Ask for one at a time, revisits first, or the
-  // row turns into a sentence.
+  // half) and going out often. Visits is the one a student can count.
   $('lever-loyalty-fill').style.width = pct(t.loyalty);
-  $('lever-loyalty-val').textContent =
-    rem.revisits > 0 ? more(rem.revisits, 'revisit')
-      : rem.visits > 0 ? more(rem.visits, 'visit')
-        : LEVER_DONE;
+  $('lever-loyalty-val').textContent = count(t.totalVisits ?? 0, 'visit');
 
   // Dollars are the credited figure: a visit counts at most $30 (the anti
-  // receipt-stuffing cap), which the (i) explainer spells out. Past the dollar
-  // target there is still the ticket-size half of the term to satisfy.
+  // receipt-stuffing cap), which the (i) explainer spells out.
   $('lever-spend-fill').style.width = pct(t.spend);
-  $('lever-spend-val').textContent =
-    rem.spend > 0 ? `$${rem.spend} more`
-      : rem.smallOrders ? 'Bigger orders'
-        : LEVER_DONE;
+  $('lever-spend-val').textContent = `$${Math.round(t.totalSpend ?? 0)}`;
 
   // The rows say how much; this says which one to spend the effort on.
   let low = 0;
   comps.forEach((c, i) => { if (c < comps[low]) low = i; });
-  $('lever-tip').textContent = t.nextTierScore == null
-    ? 'You’re at the top tier. Keep visiting to hold it: the score covers a rolling 30 days.'
-    : LEVER_TIPS[low];
+  $('lever-tip').textContent = t.topPercent == null
+    ? 'Any visit gets you ranked. Variety, loyalty and spend all move you up.'
+    : t.nextMultiplier == null
+      ? 'You’re at the top tier. Keep visiting to hold it: rankings cover a rolling 30 days.'
+      : LEVER_TIPS[low];
 
   el.hidden = false;
 }

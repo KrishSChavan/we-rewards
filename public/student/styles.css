@@ -709,10 +709,11 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 
 /* ---------- 30-day tier meter (lives in the hub panel) ----------
-   Three nodes — one per multiplier in TIERS — evenly spaced, with the real
-   0–1000 score filling the track behind them. JS places the nodes and maps the
-   score onto the track piecewise (see renderTier), so each leg is worth one
-   tier's progress regardless of where the cutoffs actually fall. */
+   Three nodes — one per multiplier in TIERS — evenly spaced, with the
+   student's rank (top 100% → 50% → 10%) filling the track behind them. JS
+   places the nodes and maps the rank onto the track piecewise (see
+   renderTier), so each leg is worth one tier's progress regardless of where
+   the cutoffs actually fall. */
 .tier-bar { margin: 0.55rem var(--hub-pad) 0; }
 
 .tier-head {

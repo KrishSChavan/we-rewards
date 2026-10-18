@@ -169,17 +169,29 @@ customers; a geometric blend only pays out when all three are strong, so
 looping through vendors beats whaling one. Anti-farming: visits count once
 per vendor per day, and each visit credits at most $30 of spend.
 
-- Score < 350 → **1x** (1 point per $1)
-- 350–699 → **1.5x**
-- 700+ → **2x**
+The tier is a **rank**, not a fixed score (since 2026-10-18; it used to be
+350 → 1.5x and 700 → 2x). Breadth and the revisit target both grow with the
+vendor list, so a fixed bar got harder with every spot that joined:
 
-The score is computed live per request (no cron): the home screen shows it as
-the tier bar (`GET /api/me/tier`), the terminal shows the customer's
-multiplier on scan, and `/api/vendor/award` applies it server-side
-(`base × multiplier`, tier computed before the purchase lands so a
-transaction can't bump its own multiplier). Cutoffs and targets are
-constants at the top of `src/lib/tiers.js` — recalibrate them once real
-distribution data exists.
+- Top 50% of students → **1.5x**
+- Top 10% → **2x**
+- Everyone else, and anyone with a score of 0 → **1x** (1 point per $1)
+
+"Students" means every profile, including the ones who have never scanned,
+so while few students are active, one visit puts you in the top 10%. That
+was chosen knowingly. Ranks round up (with 87 students the top 10% is 9
+places) and ties go up. A score of 0 is never ranked: with every signup in
+the pool and ties going up, every zero would otherwise tie into 2x. The rule
+is `rankTier()` in `src/lib/tiers.js`.
+
+Each student's own score is computed live per request (no cron): the home
+screen shows the rank as the tier bar (`GET /api/me/tier`), the terminal shows
+the customer's multiplier on scan, and `/api/vendor/award` applies it
+server-side (`base × multiplier`, tier computed before the purchase lands so a
+transaction can't bump its own multiplier). The scores it is ranked against
+come from `tierRankingCache` (2 minutes), which re-reads every earn of the
+last 30 days. The cutoffs and score targets are constants at the top of
+`src/lib/tiers.js`.
 
 All source data lives in the `transactions` table (what happened, dollar
 amount, points, the student, the vendor, the date). Each computed score is

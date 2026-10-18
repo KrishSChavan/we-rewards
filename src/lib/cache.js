@@ -405,9 +405,28 @@ export const reviewSummaryCache = createCache({
   staleMs: 120_000,
 });
 
+/**
+ * Every student's 30-day score, ranked, keyed 'all':
+ * { ranked: [{ userId, score }] highest first, studentCount }.
+ * Loaded by loadTierRanking() in src/lib/tiers.js, which owns the query.
+ *
+ * The tier multiplier is a RANK (top 50% / top 10%), so every award needs every
+ * other student's score, and recomputing those per award is a read of the whole
+ * month's earn history. Two minutes because a rank barely moves between reads:
+ * the student's OWN score is still computed live on every award, only the field
+ * they are measured against is this old. The long stale window is the same
+ * trade as the bonus window's: a slightly-old ranking during an outage is a
+ * handful of awards at yesterday's tier, a thrown error is a failed sale.
+ */
+export const tierRankingCache = createCache({
+  name: 'tier-ranking',
+  ttlMs: 2 * 60_000,
+  staleMs: 60 * 60_000,
+});
+
 export const allCaches = [
   vendorCatalogueCache, vendorLogoCache, recommendedVendorsCache, bonusWindowCache,
-  reviewSummaryCache,
+  reviewSummaryCache, tierRankingCache,
 ];
 
 /** Wipe everything. Tests, and nothing else. */
