@@ -2853,6 +2853,17 @@ function closeEarnSheet() {
   }, 400);
 }
 
+// Points just landed from a counter scan (the realtime 'balance' handler). If
+// the code is still up, close it and say what arrived: under the sheet is Home,
+// where the only other sign is a card's number changing. Not when the spot's
+// own screen is under it (`toasted`), whose meter already pops "+N pts", and
+// nothing at all when the sheet is not open, so no other screen gains a toast.
+function closeEarnSheetOnEarn(earned, v, toasted) {
+  if (!$('earn-modal').classList.contains('is-open')) return;
+  closeEarnSheet();
+  if (!toasted) showToast(`✨  +${earned} pts${v?.name ? ` at ${v.name}` : ''}`, 'gain');
+}
+
 // Hard reset, no animation — for sign-out, where the app shell disappears out
 // from under the sheet and sliding it down over the landing page looks broken.
 function dropEarnSheet() {
@@ -8231,6 +8242,12 @@ function connectSocket() {
       // was (migration-066), once whatever is on screen has finished. A review
       // credit itself carries no `visit`, so it can never prompt for another.
       if (payload.visit) queueReviewPrompt(payload.vendorId, next > prev ? 'earn' : 'redeem');
+      // The counter just scanned the earn code and the points are in, so the
+      // code has done its job: take the student off it. Only for an earn (a
+      // visit that raised the balance), never a redemption, a review credit or
+      // a community-points move. Ahead of the install nudge below, which would
+      // otherwise wait behind the sheet like the review prompt above does.
+      if (payload.visit && next > prev && !payload.review) closeEarnSheetOnEarn(next - prev, v, hitOpen);
       // A gain here is a scan landing → install triggers 2 (near a reward
       // threshold) and 4 (first points earned). `v` carries the vendor's rewards
       // so the hook can decide "within 1 visit". Redemptions (a drop) are handled

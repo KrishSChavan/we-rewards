@@ -344,7 +344,7 @@ describe('the socket handlers', () => {
   const socketBlock = block('function connectSocket()', '// Foreground/background, so the campaign worker');
 
   function wired(vendors) {
-    const calls = { visits: [], renders: 0, reviewPrompts: [] };
+    const calls = { visits: [], renders: 0, reviewPrompts: [], earnCloses: [] };
     const handlers = {};
     const noop = () => {};
     const deps = {
@@ -378,6 +378,9 @@ describe('the socket handlers', () => {
       function applyVisitLocally(id) { calls.visits.push(id); calls.renders++; }
       // The review prompt (migration-066) rides the same \`visit\` flag.
       function queueReviewPrompt(id, trigger) { calls.reviewPrompts.push([id, trigger]); }
+      // The earn-code sheet closing itself on an earn; what it does is
+      // test/earn-sheet-close.test.js, WHEN it is asked for is checked here.
+      function closeEarnSheetOnEarn(earned, v, toasted) { calls.earnCloses.push([earned, v?.vendorId, toasted]); }
       function patchVendorCard() {}
       function refreshHomeRewards() {}   // Home's reward card; see home-redesign-client.test.js
       function applyBalance() {}
@@ -419,6 +422,16 @@ describe('the socket handlers', () => {
     const { handlers, calls } = wired([{ ...spot({ vendorId: 'v1' }), balance: 100 }]);
     handlers.balance({ vendorId: 'v1', balance: 20, visit: true });
     assert.deepEqual(calls.reviewPrompts, [['v1', 'redeem']]);
+  });
+
+  test('an earn closes the earn-code sheet; a redeem, a review credit or a move never does', () => {
+    const { handlers, calls } = wired([{ ...spot({ vendorId: 'v1' }), balance: 20 }]);
+    handlers.balance({ vendorId: 'v1', balance: 32, visit: true });             // a scan at the counter
+    handlers.balance({ vendorId: 'v1', balance: 12, visit: true });             // a redemption
+    handlers.balance({ vendorId: 'v1', balance: 22, review: true });            // a review credit
+    handlers.balance({ vendorId: 'v1', balance: 72, community: 10 });           // points moved in
+    // `toasted` is false: no spot screen is open in this harness (vendor = null).
+    assert.deepEqual(calls.earnCloses, [[12, 'v1', false]]);
   });
 
   test('a community-points move does NOT count as a visit', () => {
