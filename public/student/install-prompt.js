@@ -746,6 +746,13 @@
     isInstalled: isInstalled,
     canOffer: canOffer,
 
+    // True while a trigger is waiting out its delay, or while Chromium's native
+    // prompt is armed on the next tap. The review prompt (app.js,
+    // migration-066) fires on the same earn/redeem moments and holds back until
+    // this is false, so the two never stack and a tap on a star never doubles
+    // as the gesture that launches the install dialog.
+    isPending: function () { return !!pending || armed; },
+
     // Dev helpers (wired to the dev-only reset button + console poking).
     reset: function () {
       try { localStorage.removeItem(STORE_KEY); } catch (e) {}

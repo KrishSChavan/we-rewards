@@ -42,7 +42,7 @@ const PUSH_DISMISS_KEY = 'wr-admin-push-prompt-dismissed'; // set once "Not now"
 // evaluating — declared below the boot IIFE it would be in its temporal dead
 // zone at that moment, and the throw is swallowed, so the report would quietly
 // arrive missing the context it exists for.
-const VIEWS = ['dashboard', 'roi', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'broadcast', 'notifications', 'students'];
+const VIEWS = ['dashboard', 'roi', 'applications', 'incentives', 'poster', 'pools', 'ambassadors', 'broadcast', 'notifications', 'students', 'reviews'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -115,6 +115,10 @@ function bootFailed(message) {
   $('bc-audience').addEventListener('click', onBroadcastAudiencePick);
   $('bc-vendor').addEventListener('change', refreshBroadcastReach);
   $('bc-history').addEventListener('click', onBroadcastHistoryTap);
+  $('tab-reviews').addEventListener('click', openReviewsView);
+  $('rv-hidden-only').addEventListener('change', loadAdminReviews);
+  $('rv-list').addEventListener('click', onReviewListTap);
+  $('vendor-reviews-save').addEventListener('click', saveVendorReviewSettings);
   wireNotifications();   // the Notifications tab, its popup and the dashboard tile
   $('amb-add-btn').addEventListener('click', () => openAmbModal(null));
   $('amb-form').addEventListener('submit', submitAmbassador);
@@ -364,6 +368,8 @@ async function loadAll() {
       // the worker drains a queue, so a reload here keeps an operator who left
       // the tab open from reading a stale "0 of 312 sent".
       bcLoaded ? loadBroadcasts() : null,
+      // The Reviews tab (migration-066), same bargain again.
+      rvLoaded ? loadAdminReviews() : null,
       // The Notifications tab, same bargain as the four above. Its dashboard
       // tile is not lazy: it sits on the screen every sign-in lands on.
       notifLoaded ? refreshNotifications() : null,
@@ -1502,6 +1508,7 @@ function openVendorModal(v, infoEl) {
   buildCuisineGrid($('vendor-edit-cuisine'), v.cuisine);
   $('vendor-edit-price').value = v.price_level ?? '';
   setNote($('vendor-sells-note'), '', null);
+  resetVendorReviewSettings();
   $('vendor-edit-error').hidden = true;
   $('vendor-reward-list').innerHTML = '';
   showRewardsMsg('Loading items…');
@@ -1509,6 +1516,7 @@ function openVendorModal(v, infoEl) {
   $('vendor-modal').hidden = false;
   $('vendor-edit-ratio').focus();
   loadVendorRewards(v.id);
+  loadVendorReviewSettings(v.id);
   // Only when the roster says there is artwork to fetch. has_logo rides along on
   // GET /admin/vendors precisely so this dialog can skip the request for the
   // majority of vendors, who have no logo at all.
@@ -1600,6 +1608,74 @@ async function saveVendorLocationLabel() {
 // long deleted, and there is no backfill. They are re-collected one at a time,
 // here, which is why the roster renders a missing number as a visible "no
 // phone" rather than an empty space.
+/* ---------- reviews settings, in the Edit vendor dialog (migration-066) ---------- */
+
+function resetVendorReviewSettings() {
+  $('vendor-edit-google').value = '';
+  $('vendor-edit-review-points').value = '';
+  $('vendor-edit-google').disabled = true;
+  $('vendor-edit-review-points').disabled = true;
+  $('vendor-reviews-save').disabled = true;
+  $('vendor-reviews-summary').hidden = true;
+  setNote($('vendor-reviews-note'), 'Loading…', null);
+}
+
+async function loadVendorReviewSettings(vendorId) {
+  const note = $('vendor-reviews-note');
+  try {
+    const res = await authFetch(`/api/admin/vendors/${encodeURIComponent(vendorId)}/review-settings`);
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (editVendor?.v.id !== vendorId) return;          // the dialog moved on
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t load.', 'err'); return; }
+    if (!data.available) { setNote(note, 'Needs migration 066.', 'err'); return; }
+    $('vendor-edit-google').value = data.googleReviewUrl ?? '';
+    $('vendor-edit-review-points').value = String(data.reviewPoints ?? 0);
+    $('vendor-edit-google').disabled = false;
+    $('vendor-edit-review-points').disabled = false;
+    $('vendor-reviews-save').disabled = false;
+    const c = data.summary?.count ?? 0;
+    $('vendor-reviews-summary').textContent = c
+      ? `★ ${Number(data.summary.avg).toFixed(1)} from ${c} ${c === 1 ? 'review' : 'reviews'}. See the Reviews tab to moderate.`
+      : 'No reviews yet.';
+    $('vendor-reviews-summary').hidden = false;
+    setNote(note, '', null);
+  } catch {
+    if (editVendor?.v.id === vendorId) setNote(note, 'No connection.', 'err');
+  }
+}
+
+async function saveVendorReviewSettings() {
+  if (!editVendor) return;
+  const btn = $('vendor-reviews-save');
+  const note = $('vendor-reviews-note');
+  const vendorId = editVendor.v.id;
+  // Both keys, always: '' clears the link, '' or 0 switches review points off.
+  const googleReviewUrl = $('vendor-edit-google').value.trim();
+  const reviewPoints = $('vendor-edit-review-points').value.trim();
+  btn.disabled = true;
+  setNote(note, 'Saving…', null);
+  try {
+    const res = await authFetch(`/api/admin/vendors/${encodeURIComponent(vendorId)}/review-settings`, {
+      method: 'PATCH',
+      body: JSON.stringify({ googleReviewUrl, reviewPoints: reviewPoints === '' ? 0 : Number(reviewPoints) }),
+    });
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { setNote(note, data.message || 'Couldn’t save.', 'err'); btn.disabled = false; return; }
+    if (editVendor?.v.id === vendorId) {
+      // Normalised by the server (a pasted link can come back re-encoded).
+      $('vendor-edit-google').value = data.googleReviewUrl ?? '';
+      $('vendor-edit-review-points').value = String(data.reviewPoints ?? 0);
+    }
+    setNote(note, 'Saved', 'ok');
+    btn.disabled = false;
+  } catch {
+    setNote(note, 'No connection.', 'err');
+    btn.disabled = false;
+  }
+}
+
 async function saveVendorContact() {
   if (!editVendor) return;
   const btn = $('vendor-contact-save');
@@ -8283,6 +8359,120 @@ const BC_AUDIENCE_LABEL = {
   lapsed: 'Stopped coming',
   vendor: 'One spot',
 };
+
+/* ---------- the Reviews tab (migration-066) ---------- */
+
+let rvLoaded = false;   // false until the first open pays for the list
+let rvReasons = ['abuse', 'spam', 'off_topic', 'personal_info', 'not_genuine'];
+const RV_REASON_LABEL = {
+  abuse: 'Abusive',
+  spam: 'Spam',
+  off_topic: 'Off-topic',
+  personal_info: 'Personal information',
+  not_genuine: 'Not a genuine visit',
+};
+
+function openReviewsView() {
+  setView('reviews');
+  loadAdminReviews();
+}
+
+async function loadAdminReviews() {
+  rvLoaded = true;
+  const err = $('rv-error');
+  err.hidden = true;
+  try {
+    const q = $('rv-hidden-only').checked ? '?show=hidden' : '';
+    const res = await authFetch(`/api/admin/reviews${q}`);
+    if (res.status === 403) return denyAccess();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { err.textContent = data.message || 'Couldn’t load reviews.'; err.hidden = false; return; }
+    if (!data.available) {
+      $('rv-count').textContent = '';
+      $('rv-list').innerHTML = '<p class="muted">Reviews need migration 066 in the database first.</p>';
+      return;
+    }
+    if (Array.isArray(data.reasons) && data.reasons.length) rvReasons = data.reasons;
+    renderAdminReviews(data.reviews ?? []);
+  } catch {
+    err.textContent = 'No connection, try again.';
+    err.hidden = false;
+  }
+}
+
+function renderAdminReviews(rows) {
+  $('rv-count').textContent = rows.length ? `${rows.length} most recent` : '';
+  if (!rows.length) {
+    $('rv-list').innerHTML = `<p class="muted">${$('rv-hidden-only').checked ? 'No hidden reviews.' : 'No reviews yet.'}</p>`;
+    return;
+  }
+  $('rv-list').innerHTML = rows.map((r) => {
+    const spot = r.locationLabel ? `${r.vendorName ?? 'Unknown spot'} (${r.locationLabel})` : (r.vendorName ?? 'Unknown spot');
+    const when = new Date(r.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const how = r.source === 'onsite' ? 'reviewed on site' : 'reviewed after a visit';
+    const paid = r.pointsAwarded > 0 ? ` · paid ${num(r.pointsAwarded)} pts` : '';
+    const hidden = r.hiddenAt
+      ? `<p class="bc-row-meta"><span class="bc-state is-cancelled">hidden</span> · ${escapeHtml(RV_REASON_LABEL[r.hiddenReason] ?? r.hiddenReason ?? '')}${r.hiddenBy ? ` · by ${escapeHtml(r.hiddenBy)}` : ''}</p>`
+      : '';
+    const action = r.hiddenAt
+      ? `<button class="vr-save rv-unhide" type="button" data-id="${escapeHtml(r.id)}">Unhide</button>`
+      : `<span class="rv-actions">
+          <select class="rv-reason" aria-label="Reason to hide this review">
+            <option value="">Hide because…</option>
+            ${rvReasons.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(RV_REASON_LABEL[k] ?? k)}</option>`).join('')}
+          </select>
+          <button class="vr-save rv-hide" type="button" data-id="${escapeHtml(r.id)}">Hide</button>
+        </span>`;
+    return `
+      <div class="bc-row${r.hiddenAt ? ' is-hidden' : ''}">
+        <div class="bc-row-main">
+          <p class="bc-row-title"><span class="rv-stars" aria-label="${r.rating} out of 5 stars">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span> ${escapeHtml(spot)}</p>
+          ${r.body ? `<p class="bc-row-body rv-body">${escapeHtml(r.body)}</p>` : ''}
+          <p class="bc-row-meta">${escapeHtml(r.authorName ?? 'Anonymous')} · ${escapeHtml(when)} · ${how}${paid}</p>
+          ${hidden}
+        </div>
+        ${action}
+      </div>`;
+  }).join('');
+}
+
+async function onReviewListTap(e) {
+  const hide = e.target.closest('.rv-hide');
+  const unhide = e.target.closest('.rv-unhide');
+  const btn = hide || unhide;
+  if (!btn) return;
+  const err = $('rv-error');
+  err.hidden = true;
+  let body = null;
+  if (hide) {
+    const reason = btn.parentElement.querySelector('.rv-reason')?.value;
+    if (!reason) {
+      err.textContent = 'Pick why this review breaks the rules first.';
+      err.hidden = false;
+      return;
+    }
+    body = JSON.stringify({ reason });
+  }
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/admin/reviews/${encodeURIComponent(btn.dataset.id)}/${hide ? 'hide' : 'unhide'}`, {
+      method: 'POST',
+      ...(body ? { body } : {}),
+    });
+    if (res.status === 403) { await denyAccess(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      err.textContent = data.message || 'Couldn’t change that review.';
+      err.hidden = false;
+    }
+    await loadAdminReviews();
+  } catch {
+    err.textContent = 'No connection, try again.';
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 function renderBroadcasts(rows) {
   $('bc-history-count').textContent = rows.length ? `${rows.length} most recent` : '';

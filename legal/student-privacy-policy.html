@@ -135,7 +135,7 @@
   <p>All of these are stored on your device rather than sent to us as a separate collection of data. You can clear them at any time through your browser's site-data settings.</p>
 
   <h3>2.9 Location</h3>
-  <p>Two features in WeRewards can use your location. Both ask your permission first, both work only while the app is open, and you can refuse or switch off either one without losing anything else.</p>
+  <p>Three features in WeRewards can use your location. All three ask your permission first, work only while the app is open, and can be refused without losing anything else. The map and Nearby spot alerts never send your coordinates to us. Reviewing a spot can, once, as described at the end of this section.</p>
 
   <h4>The map</h4>
   <p>The app includes a map of the spots you can earn points at. Opening that map does not involve your location at all: it shows the vendors' own addresses, which they gave us.</p>
@@ -159,6 +159,16 @@
   </ul>
   <p><strong>This does not run in the background.</strong> Web apps cannot read your location when they are closed, and WeRewards does not try to. If the app is not open on your screen, nothing here is happening.</p>
   <p>You can switch Nearby spots off at any time in Account &rarr; Notifications, or withdraw location permission in your device settings — the switch turns itself off when you do. Turning it off stops the alerts and no further records are made. It is separate from Deal alerts: switching one off does not affect the other.</p>
+
+  <h4>Reviewing a spot</h4>
+  <p>Your first review of a spot has to come from someone who was there (Terms of Service, Section 4.8). If you earned or redeemed points, or collected a visit, at that spot in the last 24 hours, we already know that and your location is not used at all. Otherwise:</p>
+  <ul>
+    <li>When you press Post, the app asks your browser or phone for your position <strong>once</strong>, and you can refuse.</li>
+    <li>If you allow it, your <strong>latitude, longitude and the reading's accuracy are sent to our server with your review</strong>. Unlike the two features above, this one does send your coordinates to us.</li>
+    <li>The server compares them with the spot's address to decide whether you are there, and then <strong>discards them</strong>. They are not stored, not logged, not attached to your review and not shared with the vendor or anyone else.</li>
+    <li>What we keep is only the outcome: that your review was posted on site, rather than after a visit. That is part of your review record (Section 2.16).</li>
+  </ul>
+  <p>Editing a review you have already posted never uses your location.</p>
 
   <h3>2.10 Receipt Photos</h3>
   <p>You can claim points by photographing a paper receipt from a participating spot. Taking that photo is entirely up to you — you can always earn at the counter instead, and nothing here happens unless you tap submit.</p>
@@ -193,7 +203,7 @@
   <h3>2.13 Information We Do NOT Collect</h3>
   <ul>
     <li>Payment card numbers or bank account information. (A receipt often prints the last four digits of a card; we do not read, extract, or store them.)</li>
-    <li>Precise GPS location. Two features can read your position with your permission &mdash; the map's locate button and Nearby spot alerts &mdash; but in both cases the reading stays inside your browser and your coordinates never reach us. For nearby alerts we learn only <em>which spot</em> you were next to, never where you are. See Section 2.9.</li>
+    <li>A record of your precise GPS location. The map's locate button and Nearby spot alerts read your position with your permission but keep it inside your browser; for nearby alerts we learn only <em>which spot</em> you were next to. Reviewing a spot away from a recent visit sends your coordinates to us once, to check you are there, and we discard them immediately without storing or logging them. See Section 2.9.</li>
     <li>Penn State student ID numbers or academic records</li>
     <li>Biometric data</li>
     <li>Contacts, or files from your device</li>
@@ -226,12 +236,21 @@
   </ul>
   <p><strong>If the address you add already has its own WeRewards account</strong>, adding it offers to join the two together. You are shown exactly what would move before you agree. If you agree:</p>
   <ul>
-    <li><strong>Everything the other account holds becomes part of this one</strong> — its points, its community points, its visit counts, its saved spots and its full transaction history. From that moment we hold that data about you under the account you kept.</li>
+    <li><strong>Everything the other account holds becomes part of this one</strong> — its points, its community points, its visit counts, its saved spots, its full transaction history and its reviews (Section 2.16). Where both accounts reviewed the same spot, the review from the account you kept stays and the other one is deleted. From that moment we hold that data about you under the account you kept.</li>
     <li><strong>The other account is closed and its login is deleted.</strong></li>
     <li><strong>This cannot be undone.</strong> The two sets of points are added together and there is no record of which came from where, beyond a single administrative entry noting that the accounts were joined, when, the address involved, and the totals that moved.</li>
     <li><strong>Where a bonus was paid because one of the two accounts invited the other</strong>, that bonus is reversed when they are joined, since they turn out to be the same person. Bonuses paid to anyone else — a campus ambassador, for example — are not reversed.</li>
   </ul>
   <p>We will only ever join two accounts when someone proves they hold the mailbox and then confirms it. We never do it automatically.</p>
+
+  <h3>2.16 Reviews</h3>
+  <p>If you review a spot (Terms of Service, Section 4.8), we store your rating, your comment if you wrote one, whether you chose to post anonymously, the name the review is shown under (taken from the name on your account: your first name and the first letter of your last name, or, if your name is a single word, that word), whether the presence check was a recent visit or your location (Section 2.9), the points the review earned, when you posted and last edited it, and, if we hide it, when, why and which of our staff did so.</p>
+  <ul>
+    <li><strong>Reviews are public.</strong> Your rating, comment and date, and the name you posted under (or "WeRewards member"), are shown to other users in the app, to the vendor, and on the spot's public page on our website, where search engines may index and cache them.</li>
+    <li><strong>If your account has no usable name</strong>, for example because the name we hold was taken from your email address or contains numbers, your reviews are always shown as "WeRewards member". We never publish your email address or any part of it. The app shows you exactly what name will appear before you post, and you can always choose to post anonymously instead.</li>
+    <li><strong>The Google button.</strong> After you post, the app may offer a link to the spot's Google review page. Tapping it simply opens Google; we send Google nothing about you or your review, and what you do there is governed by Google's privacy policy.</li>
+    <li>Your reviews are included in <strong>Download my data</strong> (Section 7.1), and are deleted with your account (Section 6).</li>
+  </ul>
 
   <h2>3. How We Use Your Information</h2>
   <table>
@@ -246,6 +265,8 @@
       <tr><td>Show your activity history</td><td>Transaction data, vendor names, rewards</td></tr>
       <tr><td>Provide data export on request</td><td>All data associated with your account</td></tr>
       <tr><td>Detect and prevent fraud or abuse</td><td>User ID, transaction data, error logs</td></tr>
+      <tr><td>Publish your review of a spot, credit the points it earns, and moderate reviews that break the rules</td><td>User ID, your review (Section 2.16), the name on your account</td></tr>
+      <tr><td>Check you were at a spot before a first review</td><td>Your recent transactions and visits at that spot, or your location at the moment you post (read once and discarded, Section 2.9)</td></tr>
       <tr><td>Award points for a receipt you photograph, and check the receipt is genuine and not already claimed</td><td>The receipt photo (read, then discarded — see Section 2.10), and the business, total, and printed date and time read from it</td></tr>
       <tr><td>Debug and fix platform errors</td><td>Error logs, user agent, user ID</td></tr>
       <tr><td>Operate platform analytics (admin-only)</td><td>Aggregated/anonymized transaction data</td></tr>
@@ -369,6 +390,8 @@
       <tr><td>Email suppressions (an address that bounced, or whose owner unsubscribed or reported a message as spam)</td><td>Kept so that nothing further is sent to that address. A bounce is dropped after about 180 days, in case the address is repaired. An unsubscribe or a spam report is kept indefinitely, <em>including after the account is deleted</em>: the record is what stops us mailing that address again, so deleting it would undo the very request it exists to honour. It holds the address and the reason only</td></tr>
       <tr><td>Deal delivery records and frequency counters</td><td>About 30 days after the deal expires; deleted immediately if you delete your account</td></tr>
       <tr><td>Notification records (each notification and email we sent or tried to send you, and how it went)</td><td>About 30 days after the message; deleted immediately if you delete your account</td></tr>
+      <tr><td>Reviews you post (Section 2.16)</td><td>Until you delete your account. Copies already made by search engines may take some time to disappear after that</td></tr>
+      <tr><td>Location sent to check you are at a spot (Section 2.9)</td><td>Never stored. Compared with the spot's address, then discarded</td></tr>
       <tr><td>Your invite code</td><td>Until you delete your account</td></tr>
       <tr><td>Referral records (which account invited which)</td><td>Until either account is deleted, whichever comes first</td></tr>
       <tr><td>Bonus-point records (what we credited and why)</td><td>Retained indefinitely with your identity severed after account deletion (see Section 6)</td></tr>
@@ -385,6 +408,7 @@
     <li>Your profile (name, email, user ID) is permanently deleted.</li>
     <li>Your point balances, community points balance, and engagement scores are permanently deleted.</li>
     <li>Your active earn and redemption codes are permanently deleted.</li>
+    <li>Your <strong>reviews are permanently deleted</strong> and disappear from the app, from vendors' screens and from our public pages. Copies already made by search engines may take some time to disappear after that.</li>
     <li>Your consent records, including the IP address recorded at acceptance, are permanently deleted.</li>
     <li>Your <strong>invite code and every referral record involving your account</strong> are permanently deleted — both the invitations you sent and the one you used, if any. If someone who invited you has not yet been paid their bonus, deleting your account means it will not be paid.</li>
     <li>Your <strong>transaction history records are retained but permanently anonymized</strong> — the link between those records and your identity is severed. This is necessary to preserve the accuracy of vendors' business records (e.g., total revenue statistics) which we are contractually obligated to maintain.</li>
@@ -397,7 +421,7 @@
   <!-- ══════════════════════════════════════════════════════════ -->
   <h2>7. Your Rights and Choices</h2>
   <h3>7.1 Data Export</h3>
-  <p>You can download a full copy of your WeRewards data at any time through <strong>Account tab → Download my data</strong>. The file is provided as a JSON file and includes your profile, your balances and community points balance, your full transaction history, your engagement scores, your notification records in their own section of the file (each message we sent or tried to send you, when, and how it went), every bonus we have credited you and what it was for, your invite code, your referral records, any second email address you have linked, and a record of any account that has been joined into yours.</p>
+  <p>You can download a full copy of your WeRewards data at any time through <strong>Account tab → Download my data</strong>. The file is provided as a JSON file and includes your profile, your balances and community points balance, your full transaction history, your engagement scores, your notification records in their own section of the file (each message we sent or tried to send you, when, and how it went), every bonus we have credited you and what it was for, your invite code, your referral records, any second email address you have linked, a record of any account that has been joined into yours, and every review you have posted, including any we have hidden.</p>
   <p>Your referral records are limited to <strong>your</strong> side of each invitation, in line with Section 2.12: an invitation you sent appears as its date, status, and what you were paid, without any identifier for the person you invited.</p>
   <h3>7.2 Account Deletion</h3>
   <p>As described in Section 6, you may delete your account at any time through the app.</p>

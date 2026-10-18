@@ -918,6 +918,15 @@ body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea,
 .top-count { font-weight: 900; min-width: 2ch; text-align: right; }
 .stats-empty { color: var(--muted); font-weight: 700; }
 
+/* reviews (migration-066). Star gold is fixed in both themes: a symbol, not ink. */
+.reviews-list { list-style: none; display: flex; flex-direction: column; gap: 0.6rem; }
+.review-row { border-top: 2px solid var(--sky); padding-top: 0.6rem; }
+.review-row:first-child { border-top: 0; padding-top: 0; }
+.review-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
+.review-row-stars { color: #e0a100; letter-spacing: 0.06em; font-size: 1.05rem; }
+.review-row-who { color: var(--muted); font-weight: 700; font-size: 0.9rem; }
+.review-row-body { margin-top: 0.25rem; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
+
 /* recent activity + undo */
 /* height:auto, NOT a fixed pane. This used to be `height: 500px` with the
    phone breakpoint below relaxing it, on the reasoning that a fixed pane inside

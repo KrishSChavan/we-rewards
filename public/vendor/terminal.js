@@ -3575,6 +3575,7 @@ function renderAnalytics(d) {
   syncStatsLock(limited, sections);
   loadPoolSettlement();
   loadRecent();
+  loadReviews();
 }
 
 /**
@@ -3718,6 +3719,46 @@ function renderPoolSettlement(data) {
 }
 
 /* ---------- STATS: recent activity + undo (reverse a transaction) ---------- */
+
+/* ---------- reviews (migration-066) ----------
+   What students said about this location, as the public sees it: stars, the
+   comment, and the "First L." they chose or nothing. Plus what reviews here
+   pay and what they have paid so far, because those points are this shop's. */
+async function loadReviews() {
+  const card = $('stats-reviews-card');
+  try {
+    const res = await authFetch('/api/vendor/reviews');
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok || !data.available) { card.hidden = true; return; }
+    renderReviews(data);
+    card.hidden = false;
+  } catch { /* keep the prior render */ }
+}
+
+function renderReviews(d) {
+  const count = d.summary?.count ?? 0;
+  $('stats-reviews-avg').textContent = count && d.summary.avg != null
+    ? `★ ${Number(d.summary.avg).toFixed(1)} · ${count} ${count === 1 ? 'review' : 'reviews'}`
+    : '';
+  const paid = d.pointsPaid > 0 ? ` Reviews here have paid ${d.pointsPaid.toLocaleString()} pts so far.` : '';
+  $('stats-reviews-note').textContent = d.reviewPoints > 0
+    ? `A student’s first review here earns them ${d.reviewPoints} pts, whatever they rate you.${paid}`
+    : `Reviews here don’t earn points right now.${paid}`;
+  const list = $('stats-reviews-list');
+  if (!(d.reviews ?? []).length) {
+    list.innerHTML = `<li class="stats-empty">No reviews yet. Students are asked after they earn or redeem.</li>`;
+    return;
+  }
+  list.innerHTML = d.reviews.map((r) => {
+    const when = new Date(r.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return `<li class="review-row">
+      <span class="review-row-head"><span class="review-row-stars" aria-label="${r.rating} out of 5 stars">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span>
+      <span class="review-row-who">${escapeHtml(r.authorName ?? 'WeRewards member')} · ${escapeHtml(when)}${r.edited ? ' · edited' : ''}</span></span>
+      ${r.body ? `<p class="review-row-body">${escapeHtml(r.body)}</p>` : ''}
+    </li>`;
+  }).join('');
+}
 
 let recentItems = [];
 let undoArmedId = null;      // txn id whose Undo button is armed for a confirming 2nd tap

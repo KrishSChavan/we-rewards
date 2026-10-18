@@ -603,6 +603,22 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
   $('punch-card-btn').addEventListener('click', openPunchModal);
   $('punch-close').addEventListener('click', closePunchModal);
   $('punch-modal').addEventListener('click', (e) => { if (e.target === $('punch-modal')) closePunchModal(); });
+  // reviews (migration-066): the spot screen's button opens the sheet; ✕ /
+  // backdrop / Esc / "Not now" close it
+  $('spot-review-btn').addEventListener('click', () => { if (vendor) openReviewSheet(vendor.vendorId, { trigger: 'button' }); });
+  $('review-close').addEventListener('click', () => closeReviewSheet('close'));
+  $('review-later').addEventListener('click', () => closeReviewSheet('later'));
+  $('review-done').addEventListener('click', () => closeReviewSheet('done'));
+  $('review-modal').addEventListener('click', (e) => { if (e.target === $('review-modal')) closeReviewSheet('backdrop'); });
+  $('review-stars').addEventListener('click', (e) => {
+    const star = e.target.closest('.review-star');
+    if (star) setReviewRating(Number(star.dataset.star));
+  });
+  $('review-stars').addEventListener('keydown', onReviewStarsKey);
+  $('review-body').addEventListener('input', syncReviewCount);
+  $('review-anon').addEventListener('change', syncReviewAs);
+  $('review-submit').addEventListener('click', submitReview);
+  $('review-google-btn').addEventListener('click', openGoogleReview);
   $('punch-scan-btn').addEventListener('click', openPunchScanSheet);
   $('punch-scan-close').addEventListener('click', closePunchScanSheet);
   $('punch-scan-modal').addEventListener('click', (e) => { if (e.target === $('punch-scan-modal')) closePunchScanSheet(); });
@@ -711,6 +727,7 @@ const BOOT_SCRIPTS = { supabase: '/supabase.js', InstallPrompt: '/install-prompt
     closePickSheet();
     closePunchScanSheet();
     closePunchModal();
+    closeReviewSheet('escape');
     closeHelpSheet();
     closeInfo('tier-info', 'tier-info-btn');
     closeInfo('community-info', 'community-card');
@@ -1294,6 +1311,7 @@ function render(session) {
     dropReceiptSheet();         // same, and it may hold a photo preview the next student must not see
     dropPunchScanSheet();       // same (and it holds the camera)
     dropPunchModal();           // same
+    dropReviewSheet();          // same, and it can hold a half-written review
     dropDealsSheet();           // same, and the next student must not read these
     dropNearby();               // stop the location watch: it must never outlive the session that opted into it
     dropItemModal();            // same, and it can be holding a live redemption QR
@@ -2544,6 +2562,23 @@ function historyRow(tx) {
       </span>
       <span class="hr-points">+${Number(tx.community_points) || 0}<small>community</small></span>`;
     return grow;
+  }
+
+  // A paid review (migration-066): vendor points with no purchase behind them.
+  // The server shapes it into this envelope; none of the reward/undo logic below
+  // applies to it.
+  if (tx.type === 'review') {
+    const rtime = new Date(tx.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const rrow = document.createElement('div');
+    rrow.className = 'history-row earn';
+    rrow.innerHTML = `
+      <span class="hr-icon">⭐</span>
+      <span class="hr-body">
+        <span class="hr-title">${escapeHtml(`Reviewed ${tx.vendors?.name ?? 'a spot'}`)}</span>
+        <span class="hr-sub">${escapeHtml(`first review · ${rtime}`)}</span>
+      </span>
+      <span class="hr-points">+${Number(tx.points) || 0}<small>pts</small></span>`;
+    return rrow;
   }
 
   const earn = tx.type === 'earn';
@@ -3897,6 +3932,9 @@ function renderGains(listId, p) {
       + (names ? ` <span>${names}${more > 0 ? ` and ${more} more` : ''}</span>` : ''));
   }
   if (p?.transactions > 0) rows.push(`<b>${p.transactions}</b> past visit${p.transactions === 1 ? '' : 's'} in your history`);
+  // Spot reviews (migration-066): carried across, except where this account
+  // already reviewed the same spot.
+  if (p?.reviews > 0) rows.push(`<b>${p.reviews}</b> review${p.reviews === 1 ? '' : 's'} you posted`);
   el.innerHTML = rows.map((r) => `<li>${r}</li>`).join('');
   el.hidden = rows.length === 0;
 }
@@ -4153,6 +4191,9 @@ async function submitReceipt() {
     // a phone whose socket happens to be reconnecting. Idempotent — whichever
     // arrives second finds the flags already set and repaints nothing.
     applyVisitLocally(data.vendorId);
+    // Waits for this sheet to close (see queueReviewPrompt). The socket push
+    // queues the same spot too; whichever lands second is a no-op.
+    queueReviewPrompt(data.vendorId, 'receipt');
     $('receipt-success-line').textContent =
       `+${data.awarded} pts at ${data.vendorName} on your $${Number(data.total).toFixed(2)} receipt 🎉`;
     $('receipt-pick-view').hidden = true;
@@ -5791,10 +5832,14 @@ function buildSpotRow(v) {
   // the same reason. It is a fifth grid child spanning the full width, so it
   // sits UNDER the whole row rather than squeezing the name column.
   const poolChip = poolChipText(v);
+  // "★ 4.6 (12)" ahead of the rate on the same small line (migration-066).
+  // In spotRowSig() too: a new review must rebuild the row, since only the
+  // balance and the heart are ever patched in place.
+  const sub = [ratingChipText(v.rating), rate].filter(Boolean).join(' · ');
 
   row.innerHTML = `
     <span class="spot-mark" aria-hidden="true">${mark}</span>
-    <span class="spot-name">${escapeHtml(v.name)}${rate ? `<small class="spot-sub">${escapeHtml(rate)}</small>` : ''}</span>
+    <span class="spot-name">${escapeHtml(v.name)}${sub ? `<small class="spot-sub">${escapeHtml(sub)}</small>` : ''}</span>
     <span class="spot-points"><span class="spot-num">${v.balance ?? 0}</span><small>pts</small></span>
     <button class="spot-heart" type="button" aria-pressed="false">
       <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -5826,7 +5871,7 @@ function paintSpotHeart(row, on, name) {
 // balance is patched in place and never rebuilds the row, so a chip left out of
 // here would never appear on a row that already exists.
 function spotRowSig(v) {
-  return JSON.stringify([v.name, !!v.hasLogo, v.pointsPerDollar ?? null, poolChipText(v)]);
+  return JSON.stringify([v.name, !!v.hasLogo, v.pointsPerDollar ?? null, poolChipText(v), ratingChipText(v.rating)]);
 }
 
 /**
@@ -7770,6 +7815,7 @@ function openVendor(vendorId, origin) {
   // hidden. Nothing has painted between the two calls, so the block still
   // arrives with the screen rather than a frame late.
   renderPunchUi();
+  loadSpotReviews(v);
 }
 
 /**
@@ -8160,11 +8206,17 @@ function connectSocket() {
       // and is deliberately NOT one, so the flag is what tells them apart on a
       // device that did not make the move. Origin only, never the siblings.
       if (payload.visit) applyVisitLocally(payload.vendorId);
+      // An award, a redeem or a receipt just landed at this spot: ask how it
+      // was (migration-066), once whatever is on screen has finished. A review
+      // credit itself carries no `visit`, so it can never prompt for another.
+      if (payload.visit) queueReviewPrompt(payload.vendorId, next > prev ? 'earn' : 'redeem');
       // A gain here is a scan landing → install triggers 2 (near a reward
       // threshold) and 4 (first points earned). `v` carries the vendor's rewards
       // so the hook can decide "within 1 visit". Redemptions (a drop) are handled
       // in applyBalance, which knows the code sheet was open.
-      if (next > prev) {
+      // Not for a review credit (migration-066): it is not a purchase, and the
+      // sheet thanking them for the review is still up when it lands.
+      if (next > prev && !payload.review) {
         InstallPrompt.onPointsEarned({ vendor: v, prevBalance: prev, newBalance: next, earned: next - prev });
       }
       loadTier();                             // an earn just landed — score may have moved
@@ -8193,6 +8245,9 @@ function connectSocket() {
         document.querySelectorAll('.item-card').forEach(decorateCard);
       }
       if (payload.redeemed) {
+        // A visits redemption also pushes `balance` with `visit`, so this is
+        // the belt to that brace for a socket that only delivered this one.
+        queueReviewPrompt(payload.vendorId, 'redeem');
         punchToast(`🎉 Redeemed${payload.reward ? ` · ${payload.reward}` : ''}`);
         if (!$('punch-modal').hidden) closePunchModal();
         if (!$('item-modal').hidden) closeItemModal();
@@ -9181,6 +9236,485 @@ function dropPunchModal() {
   ov.classList.remove('is-open');
   ov.hidden = true;
   $('punch-card-btn').setAttribute('aria-expanded', 'false');
+}
+
+/* ============================================================
+   REVIEWS — rate a spot in the app (migration-066)
+
+   The points are for the review WE hold. After posting, the sheet offers the
+   spot's Google review page if the operator set one, at EVERY star rating, and
+   nothing about points depends on it. Both halves of that are Google's rules
+   (no incentives for Google reviews, no "review gating"), and the penalty for
+   breaking them lands on the vendor's own Google listing. Do not add a rating
+   check in front of the Google button, and do not add points to it.
+
+   PRESENCE. A first review needs the student to have been there: a visit in
+   the last 24h (the server knows), or their location right now. So the sheet
+   only asks for location when the server says there was no recent visit, and
+   only at the moment they press Post.
+
+   THE PROMPT. After an earn, a redeem or a receipt at a spot they have not
+   reviewed, the sheet opens by itself, but only once nothing else is on
+   screen: the QR sheet the cashier just scanned, the redeem code closing, the
+   receipt confirmation, the install nudge. "Not now" (or any dismissal) is good
+   for the rest of that visit, which is the REVIEW_PROMPT_SNOOZE_MS window.
+   ============================================================ */
+
+const REVIEW_PROMPT_DELAY_MS = 1800;              // after the "+N pts" toast, not on top of it
+const REVIEW_PROMPT_RETRY_MS = 700;
+const REVIEW_PROMPT_GIVE_UP_MS = 5 * 60 * 1000;   // the QR sheet can stay up a while
+const REVIEW_PROMPT_SNOOZE_MS = 3 * 60 * 60 * 1000;
+
+let reviewState = null;        // GET /api/me/reviews/:id for the spot the sheet is about
+let reviewVendorId = null;     // which spot the sheet is about (not always the open one)
+let reviewRating = 0;
+let reviewMode = 'button';     // 'button' | 'earn' | 'redeem' | 'receipt'
+let reviewBusy = false;
+let reviewLoadSeq = 0;         // drops a stale section load when spots change fast
+let reviewPromptQueued = null; // { vendorId, trigger, since }
+let reviewPromptTimer = null;
+// Bumped by dropReviewSheet (sign-out). Every await in this block checks it,
+// so a read that was already in flight for the last student can never open a
+// sheet — with their name in it — over the landing page or the next session.
+let reviewEpoch = 0;
+
+/* The per-visit snooze: vendorId -> when this student was last asked (or
+   opened the sheet themselves). In localStorage, per student, so "Not now"
+   survives an app relaunch for the rest of that visit; in memory too, because
+   storage can be unavailable (private mode, a full quota) and the snooze must
+   still hold for this session. */
+const reviewSnoozeMemory = new Map();
+const reviewSnoozeKey = () => (currentUserId ? `wr_review_snooze:${currentUserId}` : null);
+
+function readReviewSnoozes() {
+  const key = reviewSnoozeKey();
+  if (!key) return {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function reviewSnoozedAt(vendorId) {
+  const stored = Number(readReviewSnoozes()[vendorId]) || 0;
+  return Math.max(stored, reviewSnoozeMemory.get(vendorId) ?? 0);
+}
+
+function snoozeReviewPrompt(vendorId) {
+  const now = Date.now();
+  reviewSnoozeMemory.set(vendorId, now);
+  const key = reviewSnoozeKey();
+  if (!key) return;
+  try {
+    const all = readReviewSnoozes();
+    all[vendorId] = now;
+    // Forget expired entries so the record cannot grow without bound.
+    for (const [id, at] of Object.entries(all)) {
+      if (!(now - Number(at) < REVIEW_PROMPT_SNOOZE_MS)) delete all[id];
+    }
+    localStorage.setItem(key, JSON.stringify(all));
+  } catch { /* the in-memory snooze still holds */ }
+}
+
+/** "★ 4.6 (12)", or '' with no reviews. Shared by the Spots rows and the spot screen. */
+function ratingChipText(r) {
+  if (!r || !r.count || r.avg == null) return '';
+  return `★ ${Number(r.avg).toFixed(1)} (${r.count})`;
+}
+
+const reviewStarsText = (n) => '★'.repeat(n) + '☆'.repeat(5 - n);
+
+async function fetchSpotReviews(vendorId) {
+  const res = await authFetch(`/api/me/reviews/${encodeURIComponent(vendorId)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.message || 'Couldn’t load reviews.'), { code: data.error });
+  return data;
+}
+
+/* ---------- the REVIEWS section on the spot screen ---------- */
+
+async function loadSpotReviews(v) {
+  const seq = ++reviewLoadSeq;
+  const sec = $('spot-reviews');
+  // `rating` is null on every spot when the server has no reviews to offer
+  // (migration-066 not applied): the section stays hidden and nothing is fetched.
+  if (!v || v.rating == null) { sec.hidden = true; return; }
+  // Paint what the catalogue already knows, so the section arrives with the
+  // screen; the list fills in when the read lands.
+  $('spot-reviews-avg').textContent = ratingChipText(v.rating);
+  paintSpotReviewButton(v.reviewPoints, null);
+  $('spot-reviews-list').innerHTML = '';
+  $('spot-reviews-empty').hidden = true;
+  $('spot-review-mine-note').hidden = true;
+  sec.hidden = false;
+  try {
+    const data = await fetchSpotReviews(v.vendorId);
+    if (seq !== reviewLoadSeq || vendor?.vendorId !== v.vendorId) return;
+    if (!data.available) { sec.hidden = true; return; }
+    renderSpotReviews(data);
+  } catch {
+    // The head and the button already stand on their own; an empty list here
+    // is a blip, and the sheet fetches for itself when opened.
+  }
+}
+
+function paintSpotReviewButton(points, mine) {
+  $('spot-review-btn').textContent = mine
+    ? 'Edit your review'
+    : points > 0 ? `Rate this spot · +${points} pts` : 'Rate this spot';
+}
+
+function renderSpotReviews(data) {
+  $('spot-reviews-avg').textContent = ratingChipText(data.summary);
+  paintSpotReviewButton(data.reviewPoints, data.mine);
+  const mineNote = $('spot-review-mine-note');
+  mineNote.hidden = !data.mine?.hidden;
+  mineNote.textContent = data.mine?.hidden
+    ? 'Your review is hidden by WeRewards for breaking the review rules, so only you can see it.'
+    : '';
+  const list = $('spot-reviews-list');
+  list.innerHTML = (data.reviews ?? []).map((r) => `
+    <li class="spot-review${r.mine ? ' is-mine' : ''}">
+      <span class="spot-review-stars" aria-label="${r.rating} out of 5 stars">${reviewStarsText(r.rating)}</span>
+      <span class="spot-review-who">${escapeHtml(r.mine ? 'You' : (r.authorName ?? 'WeRewards member'))}${r.edited ? ' · edited' : ''}</span>
+      ${r.body ? `<p class="spot-review-body">${escapeHtml(r.body)}</p>` : ''}
+    </li>`).join('');
+  $('spot-reviews-empty').hidden = (data.reviews ?? []).length > 0;
+}
+
+/* ---------- the sheet ---------- */
+
+/**
+ * Open the review sheet for a spot. `data` is a fresh GET when the caller
+ * already has one (the prompt does); otherwise it is fetched here. Returns
+ * false when the sheet did not open.
+ */
+async function openReviewSheet(vendorId, { trigger = 'button', data = null } = {}) {
+  const epoch = reviewEpoch;
+  if (!data) {
+    try {
+      data = await fetchSpotReviews(vendorId);
+    } catch (err) {
+      if (epoch === reviewEpoch) showToast(err.message || 'Couldn’t open reviews. Try again.', 'info');
+      return false;
+    }
+  }
+  if (epoch !== reviewEpoch || !data.available) return false;
+  // However it was opened, this counts as having asked about this spot for the
+  // visit: an award landing while they look at the sheet must not reopen it a
+  // second after they close it.
+  snoozeReviewPrompt(vendorId);
+  const v = allVendors.find((x) => x.vendorId === vendorId);
+  const name = v?.name ?? 'this spot';
+  reviewState = data;
+  reviewVendorId = vendorId;
+  reviewMode = trigger;
+  reviewBusy = false;
+
+  const mine = data.mine;
+  const prompted = trigger !== 'button';
+  $('review-title').textContent = mine ? 'Edit your review' : prompted ? `How was ${name}?` : `Rate ${name}`;
+  $('review-desc').textContent = mine
+    ? 'Change it whenever you like. Points are only for your first review of a spot.'
+    : data.reviewPoints > 0
+      ? `Your first review here earns ${data.reviewPoints} pts, whatever you rate it.`
+      : 'Your review helps other students find good food.';
+
+  setReviewRating(mine?.rating ?? 0);
+  $('review-body').value = mine?.body ?? '';
+  syncReviewCount();
+  // Anonymous when they last chose it, and ALWAYS when there is no name we can
+  // publish (appearAs null: src/lib/reviews.js reviewAuthorName).
+  const canName = Boolean(data.appearAs);
+  $('review-anon').checked = !canName || Boolean(mine?.anonymous);
+  $('review-anon-row').hidden = !canName;
+  syncReviewAs();
+
+  // Where the presence check will come from, said up front rather than as a
+  // surprise permission prompt after they have written something.
+  paintReviewWhere(name);
+  $('review-submit').textContent = mine ? 'Save changes' : 'Post review';
+  $('review-later').hidden = !prompted;
+  setReviewError(null);
+  $('review-form-view').hidden = false;
+  $('review-done-view').hidden = true;
+  syncReviewSubmit();
+
+  const ov = $('review-modal');
+  ov.hidden = false;
+  void ov.offsetWidth;                 // reflow so the slide-up transition runs
+  ov.classList.add('is-open');
+  $('spot-review-btn').setAttribute('aria-expanded', 'true');
+  track('review_sheet_opened', { vendorId, trigger, editing: Boolean(mine) });
+  return true;
+}
+
+/** `why` is what closed it: 'later' | 'close' | 'backdrop' | 'escape' | 'done'. */
+function closeReviewSheet(why) {
+  const ov = $('review-modal');
+  if (ov.hidden || !ov.classList.contains('is-open')) return;
+  // A prompt dismissed before posting is the funnel's drop-off. 'done' is the
+  // thank-you view, which is past the point that matters.
+  if (reviewMode !== 'button' && !$('review-form-view').hidden) {
+    track('review_prompt_dismissed', { vendorId: reviewVendorId, trigger: reviewMode, via: why });
+  }
+  ov.classList.remove('is-open');
+  $('spot-review-btn').setAttribute('aria-expanded', 'false');
+  setTimeout(() => {
+    if (ov.classList.contains('is-open')) return;   // reopened mid-slide
+    ov.hidden = true;
+  }, 360);
+}
+
+// Hard reset, no animation — for sign-out. Also forgets the queue and the
+// per-visit snoozes: the next student starts with none of this one's state.
+function dropReviewSheet() {
+  const ov = $('review-modal');
+  ov.classList.remove('is-open');
+  ov.hidden = true;
+  $('review-body').value = '';
+  reviewState = null;
+  reviewVendorId = null;
+  reviewPromptQueued = null;
+  clearTimeout(reviewPromptTimer);
+  reviewSnoozeMemory.clear();   // localStorage snoozes are per student and stay theirs
+  reviewEpoch++;
+  reviewLoadSeq++;              // and drop a spot-screen load still in flight
+  $('spot-reviews').hidden = true;
+}
+
+function setReviewRating(n) {
+  reviewRating = n;
+  document.querySelectorAll('#review-stars .review-star').forEach((b) => {
+    const k = Number(b.dataset.star);
+    b.classList.toggle('is-on', k <= n);
+    b.setAttribute('aria-checked', k === n ? 'true' : 'false');
+    // Roving tabindex: the radiogroup is one tab stop, arrows move within it.
+    b.tabIndex = k === (n || 1) ? 0 : -1;
+  });
+  syncReviewSubmit();
+}
+
+function onReviewStarsKey(e) {
+  const step = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key];
+  if (!step) return;
+  e.preventDefault();
+  const next = Math.min(5, Math.max(1, (reviewRating || 0) + step));
+  setReviewRating(next);
+  document.querySelector(`#review-stars .review-star[data-star="${next}"]`)?.focus();
+}
+
+function syncReviewCount() {
+  const n = [...$('review-body').value].length;
+  $('review-count').textContent = `${n} / 500`;
+}
+
+function syncReviewAs() {
+  const named = !$('review-anon').checked && reviewState?.appearAs;
+  $('review-as').textContent = `Shown as “${named ? reviewState.appearAs : 'WeRewards member'}”.`;
+}
+
+function syncReviewSubmit() {
+  const blocked = Boolean(reviewState?.ownSpot)
+    || (!reviewState?.mine && !reviewState?.recentVisit && !reviewState?.mapped);
+  $('review-submit').disabled = reviewBusy || !reviewRating || blocked;
+}
+
+/** The line under the form saying how presence will be checked, or why it can't be. */
+function paintReviewWhere(name) {
+  const st = reviewState;
+  const where = $('review-where');
+  const needsPresence = !st?.mine && !st?.recentVisit;
+  const text = st?.ownSpot ? `You run ${name}, so you can’t review it.`
+    : !needsPresence ? ''
+    : st.mapped ? `When you post, we’ll check your location once to make sure you’re at ${name}. It isn’t saved.`
+    : `You can review ${name} within a day of earning or redeeming there.`;
+  where.hidden = !text;
+  where.textContent = text;
+}
+
+function setReviewError(text) {
+  const el = $('review-error');
+  el.hidden = !text;
+  el.textContent = text ?? '';
+}
+
+/** One fix, for the presence check. Rejects with the GeolocationPositionError. */
+function reviewPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject({ code: 'unsupported' }); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+      reject,
+      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 30_000 },
+    );
+  });
+}
+
+async function submitReview() {
+  if (reviewBusy || !reviewRating || !reviewState) return;
+  const vendorId = reviewVendorId;
+  const st = reviewState;
+  const body = $('review-body').value.trim();
+  const anonymous = $('review-anon').checked;
+  const payload = { rating: reviewRating, body: body || null, anonymous };
+  const needsPresence = !st.mine && !st.recentVisit;
+  // Read BEFORE the location wait (up to 20s): a sign-out during it must stop
+  // this post, not send it under whoever signs in next.
+  const epoch = reviewEpoch;
+
+  reviewBusy = true;
+  syncReviewSubmit();
+  setReviewError(null);
+  try {
+    if (needsPresence) {
+      $('review-submit').textContent = 'Checking you’re here…';
+      try {
+        payload.location = await reviewPosition();
+      } catch (err) {
+        setReviewError(err?.code === 1
+          ? 'Location is off for WeRewards. Turn it on to review from here, or review within a day of your next visit.'
+          : 'Couldn’t find your location. Try again, or review within a day of your next visit.');
+        track('review_failed', { vendorId, code: `geo_${err?.code ?? 'error'}` });
+        return;
+      }
+      if (epoch !== reviewEpoch) return;         // signed out while locating
+    }
+    $('review-submit').textContent = st.mine ? 'Saving…' : 'Posting…';
+    const res = await authFetch(`/api/me/reviews/${encodeURIComponent(vendorId)}`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (epoch !== reviewEpoch) return;           // signed out mid-post
+    if (!res.ok) {
+      // The 24h visit window closed while the sheet was open: the server now
+      // wants a location this sheet did not know to ask for. Learn that, so
+      // the next press asks, rather than resending the same thing forever.
+      if (data.error === 'REVIEW_NEEDS_LOCATION' && st.recentVisit) {
+        st.recentVisit = false;
+        paintReviewWhere(data.vendorName ?? allVendors.find((x) => x.vendorId === vendorId)?.name ?? 'this spot');
+        setReviewError('Your last visit here was over a day ago, so we need to check your location. Press Post again.');
+      } else {
+        setReviewError(data.message || 'Couldn’t post that. Try again.');
+      }
+      track('review_failed', { vendorId, code: data.error ?? `http_${res.status}` });
+      return;
+    }
+    track('review_submitted', {
+      vendorId,
+      rating: reviewRating,
+      created: Boolean(data.created),
+      points: data.pointsAwarded ?? 0,
+      hasText: Boolean(body),
+      anonymous,
+      presence: st.mine ? 'edit' : needsPresence ? 'onsite' : 'visit',
+      trigger: reviewMode,
+    });
+    showReviewDone(data);
+    // The section under the sheet, and the stars on the Spots rows.
+    if (vendor?.vendorId === vendorId) loadSpotReviews(vendor);
+    loadVendors();
+  } catch {
+    setReviewError('No connection. Your review wasn’t sent. Try again.');
+  } finally {
+    reviewBusy = false;
+    if (!$('review-form-view').hidden) {
+      $('review-submit').textContent = st.mine ? 'Save changes' : 'Post review';
+    }
+    syncReviewSubmit();
+  }
+}
+
+function showReviewDone(data) {
+  const name = data.vendorName ?? 'this spot';
+  $('review-done-line').textContent = data.created
+    ? (data.pointsAwarded > 0 ? `+${data.pointsAwarded} pts at ${name}. Your review is up.` : 'Your review is up.')
+    : 'Your review is updated.';
+  // EVERY rating, no exceptions — see the block comment at the top.
+  const g = data.googleReviewUrl;
+  $('review-google').hidden = !g;
+  $('review-google').dataset.url = g ?? '';
+  $('review-google-line').textContent = g ? `Want to post it on Google too? It helps other students find ${name}.` : '';
+  $('review-form-view').hidden = true;
+  $('review-done-view').hidden = false;
+  $('review-done').focus({ preventScroll: true });
+}
+
+/**
+ * Open the Google review page OUTSIDE the app's own webview. In the iOS app
+ * `*.google.com` is in capacitor.config.json's allowNavigation (for sign-in),
+ * so a plain navigation would load Google inside the app with no way back;
+ * the Browser plugin's sheet has a Done button instead. Everywhere else it is
+ * a new tab, from a detached anchor for the reasons openMaps() gives.
+ */
+function openGoogleReview() {
+  const url = $('review-google').dataset.url;
+  if (!/^https:\/\//.test(url ?? '')) return;
+  track('review_google_opened', { vendorId: reviewVendorId });
+  const plugins = nativePlugins();
+  if (plugins?.Browser?.open) {
+    plugins.Browser.open({ url }).catch(() => {});
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.click();
+}
+
+/* ---------- the prompt after an earn / redeem / receipt ---------- */
+
+function queueReviewPrompt(vendorId, trigger) {
+  if (!vendorId) return;
+  const v = allVendors.find((x) => x.vendorId === vendorId);
+  if (!v || v.rating == null) return;                       // reviews not available
+  if (Date.now() - reviewSnoozedAt(vendorId) < REVIEW_PROMPT_SNOOZE_MS) return;  // asked this visit already
+  // Already looking at this spot's sheet: the visit is being reviewed right now.
+  if (reviewVendorId === vendorId && !$('review-modal').hidden) return;
+  if (reviewPromptQueued?.vendorId === vendorId) return;    // the same visit's second push
+  reviewPromptQueued = { vendorId, trigger, since: Date.now() };
+  clearTimeout(reviewPromptTimer);
+  reviewPromptTimer = setTimeout(tryReviewPrompt, REVIEW_PROMPT_DELAY_MS);
+}
+
+/** Anything a prompt would land on top of. */
+function screenIsBusy() {
+  return Boolean(document.querySelector('.overlay:not([hidden]), .info-overlay:not([hidden]), #install-guide:not([hidden])'))
+    || window.InstallPrompt?.isPending?.()
+    || document.hidden;
+}
+
+async function tryReviewPrompt() {
+  const q = reviewPromptQueued;
+  if (!q) return;
+  if (Date.now() - q.since > REVIEW_PROMPT_GIVE_UP_MS) { reviewPromptQueued = null; return; }
+  if (screenIsBusy()) { reviewPromptTimer = setTimeout(tryReviewPrompt, REVIEW_PROMPT_RETRY_MS); return; }
+  reviewPromptQueued = null;
+  const epoch = reviewEpoch;
+  let data;
+  try {
+    data = await fetchSpotReviews(q.vendorId);
+  } catch {
+    return;                                  // a prompt is never worth an error
+  }
+  if (epoch !== reviewEpoch) return;         // signed out while that was in flight
+  if (data.ownSpot) return;                  // staff are never asked about their own spot
+  // Already reviewed here: never prompt again for this spot (their button on
+  // the spot screen still says "Edit your review").
+  if (!data.available || data.mine) return;
+  // Something may have opened during the read; try once more rather than stack.
+  if (screenIsBusy()) {
+    reviewPromptQueued = { ...q };
+    reviewPromptTimer = setTimeout(tryReviewPrompt, REVIEW_PROMPT_RETRY_MS);
+    return;
+  }
+  if (await openReviewSheet(q.vendorId, { trigger: q.trigger, data })) {
+    track('review_prompt_shown', { vendorId: q.vendorId, trigger: q.trigger });
+  }
 }
 
 /* ============================================================

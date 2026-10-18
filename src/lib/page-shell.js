@@ -117,6 +117,13 @@ p { margin: 8px 0; }
 .rewards li:last-child { border-bottom: 0; }
 .rewards .cost { font-weight: 800; color: var(--navy); white-space: nowrap; }
 @media (prefers-color-scheme: dark) { .rewards .cost { color: var(--accent); } }
+.reviews { list-style: none; padding: 0; margin: 10px 0 0; }
+.reviews li { padding: 10px 0; border-bottom: 1px solid var(--hairline); }
+.reviews li:last-child { border-bottom: 0; }
+.reviews .stars { color: #e0a100; letter-spacing: 0.06em; font-size: 0.95rem; }
+.reviews .who { color: var(--muted); font-size: 0.85rem; margin-left: 6px; }
+.reviews p { margin: 4px 0 0; white-space: pre-line; overflow-wrap: anywhere; }
+.fineprint { color: var(--muted); font-size: 0.82rem; }
 .cta {
   display: inline-block; margin-top: 22px; background: var(--navy); color: #fff;
   font-weight: 800; text-decoration: none; padding: 13px 22px; border-radius: 12px;

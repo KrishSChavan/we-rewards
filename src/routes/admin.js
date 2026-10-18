@@ -70,6 +70,13 @@ import { validLogo } from '../lib/logo.js';
 // the refusal it produces points the operator at the right dashboard.
 import { cancelSubscription, getSubscription, stripeEnabled, stripeMode } from '../lib/stripe.js';
 import { TERMS_VERSION } from '../lib/terms.js';
+import {
+  HIDE_REASONS,
+  isReviewsSchemaMissing,
+  validGoogleReviewUrl,
+  validReviewPoints,
+  invalidateReviewSummaries,
+} from '../lib/reviews.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -1454,6 +1461,190 @@ router.get('/vendors/:id/logo', async (req, res, next) => {
       .maybeSingle();
     if (error) throw error;
     res.json({ logo: data?.logo ?? null });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- spot reviews (migration-066) ----------
+   The two per-location settings get their own read and write rather than
+   riding on GET /vendors and PATCH /vendors/:id. Those two share one column
+   list that the roster depends on (see the PATCH), and PostgREST answers 400 to
+   a whole select on one unknown column — so adding these columns there would
+   take the roster down on any database without migration-066. Loaded lazily
+   when the Edit dialog opens, the same way the logo is. */
+
+const REVIEWS_NOT_APPLIED = {
+  error: 'REVIEWS_UNAVAILABLE',
+  message: 'Reviews need migration 066 in the database first.',
+};
+
+/**
+ * GET /api/admin/vendors/:id/review-settings
+ *   → { available, googleReviewUrl, reviewPoints, summary: { count, avg } }
+ */
+router.get('/vendors/:id/review-settings', async (req, res, next) => {
+  try {
+    if (!(await vendorExists(req, res))) return;
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .select('google_review_url, review_points')
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (isReviewsSchemaMissing(error)) return res.json({ available: false });
+    if (error) throw error;
+    // Read for this vendor directly rather than from the summary cache, which
+    // holds ACTIVE spots only: a switched-off spot is exactly the one an
+    // operator opens this dialog about, and it must not read "No reviews yet".
+    const { data: stats, error: sErr } = await supabaseAdmin
+      .from('vendor_review_stats')
+      .select('review_count, avg_rating')
+      .eq('vendor_id', req.params.id)
+      .maybeSingle();
+    if (sErr && !isReviewsSchemaMissing(sErr)) throw sErr;
+    res.json({
+      available: true,
+      googleReviewUrl: data?.google_review_url ?? null,
+      reviewPoints: data?.review_points ?? 0,
+      summary: { count: stats?.review_count ?? 0, avg: stats?.avg_rating == null ? null : Number(stats.avg_rating) },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH /api/admin/vendors/:id/review-settings  { googleReviewUrl?, reviewPoints? }
+ * '' or null clears the link; '' / null / 0 points means reviews here pay
+ * nothing. The link must be on a Google host (src/lib/reviews.js): it goes
+ * behind a button that says "Review on Google".
+ */
+router.patch('/vendors/:id/review-settings', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    }
+    const body = req.body ?? {};
+    const updates = {};
+    if (Object.prototype.hasOwnProperty.call(body, 'googleReviewUrl')) {
+      const u = validGoogleReviewUrl(body.googleReviewUrl);
+      if (u.error) return res.status(400).json({ error: 'BAD_REQUEST', message: u.error });
+      updates.google_review_url = u.value;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'reviewPoints')) {
+      const p = validReviewPoints(body.reviewPoints);
+      if (p.error) return res.status(400).json({ error: 'BAD_REQUEST', message: p.error });
+      updates.review_points = p.value;
+    }
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: 'Nothing to update (send googleReviewUrl and/or reviewPoints).' });
+    }
+    const { data, error } = await supabaseAdmin
+      .from('vendors')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select('google_review_url, review_points')
+      .maybeSingle();
+    if (isReviewsSchemaMissing(error)) return res.status(409).json(REVIEWS_NOT_APPLIED);
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Vendor not found.' });
+    // The app reads both through the review summary cache; the terminal reads
+    // review_points off req.vendor, which is never cached.
+    invalidateReviewSummaries();
+    res.json({ googleReviewUrl: data.google_review_url ?? null, reviewPoints: data.review_points ?? 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/admin/reviews?show=all|hidden  → { available, reviews: [...] }
+ * The newest 200 reviews across every spot, for moderation. No account
+ * identifiers: the operator moderates what was published, under the name it
+ * was published under, and a hide never needs to know who wrote it.
+ */
+router.get('/reviews', async (req, res, next) => {
+  try {
+    let q = supabaseAdmin
+      .from('vendor_reviews')
+      .select('id, vendor_id, rating, body, author_name, source, points_awarded, hidden_at, hidden_by, hidden_reason, created_at, updated_at, vendors(name, location_label)')
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (req.query.show === 'hidden') q = q.not('hidden_at', 'is', null);
+    const { data, error } = await q;
+    if (isReviewsSchemaMissing(error)) return res.json({ available: false, reviews: [] });
+    if (error) throw error;
+    res.json({
+      available: true,
+      reasons: HIDE_REASONS,
+      reviews: (data ?? []).map((r) => ({
+        id: r.id,
+        vendorId: r.vendor_id,
+        vendorName: r.vendors?.name ?? null,
+        locationLabel: r.vendors?.location_label ?? null,
+        rating: r.rating,
+        body: r.body ?? null,
+        authorName: r.author_name ?? null,
+        source: r.source,
+        pointsAwarded: r.points_awarded ?? 0,
+        hiddenAt: r.hidden_at,
+        hiddenBy: r.hidden_by,
+        hiddenReason: r.hidden_reason,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/admin/reviews/:id/hide  { reason }   — reason ∈ HIDE_REASONS
+ * POST /api/admin/reviews/:id/unhide
+ *
+ * HIDING IS FOR CONTENT, NEVER FOR SENTIMENT. There is no "negative" reason on
+ * purpose: suppressing reviews because they are unfavourable is what the FTC's
+ * review rule (16 CFR 465.7) prohibits, and the reason list is the guard. A
+ * hidden review keeps its points — the student did what was asked of them.
+ */
+router.post('/reviews/:id/hide', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'Review not found.' });
+    const reason = String(req.body?.reason ?? '');
+    if (!HIDE_REASONS.includes(reason)) {
+      return res.status(400).json({ error: 'BAD_REQUEST', message: `Pick a reason: ${HIDE_REASONS.join(', ')}.` });
+    }
+    const { data, error } = await supabaseAdmin
+      .from('vendor_reviews')
+      .update({ hidden_at: new Date().toISOString(), hidden_by: req.user?.email ?? null, hidden_reason: reason })
+      .eq('id', req.params.id)
+      .select('id, hidden_at, hidden_reason')
+      .maybeSingle();
+    if (isReviewsSchemaMissing(error)) return res.status(409).json(REVIEWS_NOT_APPLIED);
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Review not found.' });
+    invalidateReviewSummaries();
+    res.json({ ok: true, hiddenAt: data.hidden_at, hiddenReason: data.hidden_reason });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/reviews/:id/unhide', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'Review not found.' });
+    const { data, error } = await supabaseAdmin
+      .from('vendor_reviews')
+      .update({ hidden_at: null, hidden_by: null, hidden_reason: null })
+      .eq('id', req.params.id)
+      .select('id')
+      .maybeSingle();
+    if (isReviewsSchemaMissing(error)) return res.status(409).json(REVIEWS_NOT_APPLIED);
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: 'Review not found.' });
+    invalidateReviewSummaries();
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

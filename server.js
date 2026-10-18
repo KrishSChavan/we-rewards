@@ -55,6 +55,7 @@ import {
 } from './src/lib/punch.js';
 import { robotsTxt, sitemapXml, STATIC_SITEMAP_PATHS } from './src/lib/seo.js';
 import { spotsIndexHtml, spotPageHtml, publicSpots, publicSpot, isIndexable } from './src/lib/spots-page.js';
+import { publicSpotReviews, reviewSummariesOrEmpty } from './src/lib/reviews.js';
 import { howItWorksHtml, faqHtml } from './src/lib/content-pages.js';
 import { supportHtml } from './src/lib/support-page.js';
 
@@ -504,6 +505,20 @@ app.use('/api/me/student-email/start', rateLimit({
 app.use('/api/me/community-transfer', transferLimiter);
 app.use('/api/me/referral', referralLimiter);
 app.use('/api/me/punch', punchLimiter);
+// Writing a review (migration-066), per IP. Sized like the other campus-facing
+// limiters rather than like one student: the review sheet opens by itself after
+// every earn and redeem, and a busy counter on campus wifi is a whole building
+// behind one address. The per-STUDENT cap that actually bounds one person is in
+// the route (src/routes/student.js), after auth, where the user id is known.
+// Reads share the prefix and skip it.
+app.use('/api/me/reviews', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  skip: (req) => req.method !== 'POST',
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many reviews at once, wait a few minutes and try again.' },
+}));
 // The installed app's report of a tag it handled (migration-065) shares the
 // tag limiter with /t itself: it is the same tap arriving by the other door,
 // and the same counter crowd on the same wifi.
@@ -996,8 +1011,12 @@ app.get('/spots/:slug', async (req, res) => {
     // a vendor who leaves must stop being indexed, and soft-404s (a 200 that
     // says "nothing here") are the thing Google penalises a directory for.
     if (!spot) return sendNotFound(req, res);
+    // Reviews (migration-066). Both reads never throw: a reviews outage drops
+    // the section, it does not 503 a page that rendered fine without it.
+    const [summaries, reviews] = await Promise.all([reviewSummariesOrEmpty(), publicSpotReviews(spot.id, 5)]);
+    const summary = summaries.byVendor.get(spot.id);
     res.set('Cache-Control', 'public, max-age=300');
-    res.type('html').send(spotPageHtml(spot));
+    res.type('html').send(spotPageHtml(spot, summaries.available ? { avg: summary?.avg ?? null, count: summary?.count ?? 0, reviews } : null));
   } catch (err) {
     await spotsUnavailable(err, req, res);
   }
@@ -1206,6 +1225,11 @@ const CLIENT_EVENTS = new Set([
   'reward_sheet_opened', 'redeem_tapped', 'redeem_code_shown',
   'redeem_code_expired', 'redeem_code_renewed', 'redeem_confirmed',
   'redeem_failed',
+  // Spot reviews (migration-066). prompt_shown -> submitted is the number that
+  // says whether asking after an earn/redeem works; google_opened is the only
+  // record that anyone went on to Google, because nothing comes back from it.
+  'review_prompt_shown', 'review_prompt_dismissed', 'review_sheet_opened',
+  'review_submitted', 'review_failed', 'review_google_opened',
 ]);
 app.post('/api/client-event', async (req, res) => {
   const b = req.body ?? {};
@@ -1545,6 +1569,10 @@ app.use(async (err, req, res, _next) => {
     POOL_LAST_ACTIVE_MEMBER: [409, 'This is the last active location in the pool. Add another, or delete the pool.'],
     POOL_MEMBER_HAS_POOL: [409, 'That location already shares points with another group. Remove it from that one first.'],
     VENDOR_IN_POOL: [409, 'This location shares points with others. Take it out of the pool before changing this.'],
+    // submit_review (migration-066). Neither contains, nor is contained by, a
+    // key above: checked against the whole map.
+    REVIEW_RATING_INVALID: [400, 'Pick from one to five stars.'],
+    REVIEW_SPOT_UNAVAILABLE: [409, 'That spot isn’t on WeRewards right now.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {

@@ -775,6 +775,19 @@
             <div id="stats-pool" class="pool-settle"></div>
           </div>
 
+          <!-- Student reviews of THIS location (migration-066), newest first.
+               Ships [hidden]; loadReviews shows it once the server says reviews
+               are available. Read-only: reviews are the students' words, and a
+               vendor who thinks one breaks the rules asks WeRewards to look. -->
+          <div id="stats-reviews-card" class="stats-card" hidden>
+            <div class="stats-card-head">
+              <h3>Reviews</h3>
+              <span id="stats-reviews-avg" class="chart-max"></span>
+            </div>
+            <p id="stats-reviews-note" class="manage-note"></p>
+            <ul id="stats-reviews-list" class="reviews-list"></ul>
+          </div>
+
           <div class="stats-card">
             <h3>Recent activity</h3>
             <p class="manage-note">Made a mistake? Undo an award or redemption. It writes a correction, never deletes.</p>

@@ -94,6 +94,7 @@
       <button id="tab-ambassadors" class="tab" type="button">Ambassadors</button>
       <button id="tab-broadcast" class="tab" type="button">Broadcast</button>
       <button id="tab-notifications" class="tab" type="button">Notifications</button>
+      <button id="tab-reviews" class="tab" type="button">Reviews</button>
     </nav>
 
     <main>
@@ -858,6 +859,25 @@
       </div>
     </div>
 
+    <!-- ===== REVIEWS (migration-066) =====
+         Every student review across every spot, newest first, with Hide and
+         Unhide. The reason list is the guard on what hiding is for: content
+         (abuse, spam, off-topic, personal information, not a real visit),
+         never sentiment. Hiding a review for being negative is what the FTC's
+         review rule prohibits. -->
+    <div id="view-reviews" class="wrap" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h3>Student reviews</h3>
+          <span id="rv-count" class="chart-max"></span>
+        </div>
+        <p class="muted rv-rule">Hide a review only for what it says: abuse, spam, off-topic, personal information, or not a genuine visit. Never because it is negative. A hidden review keeps the points it earned.</p>
+        <label class="rv-filter"><input id="rv-hidden-only" type="checkbox"> Hidden only</label>
+        <p id="rv-error" class="field-error" role="alert" hidden></p>
+        <div id="rv-list" class="bc-history"></div>
+      </div>
+    </div>
+
     <!-- ===== NOTIFICATIONS (migration-062) =====
          Read-only. Three questions an operator brings here: did it go out
          (Log), what is still waiting and why (Queue), and what happened to one
@@ -1231,6 +1251,24 @@
           <span id="vendor-ratio-note" class="vendor-edit-note"></span>
         </div>
         <p class="vendor-edit-hint">A $10 purchase at rate 10 earns 100 points. Allowed: 0.5 to 1000.</p>
+      </div>
+
+      <!-- Spot reviews (migration-066). Loaded when the dialog opens, from its
+           own endpoint rather than the roster row: see the note above
+           GET /vendors/:id/review-settings in src/routes/admin.js for why
+           these two columns stay off the roster query. The points are this
+           vendor's own, so 0 (the default) is how a vendor opts out. -->
+      <div class="vendor-edit-section">
+        <p class="vendor-edit-label">Reviews</p>
+        <div class="vendor-ratio-row vendor-reviews-row">
+          <input id="vendor-edit-google" class="vendor-edit-input" type="url" inputmode="url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Google review link" aria-label="Google review link" />
+          <input id="vendor-edit-review-points" class="vendor-edit-input" type="number" inputmode="numeric" min="0" max="500" step="1" placeholder="0" aria-label="Points for a first review" />
+          <button id="vendor-reviews-save" class="vr-save" type="button">Save</button>
+          <span id="vendor-reviews-note" class="vendor-edit-note"></span>
+        </div>
+        <p class="vendor-edit-hint">Link: in the vendor's Google Business Profile, tap <strong>Ask for reviews</strong> and copy the link (g.page/r/…/review), or use https://search.google.com/local/writereview?placeid=PLACE_ID. Students see it as an optional "Review on Google" button after they review in the app, at every star rating, and it never pays points (Google bans paying for its reviews). Leave it empty to hide the button.</p>
+        <p class="vendor-edit-hint">Points: what a student's first in-app review of this location pays, from this location's points (0 to 500). 0 means reviews here pay nothing.</p>
+        <p id="vendor-reviews-summary" class="vendor-edit-hint" hidden></p>
       </div>
 
       <!-- What the place sells (migration-042). One save button for both

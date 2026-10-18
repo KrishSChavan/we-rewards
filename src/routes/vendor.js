@@ -39,6 +39,7 @@ import {
 // vendors(*) — so pool_id is always present and the helpers can never be handed
 // a row that merely LOOKS unpooled.
 import { balanceFor, isPooled, poolFacts, poolVendorIds } from '../lib/pools.js';
+import { isReviewsSchemaMissing, loadReviewSummaries, publicReview } from '../lib/reviews.js';
 
 // Max stored address length — keeps a pasted essay out of the column and the geocoder.
 const ADDRESS_MAX = 300;
@@ -1068,6 +1069,58 @@ router.get('/recent', async (req, res, next) => {
       .limit(20);
     if (error) throw error;
     res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/vendor/reviews  (PIN-gated, like the rest of the STATS tab it sits on)
+ * This location's public reviews (migration-066), newest first, plus its
+ * average, what a first review here pays, and what reviews have paid so far.
+ *
+ * Exactly what the public sees and no more: the "First L." the student chose
+ * or nothing, never an account. A review the operator hid is not shown here
+ * either; hiding is for content (abuse, personal information), and a vendor
+ * reading a hidden one back is the thing hiding exists to stop.
+ * { available: false } when migration-066 is not applied.
+ */
+router.get('/reviews', requirePin, async (req, res, next) => {
+  try {
+    const summaries = await loadReviewSummaries();
+    if (!summaries.available) return res.json({ available: false });
+    const [list, paid] = await Promise.all([
+      supabaseAdmin
+        .from('vendor_reviews')
+        .select('id, rating, body, author_name, created_at, updated_at')
+        .eq('vendor_id', req.vendor.id)
+        .is('hidden_at', null)
+        .order('created_at', { ascending: false })
+        .limit(50),
+      // Hidden reviews included: a hidden review keeps its points, and this is
+      // the vendor's own cost. Capped by PostgREST at 1000 rows, which is a
+      // thousand paid reviews at ONE location before this undercounts.
+      supabaseAdmin
+        .from('vendor_reviews')
+        .select('points_awarded')
+        .eq('vendor_id', req.vendor.id)
+        .gt('points_awarded', 0),
+    ]);
+    if (isReviewsSchemaMissing(list.error) || isReviewsSchemaMissing(paid.error)) return res.json({ available: false });
+    if (list.error) throw list.error;
+    if (paid.error) throw paid.error;
+    // The summary is cached over ACTIVE spots only; a disabled vendor never
+    // reaches this route (requireVendor), so a miss means "no reviews yet".
+    const s = summaries.byVendor.get(req.vendor.id);
+    res.json({
+      available: true,
+      summary: { count: s?.count ?? 0, avg: s?.avg ?? null },
+      reviewPoints: req.vendor.review_points ?? 0,
+      hasGoogleLink: Boolean(req.vendor.google_review_url),
+      pointsPaid: (paid.data ?? []).reduce((sum, r) => sum + (r.points_awarded ?? 0), 0),
+      paidReviews: (paid.data ?? []).length,
+      reviews: (list.data ?? []).map(publicReview),
+    });
   } catch (err) {
     next(err);
   }

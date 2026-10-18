@@ -293,7 +293,41 @@ export function isIndexable(spot) {
 }
 
 /** GET /spots/:slug */
-export function spotPageHtml(spot) {
+const starText = (rating) => '\u2605'.repeat(rating) + '\u2606'.repeat(5 - rating);
+
+/**
+ * The "What students say" section (migration-066), or '' when reviews are not
+ * available. `info` is { avg, count, reviews } from server.js.
+ *
+ * TWO THINGS DELIBERATELY ABSENT. No AggregateRating or Review JSON-LD: Google
+ * treats reviews a site hosts about the businesses it lists as "self-serving"
+ * for LocalBusiness rich results, and these were paid for in points, which its
+ * review-snippet guidelines also exclude. Marking them up would at best be
+ * ignored and at worst read as spam on pages we want indexed. And no reviewer
+ * beyond the "First L." the student chose to post under.
+ *
+ * THE DISCLOSURE IS NOT OPTIONAL. Every review here earned its writer points,
+ * whatever the rating, and the FTC's endorsement guides expect a reader to be
+ * told when a reviewer was compensated. It sits above the list, not in a footer.
+ */
+function reviewsSection(spot, info) {
+  if (!info) return '';
+  const name = escapeHtml(spot.name);
+  if (!info.count) {
+    return `    <h2>What students say about ${name}</h2>
+    <p class="lede">No reviews yet. Students can rate ${name} in the app after a visit.</p>`;
+  }
+  const avg = info.avg == null ? '' : `${Number(info.avg).toFixed(1)} out of 5, `;
+  const items = (info.reviews ?? [])
+    .map((r) => `      <li><span class="stars" aria-label="${r.rating} out of 5 stars">${starText(r.rating)}</span><span class="who">${escapeHtml(r.authorName ?? 'WeRewards member')}${r.edited ? ', edited' : ''}</span>${r.body ? `<p>${escapeHtml(r.body)}</p>` : ''}</li>`)
+    .join('\n');
+  return `    <h2>What students say about ${name}</h2>
+    <p class="lede">${avg}from ${info.count} student ${info.count === 1 ? 'review' : 'reviews'}.</p>
+    <p class="fineprint">Students get WeRewards points for their first review of a spot, whatever rating they give.</p>
+${items ? `    <ul class="reviews">\n${items}\n    </ul>` : ''}`;
+}
+
+export function spotPageHtml(spot, reviewInfo = null) {
   const where = spot.address ? `${spot.address}, ${LOCALITY}, ${REGION}` : `${LOCALITY}, ${REGION}`;
   const cuisines = spot.cuisine.map(cuisineLabel);
   const kind = cuisinePhrase(spot.cuisine);
@@ -316,6 +350,7 @@ ${spot.rewards
     <p><strong>Address:</strong> ${escapeHtml(where)}</p>
     ${cuisines.length ? `<ul class="tags">${cuisines.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>` : ''}
 ${rewards}
+${reviewsSection(spot, reviewInfo)}
     <h2>How it works at ${escapeHtml(spot.name)}</h2>
     <p>Sign in once and a personal QR code appears. Show it when you pay, ${escapeHtml(spot.name)} scans it, and your points land right away. Once you have enough, show the redeem code and say what you are claiming.</p>
     <a class="cta" href="/">Start earning at ${escapeHtml(spot.name)}</a>

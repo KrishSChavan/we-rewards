@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { computeTierProfile, persistTierSnapshot } from '../lib/tiers.js';
 import { requireUser, requireConsent } from '../middleware/auth.js';
@@ -64,6 +65,23 @@ import { recordNfcTap, hashVisitor, withTimeout, CATALOGUE_WAIT_MS } from '../li
 // that rule inline: a second copy of it that disagreed with the SQL functions
 // would show a customer one balance and charge them from another.
 import { readPurses, balanceFor, poolVendorIds, poolVendorIdsById } from '../lib/pools.js';
+// Spot reviews (migration-066). The Google rule that shapes this feature is
+// written up at the top of that file; read it before changing what pays.
+import {
+  REVIEW_CONFIG,
+  REVIEWS_UNAVAILABLE,
+  isReviewsSchemaMissing,
+  parseReviewInput,
+  reviewAuthorName,
+  checkOnsite,
+  hadRecentVisit,
+  loadReviewSummaries,
+  reviewSummariesOrEmpty,
+  invalidateReviewSummaries,
+  listSpotReviews,
+  publicReview,
+  readReviewSettings,
+} from '../lib/reviews.js';
 
 const router = Router();
 
@@ -579,6 +597,7 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       { data: recentPunches, error: pErr },
       recommended,
       visited,
+      reviewSummaries,
     ] = await Promise.all([
       // The catalogue half of this payload is IDENTICAL for every student, and
       // `vendors` has no index beyond its primary key — so filtering on `active`
@@ -626,6 +645,11 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       // max_rows = 1000 and an all-time transactions pull would truncate there
       // in silence. Never throws upward — see visitedVendorIds().
       visitedVendorIds(req.user.id),
+      // Star rating and review points per spot (migration-066). Cached and
+      // global like the catalogue, and NEVER throws: a reviews outage, or the
+      // migration not being applied yet, leaves the cards without stars rather
+      // than taking the home screen down.
+      reviewSummariesOrEmpty(),
     ]);
     // readPurses throws its own Supabase errors, so it needs no line here.
     if (cErr) throw cErr;
@@ -769,6 +793,13 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           // owns "how new counts as new", the client owns the ordering.
           isNew: new Date(v.created_at).getTime() >= newSinceMs,
           createdAt: v.created_at,
+          // Public star rating ({ avg, count }, avg null until the first
+          // review) and what a FIRST review here pays. Both null when reviews
+          // are not available, which the app reads as "no reviews section".
+          rating: reviewSummaries.available
+            ? { avg: reviewSummaries.byVendor.get(v.id)?.avg ?? null, count: reviewSummaries.byVendor.get(v.id)?.count ?? 0 }
+            : null,
+          reviewPoints: reviewSummaries.available ? (reviewSummaries.byVendor.get(v.id)?.points ?? 0) : null,
         };
       })
     );
@@ -1646,7 +1677,11 @@ router.post('/student-email/verify', requireConsent, async (req, res, next) => {
     });
     if (error) throw error;
 
-    res.json({ ok: true, needsMerge: true, email, preview });
+    // Reviews move too (migration-066's merge trigger), except at spots this
+    // account already reviewed. Counted here because preview_student_merge
+    // predates them; the Privacy Policy promises the student sees what moves.
+    const reviewsMoving = await countReviewsMoving(req.user.id, otherId);
+    res.json({ ok: true, needsMerge: true, email, preview: { ...(preview ?? {}), reviews: reviewsMoving } });
   } catch (err) {
     next(err);
   }
@@ -1992,9 +2027,10 @@ export function historyWindowDays(raw) {
  * "Load older" being offered a wider window it could not show — once a page is
  * full, widening returns the same newest HISTORY_ROWS rows.
  */
-export function mergeHistory(transactions, grants, { max = HISTORY_ROWS, grantMax = HISTORY_GRANTS } = {}) {
+export function mergeHistory(transactions, grants, { max = HISTORY_ROWS, grantMax = HISTORY_GRANTS, reviews = [], reviewMax = HISTORY_GRANTS } = {}) {
   const tx = transactions ?? [];
   const gr = grants ?? [];
+  const rv = reviews ?? [];
   // type 'grant' is a CLIENT-SIDE label, not a transactions.type — nothing
   // here is written back, and transactions_type_check knows nothing about it.
   // points carries the amount so the row's chip works unchanged; grant_kind
@@ -2010,7 +2046,20 @@ export function mergeHistory(transactions, grants, { max = HISTORY_ROWS, grantMa
     created_at: g.created_at,
   }));
 
-  const all = [...tx, ...asRows]
+  // Paid reviews (migration-066): vendor points that came from no purchase, so
+  // without a row of their own the balance would jump with nothing to explain
+  // it. Also a client-side label only; vendor_reviews is the ledger.
+  const reviewRows = rv.map((r) => ({
+    id: r.id,
+    type: 'review',
+    points: r.points_awarded ?? 0,
+    community_points: 0,
+    vendor_id: r.vendor_id,
+    vendors: r.vendors ?? null,
+    created_at: r.created_at,
+  }));
+
+  const all = [...tx, ...asRows, ...reviewRows]
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
   return {
@@ -2022,7 +2071,7 @@ export function mergeHistory(transactions, grants, { max = HISTORY_ROWS, grantMa
     // clause of its own — those rows are all in `all`, so a query sitting on it
     // has already put the merge over the cap. Grants do need one: their limit is
     // far below `max`, so they can saturate while the feed is half empty.
-    truncated: all.length >= max || gr.length >= grantMax,
+    truncated: all.length >= max || gr.length >= grantMax || rv.length >= reviewMax,
   };
 }
 
@@ -2076,9 +2125,16 @@ router.get('/history', requireConsent, async (req, res, next) => {
         .eq('user_id', req.user.id)
         .lt('created_at', since)
         .limit(1),
+      supabaseAdmin
+        .from('vendor_reviews')
+        .select('id')
+        .eq('user_id', req.user.id)
+        .gt('points_awarded', 0)
+        .lt('created_at', since)
+        .limit(1),
     ];
 
-    const [txRes, grantRes, olderTx, olderGrant] = await Promise.all([
+    const [txRes, grantRes, reviewRes, olderTx, olderGrant, olderReview] = await Promise.all([
       supabaseAdmin
         .from('transactions')
         // community_points rides on the earn's own row, so the History tab can
@@ -2099,16 +2155,35 @@ router.get('/history', requireConsent, async (req, res, next) => {
         .gte('created_at', since)
         .order('created_at', { ascending: false })
         .limit(HISTORY_GRANTS),
+      // Paid reviews (migration-066). Optional like every 066 read: a database
+      // without the migration answers an error here, and the feed simply has
+      // no review rows rather than failing the whole Activity tab.
+      supabaseAdmin
+        .from('vendor_reviews')
+        .select('id, vendor_id, points_awarded, created_at, vendors(name)')
+        .eq('user_id', req.user.id)
+        .gt('points_awarded', 0)
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(HISTORY_GRANTS),
       ...probes,
     ]);
     for (const r of [txRes, grantRes, olderTx, olderGrant]) {
       if (r?.error) throw r.error;
     }
+    const reviewRows = reviewRes?.error ? [] : (reviewRes?.data ?? []);
+    if (reviewRes?.error && !isReviewsSchemaMissing(reviewRes.error)) {
+      console.warn(`[history] review rows unavailable: ${reviewRes.error.message}`);
+    }
 
-    const { items, truncated } = mergeHistory(txRes.data, grantRes.data);
+    // Not for a legacy caller (no ?days): that is an app cached from before
+    // reviews, which has no 'review' branch and would draw the row as a
+    // redemption. Same reason the probe above is skipped for it.
+    const { items, truncated } = mergeHistory(txRes.data, grantRes.data, { reviews: legacy ? [] : reviewRows });
     if (legacy) return res.json(items);
 
-    const older = (olderTx.data?.length ?? 0) > 0 || (olderGrant.data?.length ?? 0) > 0;
+    const older = (olderTx.data?.length ?? 0) > 0 || (olderGrant.data?.length ?? 0) > 0
+      || (!olderReview?.error && (olderReview?.data?.length ?? 0) > 0);
     res.json({
       items,
       days,
@@ -2554,6 +2629,224 @@ export async function logNearbyAllowed(userId, vendorId) {
   }
 }
 
+/* ---------- spot reviews (migration-066) ----------
+   Points pay for the review WE hold; the Google link after it pays nothing
+   and is offered at every rating. See src/lib/reviews.js for why both halves
+   of that sentence are load-bearing. */
+
+/** An active spot from the cached catalogue, or null. */
+async function activeSpot(vendorId) {
+  if (!isUuid(vendorId)) return null;
+  const catalogue = await loadVendorCatalogue();
+  return catalogue.find((v) => v.id === vendorId) ?? null;
+}
+
+const SPOT_GONE = { error: 'REVIEW_SPOT_UNAVAILABLE', message: 'That spot isn’t on WeRewards right now.' };
+const OWN_SPOT = { error: 'REVIEW_OWN_SPOT', message: 'You can’t review a spot you run.' };
+
+/**
+ * Does this account run the spot, or any spot sharing its purse? The Terms
+ * (4.8) forbid reviewing a business you own or work for, and an owner with a
+ * dual-role account standing at their own counter passes the onsite check
+ * every time. Pool siblings count: a chain's purse is one business's money.
+ */
+async function runsSpot(userId, spot) {
+  const { data, error } = await supabaseAdmin.from('vendor_staff').select('vendor_id').eq('user_id', userId);
+  if (error) throw error;
+  const staffed = new Set((data ?? []).map((r) => r.vendor_id));
+  if (!staffed.size) return false;
+  if (staffed.has(spot.id)) return true;
+  if (!spot.pool_id) return false;
+  const catalogue = await loadVendorCatalogue();
+  return catalogue.some((v) => v.pool_id === spot.pool_id && staffed.has(v.id));
+}
+
+// One STUDENT's write budget (the IP-wide one in server.js is sized for a
+// building on one address). Keyed on the account, so it can only be mounted
+// after requireUser, which router.use() above guarantees.
+const reviewWriteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  keyGenerator: (req) => `u:${req.user?.id ?? req.ip}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many reviews at once, wait a few minutes and try again.' },
+});
+
+/**
+ * How many of `loserId`'s reviews a merge into `winnerId` would carry across:
+ * the ones at spots the winner has not reviewed (see migration-066's
+ * carry_reviews_through_merge). Never throws; 0 when it cannot tell.
+ */
+async function countReviewsMoving(winnerId, loserId) {
+  try {
+    const [loser, winner] = await Promise.all([
+      supabaseAdmin.from('vendor_reviews').select('vendor_id').eq('user_id', loserId),
+      supabaseAdmin.from('vendor_reviews').select('vendor_id').eq('user_id', winnerId),
+    ]);
+    if (loser.error || winner.error) return 0;
+    const mine = new Set((winner.data ?? []).map((r) => r.vendor_id));
+    return (loser.data ?? []).filter((r) => !mine.has(r.vendor_id)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * GET /api/me/reviews/:vendorId
+ * Everything the spot screen's REVIEWS section and the review sheet need, in
+ * one read: the public list, this student's own review, what a first review
+ * here pays, the Google link, whether they were just there (so the app knows
+ * whether it needs their location), and the exact name they would post under.
+ * { available: false } when migration-066 is not applied.
+ */
+router.get('/reviews/:vendorId', requireConsent, async (req, res, next) => {
+  try {
+    const spot = await activeSpot(req.params.vendorId);
+    if (!spot) return res.status(404).json(SPOT_GONE);
+
+    const summaries = await loadReviewSummaries();
+    if (!summaries.available) return res.json({ available: false });
+    const summary = summaries.byVendor.get(spot.id) ?? { count: 0, avg: null };
+
+    const [list, mine, recentVisit, settings, ownSpot] = await Promise.all([
+      listSpotReviews(spot.id, 20),
+      supabaseAdmin
+        .from('vendor_reviews')
+        .select('id, rating, body, author_name, points_awarded, hidden_at, created_at, updated_at')
+        .eq('user_id', req.user.id)
+        .eq('vendor_id', spot.id)
+        .maybeSingle(),
+      hadRecentVisit(req.user.id, spot.id),
+      // Live, not cached: this is the number the sheet promises (see readReviewSettings).
+      readReviewSettings(spot.id),
+      runsSpot(req.user.id, spot),
+    ]);
+    if (isReviewsSchemaMissing(list.error) || isReviewsSchemaMissing(mine.error) || !settings.available) {
+      return res.json({ available: false });
+    }
+    if (list.error) throw list.error;
+    if (mine.error) throw mine.error;
+
+    const m = mine.data;
+    res.json({
+      available: true,
+      vendorId: spot.id,
+      summary: { count: summary.count, avg: summary.avg },
+      reviewPoints: settings.points,
+      googleReviewUrl: settings.googleReviewUrl,
+      // Staff of this spot (or of a spot sharing its purse) cannot review it.
+      ownSpot,
+      reviews: (list.data ?? []).map((r) => ({ ...publicReview(r), mine: r.user_id === req.user.id })),
+      mine: m
+        ? {
+            rating: m.rating,
+            body: m.body ?? null,
+            anonymous: m.author_name == null,
+            pointsAwarded: m.points_awarded ?? 0,
+            hidden: m.hidden_at != null,
+            createdAt: m.created_at,
+          }
+        : null,
+      recentVisit,
+      // Whether an on-the-spot review is possible at all: a spot with no
+      // geocoded address can only be reviewed after a visit.
+      mapped: spot.latitude != null && spot.longitude != null,
+      radiusMeters: REVIEW_CONFIG.radiusMeters,
+      appearAs: reviewAuthorName(req.profile ?? {}),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/me/reviews/:vendorId  { rating, body?, anonymous?, location?: { lat, lng, accuracy } }
+ *
+ * Writes this student's review of one location, or edits it. The FIRST review
+ * needs presence — a visit here in the last 24h, or `location` within the
+ * radius — and pays vendors.review_points into the purse they spend here.
+ * Edits need no presence and pay nothing. `location` is compared and dropped:
+ * never stored, never logged (src/lib/errors.js reduces an object to a count).
+ */
+router.post('/reviews/:vendorId', requireConsent, reviewWriteLimiter, async (req, res, next) => {
+  try {
+    const input = parseReviewInput(req.body);
+    if (input.error) return res.status(400).json({ error: input.code, message: input.error });
+
+    const spot = await activeSpot(req.params.vendorId);
+    if (!spot) return res.status(404).json(SPOT_GONE);
+    if (await runsSpot(req.user.id, spot)) return res.status(403).json(OWN_SPOT);
+
+    const { data: existing, error: eErr } = await supabaseAdmin
+      .from('vendor_reviews')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .eq('vendor_id', spot.id)
+      .maybeSingle();
+    if (isReviewsSchemaMissing(eErr)) return res.status(503).json(REVIEWS_UNAVAILABLE);
+    if (eErr) throw eErr;
+
+    // Presence is checked for a FIRST review only. A race where two first
+    // submits both pass it is harmless: submit_review lets exactly one insert
+    // win and pay, and the other lands as an edit.
+    let source = 'visit';
+    if (!existing) {
+      if (!(await hadRecentVisit(req.user.id, spot.id))) {
+        const where = checkOnsite(spot, input.location);
+        if (!where.ok) return res.status(where.status).json({ error: where.code, message: where.message });
+        source = 'onsite';
+      }
+    }
+
+    const authorName = input.anonymous ? null : reviewAuthorName(req.profile ?? {});
+    const { data, error } = await supabaseAdmin.rpc('submit_review', {
+      p_user_id: req.user.id,
+      p_vendor_id: spot.id,
+      p_rating: input.rating,
+      p_body: input.body,
+      p_author_name: authorName,
+      p_source: source,
+    });
+    if (isReviewsSchemaMissing(error)) return res.status(503).json(REVIEWS_UNAVAILABLE);
+    // REVIEW_RATING_INVALID / REVIEW_SPOT_UNAVAILABLE map in server.js.
+    if (error) throw error;
+    const row = data?.[0] ?? {};
+
+    invalidateReviewSummaries();
+
+    const pointsAwarded = row.created ? (row.points_awarded ?? 0) : 0;
+    if (pointsAwarded > 0 && row.new_balance != null) {
+      // No `visit` flag: a review is not somebody turning up at a counter, and
+      // the app keys its review prompt and its Recent row on that flag.
+      // `review` tells the app this gain is not a purchase, so it does not
+      // spend a once-only install-nudge trigger on it (over the thank-you sheet).
+      emitBalance(req.user.id, {
+        vendorId: spot.id,
+        balance: row.new_balance,
+        poolVendorIds: await poolVendorIds(spot),
+        review: true,
+      });
+    }
+
+    // Live, like the GET: an operator may have just set or cleared the link.
+    const settings = await readReviewSettings(spot.id).catch(() => ({ googleReviewUrl: null }));
+    res.json({
+      ok: true,
+      created: Boolean(row.created),
+      pointsAwarded,
+      newBalance: row.new_balance ?? null,
+      vendorId: spot.id,
+      vendorName: spot.name,
+      // Offered after EVERY review, whatever the rating. See the file header.
+      googleReviewUrl: settings.googleReviewUrl ?? null,
+      authorName,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * GET /api/me/export
  * Everything WeRewards holds about the signed-in student, as a JSON download:
@@ -2564,7 +2857,7 @@ export async function logNearbyAllowed(userId, vendorId) {
 router.get('/export', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby, linkedEmail, merges, notificationLog] = await Promise.all([
+    const [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby, linkedEmail, merges, notificationLog, reviews] = await Promise.all([
       supabaseAdmin.from('profiles').select('user_id, name, email, revisits, created_at, referral_code, linked_email, linked_email_at').eq('user_id', uid).maybeSingle(),
       supabaseAdmin.from('point_balances').select('vendor_id, balance, updated_at').eq('user_id', uid),
       // The shared purses (migration-044). Points a student holds in a pool are
@@ -2651,6 +2944,14 @@ router.get('/export', async (req, res, next) => {
       // Never rejects (an empty list when migration-062 is not applied), so it
       // cannot fail the download the way the required reads above can.
       exportNotificationRows(uid),
+      // Every review they have written (migration-066), hidden ones included —
+      // a review an operator hid is still something we hold about them — and
+      // whether it went out under their name.
+      supabaseAdmin
+        .from('vendor_reviews')
+        .select('vendor_id, rating, body, author_name, source, points_awarded, hidden_at, hidden_reason, created_at, updated_at, vendors(name)')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false }),
     ]);
     for (const r of [profile, balances, poolBalances, community, transactions, scores, deals, notify, grants, invitesSent, inviteUsed, nearby]) {
       if (r.error) throw r.error;
@@ -2664,6 +2965,8 @@ router.get('/export', async (req, res, next) => {
     for (const r of [linkedEmail, merges]) {
       if (r.error) console.warn(`[export] student-email section unavailable: ${r.error.message} (migration-057 applied?)`);
     }
+    // Optional for the same reason: the server can ship before migration-066.
+    if (reviews.error) console.warn(`[export] reviews section unavailable: ${reviews.error.message} (migration-066 applied?)`);
 
     res.setHeader('Content-Disposition', 'attachment; filename="werewards-data.json"');
     res.json({
@@ -2718,6 +3021,21 @@ router.get('/export', async (req, res, next) => {
           }
         : null,
       accountsMerged: merges.error ? [] : (merges.data ?? []),
+      // Flattened to a spot name like nearbySpotsNotified. `postedAs` is the
+      // public signature ("Krish C."), null when they posted anonymously.
+      reviews: reviews.error ? [] : (reviews.data ?? []).map((r) => ({
+        vendor_id: r.vendor_id,
+        vendor_name: r.vendors?.name ?? null,
+        rating: r.rating,
+        body: r.body,
+        postedAs: r.author_name,
+        how_we_knew_you_were_there: r.source,
+        points_awarded: r.points_awarded,
+        hidden_at: r.hidden_at,
+        hidden_reason: r.hidden_reason,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      })),
       referrals: {
         code: profile.data?.referral_code ?? null,
         invitesSent: invitesSent.data ?? [],

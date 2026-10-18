@@ -4503,3 +4503,66 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 /* .no-map used to centre a short card in a row of tall ones; every card is the
    same shape now and they all stretch to the row's height */
 .vendor-card.no-map { align-self: stretch; }
+
+/* ---------- spot reviews (migration-066) ----------
+   The REVIEWS section at the foot of the spot screen and the review sheet.
+   Star gold is a fixed colour in both themes: it is a symbol, not ink, and
+   #e0a100 holds up on --card light and dark alike. Empty stars use --muted. */
+
+.spot-reviews { margin-top: 0.4rem; }
+.spot-reviews-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.spot-reviews-avg { font-weight: 900; color: #e0a100; font-size: 0.95rem; }
+.spot-review-btn {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border: 2.5px solid var(--edge); border-radius: 0.9rem;
+  background: var(--card); color: var(--ink);
+  font-weight: 900; font-size: 1rem;
+  box-shadow: 3px 3px 0 var(--edge);
+}
+.spot-review-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--edge); }
+.spot-reviews-note { margin-top: 0.6rem; color: var(--muted); font-size: 0.82rem; font-weight: 600; line-height: 1.4; }
+.spot-reviews-list { list-style: none; margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.55rem; }
+.spot-review {
+  padding: 0.7rem 0.9rem;
+  border: 2px solid var(--edge); border-radius: 0.8rem;
+  background: var(--card);
+}
+.spot-review.is-mine { border-color: var(--brand); }
+.spot-review-stars { color: #e0a100; letter-spacing: 0.08em; font-size: 0.95rem; }
+.spot-review-who { margin-left: 0.4rem; color: var(--muted); font-weight: 800; font-size: 0.82rem; }
+.spot-review-body {
+  margin-top: 0.3rem; color: var(--ink); font-weight: 500; line-height: 1.45;
+  white-space: pre-line; overflow-wrap: anywhere;
+}
+
+.review-view { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
+.review-stars { display: flex; gap: 0.35rem; margin: 0.2rem 0 0.4rem; }
+.review-star {
+  font-size: 2.4rem; line-height: 1; padding: 0.15rem 0.2rem;
+  color: var(--sky-line);
+  transition: transform 120ms ease, color 120ms ease;
+}
+.review-star.is-on { color: #e0a100; }
+.review-star:active { transform: scale(0.9); }
+.review-star:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; border-radius: 0.4rem; }
+.review-body-label { align-self: flex-start; font-weight: 800; font-size: 0.95rem; color: var(--ink); }
+.review-body-label span { color: var(--muted); font-weight: 600; }
+.review-body {
+  width: 100%; resize: vertical; min-height: 5.5rem;
+  padding: 0.75rem 0.9rem;
+  border: 2.5px solid var(--edge); border-radius: 0.9rem;
+  background: var(--paper); color: var(--ink);
+  font: inherit; font-weight: 500; line-height: 1.45;
+}
+.review-count { align-self: flex-end; color: var(--muted); font-size: 0.78rem; font-weight: 700; margin-top: -0.3rem; }
+.review-anon {
+  align-self: flex-start; display: flex; align-items: center; gap: 0.6rem;
+  font-weight: 700; color: var(--ink); cursor: pointer;
+}
+.review-anon input { width: 1.3rem; height: 1.3rem; accent-color: var(--navy); }
+.review-as { align-self: flex-start; color: var(--muted); font-size: 0.85rem; font-weight: 600; margin-top: -0.3rem; }
+.review-where { color: var(--muted); font-size: 0.85rem; font-weight: 600; line-height: 1.4; }
+.review-error { color: var(--danger); font-weight: 800; font-size: 0.92rem; line-height: 1.4; }
+.review-google { width: 100%; margin-top: 0.4rem; padding-top: 0.8rem; border-top: 2px dashed var(--sky-line); }
+.review-google-fine { margin-top: 0.4rem; color: var(--muted); font-size: 0.8rem; font-weight: 600; }

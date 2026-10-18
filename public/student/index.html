@@ -534,6 +534,25 @@
 
           <div id="items" class="items"></div>
           <p id="items-empty" class="empty-state" hidden>No rewards yet, check back soon!</p>
+
+          <!-- Spot reviews (migration-066). Ships [hidden]: loadSpotReviews
+               shows it only when the server says reviews are available, so a
+               database without the migration leaves the spot screen exactly as
+               it was. The note is the points disclosure every reader of these
+               reviews is owed (src/lib/reviews.js), and it says "whatever
+               rating" because that is the promise: points never depend on it. -->
+          <section id="spot-reviews" class="spot-reviews" aria-labelledby="spot-reviews-title" hidden>
+            <div class="spot-reviews-head">
+              <p id="spot-reviews-title" class="app-sub">REVIEWS</p>
+              <p id="spot-reviews-avg" class="spot-reviews-avg"></p>
+            </div>
+            <button id="spot-review-btn" class="spot-review-btn" type="button"
+                    aria-haspopup="dialog" aria-expanded="false" aria-controls="review-modal">Rate this spot</button>
+            <p id="spot-review-mine-note" class="spot-reviews-note" hidden></p>
+            <ul id="spot-reviews-list" class="spot-reviews-list"></ul>
+            <p id="spot-reviews-empty" class="spot-reviews-note" hidden>No reviews yet. Be the first.</p>
+            <p class="spot-reviews-note">Students get points for their first review of a spot, whatever rating they give.</p>
+          </section>
         </main>
 
         <!-- Pinned under the rewards list: the list scrolls, this does not.
@@ -2256,6 +2275,56 @@
       <h2 id="punch-modal-title" class="detail-title">Your visits</h2>
       <p id="punch-modal-desc" class="detail-desc"></p>
       <ul id="punch-modal-list" class="punch-modal-list"></ul>
+    </div>
+  </div>
+
+  <!-- ---------- review a spot (migration-066) ----------
+       Two views, like the receipt sheet: the form, then a thank-you that
+       offers the spot's Google review page. The Google button is offered
+       after EVERY review, whatever the rating, and pays nothing — showing it
+       only to happy reviewers is the "review gating" Google forbids, and
+       paying for it is the incentive Google forbids. See src/lib/reviews.js. -->
+  <div id="review-modal" class="overlay sheet" role="dialog" aria-modal="true" aria-labelledby="review-title" hidden>
+    <div class="detail-card">
+      <button id="review-close" class="detail-close" aria-label="Close">✕</button>
+
+      <div id="review-form-view" class="review-view">
+        <p class="detail-emoji">⭐</p>
+        <h2 id="review-title" class="detail-title">Rate this spot</h2>
+        <p id="review-desc" class="detail-desc"></p>
+        <div id="review-stars" class="review-stars" role="radiogroup" aria-label="Your rating">
+          <button type="button" class="review-star" role="radio" aria-checked="false" data-star="1" aria-label="1 star">★</button>
+          <button type="button" class="review-star" role="radio" aria-checked="false" data-star="2" aria-label="2 stars">★</button>
+          <button type="button" class="review-star" role="radio" aria-checked="false" data-star="3" aria-label="3 stars">★</button>
+          <button type="button" class="review-star" role="radio" aria-checked="false" data-star="4" aria-label="4 stars">★</button>
+          <button type="button" class="review-star" role="radio" aria-checked="false" data-star="5" aria-label="5 stars">★</button>
+        </div>
+        <label class="review-body-label" for="review-body">Anything to add? <span>(optional)</span></label>
+        <textarea id="review-body" class="review-body" rows="3" maxlength="500"
+                  placeholder="What did you get? How was it?"></textarea>
+        <p id="review-count" class="review-count" aria-live="polite">0 / 500</p>
+        <label id="review-anon-row" class="review-anon">
+          <input id="review-anon" type="checkbox">
+          <span>Post anonymously</span>
+        </label>
+        <p id="review-as" class="review-as"></p>
+        <p id="review-where" class="review-where" hidden></p>
+        <p id="review-error" class="review-error" role="alert" hidden></p>
+        <button id="review-submit" class="btn-redeem" type="button" disabled>Post review</button>
+        <button id="review-later" class="detail-textbtn" type="button" hidden>Not now</button>
+      </div>
+
+      <div id="review-done-view" class="review-view" hidden>
+        <p class="detail-emoji">🎉</p>
+        <h2 class="detail-title">Thanks!</h2>
+        <p id="review-done-line" class="detail-desc"></p>
+        <div id="review-google" class="review-google" hidden>
+          <p id="review-google-line" class="detail-desc"></p>
+          <button id="review-google-btn" class="btn-redeem secondary" type="button">Review on Google</button>
+          <p class="review-google-fine">Optional. It has nothing to do with your points.</p>
+        </div>
+        <button id="review-done" class="btn-redeem" type="button">Done</button>
+      </div>
     </div>
   </div>
 

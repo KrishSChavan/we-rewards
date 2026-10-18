@@ -390,8 +390,24 @@ export const bonusWindowCache = createCache({
 });
 
 /** Every cache, for a stats endpoint or a test's afterEach. */
+/**
+ * Per-spot review roll-up and review settings (migration-066), keyed 'all':
+ * { available, byVendor: Map(vendorId -> { count, avg, points, googleReviewUrl }) }.
+ * Loaded by loadReviewSummaries() in src/lib/reviews.js, which owns the query.
+ *
+ * Same TTL and stale window as the catalogue it rides beside on the home
+ * screen. Invalidated by every review write and by the operator's review
+ * settings save, so the 30s is only ever the safety net.
+ */
+export const reviewSummaryCache = createCache({
+  name: 'review-summary',
+  ttlMs: 30_000,
+  staleMs: 120_000,
+});
+
 export const allCaches = [
   vendorCatalogueCache, vendorLogoCache, recommendedVendorsCache, bonusWindowCache,
+  reviewSummaryCache,
 ];
 
 /** Wipe everything. Tests, and nothing else. */
