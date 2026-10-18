@@ -16,7 +16,7 @@ import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WIN
 import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupVendorAnalytics } from '../lib/analytics.js';
-import { validReward, validRatio, pointsFor } from '../lib/rewards.js';
+import { validReward, validRatio, pointsFor, mergeRewardEdit, onceUpdate } from '../lib/rewards.js';
 import { getPoster, readPoster } from '../lib/qr-poster.js';
 import { invalidateVendorCaches } from '../lib/cache.js';
 // The bonus window (migration-063). bonusBoost REPLACES reading
@@ -739,9 +739,12 @@ router.post('/reverse', requirePin, async (req, res, next) => {
 /** GET /api/vendor/rewards — all rewards incl. inactive, for the Items screen */
 router.get('/rewards', async (req, res, next) => {
   try {
+    // `*` rather than a column list so this screen keeps loading on a database
+    // that has not had migration-067 yet: once_per_student is read when it is
+    // there, and a named column that is not would 400 the whole request.
     const { data, error } = await supabaseAdmin
       .from('rewards')
-      .select('id, title, cost_in_points, cost_in_visits, emoji, active, created_at')
+      .select('*')
       .eq('vendor_id', req.vendor.id)
       .order('created_at', { ascending: true });
     if (error) throw error;
@@ -819,7 +822,7 @@ function itemCapRefusal(vendor, cap, door) {
   return { error: 'ITEM_CAP_REACHED', message, cap, plan };
 }
 
-/** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji } */
+/** POST /api/vendor/rewards  { title, costInPoints, costInVisits, emoji, oncePerStudent } */
 router.post('/rewards', requirePin, async (req, res, next) => {
   try {
     // Type-gate the two TEXT fields before validReward coerces them. It opens
@@ -832,7 +835,7 @@ router.post('/rewards', requirePin, async (req, res, next) => {
     if (badText(req.body?.title) || badText(req.body?.emoji)) {
       return res.status(400).json({ error: 'BAD_REWARD', message: 'Give the item a name and an emoji as text.' });
     }
-    const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji);
+    const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji, req.body?.oncePerStudent);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
 
     // The free tier's catalogue cap. Counted on CREATE only, and counting
@@ -863,6 +866,9 @@ router.post('/rewards', requirePin, async (req, res, next) => {
         cost_in_points: v.cost,
         cost_in_visits: v.visits,
         emoji: v.emoji,
+        // Only a free item writes the flag (migration-067), so a priced item
+        // still saves on a database that does not have the column yet.
+        ...(v.cost === 0 ? { once_per_student: v.once } : {}),
       })
       .select()
       .single();
@@ -876,7 +882,7 @@ router.post('/rewards', requirePin, async (req, res, next) => {
   }
 });
 
-/** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, costInVisits?, emoji?, active? } */
+/** PATCH /api/vendor/rewards/:id  { title?, costInPoints?, costInVisits?, emoji?, oncePerStudent?, active? } */
 router.patch('/rewards/:id', requirePin, async (req, res, next) => {
   try {
     // A malformed id is a clean 404, not a uuid-cast 500 in the update query.
@@ -896,7 +902,8 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
 
     const touchesFields =
       req.body?.title !== undefined || req.body?.costInPoints !== undefined ||
-      req.body?.costInVisits !== undefined || req.body?.emoji !== undefined;
+      req.body?.costInVisits !== undefined || req.body?.emoji !== undefined ||
+      req.body?.oncePerStudent !== undefined;
 
     const updates = {};
     if (touchesFields) {
@@ -904,24 +911,21 @@ router.patch('/rewards/:id', requirePin, async (req, res, next) => {
       // sentinels. The old code passed `costInPoints ?? 1`, which meant a
       // partial PATCH silently revalidated a dummy price and, worse, made
       // clearing a price impossible — the exact operation dual pricing needs.
+      // `*` for the same reason as GET /rewards: once_per_student (067) when it
+      // exists, no 400 when it does not.
       const { data: current } = await supabaseAdmin
-        .from('rewards').select('title, cost_in_points, cost_in_visits, emoji')
+        .from('rewards').select('*')
         .eq('id', req.params.id).eq('vendor_id', req.vendor.id).maybeSingle();
       if (!current) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
 
-      const merged = {
-        title: req.body?.title !== undefined ? req.body.title : current.title,
-        cost: req.body?.costInPoints !== undefined ? req.body.costInPoints : current.cost_in_points,
-        visits: req.body?.costInVisits !== undefined ? req.body.costInVisits : current.cost_in_visits,
-        emoji: req.body?.emoji !== undefined ? req.body.emoji : current.emoji,
-      };
-      const v = validReward(merged.title, merged.cost, merged.visits, merged.emoji);
+      const v = validReward(...mergeRewardEdit(req.body, current));
       if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
 
       if (req.body?.title !== undefined) updates.title = v.title;
       if (req.body?.costInPoints !== undefined) updates.cost_in_points = v.cost;
       if (req.body?.costInVisits !== undefined) updates.cost_in_visits = v.visits;
       if (req.body?.emoji !== undefined) updates.emoji = v.emoji;
+      Object.assign(updates, onceUpdate(req.body, current, v));
     }
     if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
     if (!Object.keys(updates).length) {

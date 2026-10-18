@@ -50,32 +50,71 @@ export function pointsFor(dollarAmount, ratio) {
   return Math.floor((cents * hundredths) / 10000);
 }
 
-// A price is: a positive integer, or null meaning "not sold in this currency".
-// Blank string counts as null so an emptied form field clears the price.
-export function validPrice(raw, label, max) {
+// A price is: a whole number from `min` to `max`, or null meaning "not sold in
+// this currency". Blank string counts as null so an emptied form field clears
+// the price.
+export function validPrice(raw, label, max, min = 1) {
   if (raw == null || raw === '') return { value: null };
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1 || n > max) {
-    return { error: `${label} must be a whole number from 1 to ${max}.` };
+  if (!Number.isInteger(n) || n < min || n > max) {
+    return { error: `${label} must be a whole number from ${min} to ${max}.` };
   }
   return { value: n };
 }
 
-// Mirrors the DB's rewards_has_a_price CHECK (migration-029): points, visits,
-// or both, but never neither.
-export function validReward(title, cost, visits, emoji) {
+// Mirrors the DB's rewards CHECKs (migrations 029 and 067): points, visits, or
+// both, but never neither. A point cost of 0 is a FREE item, which cannot also
+// carry a visit price, and is the only kind that can be once per student.
+// `once` is anything but `true` → false, and is quietly false on a priced item
+// rather than an error: the price already limits how often a student has it.
+export function validReward(title, cost, visits, emoji, once = false) {
   const t = String(title ?? '').trim();
   const e = String(emoji ?? '🎁').trim().slice(0, 16) || '🎁'; // emoji can be multi-codepoint
   if (!t || t.length > 60) return { error: 'Give the item a name (up to 60 characters).' };
 
-  const p = validPrice(cost, 'Point cost', 100000);
+  const p = validPrice(cost, 'Point cost', 100000, 0);
   if (p.error) return { error: p.error };
   const v = validPrice(visits, 'Visit cost', 50);
   if (v.error) return { error: v.error };
   if (p.value == null && v.value == null) {
     return { error: 'Set a point cost, a visit cost, or both.' };
   }
-  return { title: t, cost: p.value, visits: v.value, emoji: e };
+  const free = p.value === 0;
+  if (free && v.value != null) {
+    return { error: 'A free item can’t also have a visit cost. Clear the visit cost, or give it a point cost.' };
+  }
+  return { title: t, cost: p.value, visits: v.value, emoji: e, once: free && once === true };
+}
+
+/**
+ * A reward PATCH body merged over the STORED row → validReward's arguments.
+ * Shared by the vendor's and the operator's edit routes. Merging is what lets a
+ * partial PATCH revalidate real values and lets a price be cleared, which a
+ * placeholder like `costInPoints ?? 1` could never do. `current` may predate
+ * migration-067 and lack once_per_student, which reads as false.
+ */
+export function mergeRewardEdit(body, current) {
+  const pick = (key, stored) => (body?.[key] !== undefined ? body[key] : stored);
+  return [
+    pick('title', current.title),
+    pick('costInPoints', current.cost_in_points),
+    pick('costInVisits', current.cost_in_visits),
+    pick('emoji', current.emoji),
+    pick('oncePerStudent', current.once_per_student === true),
+  ];
+}
+
+/**
+ * The once_per_student write for a reward PATCH, or {} for none. Written when
+ * the price or the flag was edited AND the item is or was free: becoming free
+ * sets it, and pricing a free item must clear it in the same write or the DB's
+ * rewards_once_only_when_free refuses the update. A priced item that stays
+ * priced never names the column, so it keeps saving on a database without 067.
+ */
+export function onceUpdate(body, current, v) {
+  if (body?.costInPoints === undefined && body?.oncePerStudent === undefined) return {};
+  if (v.cost !== 0 && current.cost_in_points !== 0) return {};
+  return { once_per_student: v.once };
 }
 
 /* ---------- starter items: the ones an applicant names on /join ----------

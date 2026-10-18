@@ -65,6 +65,7 @@ let idleTimeout = null;
 let editingRewardId = null;
 let editingVisitsWas = null;   // punch price the item had when the form opened
 let rewardRaiseArmed = false;  // two-tap confirm for raising a punch price
+let rewardOnce = false;        // free item: once per student (true) or every visit
 let logoValue = null;      // current logo data-URL (null = none) shown in Settings
 let logoChanged = false;   // only PATCH the logo when the vendor actually changed it
 let lastActivity = null;   // most recent transaction (for the "Undo last" button)
@@ -333,6 +334,7 @@ function bootFailed(message) {
   $('reward-form-cancel').addEventListener('click', closeRewardForm);
   $('reward-form-save').addEventListener('click', saveReward);
   $('emoji-grid').addEventListener('click', onEmojiPick);
+  $('reward-free').addEventListener('click', onFreeLimitPick);
   $('scan-code-form').addEventListener('submit', (e) => { e.preventDefault(); submitTypedCode(); });
   $('scan-code-input').addEventListener('input', (e) => { e.target.value = normalizeCode(e.target.value); });
   $('scan-keypad').addEventListener('click', (e) => onCodeKey(e, 'scan-code-input', normalizeCode));
@@ -2204,7 +2206,9 @@ async function submitRedeemCode(code) {
 // whatever the reward costs, so staff see it before they commit.
 function showRedeemConfirm(code, data) {
   pendingRedeemCode = code;
-  pendingRedeemKind = data.paidWith === 'visits' ? 'punch' : 'reward';
+  // 'free' is a points code for a 0-point item (migration-067): the same
+  // screen, but nothing to deduct, so it must not say anything will be.
+  pendingRedeemKind = data.paidWith === 'visits' ? 'punch' : data.cost === 0 ? 'free' : 'reward';
   $('redeem-name').textContent = data.name;
   $('redeem-item').textContent = data.rewardTitle;
   $('redeem-confirm').disabled = false;
@@ -2246,8 +2250,9 @@ function showRedeemConfirm(code, data) {
   $('redeem-shared-note').hidden = !sharedHere;
   $('redeem-emoji').textContent = data.emoji || '🎁';
   $('redeem-item').textContent = data.rewardTitle;
-  $('redeem-cost').textContent = `${data.cost} pts will be deducted`;
-  $('redeem-confirm').textContent = 'Confirm and deduct points';
+  const free = pendingRedeemKind === 'free';
+  $('redeem-cost').textContent = free ? 'Free item · no points deducted' : `${data.cost} pts will be deducted`;
+  $('redeem-confirm').textContent = free ? 'Confirm free item' : 'Confirm and deduct points';
   $('redeem-confirm').disabled = false;
   show('screen-redeem-confirm');
 }
@@ -2260,6 +2265,7 @@ async function confirmRedeem() {
   if (busy || !pendingRedeemCode) return;
   const code = pendingRedeemCode;   // the `finally` below clears the global
   const isPunch = pendingRedeemKind === 'punch';
+  const isFree = pendingRedeemKind === 'free';
   busy = true;
   $('redeem-confirm').disabled = true;
   try {
@@ -2281,7 +2287,9 @@ async function confirmRedeem() {
     // back), so the affordance has to appear for them too.
     const sub = isPunch
       ? `Visits used · ${data.visitsLeft ?? 0} left`
-      : `Points deducted · balance now ${data.newBalance}${sharedNote()}`;
+      : isFree
+        ? 'Free item · no points used'
+        : `Points deducted · balance now ${data.newBalance}${sharedNote()}`;
     flood('success', `GIVE: ${data.rewardTitle}`, sub, () => {
       refreshLastActivity();
       enterScan();
@@ -2667,7 +2675,10 @@ function renderRewardList() {
     // Either price may be absent, so build the line from what exists rather
     // than interpolating a null into "null pts · about $NaN of purchases".
     const bits = [];
-    if (r.cost_in_points != null) {
+    if (r.cost_in_points === 0) {
+      // A free item (migration-067) has no purchases to point at.
+      bits.push(r.once_per_student ? 'Free · once per student' : 'Free · every visit');
+    } else if (r.cost_in_points != null) {
       const spend = spendForPoints(r.cost_in_points);
       bits.push(`${r.cost_in_points} pts${spend ? ` (about ${spend} of purchases)` : ''}`);
     }
@@ -2781,8 +2792,7 @@ function openRewardForm(reward) {
   $('reward-title').value = reward?.title ?? '';
   $('reward-cost').value = reward?.cost_in_points ?? '';
   $('reward-visits').value = reward?.cost_in_visits ?? '';
-  // A punch price is meaningless while punches are switched off for this spot.
-  $('reward-visits-label').hidden = !config.punchEnabled;
+  setFreeLimit(reward?.once_per_student === true);
   setSelectedEmoji(reward?.emoji || '🎁');
   $('reward-form-error').hidden = true;
   updateRewardHint();
@@ -2801,10 +2811,36 @@ function setSelectedEmoji(em) {
   [...$('emoji-grid').children].forEach((b) => b.classList.toggle('selected', b.dataset.e === em));
 }
 
+// 0 in the points box makes the item FREE (migration-067). Read off the raw
+// text, because Number('') is 0 too and an empty box means "not sold for points".
+function rewardCostIsFree() {
+  const raw = $('reward-cost').value.trim();
+  return raw !== '' && Number(raw) === 0;
+}
+
+function onFreeLimitPick(e) {
+  const b = e.target.closest('button[data-once]');
+  if (b) setFreeLimit(b.dataset.once === '1');
+}
+
+function setFreeLimit(once) {
+  rewardOnce = once;
+  $('reward-free').querySelectorAll('button[data-once]').forEach((b) => {
+    b.setAttribute('aria-checked', String((b.dataset.once === '1') === once));
+  });
+}
+
 function updateRewardHint() {
+  const free = rewardCostIsFree();
   const cost = Number($('reward-cost').value);
-  $('reward-form-hint').textContent =
-    cost > 0
+  // The free question appears only while the box says 0, and the visits box
+  // goes away: a free item cannot also have a visit price. A visits price is
+  // also meaningless while visits are switched off for this spot.
+  $('reward-free').hidden = !free;
+  $('reward-visits-label').hidden = free || !config.punchEnabled;
+  $('reward-form-hint').textContent = free
+    ? 'Students redeem it without spending any points.'
+    : cost > 0
       ? `At ${config.pointsPerDollar} pts per $1, a customer earns this after about ${spendForPoints(cost)} of purchases.`
       : '';
 }
@@ -2823,7 +2859,9 @@ async function saveReward() {
   const rawCost = $('reward-cost').value.trim();
   const rawVisits = $('reward-visits').value.trim();
   const cost = rawCost === '' ? null : Number(rawCost);
-  const visits = rawVisits === '' ? null : Number(rawVisits);
+  // A free item's visits box is hidden, and whatever it still holds is dropped
+  // rather than sent: the server refuses a free item with a visit price.
+  const visits = rawVisits === '' || cost === 0 ? null : Number(rawVisits);
   $('reward-form-error').hidden = true;
 
   // Raising a punch price silently pushes the item out of reach for anyone who
@@ -2850,7 +2888,10 @@ async function saveReward() {
     editingRewardId ? `/api/vendor/rewards/${editingRewardId}` : '/api/vendor/rewards',
     {
       method: editingRewardId ? 'PATCH' : 'POST',
-      body: JSON.stringify({ title, costInPoints: cost, costInVisits: visits, emoji: selectedEmoji }),
+      body: JSON.stringify({
+        title, costInPoints: cost, costInVisits: visits, emoji: selectedEmoji,
+        oncePerStudent: cost === 0 && rewardOnce,
+      }),
     }
   );
   const data = await res.json();
@@ -3798,7 +3839,9 @@ function renderRecent() {
     const spent = Math.abs(tx.visits_spent ?? 0);
     const amount = paidVisits
       ? `${tx.visits_spent < 0 ? '+' : '-'}${spent} ${spent === 1 ? 'visit' : 'visits'}`
-      : `${tx.points > 0 ? `+${tx.points}` : `${tx.points}`} pts`;
+      : tx.type === 'redeem' && tx.points === 0
+        ? 'Free'   // a free item (migration-067), not "0 pts"
+        : `${tx.points > 0 ? `+${tx.points}` : `${tx.points}`} pts`;
     const what = transfer
       ? `Community points in · ${who}`
       : earn
@@ -3871,6 +3914,9 @@ async function performReverse(txId, after) {
     if (data.paidWith === 'visits') {
       const n = data.restoredVisits ?? 0;
       flood('success', 'UNDONE', `${n} ${n === 1 ? 'visit' : 'visits'} put back`, refresh);
+    } else if (data.type === 'redeem' && data.points === 0) {
+      // A free item gave nothing back, so there is no balance change to report.
+      flood('success', 'UNDONE', 'Free item redemption undone', refresh);
     } else {
       const back = data.type === 'redeem' ? 'points refunded' : 'points removed';
       flood('success', 'UNDONE', `Balance now ${data.newBalance}${sharedNote()} · ${back}`, refresh);

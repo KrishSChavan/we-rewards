@@ -1448,7 +1448,9 @@ async function submitRedeemCode(code) {
 
 function showRedeemConfirm(code, data) {
   pendingRedeemCode = code;
-  pendingRedeemKind = data.paidWith === 'visits' ? 'punch' : 'reward';
+  // 'free': a points code for a 0-point item (migration-067). Nothing is
+  // deducted, so the screen must not say anything will be.
+  pendingRedeemKind = data.paidWith === 'visits' ? 'punch' : data.cost === 0 ? 'free' : 'reward';
   $('redeem-name').textContent = data.name;
   $('redeem-item').textContent = data.rewardTitle;
   $('redeem-confirm').disabled = false;
@@ -1472,8 +1474,9 @@ function showRedeemConfirm(code, data) {
   chip.hidden = false;
   $('redeem-emoji').textContent = data.emoji || '🎁';
   $('redeem-item').textContent = data.rewardTitle;
-  $('redeem-cost').textContent = data.cost + ' pts will be deducted';
-  $('redeem-confirm').textContent = 'Confirm and deduct points';
+  var free = pendingRedeemKind === 'free';
+  $('redeem-cost').textContent = free ? 'Free item · no points deducted' : data.cost + ' pts will be deducted';
+  $('redeem-confirm').textContent = free ? 'Confirm free item' : 'Confirm and deduct points';
   $('redeem-confirm').disabled = false;
   show('screen-redeem-confirm');
 }
@@ -1482,6 +1485,7 @@ async function confirmRedeem() {
   if (busy || !pendingRedeemCode) return;
   var code = pendingRedeemCode;
   var isPunch = pendingRedeemKind === 'punch';
+  var isFree = pendingRedeemKind === 'free';
   busy = true;
   $('redeem-confirm').disabled = true;
   try {
@@ -1496,7 +1500,9 @@ async function confirmRedeem() {
     }
     var sub = isPunch
       ? ('Visits used · ' + (data.visitsLeft ?? 0) + ' left')
-      : ('Points deducted · balance now ' + data.newBalance);
+      : isFree
+        ? 'Free item · no points used'
+        : ('Points deducted · balance now ' + data.newBalance);
     flood('success', 'GIVE: ' + data.rewardTitle, sub, function () {
       refreshLastActivity();
       enterScan();
@@ -1831,6 +1837,9 @@ async function performReverse(txId, after) {
     if (data.paidWith === 'visits') {
       var n = data.restoredVisits ?? 0;
       flood('success', 'UNDONE', n + (n === 1 ? ' visit' : ' visits') + ' put back', refresh);
+    } else if (data.type === 'redeem' && data.points === 0) {
+      // A free item gave nothing back, so there is no balance change to report.
+      flood('success', 'UNDONE', 'Free item redemption undone', refresh);
     } else {
       var back = data.type === 'redeem' ? 'points refunded' : 'points removed';
       flood('success', 'UNDONE', 'Balance now ' + data.newBalance + ' · ' + back, refresh);

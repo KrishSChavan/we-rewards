@@ -2621,9 +2621,12 @@ function historyRow(tx) {
   // `+${tx.points}` printed the literal "+-150" on an undone earn, and a
   // reversed visits row must read "+12", not another "12".
   const sign = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n)}`;
+  // A free item (migration-067) is a redeem row of 0 points, so it says Free.
   const chip = tx.paid_with === 'visits'
     ? `${sign(-(tx.visits_spent ?? 0))}<small>visits</small>`
-    : `${sign(tx.points)}<small>pts</small>`;
+    : tx.type === 'redeem' && tx.points === 0
+      ? 'Free'
+      : `${sign(tx.points)}<small>pts</small>`;
 
   const row = document.createElement('div');
   row.className = `history-row ${transfer ? 'transfer' : earn ? 'earn' : 'redeem'}`;
@@ -4965,7 +4968,7 @@ function cardProgressHtml(v) {
     const ready = st.bal >= r.cost_in_points;
     const pct = ready ? 100 : Math.max(0, Math.min(1, st.bal / (r.cost_in_points || 1))) * 100;
     return `<span class="vc-reward${ready ? ' is-ready' : ''}">
-        <span class="vc-goal"><b>${escapeHtml(r.title)}</b><span>${ready ? 'Ready ✓' : `${r.cost_in_points - st.bal} pts to go`}</span></span>
+        <span class="vc-goal"><b>${escapeHtml(r.title)}</b><span>${r.cost_in_points === 0 ? 'Free ✓' : ready ? 'Ready ✓' : `${r.cost_in_points - st.bal} pts to go`}</span></span>
         <span class="vc-track"><i style="width:${pct.toFixed(1)}%"></i></span>
       </span>`;
   }).join('');
@@ -8368,6 +8371,9 @@ function renderItems() {
     // the string "null") so Number() never yields NaN downstream.
     card.dataset.costPoints = r.cost_in_points ?? '';
     card.dataset.costVisits = r.cost_in_visits ?? '';
+    // A once-per-student free item (migration-067). The server already leaves
+    // one this student has used out of the list, so this only changes wording.
+    if (r.once_per_student) card.dataset.once = '1';
     card.dataset.emoji = r.emoji || '🎁';
     wrap.appendChild(card);
   });
@@ -8411,10 +8417,12 @@ function affordability(card) {
   };
 }
 
-// "50 pts / 5 visits", or just the half that exists.
+// "50 pts / 5 visits", or just the half that exists. 0 points is a free item
+// (migration-067), which never has a visit price.
 function priceBits(a) {
   const bits = [];
-  if (a.pts != null) bits.push(`${a.pts} pts`);
+  if (a.pts === 0) bits.push('Free');
+  else if (a.pts != null) bits.push(`${a.pts} pts`);
   if (a.vis != null && a.visitsOn) bits.push(`${a.vis} visits`);
   return bits;
 }
@@ -8479,9 +8487,14 @@ function onItemTap(e) {
   // pooled spot: the points it just showed are the chain's, so the sheet has to
   // say the reward's price comes out of a purse the siblings share.
   const anySpot = poolAnySpotText(vendor);
-  $('item-desc').textContent = anySpot
-    ? `Redeem at ${vendor?.name ?? 'this spot'}. These points work at ${anySpot}.`
-    : `Redeem at ${vendor?.name ?? 'this spot'}.`;
+  const free = a.pts === 0;
+  // A free item spends no points, so the pooled "these points work at" line
+  // has nothing to explain; what it needs instead is how often it can be had.
+  $('item-desc').textContent = free
+    ? `Redeem at ${vendor?.name ?? 'this spot'}. ${card.dataset.once === '1' ? 'One per student.' : 'Free every visit.'}`
+    : anySpot
+      ? `Redeem at ${vendor?.name ?? 'this spot'}. These points work at ${anySpot}.`
+      : `Redeem at ${vendor?.name ?? 'this spot'}.`;
 
   // The buttons carry the user's own wording, so the numbers live here instead
   // of vanishing with the old disabled-button state.
@@ -8491,6 +8504,7 @@ function onItemTap(e) {
 
   $('item-redeem').hidden = !a.byPoints;
   $('item-redeem').disabled = false;
+  $('item-redeem').textContent = free ? 'Redeem for free' : 'Redeem with points';
   $('item-redeem-visits').hidden = !a.byVisits;
   $('item-redeem-visits').disabled = false;
   $('item-notready').hidden = a.byPoints || a.byVisits;

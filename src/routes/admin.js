@@ -21,7 +21,7 @@ import { rollupRoi } from '../lib/roi.js';
 import { generateResetCode, normalizeResetCode } from '../lib/reset-codes.js';
 import { sendEmail, emailUrl, emailEnabled } from '../lib/email.js';
 import { applicationAccepted, vendorResetCode } from '../lib/email-templates.js';
-import { validReward, validRatio, validStarterItems, starterItemToReward } from '../lib/rewards.js';
+import { validReward, validRatio, validStarterItems, starterItemToReward, mergeRewardEdit, onceUpdate } from '../lib/rewards.js';
 import { validReferralConfig, runReferralSweep } from '../lib/referrals.js';
 import { validSignupConfig } from '../lib/signup-bonus.js';
 import { validBonusWindowConfig, invalidateBonusWindow, announceBroadcastFor } from '../lib/bonus-window.js';
@@ -1654,9 +1654,10 @@ router.post('/reviews/:id/unhide', async (req, res, next) => {
 router.get('/vendors/:id/rewards', async (req, res, next) => {
   try {
     if (!(await vendorExists(req, res))) return;
+    // `*` so this keeps loading before migration-067 (see GET /api/vendor/rewards).
     const { data, error } = await supabaseAdmin
       .from('rewards')
-      .select('id, title, cost_in_points, cost_in_visits, emoji, active, created_at')
+      .select('*')
       .eq('vendor_id', req.params.id)
       .order('created_at', { ascending: true });
     if (error) throw error;
@@ -1666,11 +1667,11 @@ router.get('/vendors/:id/rewards', async (req, res, next) => {
   }
 });
 
-/** POST /api/admin/vendors/:id/rewards  { title, costInPoints, costInVisits, emoji } */
+/** POST /api/admin/vendors/:id/rewards  { title, costInPoints, costInVisits, emoji, oncePerStudent } */
 router.post('/vendors/:id/rewards', async (req, res, next) => {
   try {
     if (!(await vendorExists(req, res))) return;
-    const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji);
+    const v = validReward(req.body?.title, req.body?.costInPoints, req.body?.costInVisits, req.body?.emoji, req.body?.oncePerStudent);
     if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
 
     const { data, error } = await supabaseAdmin
@@ -1681,6 +1682,8 @@ router.post('/vendors/:id/rewards', async (req, res, next) => {
         cost_in_points: v.cost,
         cost_in_visits: v.visits,
         emoji: v.emoji,
+        // Only a free item writes the flag (migration-067); see the vendor POST.
+        ...(v.cost === 0 ? { once_per_student: v.once } : {}),
       })
       .select()
       .single();
@@ -1693,7 +1696,7 @@ router.post('/vendors/:id/rewards', async (req, res, next) => {
   }
 });
 
-/** PATCH /api/admin/vendors/:id/rewards/:rewardId  { title?, costInPoints?, costInVisits?, emoji?, active? } */
+/** PATCH /api/admin/vendors/:id/rewards/:rewardId  { title?, costInPoints?, costInVisits?, emoji?, oncePerStudent?, active? } */
 router.patch('/vendors/:id/rewards/:rewardId', async (req, res, next) => {
   try {
     if (!(await vendorExists(req, res))) return;
@@ -1703,31 +1706,27 @@ router.patch('/vendors/:id/rewards/:rewardId', async (req, res, next) => {
 
     const touchesFields =
       req.body?.title !== undefined || req.body?.costInPoints !== undefined ||
-      req.body?.costInVisits !== undefined || req.body?.emoji !== undefined;
+      req.body?.costInVisits !== undefined || req.body?.emoji !== undefined ||
+      req.body?.oncePerStudent !== undefined;
 
     const updates = {};
     if (touchesFields) {
       // Merge against the STORED row so a partial PATCH revalidates real values
       // and clearing one of the two prices stays possible (same reasoning as
-      // the vendor-side PATCH in src/routes/vendor.js).
+      // the vendor-side PATCH in src/routes/vendor.js, which shares the helpers).
       const { data: current } = await supabaseAdmin
-        .from('rewards').select('title, cost_in_points, cost_in_visits, emoji')
+        .from('rewards').select('*')
         .eq('id', req.params.rewardId).eq('vendor_id', req.params.id).maybeSingle();
       if (!current) return res.status(404).json({ error: 'NOT_FOUND', message: 'Reward not found.' });
 
-      const merged = {
-        title: req.body?.title !== undefined ? req.body.title : current.title,
-        cost: req.body?.costInPoints !== undefined ? req.body.costInPoints : current.cost_in_points,
-        visits: req.body?.costInVisits !== undefined ? req.body.costInVisits : current.cost_in_visits,
-        emoji: req.body?.emoji !== undefined ? req.body.emoji : current.emoji,
-      };
-      const v = validReward(merged.title, merged.cost, merged.visits, merged.emoji);
+      const v = validReward(...mergeRewardEdit(req.body, current));
       if (v.error) return res.status(400).json({ error: 'BAD_REWARD', message: v.error });
 
       if (req.body?.title !== undefined) updates.title = v.title;
       if (req.body?.costInPoints !== undefined) updates.cost_in_points = v.cost;
       if (req.body?.costInVisits !== undefined) updates.cost_in_visits = v.visits;
       if (req.body?.emoji !== undefined) updates.emoji = v.emoji;
+      Object.assign(updates, onceUpdate(req.body, current, v));
     }
     if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
     if (!Object.keys(updates).length) {

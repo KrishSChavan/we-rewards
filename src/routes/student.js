@@ -571,6 +571,49 @@ async function visitedVendorIds(userId) {
 }
 
 /**
+ * The once-per-student free items (migration-067), and which of them this
+ * student has already had: a redeem row that was not undone.
+ *
+ * NEVER THROWS, and falls back to "no once-only items" — the same footing as
+ * reviewSummariesOrEmpty, for the same reason: this is the read behind every
+ * home screen, and a missing column (067 not applied yet) or a blip must not
+ * take that down. The fallback only shows a used item as still on offer, and
+ * create_redeem_code refuses it with ONE_TIME_ITEM_USED when tapped.
+ *
+ * Kept OUT of the cached catalogue on purpose. Naming once_per_student in that
+ * select would make the whole home screen depend on the migration having run.
+ */
+const ONE_TIME_WARN_INTERVAL_MS = 60 * 60_000;
+let oneTimeWarnedAt = 0;
+async function oneTimeRewardState(userId) {
+  const none = { once: new Set(), used: new Set() };
+  try {
+    const { data: onceRows, error } = await supabaseAdmin
+      .from('rewards').select('id').eq('once_per_student', true).eq('active', true);
+    if (error) throw error;
+    const ids = (onceRows ?? []).map((r) => r.id);
+    if (!ids.length) return none;
+    const { data: usedRows, error: usedErr } = await supabaseAdmin
+      .from('transactions')
+      .select('reward_id')
+      .eq('user_id', userId)
+      .eq('type', 'redeem')
+      .in('reward_id', ids)
+      .is('reverses', null)
+      .is('reversed_by', null);
+    if (usedErr) throw usedErr;
+    return { once: new Set(ids), used: new Set((usedRows ?? []).map((t) => t.reward_id)) };
+  } catch (err) {
+    const now = Date.now();
+    if (now - oneTimeWarnedAt >= ONE_TIME_WARN_INTERVAL_MS) {
+      oneTimeWarnedAt = now;
+      console.warn(`[balances] once-only items unavailable, showing none (run migration-067?): ${err?.message ?? err}`);
+    }
+    return none;
+  }
+}
+
+/**
  * GET /api/me/balances
  * All vendors + this student's balance at each (0 if never visited),
  * plus each vendor's active rewards so the app can show "1 punch away" style progress.
@@ -598,6 +641,7 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       recommended,
       visited,
       reviewSummaries,
+      oneTime,
     ] = await Promise.all([
       // The catalogue half of this payload is IDENTICAL for every student, and
       // `vendors` has no index beyond its primary key — so filtering on `active`
@@ -650,6 +694,9 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       // migration not being applied yet, leaves the cards without stars rather
       // than taking the home screen down.
       reviewSummariesOrEmpty(),
+      // Once-only free items, and which this student has used (migration-067).
+      // Never throws; see oneTimeRewardState.
+      oneTimeRewardState(req.user.id),
     ]);
     // readPurses throws its own Supabase errors, so it needs no line here.
     if (cErr) throw cErr;
@@ -747,7 +794,12 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           // Feeds the Move-points picker (community-points.md step 5). Advisory
           // only — the transfer RPC re-checks eligibility server-side.
           acceptsCommunity: Boolean(v.accepts_community_points),
-          rewards: (v.rewards ?? []).filter((r) => r.active),
+          // A once-only free item this student has already had is left out
+          // entirely, so nothing on the home screen offers it again. The rest
+          // carry once_per_student so the item sheet can say "one per student".
+          rewards: (v.rewards ?? [])
+            .filter((r) => r.active && !oneTime.used.has(r.id))
+            .map((r) => (oneTime.once.has(r.id) ? { ...r, once_per_student: true } : r)),
           // Visits (migration-029): `enabled` drives the counter + scan button
           // and gates the visits price on every reward row. Each reward carries
           // its own cost_in_visits; there is no vendor-level card any more.

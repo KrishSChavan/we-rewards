@@ -1328,6 +1328,22 @@ body.is-admin .tab-rail::after  { background: linear-gradient(to left,  #fdecea,
   border-color: var(--navy); background: var(--sky);
 }
 
+/* ---------- free item: every visit, or once per student ----------
+   Shown only while the points box holds 0. Two buttons rather than radio
+   inputs because `.form-card input` would draw a radio as a text box; they
+   borrow the emoji picker's selected look so the form has one way to show a
+   choice. */
+.reward-free[hidden] { display: none; }
+.reward-free-q { font-weight: 700; margin-bottom: 0.4rem; }
+.reward-free-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.reward-free-opts button {
+  font: inherit; font-weight: 700; padding: 0.7rem 0.5rem; color: var(--ink);
+  background: var(--paper); border: 2.5px solid transparent; border-radius: 0.7rem;
+}
+.reward-free-opts button[aria-checked="true"] {
+  border-color: var(--navy); background: var(--sky);
+}
+
 .reward-emoji { font-size: 1.7rem; margin-right: 0.6rem; }
 .confirm-emoji { font-size: clamp(3rem, 8vw, 4.5rem); line-height: 1; }
 

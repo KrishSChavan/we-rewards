@@ -1573,6 +1573,10 @@ app.use(async (err, req, res, _next) => {
     // key above: checked against the whole map.
     REVIEW_RATING_INVALID: [400, 'Pick from one to five stars.'],
     REVIEW_SPOT_UNAVAILABLE: [409, 'That spot isn’t on WeRewards right now.'],
+    // Once-only free items (migration-067). Read by the student in the app and
+    // by staff at the till, so it names the rule rather than either of them.
+    // Checked against the whole map: contains no key, and no key contains it.
+    ONE_TIME_ITEM_USED: [409, 'This free item is one per student, and it’s already been redeemed on this account.'],
   };
   const key = Object.keys(known).find((k) => err.message?.includes(k));
   if (key) {

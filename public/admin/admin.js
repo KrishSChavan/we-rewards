@@ -1814,10 +1814,10 @@ function buildRewardRow(r) {
   const pts = document.createElement('input');
   pts.className = 'vr-pts';
   pts.type = 'number';
-  pts.min = '1';
+  pts.min = '0';
   pts.max = '100000';
   pts.placeholder = 'pts';
-  pts.title = 'Point cost (blank: not sold for points)';
+  pts.title = 'Point cost (blank: not sold for points, 0: free)';
   pts.value = r?.cost_in_points ?? '';
   pts.setAttribute('aria-label', 'Point cost');
 
@@ -1831,6 +1831,17 @@ function buildRewardRow(r) {
   visits.value = r?.cost_in_visits ?? '';
   visits.setAttribute('aria-label', 'Visit cost');
 
+  // A free item (0 points, migration-067) asks how often a student can have it.
+  // In the actions strip rather than the grid, so the row's columns don't move.
+  const once = document.createElement('select');
+  once.className = 'vr-once';
+  once.setAttribute('aria-label', 'How often a student can redeem this free item');
+  once.innerHTML = '<option value="">Free every visit</option><option value="1">Free once per student</option>';
+  once.value = r?.once_per_student ? '1' : '';
+  const syncOnce = () => { once.hidden = !(pts.value.trim() !== '' && Number(pts.value) === 0); };
+  pts.addEventListener('input', syncOnce);
+  syncOnce();
+
   const actions = document.createElement('div');
   actions.className = 'vr-actions';
   const note = document.createElement('span');
@@ -1839,7 +1850,7 @@ function buildRewardRow(r) {
   save.className = 'vr-save';
   save.type = 'button';
   save.textContent = r ? 'Save' : 'Add item';
-  save.addEventListener('click', () => saveReward(r, { emoji, title, pts, visits }, save, note, row));
+  save.addEventListener('click', () => saveReward(r, { emoji, title, pts, visits, once }, save, note, row));
 
   if (r) {
     // Same switch chrome as the roster's on/off toggle; saves immediately.
@@ -1850,14 +1861,14 @@ function buildRewardRow(r) {
     toggle.innerHTML = `<span class="vt-track"><span class="vt-knob"></span></span><span class="vt-label"></span>`;
     paintRewardToggle(toggle, row, r);
     toggle.addEventListener('click', () => toggleReward(r, toggle, row, note));
-    actions.append(note, toggle, save);
+    actions.append(once, note, toggle, save);
   } else {
     const cancel = document.createElement('button');
     cancel.className = 'vr-cancel';
     cancel.type = 'button';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', () => row.remove());
-    actions.append(note, cancel, save);
+    actions.append(once, note, cancel, save);
   }
 
   row.append(emoji, title, pts, visits, actions);
@@ -1903,6 +1914,8 @@ async function saveReward(r, fields, save, note, row) {
     costInPoints: fields.pts.value.trim(),
     costInVisits: fields.visits.value.trim(),
     emoji: fields.emoji.value,
+    // The server ignores it unless the point cost is 0.
+    oncePerStudent: fields.once.value === '1',
   };
   save.disabled = true;
   setNote(note, 'Saving…', null);

@@ -1102,14 +1102,24 @@
       <!-- Two prices, either optional, at least one required (the DB enforces
            the same rule via rewards_has_a_price). Leaving one blank means the
            item simply cannot be bought with that currency. The max on points
-           matches the server's 100000 cap, which the old markup omitted. -->
+           matches the server's 100000 cap, which the old markup omitted.
+           0 points is a FREE item (migration-067): the visits box hides, since
+           a free item cannot also have a visit price, and the vendor is asked
+           how often a student can have it. -->
       <label>Points to redeem
-        <input id="reward-cost" type="number" inputmode="numeric" min="1" max="100000" step="1" placeholder="150" />
+        <input id="reward-cost" type="number" inputmode="numeric" min="0" max="100000" step="1" placeholder="150" />
       </label>
+      <div id="reward-free" class="reward-free" hidden>
+        <p class="reward-free-q">Free item. How often can a student redeem it?</p>
+        <div class="reward-free-opts" role="radiogroup" aria-label="How often a student can redeem this free item">
+          <button type="button" role="radio" data-once="0">Every visit</button>
+          <button type="button" role="radio" data-once="1">Once per student</button>
+        </div>
+      </div>
       <label id="reward-visits-label">Visits to redeem
         <input id="reward-visits" type="number" inputmode="numeric" min="1" max="50" step="1" placeholder="5" />
       </label>
-      <p class="manage-note">Set at least one. Leave a box empty and the item cannot be bought that way.</p>
+      <p class="manage-note">Set at least one. Leave a box empty and the item cannot be bought that way. Put 0 points to make it free.</p>
       <label>Icon</label>
       <div id="emoji-grid" class="emoji-grid">
         <button type="button" data-e="🎁">🎁</button><button type="button" data-e="🥤">🥤</button>

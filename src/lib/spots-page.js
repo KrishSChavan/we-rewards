@@ -88,11 +88,14 @@ export function cuisinePhrase(cuisines) {
   return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]} spot`;
 }
 
-/** "250 points" / "8 visits", the way the app prices a reward. */
+/** "250 points" / "8 visits" / "Free", the way the app prices a reward. */
 export function rewardCost(reward) {
   if (reward.cost_in_visits > 0) {
     return `${reward.cost_in_visits} ${reward.cost_in_visits === 1 ? 'visit' : 'visits'}`;
   }
+  // 0 points is a free item (migration-067). A free item never has a visit
+  // price, so it always reaches this line.
+  if (reward.cost_in_points === 0) return 'Free';
   const pts = reward.cost_in_points ?? 0;
   return `${pts} ${pts === 1 ? 'point' : 'points'}`;
 }
@@ -214,9 +217,13 @@ function spotCard(spot) {
   const tags = spot.cuisine.length
     ? `<ul class="tags">${spot.cuisine.map((c) => `<li>${escapeHtml(cuisineLabel(c))}</li>`).join('')}</ul>`
     : '';
-  const reward = spot.rewards.length
-    ? `<p>Rewards from ${escapeHtml(rewardCost(spot.rewards[0]))}</p>`
-    : '';
+  // "Rewards from Free" reads as a typo, so a free cheapest item gets its own line.
+  const cheapest = spot.rewards.length ? rewardCost(spot.rewards[0]) : null;
+  const reward = cheapest === 'Free'
+    ? '<p>Has a free reward</p>'
+    : cheapest
+      ? `<p>Rewards from ${escapeHtml(cheapest)}</p>`
+      : '';
   return `      <li class="card">
         <h3><a href="/spots/${escapeHtml(spot.slug)}">${escapeHtml(spot.name)}</a></h3>
         ${spot.address ? `<p>${escapeHtml(spot.address)}, ${LOCALITY}, ${REGION}</p>` : ''}
