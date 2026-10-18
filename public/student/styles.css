@@ -2659,7 +2659,7 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 }
 .tab-earn-disc {
   position: absolute; left: 50%; top: 0;
-  width: 3.4rem; height: 3.4rem; margin: -1.7rem 0 0 -1.7rem;
+  width: 3.4rem; height: 3.4rem; margin: -1.6rem 0 0 -1.6rem;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%; background: var(--navy); color: #3DDC97;
   box-shadow: 0 4px 10px rgba(16, 29, 51, 0.28);
