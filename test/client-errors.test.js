@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { isCrawler } from '../src/lib/errors.js';
+import { isCrawler, isLinkScannerError } from '../src/lib/errors.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const GUARD_SRC = fs.readFileSync(path.join(ROOT, 'public/shared/boot-guard.js'), 'utf8');
@@ -169,4 +169,33 @@ test('real devices are never mistaken for crawlers', () => {
   }
   assert.equal(isCrawler(undefined), false);
   assert.equal(isCrawler(null), false);
+});
+
+/* ---------- email link scanners ---------- */
+
+test('reports from an email link scanner are recognised by their message', () => {
+  // Both verbatim from the 2026-10-19 broadcast (322 and 98 rows).
+  for (const message of [
+    'Object Not Found Matching Id:2, MethodName:update, ParamCount:4',
+    'Object Not Found Matching Id:1, MethodName:update, ParamCount:4',
+    'Object Not Found Matching Id:13, MethodName:click, ParamCount:0',
+  ]) {
+    assert.equal(isLinkScannerError(message), true, `should have been read as a scanner: ${message}`);
+  }
+});
+
+test('real errors are never mistaken for a link scanner', () => {
+  for (const message of [
+    // Anchored both ends: our own code quoting the text is still a real error.
+    'boot failed: Object Not Found Matching Id:2, MethodName:update, ParamCount:4',
+    'Object Not Found Matching Id:2, MethodName:update, ParamCount:4 (in app.js)',
+    'Object not found',
+    'TypeError: Cannot read properties of undefined (reading \'update\')',
+    '',
+  ]) {
+    assert.equal(isLinkScannerError(message), false, `should NOT have been read as a scanner: ${message}`);
+  }
+  for (const value of [undefined, null, 42, { message: 'Object Not Found Matching Id:2, MethodName:update, ParamCount:4' }]) {
+    assert.equal(isLinkScannerError(value), false);
+  }
 });

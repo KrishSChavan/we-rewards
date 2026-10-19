@@ -91,8 +91,9 @@ export function punchUrl(origin, token) {
  * handler's `catch (err) { next(err) }`, and the central handler in server.js has
  * no branch for a bare TypeError: it writes an error_logs row and then calls
  * notifyError → notifyAdmins (src/lib/alerts.js), which web-pushes EVERY
- * subscribed operator. Nothing throttles that, so a curl loop inside
- * punchHoldLimiter's per-IP budget is an operator-paging machine.
+ * subscribed operator. Only an identical message is held back (once an hour),
+ * so a curl loop inside punchHoldLimiter's per-IP budget still fills error_logs
+ * and pages on every new message it can make.
  *
  * WHY A TYPE GATE AND NOT A try/catch around the coercion: the two callers
  * (server.js /api/punch/hold, and the `token` branch of POST /api/me/punch in

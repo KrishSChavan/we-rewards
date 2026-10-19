@@ -210,6 +210,28 @@ export function isCrawler(userAgent) {
   return CRAWLER_UA.test(String(userAgent || ''));
 }
 
+/* ---------- email link scanners ----------
+   Mail security gateways (Microsoft's Safe Links is the big one, and school
+   inboxes are mostly Microsoft 365) open every link in a message in an
+   embedded browser before the student ever sees it. That browser is built on
+   CefSharp, and its own JS bridge rejects a promise with exactly this text,
+   which our unhandledrejection hook then files as a student crash. The 2026-10-19
+   "everyone" deal broadcast drew 420 of these in 65 seconds, all on "/", all
+   signed out, under seven different spoofed user agents (Windows 7 + Chrome 140
+   among them), and every one paged the operator.
+
+   Matched on the MESSAGE, not the user agent: the agents are ordinary Chrome
+   strings, while this message is CefSharp's own format string ("Object Not Found
+   Matching Id:{0}, MethodName:{1}, ParamCount:{2}") and nothing in this repo can
+   produce it. Anchored at both ends so a real error that merely quotes it is
+   still filed. */
+const LINK_SCANNER_ERROR = /^Object Not Found Matching Id:\d+, MethodName:\w+, ParamCount:\d+$/;
+
+/** True for a client error report that came from an email link scanner. */
+export function isLinkScannerError(message) {
+  return typeof message === 'string' && LINK_SCANNER_ERROR.test(message);
+}
+
 /**
  * @param {object} e
  * @param {'server'|'student'|'vendor'|'admin'} e.source

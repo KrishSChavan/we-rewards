@@ -25,7 +25,7 @@ import { CUISINES, MAX_CUISINES } from './src/lib/cuisines.js';
 import { NEARBY_CONFIG } from './src/lib/nearby.js';
 import { resolveUserFromToken, authVerificationMode } from './src/lib/jwt.js';
 import { setIo } from './src/lib/realtime.js';
-import { logError, requestContext, isCrawler } from './src/lib/errors.js';
+import { logError, requestContext, isCrawler, isLinkScannerError } from './src/lib/errors.js';
 import { logEvent } from './src/lib/events.js';
 import {
   posthogEnabled, flushPostHog, batchUrl,
@@ -1182,6 +1182,9 @@ app.post('/api/client-error', async (req, res) => {
   // than in the four client reporters means the boot guard is covered too, and
   // that is the one reporter that runs on a browser we can't ship a fix to.
   if (isCrawler(req.headers['user-agent'])) return res.status(204).end();
+  // Same treatment for email link scanners, which are caught by what they
+  // report rather than by who they claim to be (see isLinkScannerError).
+  if (isLinkScannerError(b.message)) return res.status(204).end();
   let userId = null;
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (token) {

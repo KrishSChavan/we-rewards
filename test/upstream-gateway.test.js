@@ -206,6 +206,28 @@ test('a client crash carries its vendor all the way into the error log row', asy
   assert.equal(row.source, 'student');
 });
 
+test('an email link scanner\'s report is accepted and never reaches the error log', async () => {
+  const seen = stubSupabase(201, JSON.stringify([{ id: 'log-1' }]), 'application/json');
+  const res = await realFetch(`http://127.0.0.1:${port}/api/client-error`, {
+    method: 'POST',
+    // One of the seven user agents the 2026-10-19 broadcast's scanner sent.
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Forwarded-For': '203.0.113.252',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.7339.0 Safari/537.36',
+    },
+    body: JSON.stringify({
+      source: 'student',
+      message: 'Object Not Found Matching Id:2, MethodName:update, ParamCount:4',
+      url: '/',
+      context: { tab: 'home', online: true },
+    }),
+  });
+  assert.equal(res.status, 204, 'a 4xx would only make the scanner retry');
+  assert.equal(loggedRow(seen), undefined, 'the scanner was filed as a student crash');
+  assert.equal(seen.length, 0, 'nothing at all should reach Supabase for it');
+});
+
 test('a server failure records the request that caused it, for the same row', async () => {
   // requestContext is what fills this in; here it is only being shown to be
   // WIRED to the central handler, which is the part a unit test cannot see.
