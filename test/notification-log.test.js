@@ -78,7 +78,7 @@ test('NOTIFICATION_KINDS is the frozen vocabulary from the contract', () => {
   assert.ok(Object.isFrozen(NOTIFICATION_KINDS));
   assert.deepEqual([...NOTIFICATION_KINDS].sort(), [
     'admin_alert', 'admin_test', 'application_accepted', 'application_received', 'broadcast',
-    'deal', 'nearby', 'other', 'reminder', 'student_link_code', 'vendor_reset',
+    'deal', 'deal_request', 'nearby', 'other', 'reminder', 'student_link_code', 'vendor_reset',
   ]);
 });
 

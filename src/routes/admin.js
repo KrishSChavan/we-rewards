@@ -15,6 +15,7 @@ import { NOTIFICATION_KINDS, deviceLabelFromUA, notificationLogState, serviceOf 
 import { CAMPAIGN_CONFIG, campaignWorkerStatus } from '../lib/campaigns.js';
 import { REMINDER_CONFIG, previewReminder, reminderBackoff, reminderWorkerStatus } from '../lib/reminders.js';
 import { broadcastBackoff, broadcastWorkerStatus } from '../lib/broadcasts.js';
+import { listAdminDealRequests, reviewDealRequest, takeDownEveryoneDeal } from '../lib/deal-requests.js';
 import { isUuid } from '../lib/ids.js';
 import { rollupPlatformOverview } from '../lib/analytics.js';
 import { rollupRoi } from '../lib/roi.js';
@@ -3575,6 +3576,57 @@ router.post('/broadcasts/:id/cancel', async (req, res, next) => {
     if (error) throw error;
     if (!data) return res.status(409).json({ error: 'NOT_CANCELLABLE', message: 'That broadcast has already finished or been cancelled.' });
     res.json({ ok: true, alreadySent: data.sent_count });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- vendor requests to send a deal to every student (migration-069) ----------
+
+   The other half of /api/vendor/deal-requests. A vendor asks; the operator
+   approves or denies here, optionally with a note; the vendor is emailed the
+   answer. Approving writes an ordinary campaign with audience 'all', so the
+   shared frequency budget, quiet hours and every switch apply to it as they do
+   to any deal. All of the logic is in src/lib/deal-requests.js. */
+
+/** GET /api/admin/deal-requests — pending (oldest first) and recent decisions. */
+router.get('/deal-requests', async (req, res, next) => {
+  try {
+    const out = await listAdminDealRequests();
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/admin/deal-requests/:id/approve  { note? } */
+router.post('/deal-requests/:id/approve', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'That request no longer exists.' });
+    const out = await reviewDealRequest({ id: req.params.id, reviewerId: req.user.id, approve: true, note: req.body?.note ?? null, req });
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/admin/deal-requests/:id/deny  { note? } — the note is the vendor's reason. */
+router.post('/deal-requests/:id/deny', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'That request no longer exists.' });
+    const out = await reviewDealRequest({ id: req.params.id, reviewerId: req.user.id, approve: false, note: req.body?.note ?? null, req });
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/admin/deal-requests/:id/take-down — stop an approved deal early. */
+router.post('/deal-requests/:id/take-down', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'NOT_FOUND', message: 'That request no longer exists.' });
+    const out = await takeDownEveryoneDeal(req.params.id);
+    res.status(out.status).json(out.body);
   } catch (err) {
     next(err);
   }

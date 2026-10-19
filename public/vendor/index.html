@@ -649,6 +649,24 @@
             <p id="deal-note" class="deals-note"></p>
           </div>
 
+          <!-- ASK TO REACH EVERY STUDENT (migration-069). A REQUEST, not a send:
+               it uses the headline, message and length from the composer above,
+               goes to WeRewards for review, and nothing reaches a student unless
+               it is approved. The vendor is emailed the answer either way.
+
+               Its own card with its own button, deliberately not a fourth
+               audience chip: Send deal is plan-gated and quota-counted (see
+               #deals-lock above), and this is neither, so sharing that button
+               would mean teaching every lock and quota path an exception. -->
+          <div class="stats-card deals-compose">
+            <h3>Send to every student</h3>
+            <p class="deals-note">Want everyone on WeRewards to see this deal, not just your own customers? Send it to us for review. It uses the headline, message and length above. If we approve it, it goes out within each student’s notification limits and doesn’t use one of your weekly sends. We’ll email you either way.</p>
+            <p id="everyone-error" class="field-error" hidden></p>
+            <p id="everyone-success" class="field-success" hidden></p>
+            <button id="everyone-send" class="btn-secondary" type="button">Request send to every student</button>
+            <div id="everyone-list" class="deal-history"></div>
+          </div>
+
           <div class="stats-card">
             <h3>Sent recently</h3>
             <div id="deal-history" class="deal-history"></div>

@@ -12,6 +12,7 @@ import { effectivePlan, itemCap, daysPastDue, planLocks, PLAN_LABELS, DEGRADE_DA
 import { isTerminalAdmin } from '../lib/terminal-admin.js';
 import { emitBalance, emitPunch, emitDeal } from '../lib/realtime.js';
 import { CAMPAIGN_CONFIG, CAMPAIGN_DURATIONS } from '../lib/campaigns.js';
+import { listVendorDealRequests, submitDealRequest, withdrawDealRequest } from '../lib/deal-requests.js';
 import { mintPunchToken, punchUrl, currentWindow, secondsLeftInWindow, PUNCH_WINDOW_SECONDS } from '../lib/punch.js';
 import { geocode } from '../lib/geocode.js';
 import { isUuid } from '../lib/ids.js';
@@ -1299,6 +1300,10 @@ const CAMPAIGN_AUDIENCE_MAX = 100;
  *
  * Mirrored in create_campaign (migration-034) — the display and the enforcement
  * must agree, or a vendor sees sends they cannot spend.
+ *
+ * An approved all-student deal (audience 'all', migration-069) is not counted:
+ * it is the operator's send, not one of the vendor's. create_campaign skips it
+ * the same way since 069.
  */
 async function campaignQuota(vendorId) {
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
@@ -1306,6 +1311,7 @@ async function campaignQuota(vendorId) {
     .from('vendor_campaigns')
     .select('id', { count: 'exact', head: true })
     .eq('vendor_id', vendorId)
+    .neq('audience', 'all')
     .gte('created_at', since);
   const used = count ?? 0;
   return {
@@ -1555,6 +1561,15 @@ router.patch('/campaigns/:id', requirePin, requirePlan('discovery'), async (req,
         message: 'That deal has already ended. Send a new one instead.',
       });
     }
+    // An all-student deal went out because WeRewards approved THESE words for
+    // every student (migration-069). Rewriting it afterwards would turn the
+    // approval into a blank cheque, so it is take-down-only.
+    if (campaign.audience === 'all') {
+      return res.status(409).json({
+        error: 'CAMPAIGN_LOCKED',
+        message: 'WeRewards approved this wording for every student, so it can’t be edited. Take it down and ask again instead.',
+      });
+    }
 
     const b = req.body ?? {};
     const patch = {};
@@ -1676,6 +1691,56 @@ router.delete('/campaigns/:id', requirePin, async (req, res, next) => {
     // Note there is no `refunded` here: a takedown never gives the send back.
     // See campaignQuota for why, and use PATCH if the problem is the wording.
     res.json({ ok: true, quota: await campaignQuota(req.vendor.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- asking for a deal to reach every student (migration-069) ----------
+
+   A request, not a send: nothing reaches a student until the operator approves
+   it in /admin, and the vendor is emailed the answer either way. The logic is in
+   src/lib/deal-requests.js; these routes only hand it the vendor.
+
+   PIN-gated like every DEALS route (it speaks in the vendor's name), and
+   deliberately NOT plan-gated and NOT counted against the weekly sends: the
+   operator's approval is the gate here, and an approved deal is the operator's
+   send. */
+
+/** GET /api/vendor/deal-requests — this vendor's recent requests and their answers. */
+router.get('/deal-requests', requirePin, async (req, res, next) => {
+  try {
+    const out = await listVendorDealRequests(req.vendor.id);
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/vendor/deal-requests  { title, body, durationHours, requestId } */
+router.post('/deal-requests', requirePin, async (req, res, next) => {
+  try {
+    const b = req.body ?? {};
+    const out = await submitDealRequest({
+      vendor: req.vendor,
+      userId: req.user?.id ?? null,
+      input: b,
+      requestId: b.requestId,
+    });
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE /api/vendor/deal-requests/:id — withdraw a request still waiting for review. */
+router.delete('/deal-requests/:id', requirePin, async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'That request no longer exists.' });
+    }
+    const out = await withdrawDealRequest(req.vendor.id, req.params.id);
+    res.status(out.status).json(out.body);
   } catch (err) {
     next(err);
   }

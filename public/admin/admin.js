@@ -115,6 +115,8 @@ function bootFailed(message) {
   $('bc-audience').addEventListener('click', onBroadcastAudiencePick);
   $('bc-vendor').addEventListener('change', refreshBroadcastReach);
   $('bc-history').addEventListener('click', onBroadcastHistoryTap);
+  $('dr-pending').addEventListener('click', onDealRequestTap);
+  $('dr-decided').addEventListener('click', onDealRequestTap);
   $('tab-reviews').addEventListener('click', openReviewsView);
   $('rv-hidden-only').addEventListener('change', loadAdminReviews);
   $('rv-list').addEventListener('click', onReviewListTap);
@@ -385,6 +387,10 @@ async function loadAll() {
       // the worker drains a queue, so a reload here keeps an operator who left
       // the tab open from reading a stale "0 of 312 sent".
       bcLoaded ? loadBroadcasts() : null,
+      // NOT lazy, unlike the line above: a spot waiting on an answer is the
+      // reason to open the Broadcast tab at all, so the tab badge has to be
+      // right before anyone opens it.
+      loadDealRequests(),
       // The Reviews tab (migration-066), same bargain again.
       rvLoaded ? loadAdminReviews() : null,
       // The Notifications tab, same bargain as the four above. Its dashboard
@@ -7011,6 +7017,7 @@ const NOTIF_KIND_LABEL = {
   application_received: 'Application received',
   application_accepted: 'Application accepted',
   student_link_code: 'Link code',
+  deal_request: 'Deal request answer',
   other: 'Other',
 };
 const NOTIF_CHANNEL_LABEL = { push: 'Push', email: 'Email' };
@@ -8184,6 +8191,7 @@ function openBroadcast() {
   // Reload every open rather than once: a queue drains in the background, so the
   // counts in the history card are stale the moment the operator looks away.
   loadBroadcasts();
+  loadDealRequests();
   syncBroadcastVendors();
   refreshBroadcastReach();
 }
@@ -8361,6 +8369,207 @@ const BC_AUDIENCE_LABEL = {
   lapsed: 'Stopped coming',
   vendor: 'One spot',
 };
+
+/* ---------- deal requests from spots (migration-069) ----------
+   A spot asked for one of its deals to reach every student. Approve is armed
+   with a second tap (it addresses everybody, and a notification cannot be
+   recalled); Deny opens a note under the row, which the spot receives verbatim
+   in the email. The server decides under a row lock, so a second operator
+   answering the same request at the same moment gets "already approved" rather
+   than a second campaign or a second email. */
+
+let drArmed = null;          // request id whose Approve is armed
+let drArmTimer = null;
+
+const DR_STATUS_LABEL = { pending: 'waiting', approved: 'approved', denied: 'denied', withdrawn: 'withdrawn' };
+
+function runLabel(hours) {
+  const h = Number(hours) || 0;
+  if (h === 168) return 'a week';
+  if (h > 0 && h % 24 === 0) return h === 24 ? '1 day' : `${h / 24} days`;
+  return `${h} hours`;
+}
+
+async function loadDealRequests() {
+  try {
+    const res = await authFetch('/api/admin/deal-requests');
+    if (res.status === 403) { await denyAccess(); return; }
+    if (!res.ok) throw new Error(String(res.status));
+    renderDealRequests(await res.json());
+  } catch {
+    $('dr-error').textContent = 'Couldn’t load deal requests.';
+    $('dr-error').hidden = false;
+  }
+}
+
+// Leaves #dr-error alone on purpose: onDealRequestTap reloads straight after
+// writing the server's refusal there, and clearing it here would erase the one
+// sentence that says why an Approve did not go through.
+function renderDealRequests(data) {
+  const badge = $('dr-badge');
+  if (!data.available) {
+    badge.hidden = true;
+    $('dr-count').textContent = '';
+    $('dr-pending').innerHTML = '<p class="muted">Deal requests need migration 069 in the database first.</p>';
+    $('dr-decided').innerHTML = '';
+    return;
+  }
+  const pending = data.pending ?? [];
+  const decided = data.decided ?? [];
+  badge.textContent = pending.length > 99 ? '99+' : String(pending.length);
+  badge.hidden = pending.length === 0;
+  $('dr-count').textContent = pending.length ? `${pending.length} waiting` : '';
+
+  // Approve is refused server-side until the disclosing Privacy Policy is the
+  // live one (src/lib/terms.js EVERYONE_DEALS_TERMS_VERSION); say so up front
+  // rather than letting the operator find out from a 409.
+  const policy = $('dr-policy');
+  policy.textContent = 'Approving is switched off until the Privacy Policy update that discloses all-student deals is live. You can still deny.';
+  policy.hidden = data.disclosed !== false;
+
+  const audience = Number.isFinite(data.students) ? `${num(data.students)} students` : 'every student';
+  // Every action, tab open and ↻ re-renders this list, so a deny note being
+  // typed on ANOTHER row would be wiped. Carry the open note across.
+  const openDeny = document.querySelector('#dr-pending .dr-deny:not([hidden])');
+  const keep = openDeny
+    ? { id: openDeny.closest('.dr-row')?.dataset.id, text: openDeny.querySelector('.dr-note')?.value ?? '' }
+    : null;
+  $('dr-pending').innerHTML = pending.length
+    ? pending.map((r) => {
+      const when = new Date(r.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      const armed = drArmed === r.id;
+      return `
+      <div class="bc-row dr-row" data-id="${escapeHtml(r.id)}">
+        <div class="bc-row-main">
+          <p class="bc-row-title">${escapeHtml(r.title)}</p>
+          <p class="bc-row-body">${escapeHtml(r.body)}</p>
+          <p class="bc-row-meta">${escapeHtml(r.vendorName)}${r.vendorActive ? '' : ' (switched off)'} · runs ${runLabel(r.durationHours)} · to ${audience} · asked ${when}${r.requestedBy ? ` by ${escapeHtml(r.requestedBy)}` : ''}</p>
+        </div>
+        <div class="rv-actions">
+          <button class="vr-save dr-approve${armed ? ' is-armed' : ''}" type="button" data-act="approve"${data.disclosed === false || !r.vendorActive ? ' disabled' : ''}>${armed ? 'Tap again to approve' : 'Approve'}</button>
+          <button class="vr-cancel" type="button" data-act="deny-open">Deny</button>
+        </div>
+        <div class="dr-deny" hidden>
+          <label class="vendor-edit-label" for="dr-note-${escapeHtml(r.id)}">Why not? <em class="nv-opt">(optional, the spot sees this)</em></label>
+          <textarea id="dr-note-${escapeHtml(r.id)}" class="nv-input dr-note" maxlength="500" rows="3" placeholder="Say what would get it approved, for example a clearer offer or an end time."></textarea>
+          <div class="dr-deny-actions">
+            <button class="vr-cancel" type="button" data-act="deny-cancel">Cancel</button>
+            <button class="vr-save" type="button" data-act="deny">Send denial</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('')
+    : '<p class="muted">No requests waiting.</p>';
+
+  if (keep?.id) {
+    const row = [...document.querySelectorAll('#dr-pending .dr-row')].find((el) => el.dataset.id === keep.id);
+    if (row) {
+      row.querySelector('.dr-deny').hidden = false;
+      row.querySelector('.rv-actions').hidden = true;
+      row.querySelector('.dr-note').value = keep.text;
+    }
+  }
+
+  $('dr-decided').innerHTML = decided.length
+    ? decided.map((r) => {
+      const when = new Date(r.reviewedAt ?? r.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' });
+      const live = r.status === 'approved' && r.deal?.live;
+      const progress = r.status === 'approved' && r.deal
+        ? ` · ${num(r.deal.sent)} of ${num(r.queued ?? 0)} sent${r.deal.cancelled ? ' · taken down' : (live ? ' · live' : ' · ended')}`
+        : '';
+      return `
+      <div class="bc-row dr-row" data-id="${escapeHtml(r.id)}">
+        <div class="bc-row-main">
+          <p class="bc-row-title">${escapeHtml(r.title)}</p>
+          <p class="bc-row-body">${escapeHtml(r.body)}</p>
+          <p class="bc-row-meta">${escapeHtml(r.vendorName)} · <span class="bc-state is-${escapeHtml(r.status)}">${escapeHtml(DR_STATUS_LABEL[r.status] ?? r.status)}</span> ${when}${progress}</p>
+          ${r.note ? `<p class="bc-row-meta">Note: ${escapeHtml(r.note)}</p>` : ''}
+          ${live && !r.vendorActive ? '<p class="bc-row-meta"><span class="bc-state is-cancelled">spot switched off</span> · still sending until it ends or you take it down</p>' : ''}
+        </div>
+        ${live ? '<button class="vr-save" type="button" data-act="take-down">Take down</button>' : ''}
+      </div>`;
+    }).join('')
+    : '<p class="muted">Nothing answered yet.</p>';
+}
+
+function disarmDealRequest() {
+  drArmed = null;
+  clearTimeout(drArmTimer);
+  document.querySelectorAll('.dr-approve.is-armed').forEach((b) => {
+    b.classList.remove('is-armed');
+    b.textContent = 'Approve';
+  });
+}
+
+function dealRequestResult(ok, msg) {
+  $('dr-ok').hidden = !ok;
+  $('dr-error').hidden = ok;
+  (ok ? $('dr-ok') : $('dr-error')).textContent = msg;
+}
+
+/** Whether the vendor actually got the email, said plainly so a failure gets a phone call. */
+function emailedLine(data) {
+  return data.emailed
+    ? ` The spot was emailed at ${data.emailTo}.`
+    : ' The email to the spot did not go out, so let them know another way.';
+}
+
+async function onDealRequestTap(e) {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const row = btn.closest('.dr-row');
+  const id = row?.dataset.id;
+  if (!id) return;
+  const act = btn.dataset.act;
+
+  if (act === 'deny-open' || act === 'deny-cancel') {
+    disarmDealRequest();
+    const open = act === 'deny-open';
+    row.querySelector('.dr-deny').hidden = !open;
+    row.querySelector('.rv-actions').hidden = open;
+    if (open) row.querySelector('.dr-note').focus();
+    return;
+  }
+
+  if (act === 'approve' && drArmed !== id) {
+    disarmDealRequest();
+    drArmed = id;
+    btn.classList.add('is-armed');
+    btn.textContent = 'Tap again to approve';
+    drArmTimer = setTimeout(disarmDealRequest, 6000);
+    return;
+  }
+
+  if (act === 'take-down'
+      && !confirm('Take this deal down for every student?\n\nIt leaves every Deals list and nothing else is sent. Notifications already delivered stay delivered.')) return;
+
+  const path = act === 'approve' ? 'approve' : act === 'deny' ? 'deny' : act === 'take-down' ? 'take-down' : null;
+  if (!path) return;
+  disarmDealRequest();
+  row.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  try {
+    const note = act === 'deny' ? row.querySelector('.dr-note').value.trim() : undefined;
+    const res = await authFetch(`/api/admin/deal-requests/${encodeURIComponent(id)}/${path}`, {
+      method: 'POST',
+      body: JSON.stringify(note ? { note } : {}),
+    });
+    if (res.status === 403) { await denyAccess(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      dealRequestResult(false, data.message || 'That didn’t go through.');
+    } else if (act === 'approve') {
+      dealRequestResult(true, `Approved. Queued for ${num(data.queued ?? 0)} students; notifications go out within each student’s limits and never overnight.${emailedLine(data)}`);
+    } else if (act === 'deny') {
+      dealRequestResult(true, `Denied. Nothing was sent to students.${emailedLine(data)}`);
+    } else {
+      dealRequestResult(true, 'Taken down. It has left every Deals list.');
+    }
+  } catch {
+    dealRequestResult(false, 'No connection, try again.');
+  } finally {
+    await loadDealRequests();
+  }
+}
 
 /* ---------- the Reviews tab (migration-066) ---------- */
 

@@ -344,6 +344,10 @@ function bootFailed(message) {
   $('deal-duration').addEventListener('click', onDurationPick);
   $('deal-send').addEventListener('click', onDealSendTap);
   $('deal-history').addEventListener('click', onDealHistoryTap);
+  // Optional chaining: index.html and terminal.js are cached separately, so a
+  // counter iPad can run this script against markup from before the card existed.
+  $('everyone-send')?.addEventListener('click', onEveryoneTap);
+  $('everyone-list')?.addEventListener('click', onEveryoneListTap);
   setupQrScanning();
 
   const { data } = await sb.auth.getSession();
@@ -3141,6 +3145,7 @@ function enterDeals() {
   disarmDealSend();
   disarmDealDown(true);
   loadCampaigns();
+  loadEveryoneRequests();
   // #deals-lock is already painted from /config (applyPlanLocks) and is NOT
   // repainted here on purpose: refreshReach below is a gated route, so it is the
   // live probe, and it gets to correct the panel in both directions. Painting from
@@ -3458,6 +3463,9 @@ function renderDealHistory(list) {
     const when = new Date(c.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     const { live, label } = dealRowState(c);
     const armed = dealDownArmed === c.id;
+    // An approved all-student deal (migration-069) is take-down-only: WeRewards
+    // approved those exact words, and PATCH answers CAMPAIGN_LOCKED for it.
+    const everyone = c.audience === 'all';
     return `
       <div class="deal-row${live ? '' : ' is-over'}" data-id="${c.id}">
         <div class="deal-row-top">
@@ -3469,12 +3477,12 @@ function renderDealHistory(list) {
             <span class="deal-stat"><b>${c.queued_count}</b> targeted</span>
             <span class="deal-stat"><b>${c.sent_count}</b> notified</span>
             <span class="deal-stat"><b>${c.opened_count}</b> opened</span>
-            <span class="deal-when">${when}${label}</span>
+            <span class="deal-when">${when}${everyone ? `${DOT}every student` : ''}${label}</span>
           </div>
         </div>
         ${live ? `
         <div class="deal-row-actions">
-          <button class="deal-act" type="button" data-act="edit">Edit</button>
+          ${everyone ? '' : '<button class="deal-act" type="button" data-act="edit">Edit</button>'}
           <button class="deal-act deal-act-danger${armed ? ' is-armed' : ''}" type="button" data-act="down">${armed ? 'Tap again to take down' : 'Take down'}</button>
         </div>
         <p class="field-error deal-row-error" hidden></p>
@@ -3496,6 +3504,152 @@ function renderDealHistory(list) {
         </div>` : ''}
       </div>`;
   }).join('');
+}
+
+/* ---------- asking WeRewards to send a deal to every student (migration-069) ----------
+   A request, not a send. It reuses the composer's headline, message and length,
+   and goes to the operator, who approves or denies it in /admin; the vendor is
+   emailed the answer and it shows here too. Not plan-gated and not counted
+   against the weekly sends, so it deliberately shares none of Send deal's lock
+   or quota plumbing above. One request may wait at a time. */
+
+let everyoneToken = null;        // idempotency, kept across a failed attempt
+let everyonePending = false;     // a request is waiting: the button stays off
+let everyoneBusy = false;
+
+const EVERYONE_STATUS = {
+  pending: 'Waiting for review',
+  approved: 'Approved',
+  denied: 'Not approved',
+  withdrawn: 'Withdrawn',
+};
+
+async function loadEveryoneRequests() {
+  if (!$('everyone-list')) return;
+  try {
+    const res = await authFetch('/api/vendor/deal-requests');
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) return;
+    renderEveryoneRequests(data);
+  } catch { /* keep the prior render */ }
+}
+
+function renderEveryoneRequests(data) {
+  const box = $('everyone-list');
+  const send = $('everyone-send');
+  // Migration not applied yet: the card says so instead of offering a button
+  // that can only answer 503.
+  if (data.available === false) {
+    box.innerHTML = '<p class="manage-note">Not switched on yet.</p>';
+    send.disabled = true;
+    return;
+  }
+  everyonePending = Boolean(data.pending);
+  send.disabled = everyonePending || everyoneBusy;
+  const list = data.requests || [];
+  if (!list.length) { box.innerHTML = ''; return; }
+  box.innerHTML = list.map((r) => {
+    const when = new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const over = r.status !== 'pending' && r.status !== 'approved';
+    return `
+      <div class="deal-row${over ? ' is-over' : ''}" data-id="${escapeHtml(r.id)}">
+        <div class="deal-row-top">
+          <div class="deal-row-main">
+            <p class="deal-row-title">${escapeHtml(r.title)}</p>
+            <p class="deal-row-body">${escapeHtml(r.body)}</p>
+            ${r.note ? `<p class="deals-note">WeRewards: ${escapeHtml(r.note)}</p>` : ''}
+          </div>
+          <div class="deal-row-stats">
+            <span class="deal-stat"><b>${escapeHtml(EVERYONE_STATUS[r.status] ?? r.status)}</b></span>
+            <span class="deal-when">${when}</span>
+          </div>
+        </div>
+        ${r.status === 'pending' ? `
+        <div class="deal-row-actions">
+          <button class="deal-act" type="button" data-act="withdraw">Withdraw</button>
+        </div>
+        <p class="field-error deal-row-error" hidden></p>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function everyoneMessage(id, text) {
+  const err = $('everyone-error');
+  const ok = $('everyone-success');
+  err.hidden = id !== 'error';
+  ok.hidden = id !== 'success';
+  (id === 'error' ? err : ok).textContent = text;
+}
+
+async function onEveryoneTap() {
+  if (everyoneBusy || everyonePending) return;
+  const title = $('deal-title').value.trim();
+  const body = $('deal-body').value.trim();
+  if (!title || !body) {
+    everyoneMessage('error', 'Write a headline and a message in the composer above first.');
+    return;
+  }
+  everyoneBusy = true;
+  $('everyone-send').disabled = true;
+  everyoneToken = everyoneToken || `ev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  // Skipped when the PIN pad has just gone up: the reload is itself a gated
+  // call, and its 401 would put the pad up a second time over the first.
+  let reload = true;
+  try {
+    const res = await authFetch('/api/vendor/deal-requests', {
+      method: 'POST',
+      body: JSON.stringify({ title, body, durationHours: dealHours, requestId: everyoneToken }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data, onEveryoneTap)) { reload = false; return; }
+    if (!res.ok) {
+      everyoneMessage('error', data?.message || 'Could not send that request. Try again in a moment.');
+      // A refusal is final for this token: the next attempt is a new request.
+      everyoneToken = null;
+      return;
+    }
+    everyoneToken = null;
+    $('deal-title').value = '';
+    $('deal-body').value = '';
+    onDealInput();                      // resets the counters
+    // The sentence the vendor needs: this went to a person, not to students.
+    everyoneMessage('success', data.message
+      || 'Request sent to WeRewards for review. We’ll email you when it’s approved or denied.');
+  } catch {
+    // Token KEPT: if the request landed, a retry returns it instead of a 409.
+    everyoneMessage('error', 'No connection. Tap the button again when you are back online.');
+  } finally {
+    everyoneBusy = false;
+    if (reload) await loadEveryoneRequests();
+    else $('everyone-send').disabled = everyonePending;
+  }
+}
+
+async function onEveryoneListTap(e) {
+  const btn = e.target.closest('.deal-act');
+  if (!btn || btn.dataset.act !== 'withdraw') return;
+  const row = btn.closest('.deal-row');
+  if (!row?.dataset.id) return;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`/api/vendor/deal-requests/${row.dataset.id}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (handlePinRequired(res, data)) return;
+    if (!res.ok) {
+      const err = row.querySelector('.deal-row-error');
+      if (err) { err.textContent = data?.message || 'Could not withdraw that. Try again.'; err.hidden = false; }
+      btn.disabled = false;
+      return;
+    }
+    $('everyone-success').hidden = true;
+    // A token kept from a dropped connection belongs to the request just
+    // withdrawn; the next tap is a new request and needs a new token.
+    everyoneToken = null;
+    await loadEveryoneRequests();
+  } catch {
+    btn.disabled = false;
+  }
 }
 
 /* Edit / take down. Delegated from the list container, so a re-render never

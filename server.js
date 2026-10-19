@@ -472,6 +472,10 @@ app.use([
   '/api/me/redeem-code',
 ], redeemLimiter);
 app.use('/api/vendor/campaigns', campaignLimiter);
+// All-student deal requests (migration-069) get the same cap: each new request
+// pushes an alert to every operator device, so an unbounded submit/withdraw
+// loop would page the operator hundreds of times.
+app.use('/api/vendor/deal-requests', campaignLimiter);
 // Linking a student email (migration-057). Two stacked caps, for the two
 // different things that can be abused on this prefix — the same split
 // /api/vendor/recover already makes, and for the same reason.

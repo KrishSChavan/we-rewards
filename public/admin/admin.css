@@ -1564,3 +1564,20 @@ h1, h3 { margin: 0; }
   .notif-filter { min-height: 2.5rem; padding-inline: 0.75rem; }
   .notif-kind-select { width: 100%; }
 }
+
+/* ---------- deal requests (migration-069) ----------
+   The broadcast history rows again, with the deny note opening underneath the
+   row rather than beside it, so the textarea gets the card's full width. */
+.dr-row { flex-wrap: wrap; }
+.dr-deny { flex: 1 1 100%; display: flex; flex-direction: column; gap: 0.4rem; }
+.dr-deny[hidden] { display: none; }
+.dr-deny textarea { width: 100%; resize: vertical; }
+.dr-deny-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+.dr-sub { margin: 1rem 0 0.5rem; font-size: 0.76rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+/* Armed reads as "this goes to everybody", the same signal as #bc-send.is-armed. */
+.dr-approve.is-armed { background: var(--bad); border-color: var(--bad); color: #fff; }
+.bc-state.is-pending { color: var(--warn); }
+.bc-state.is-approved { color: var(--good); }
+.bc-state.is-denied { color: var(--bad); }
+.bc-state.is-withdrawn { color: var(--muted); }
+.dr-row .rv-actions[hidden] { display: none; }

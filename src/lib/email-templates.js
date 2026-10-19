@@ -469,6 +469,105 @@ export function vendorResetCode({ businessName, code, ttlMinutes = 30, terminalU
 }
 
 /**
+ * "3 days", "a week", "24 hours": how long a deal runs, as the terminal's own
+ * chips name it. Hours that are not whole days stay hours.
+ */
+function runLength(hours) {
+  const h = Number(hours) || 0;
+  if (h === 168) return 'a week';
+  if (h > 0 && h % 24 === 0) return h === 24 ? '1 day' : `${h / 24} days`;
+  return `${h} hours`;
+}
+
+/**
+ * The answer to a vendor's request to send one deal to every student
+ * (migration-069), approved or denied from /admin.
+ *
+ * One template with two outcomes, because the vendor asked one question and
+ * the answer should look the same either way. The deal's own words are quoted
+ * back: a vendor can have several requests in their history, and "your request"
+ * alone does not say which one this is.
+ *
+ * The operator's note is printed verbatim when there is one. On a denial it is
+ * the reason, which is the whole point of denying with a note; with no note the
+ * email says so and gives the support address instead, because replies to the
+ * From address are not read.
+ *
+ * Transactional, not marketing: it answers something the vendor asked for.
+ */
+export function dealRequestDecision({
+  businessName, approved = false, title = '', body: dealBody = '', note: adminNote = '',
+  durationHours = 72, terminalUrl = '/terminal/', quietStart = 22, quietEnd = 9,
+} = {}) {
+  const biz = esc(businessName || 'your spot');
+  const lasts = runLength(durationHours);
+  // An approval made at 11pm does not go out "in the next few minutes": quiet
+  // hours hold every deal until morning, so the email says when, not just soon.
+  const hour = (h) => `${h % 12 === 0 ? 12 : h % 12}${h < 12 || h === 24 ? 'am' : 'pm'}`;
+  const quiet = quietStart === quietEnd ? '' : `, though never between ${hour(quietStart)} and ${hour(quietEnd)}`;
+  const quote = `<strong>${esc(title)}</strong><br />${esc(dealBody)}`;
+  const reason = String(adminNote ?? '').trim();
+  const support = 'contactwerewards@gmail.com';
+
+  const html = approved
+    ? stack([
+      line(`We approved the request from <strong>${biz}</strong> to send this deal to every student on WeRewards:`),
+      note(quote),
+      line(`It starts going out within a few minutes${quiet}, and runs for ${lasts}. It shows in every student’s Deals list straight away. Students who have already had their notifications for the day get it later, so it can take a day to reach everyone. It doesn’t use one of your weekly sends.`),
+      line(`Please honor the offer for as long as it runs. You can take it down at any time from the Deals tab in the terminal.`),
+      reason ? line(`A note from the WeRewards team: “${esc(reason)}”`) : '',
+      button(terminalUrl, 'Open the terminal', { flush: true }),
+    ])
+    : stack([
+      line(`We looked at the request from <strong>${biz}</strong> to send this deal to every student on WeRewards, and we aren’t sending it this time:`),
+      note(quote),
+      reason
+        ? line(`<strong>Why:</strong> ${esc(reason)}`)
+        : line(`We didn’t add a reason. If you’d like to know more, email us at ${esc(support)}.`),
+      line(`Nothing was sent to students. You can still send deals to your own customers from the Deals tab as usual, or change the wording and ask again.`),
+      button(terminalUrl, 'Open the terminal', { flush: true }),
+    ]);
+
+  const text = (approved
+    ? [
+      `We approved the request from ${businessName || 'your spot'} to send this deal to every student on WeRewards:`,
+      '',
+      `    ${title}`,
+      `    ${dealBody}`,
+      '',
+      `It starts going out within a few minutes${quiet}, and runs for ${lasts}. It shows in every student's Deals list straight away. Students who have already had their notifications for the day get it later, so it can take a day to reach everyone. It doesn't use one of your weekly sends.`,
+      '',
+      'Please honor the offer for as long as it runs. You can take it down at any time from the Deals tab in the terminal.',
+      ...(reason ? ['', `A note from the WeRewards team: "${reason}"`] : []),
+    ]
+    : [
+      `We looked at the request from ${businessName || 'your spot'} to send this deal to every student on WeRewards, and we aren't sending it this time:`,
+      '',
+      `    ${title}`,
+      `    ${dealBody}`,
+      '',
+      reason ? `Why: ${reason}` : `We didn't add a reason. If you'd like to know more, email us at ${support}.`,
+      '',
+      'Nothing was sent to students. You can still send deals to your own customers from the Deals tab as usual, or change the wording and ask again.',
+    ]).concat(['', `Open the terminal: ${terminalUrl}`, '', 'WeRewards']).join('\n');
+
+  return {
+    subject: approved
+      ? 'Approved: your deal is going to every student'
+      : 'Your all-student deal request wasn’t approved',
+    html: layout({
+      title: approved ? 'Your deal was approved' : 'Request not approved',
+      preheader: approved
+        ? `“${title}” is going out to every student.`
+        : (reason ? `Why: ${reason}`.slice(0, 120) : `“${title}” won’t be sent to every student.`),
+      body: html,
+      footer: footerLines('You’re getting this because your spot asked WeRewards to send a deal to every student.'),
+    }),
+    text,
+  };
+}
+
+/**
  * The code that proves a student holds a university address.
  *
  * Same shape as vendorResetCode above and for the same reason — a code typed

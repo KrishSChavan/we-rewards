@@ -40,7 +40,7 @@ import { supabaseAdmin } from './supabase.js';
 export const NOTIFICATION_KINDS = Object.freeze([
   'deal', 'nearby', 'reminder', 'broadcast', 'admin_alert', 'admin_test',
   'vendor_reset', 'application_received', 'application_accepted',
-  'student_link_code', 'other',
+  'student_link_code', 'deal_request', 'other',
 ]);
 
 const KIND_SET = new Set(NOTIFICATION_KINDS);

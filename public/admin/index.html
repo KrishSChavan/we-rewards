@@ -92,7 +92,7 @@
       <button id="tab-poster" class="tab" type="button">QR &amp; NFC</button>
       <button id="tab-pools" class="tab" type="button">Pools</button>
       <button id="tab-ambassadors" class="tab" type="button">Ambassadors</button>
-      <button id="tab-broadcast" class="tab" type="button">Broadcast</button>
+      <button id="tab-broadcast" class="tab" type="button">Broadcast<span id="dr-badge" class="tab-badge" hidden>0</span></button>
       <button id="tab-notifications" class="tab" type="button">Notifications</button>
       <button id="tab-reviews" class="tab" type="button">Reviews</button>
     </nav>
@@ -792,6 +792,26 @@
          no in-app list to correct it in, and no email follow-up. The two-tap arm
          on Send is the same guard the vendor deal composer uses. -->
     <div id="view-broadcast" class="wrap" hidden>
+      <!-- DEAL REQUESTS (migration-069). A spot asked, from its terminal, for one
+           of its deals to reach every student. Approving queues it as an
+           ordinary deal (in every Deals list at once, notifications within each
+           student's limits and switches); denying sends nothing to students.
+           The spot is emailed either answer, with the note. Approve is a
+           two-tap arm, the same guard as Send below: it addresses everybody. -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Deal requests from spots</h3>
+          <span id="dr-count" class="chart-max"></span>
+        </div>
+        <p class="muted">A spot asked to send one of its deals to every student. Approving puts it in every student’s Deals list straight away and sends notifications within each student’s limits and switches, like any deal. It doesn’t use the spot’s weekly sends. The spot is emailed your answer, with your note if you write one.</p>
+        <p id="dr-policy" class="inc-note" hidden></p>
+        <p id="dr-error" class="field-error" role="alert" hidden></p>
+        <p id="dr-ok" class="inc-ok" hidden></p>
+        <div id="dr-pending" class="bc-history"></div>
+        <p class="dr-sub">Answered</p>
+        <div id="dr-decided" class="bc-history"></div>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <h3>Send a notification</h3>
@@ -945,6 +965,7 @@
             <option value="application_received">Application received</option>
             <option value="application_accepted">Application accepted</option>
             <option value="student_link_code">Link code</option>
+            <option value="deal_request">Deal request answer</option>
             <option value="other">Other</option>
           </select>
         </div>

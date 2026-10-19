@@ -271,7 +271,51 @@
 // entries: early costs one prompt, late means having already mailed something
 // §7.4 did not cover. Revert this line and both documents' "Last Updated" dates
 // together, never one without the other.
-export const TERMS_VERSION = '2026-10-12';
+// 2026-10-18: a vendor deal can reach EVERY student, not only that vendor's
+// customers (Policy §7.4 and the §4 purposes table; migration-069). Material on
+// the plainest of the tests above, because the prior §7.4 said the opposite in
+// so many words: "Participating vendors can send offers ("deals") to students
+// who have earned points at that vendor." A student who has never set foot in a
+// spot had every reason to believe that spot could not message them, and an
+// approved all-student request makes that false.
+//
+// What did NOT change, and is the reason this is safe to disclose rather than a
+// promise to walk back: the vendor still cannot do it alone (the operator
+// approves each request, and §7.4 now says so); the vendor still learns nobody's
+// identity; and the frequency limits, quiet hours, the switches and the
+// unsubscribe link all apply unchanged, because an approved request is delivered
+// as an ordinary campaign through claim_campaign_pushes. The 2026-10-02 and
+// 2026-10-12 generalisations covered new kinds of HOUSE message and new
+// channels; neither covered a vendor reaching students outside its own
+// customers, which is why this needs its own bump.
+//
+// ⚠ EVERYONE_DEALS_TERMS_VERSION BELOW IS THE GATE, NOT THIS LINE. Approving a
+// request (src/lib/deal-requests.js reviewDealRequest) refuses while
+// TERMS_VERSION is older than it, so if this bump is deferred at ship time
+// (revert this line and both documents' "Last Updated" dates together), the
+// feature cannot send anything while the POSTED text is the old one. Requests
+// can still be made and denied; nothing reaches a student.
+//
+// What the gate does NOT check is what each student has personally accepted.
+// No send path reads profiles.terms_version (the 2026-10-12 entry's precedent:
+// the disclosure is posted before the first message, and a lapsed student who
+// has not reopened the app since is still reached), so a student who has not
+// re-accepted can receive an approved all-student deal. That is deliberate and
+// consistent with every notification feature here, not an oversight.
+//
+// ⚠ THIS BUMP ALSO RE-PROMPTS FOR EVERY OTHER UNBUMPED EDIT ALREADY IN THE
+// DOCUMENTS (spot reviews, the one-point rate, rank tiers were each written with
+// TERMS_VERSION deliberately left alone). One interruption covering all of them
+// is the point; it does mean students accept that text at the same time.
+//
+// ⚠ THE PAYOUT-SURFACE WARNING AT THE TOP OF THIS FILE STILL APPLIES, and
+// nothing in this bump widens it.
+export const TERMS_VERSION = '2026-10-18';
+
+// The first documents that disclose all-student deals. Not an alias of
+// TERMS_VERSION: that one moves with every future revision, while this one must
+// stay pinned to the revision that made the disclosure.
+export const EVERYONE_DEALS_TERMS_VERSION = '2026-10-18';
 
 // Shown in the consent modal. `path` is served by the static mount in server.js;
 // these open in a new tab so a student never loses their place in the flow.
