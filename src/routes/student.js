@@ -99,6 +99,17 @@ const router = Router();
 const RECENT_WINDOW_DAYS = 7;
 
 /**
+ * How far back the Spots tab's "Recent" filter looks, as `spotsRecent`.
+ *
+ * Longer than the Home row on purpose. The row is ambient and has to stay a
+ * week of habit (see above); the filter is something a student opens to find
+ * "that place I went a few weeks ago", and a 7-day lens hid exactly that spot.
+ * Separate from RECENT_WINDOW_DAYS for the same reason NEW_VENDOR_WINDOW_DAYS
+ * is: tuning one should never silently move the other.
+ */
+const SPOTS_RECENT_WINDOW_DAYS = 30;
+
+/**
  * How long a spot counts as newly joined, for the NEW strip at the top of the
  * Spots tab.
  *
@@ -625,10 +636,14 @@ async function oneTimeRewardState(userId) {
  */
 router.get('/balances', requireConsent, async (req, res, next) => {
   try {
-    const recentSince = new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
     // Compared as epoch ms, not as strings: Postgres hands timestamptz back as
     // '…+00:00' while toISOString() produces '…Z', so a lexicographic compare of
     // the two would be wrong in a way that only shows up at certain times of day.
+    const recentSinceMs = Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    const spotsRecentSinceMs = Date.now() - SPOTS_RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    // One read serves both recent windows: the wider is fetched and each set is
+    // cut out of it below, rather than a second pair of activity queries.
+    const activitySince = new Date(Math.min(recentSinceMs, spotsRecentSinceMs)).toISOString();
     const newSinceMs = Date.now() - NEW_VENDOR_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
     const [
@@ -668,18 +683,18 @@ router.get('/balances', requireConsent, async (req, res, next) => {
       // a vendor happens inside the app, not at a counter, so it is not a visit.
       supabaseAdmin
         .from('transactions')
-        .select('vendor_id')
+        .select('vendor_id, created_at')
         .eq('user_id', req.user.id)
         .in('type', ['earn', 'redeem'])
-        .gte('created_at', recentSince),
+        .gte('created_at', activitySince),
       // "Recent spots" part 2: a scanned visit with no purchase attached. A
       // punch is the one kind of activity that writes no transaction row, so
       // without this a student who only ever punches would have no recent spots.
       supabaseAdmin
         .from('punches')
-        .select('vendor_id')
+        .select('vendor_id, created_at')
         .eq('user_id', req.user.id)
-        .gte('created_at', recentSince),
+        .gte('created_at', activitySince),
       // The Recommended fallback for a student with no recent activity. Global
       // rather than per-student, so it is cached like the catalogue.
       loadRecommendedVendorIds(),
@@ -720,9 +735,13 @@ router.get('/balances', requireConsent, async (req, res, next) => {
     // Both feeds collapse to the same question — "was I here lately?" — so they
     // merge into one set rather than being ranked. The client orders the Recent
     // row itself; the server only says which spots qualify.
-    const recentSet = new Set([
-      ...(recentTxns ?? []).map((t) => t.vendor_id),
-      ...(recentPunches ?? []).map((p) => p.vendor_id),
+    const since = (rows, ms) => (rows ?? [])
+      .filter((r) => new Date(r.created_at).getTime() >= ms)
+      .map((r) => r.vendor_id);
+    const recentSet = new Set([...since(recentTxns, recentSinceMs), ...since(recentPunches, recentSinceMs)]);
+    const spotsRecentSet = new Set([
+      ...since(recentTxns, spotsRecentSinceMs),
+      ...since(recentPunches, spotsRecentSinceMs),
     ]);
     // Position in the top-N list, so the client can keep the ranking. A vendor
     // that has since been deactivated is already absent from `vendors`, so it
@@ -740,7 +759,7 @@ router.get('/balances', requireConsent, async (req, res, next) => {
     const visitedSet = new Set(
       visited ?? [
         ...(cards ?? []).map((c) => c.vendor_id),
-        ...(recentTxns ?? []).map((t) => t.vendor_id),
+        ...since(recentTxns, recentSinceMs),
       ]
     );
     // Is `visited` below an ANSWER or a guess? True only when the RPC replied;
@@ -824,6 +843,9 @@ router.get('/balances', requireConsent, async (req, res, next) => {
           // Any activity in the last RECENT_WINDOW_DAYS: bought, redeemed, or
           // scanned a visit. Drives the Home carousel's "Recent spots" row.
           recent: recentSet.has(v.id),
+          // The same activity over SPOTS_RECENT_WINDOW_DAYS, for the Spots
+          // tab's Recent filter. Always true wherever `recent` is.
+          spotsRecent: spotsRecentSet.has(v.id),
           // Rank in the most-visited list, or null. Only read when the student
           // has no recent spots at all, where the carousel shows these instead
           // under a "Recommended" heading rather than opening empty.

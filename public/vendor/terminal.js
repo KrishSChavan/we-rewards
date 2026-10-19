@@ -4894,11 +4894,11 @@ function renderBilling(b) {
   buyAnnual.hidden = !annual;
   if (monthly) buyMonthly.textContent = `Upgrade ${monthly}/month`;
   if (annual) {
-    // Name the saving rather than making a vendor do the arithmetic at a till.
-    const saved = monthly && annual
-      ? (b.prices.monthly.amountCents * 12 - b.prices.annual.amountCents) / 100
-      : 0;
-    buyAnnual.textContent = saved > 0 ? `${annual}/year (save $${saved})` : `${annual}/year`;
+    // Quoted per month so it reads against the monthly button beside it, with
+    // "(annually)" saying the charge itself is yearly: $319 shows as $26.58/mo.
+    // Rounded to the cent; Stripe's checkout page names the full amount charged.
+    const perMonth = priceText({ amountCents: Math.round(b.prices.annual.amountCents / 12) });
+    buyAnnual.textContent = `${perMonth}/mo (annually)`;
   }
   actions.hidden = false;
 }

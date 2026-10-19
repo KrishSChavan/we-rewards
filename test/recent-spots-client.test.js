@@ -113,6 +113,10 @@ describe('markVendorVisited', () => {
     // spot eligible to be RECOMMENDED back at the student.
     assert.equal(v.recent, true, 'recent');
     assert.equal(v.visited, true, 'visited');
+    // The Spots tab's Recent filter reads its own, wider 30-day flag. Left
+    // unset, a spot visited this minute would sit on the Home row and be
+    // missing from the filter that is meant to hold everything on that row.
+    assert.equal(v.spotsRecent, true, 'spotsRecent');
   });
 
   test('a repeat visit changes nothing and says so', () => {

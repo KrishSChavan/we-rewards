@@ -4489,10 +4489,11 @@ async function loadVendors() {
  * punch, a reconnect. Standing at a counter watching your points go up while
  * the row above still calls the place a stranger is the bug this closes.
  *
- * Both flags, because one visit answers both questions the server asks:
+ * Every flag, because one visit answers every question the server asks:
  * `recent` is "have I been here lately" (its 7-day window, so a visit today is
- * inside it by definition) and `visited` is "do I know this place at all",
- * which is a one-way door.
+ * inside it by definition), `spotsRecent` is the same over the Spots filter's
+ * 30 days, and `visited` is "do I know this place at all", which is a one-way
+ * door.
  *
  * Returns null when nothing changed, and callers repaint only when it did. A
  * regular's second coffee of the week flips nothing, and that is the common
@@ -4510,8 +4511,11 @@ function markVendorVisited(vendorId) {
   const v = allVendors.find((x) => x.vendorId === vendorId);
   if (!v) return null;
   const firstEver = !v.visited;
+  // `spotsRecent` needs no check of its own: its window holds `recent`'s, so
+  // wherever `recent` is already true it is too.
   if (!firstEver && v.recent) return null;
   v.recent = true;
+  v.spotsRecent = true;
   v.visited = true;
   return { vendor: v, firstEver };
 }
@@ -5726,8 +5730,10 @@ function recommendedList() {
  *
  *   all       — every spot, alphabetical. The directory.
  *   favorites — the spots this student saved with the heart, alphabetical.
- *   recent    — spots with activity in the last 7 days (the server's `recent`
- *               flag), alphabetical. The set the Home carousel draws from.
+ *   recent    — spots with activity in the last 30 days (the server's
+ *               `spotsRecent` flag), alphabetical. Wider than the Home
+ *               carousel's 7-day `recent` on purpose; see
+ *               SPOTS_RECENT_WINDOW_DAYS in src/routes/student.js.
  *   top       — the most-visited spots, in the server's ranking, capped at
  *               five. NOT the Home carousel's Recommended row: this one is the
  *               same for everybody and includes the student's own regular
@@ -5745,7 +5751,7 @@ function baseSpotsList() {
     return allVendors.filter((v) => v.favorite).sort(spotsOrder);
   }
   if (spotsFilter === 'recent') {
-    return allVendors.filter((v) => v.recent).sort(spotsOrder);
+    return allVendors.filter((v) => v.spotsRecent).sort(spotsOrder);
   }
   if (spotsFilter === 'top') return topSpotsList();
   return allVendors.slice().sort(spotsOrder);
@@ -5842,7 +5848,7 @@ function spotsEmptyText(query) {
   // Says what to DO, not just what is missing: an empty Favorites list is the
   // one empty state here a student can fix in one tap, so it should say how.
   if (spotsFilter === 'favorites') return 'No saved spots yet. Tap the heart on a spot to save it.';
-  if (spotsFilter === 'recent') return "You haven't been anywhere in the last 7 days.";
+  if (spotsFilter === 'recent') return "You haven't been anywhere in the last 30 days.";
   if (spotsFilter === 'top') return 'No visits recorded yet, so there is nothing to rank.';
   return 'No spots yet, check back soon!';
 }
