@@ -4595,6 +4595,9 @@ function unlockToast(v) {
 // other doesn't recognise, and there is no such value.
 const SHOW_VENDOR_CARD_MAP = document.documentElement.dataset.vendorMap === 'on';
 const TILE_Z = 16;   // OSM zoom for the vendor card thumbnail (~street level)
+// Every OSM tile request overrides the page's no-referrer policy with this. See
+// buildSpotsMap for why: without a Referer, OSM serves "Access blocked" tiles.
+const OSM_REFERRER_POLICY = 'strict-origin-when-cross-origin';
 
 // Build a 2×2 OpenStreetMap tile mosaic centred on (lat,lng) as the inner HTML
 // for a vendor card's .vc-map. Keyless — tiles are pulled straight from
@@ -4615,7 +4618,7 @@ function vendorMapHtml(lat, lng) {
   const mx = (x - x0) * 256 + px;            // point's pixel within the 512×512 mosaic
   const my = (y - y0) * 256 + py;
   const tile = (tx, ty, left, top) =>
-    `<img class="vc-tile" alt="" loading="lazy" style="left:${left}px;top:${top}px"` +
+    `<img class="vc-tile" alt="" loading="lazy" referrerpolicy="${OSM_REFERRER_POLICY}" style="left:${left}px;top:${top}px"` +
     ` src="https://tile.openstreetmap.org/${TILE_Z}/${tx}/${ty}.png" />`;
   return (
     `<span class="vc-map">` +
@@ -7618,6 +7621,11 @@ function buildSpotsMap() {
 
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: MAP_MAX_ZOOM,
+    // OSM's tile usage policy requires a Referer and its servers answer a request
+    // without one with a 403 "Access blocked" tile. helmet sends the page as
+    // Referrer-Policy: no-referrer, so each tile has to ask for one itself. This
+    // sends the origin alone (https://we-rewards.com/), never the path or query.
+    referrerPolicy: OSM_REFERRER_POLICY,
     // Required by the OpenStreetMap tile licence, and listed as a third party in
     // legal/student-privacy-policy.html. Do not remove this.
     attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
