@@ -7295,7 +7295,7 @@ function padBounds(bounds, ratio, minSpanLat) {
 // than its own limit, and Leaflet resolves that contradiction by jamming the
 // map into the wall's top-left corner. Measuring the real bounds instead makes
 // the two agree by construction.
-function frameMap(spots, focusId) {
+function wallMap(spots) {
   const view = padBounds(
     L.latLngBounds(spots.map((v) => [mapCoord(v.latitude), mapCoord(v.longitude)])),
     MAP_VIEW_PAD,
@@ -7308,6 +7308,10 @@ function frameMap(spots, focusId) {
   spotsMap.setMinZoom(spotsMap.getZoom());
   mapWall = spotsMap.getBounds().pad(0.02);   // the hair of slack keeps the edge off the outermost pin
   spotsMap.setMaxBounds(mapWall);
+}
+
+function frameMap(spots, focusId) {
+  wallMap(spots);
 
   const focus = focusId && spots.find((v) => String(v.vendorId) === focusId);
   if (!focus) return;
@@ -7320,6 +7324,24 @@ function frameMap(spots, focusId) {
   // which moves the pin up the screen.
   const lift = mapSheetHeight() / 2;
   if (lift > 0) spotsMap.panBy([0, lift], { animate: false });
+}
+
+// The wall and the zoom floor are measurements of the viewport, so a viewport
+// that changes size while the map is up leaves both describing a screen that is
+// no longer there. A phone never does this; a laptop does it all the time
+// (maximise, full screen, dragging the window edge, DevTools). Grow the window
+// and the old wall is narrower than the view, so the map cannot pan and sits
+// stuck zoomed out; shrink it and the floor stops short of the outermost pins.
+// Re-measure for the new size, then put the student back where they were,
+// clamped by the new limits.
+function onSpotsMapResize() {
+  if (!mapScreenOpen() || !mapWall) return;   // closed: the next open frames afresh
+  const spots = mappableVendors();
+  if (!spots.length) return;
+  const center = spotsMap.getCenter();
+  const zoom = spotsMap.getZoom();
+  wallMap(spots);
+  spotsMap.setView(center, Math.max(zoom, spotsMap.getMinZoom()), { animate: false });
 }
 
 /* ---------- pins ---------- */
@@ -7604,6 +7626,7 @@ function buildSpotsMap() {
   mapPins = L.layerGroup().addTo(spotsMap);
   // Tapping the map itself (not a pin) puts the sheet away.
   spotsMap.on('click', () => closePinSheet());
+  spotsMap.on('resize', onSpotsMapResize);
   spotsMap.on('locationfound', onMapLocationFound);
   spotsMap.on('locationerror', onMapLocationError);
 }

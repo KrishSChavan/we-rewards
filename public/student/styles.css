@@ -3809,6 +3809,18 @@ button { font-family: inherit; border: none; cursor: pointer; background: none; 
 .map-pin-sheet[hidden] { display: none; }
 .map-pin-sheet.is-open { transform: translateY(0); }
 @media (prefers-reduced-motion: reduce) { .map-pin-sheet { transition: none; } }
+/* Desktop: the map stays full-bleed, but the sheet joins the app's 34rem column
+   like .detail-card does. Stretched across a laptop, its two buttons came out
+   700px wide each and the name sat a screen-width away from Directions. Side
+   borders because, centred, its edges now sit on the map instead of off-screen. */
+@media (min-width: 761px) {
+  .map-pin-sheet {
+    left: 50%; right: auto; width: 100%; max-width: 34rem;
+    border: 3px solid var(--edge); border-bottom: 0;
+    transform: translate(-50%, 110%);
+  }
+  .map-pin-sheet.is-open { transform: translate(-50%, 0); }
+}
 
 .map-pin-close {
   position: absolute; right: 0.8rem; top: 0.8rem;
